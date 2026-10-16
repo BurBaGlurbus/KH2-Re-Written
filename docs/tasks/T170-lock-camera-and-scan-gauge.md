@@ -1,4 +1,4 @@
-# T132 — Lock-on camera (mode 2) and the Scan target gauge
+# T170 — Lock-on camera (mode 2) and the Scan target gauge
 
 Owner Claude (thread "Lock-on camera and Scan 1:1"), 2026-10-16. Gates P18/P21
 presentation work (development test room); no final gameplay gate inferred.
