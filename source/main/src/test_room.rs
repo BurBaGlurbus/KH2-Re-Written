@@ -44,6 +44,7 @@ use std::{
 };
 use visual::area_fog::{AddFogged, FogMaterial, FogPlugin};
 use visual::controller::{self, Pad};
+use visual::enemy_gauge::EnemyGauge;
 use visual::fade::{self, Fade};
 use visual::field_command_menu::{self, CommandMenu, Decision, Item};
 use visual::gauge::{Canvas, Draw, Gauge, GaugeStats, Texture};
@@ -428,6 +429,8 @@ struct MenuSources {
 /// HUD sources loaded with the session.
 struct HudSource {
     sheets: Vec<Sheet>,
+    /// The field 2D archive's 'fiel' sheet: the lock-on reticle.
+    field: Sheet,
     /// The field 2D archive's 'mapj' area-change iris (areas only).
     iris: Option<Sheet>,
     stats: (i32, i32),
@@ -578,6 +581,10 @@ const SE_CURSOR: u32 = 1;
 const SE_OPEN: u32 = 3;
 const SE_CLOSE: u32 = 4;
 const SE_LOW_HP: u32 = 9;
+/// Manual lock engaged, and released by the toggle (FUN_1401dd170(7) / (8) in
+/// the lock manager, FUN_1403dd650 / FUN_1403dcd70).
+const SE_LOCK: u32 = 7;
+const SE_UNLOCK: u32 = 8;
 
 /// The room collision the controller and the enemy read: the generated
 /// arena's triangles, or a game map's COCT through the exe's routines.
@@ -979,6 +986,13 @@ struct Hud {
     iris: Option<Sheet>,
     menu: Option<MenuState>,
     gauge: Gauge,
+    /// The Scan target gauge (GAUGE_ENEMY, layer 6) and what it shows.
+    enemy_gauge: EnemyGauge,
+    scan: enemy_target::ScanTracker,
+    /// The `fiel` sheet and the lock-on reticle drawn from it.
+    field: Sheet,
+    reticle: visual::lock_on::Reticle,
+    reticle_draw: Option<Draw>,
     stats: GaugeStats,
     canvas: Canvas,
     image: Handle<Image>,
@@ -2684,6 +2698,7 @@ fn load(
                 None => None,
             };
             Some(HudSource {
+                field: hud::load(source, &l.index, l.ordinal, l.name_hash, b"fiel")?,
                 sheets,
                 iris,
                 stats: hud::starting_stats(bar_entry(&battle, b"plrp")?)?,
@@ -4690,6 +4705,7 @@ fn setup(
     let enemy_model = startup.enemy_model.take();
     if let Some(HudSource {
         sheets,
+        field,
         iris,
         stats: (hp, mp),
         menu,
@@ -4747,6 +4763,11 @@ fn setup(
                 &sheets.iter().map(|s| &s.sequence).collect::<Vec<_>>(),
                 &stats,
             ),
+            enemy_gauge: EnemyGauge::new(&sheets[0].sequence),
+            scan: Default::default(),
+            field,
+            reticle: Default::default(),
+            reticle_draw: None,
             sheets,
             iris,
             menu: menu.map(|(sheet, font, labels)| {
@@ -5880,6 +5901,21 @@ fn simulate(
         game.event(serde_json::json!({"event":"target_changed","tick":tick,"target":format!("{:?}",selected.id),"locked":selected.locked}));
     }
     game.selected_target = selected.target.map(|t| t.centre);
+    // The lock plays se000 #7 as it engages (also when the lock moves to
+    // another actor) and #8 when the toggle releases it.
+    let other_actor = match (before, selected.id) {
+        (
+            Some(enemy_target::TargetId::Gallery(a, _)),
+            Some(enemy_target::TargetId::Gallery(b, _)),
+        ) => a != b,
+        (Some(old), Some(new)) => std::mem::discriminant(&old) != std::mem::discriminant(&new),
+        _ => false,
+    };
+    if selected.locked && (!game.target_locked || other_actor) {
+        game.sound_queue.push((SE_LOCK, "lock_on"));
+    } else if !selected.locked && game.target_locked && toggle {
+        game.sound_queue.push((SE_UNLOCK, "lock_off"));
+    }
     game.target_locked = selected.locked;
     let target = selected.target.map(|s| {
         let p = game.player.position;
@@ -7100,7 +7136,14 @@ fn play_sounds(mut game: ResMut<Game>, mut audio: ResMut<Audio>, hud: Option<Res
 
 /// HUD frame: test-room debug keys (F4 blow hit, F5/F6 HP -/+2, F7/F8 MP -/+10, F9 drive +10)
 /// or the unattended script change stats, then the gauge logic runs.
-fn hud_tick(keys: Res<ButtonInput<KeyCode>>, mut game: ResMut<Game>, hud: Option<ResMut<Hud>>) {
+fn hud_tick(
+    keys: Res<ButtonInput<KeyCode>>,
+    mut game: ResMut<Game>,
+    hud: Option<ResMut<Hud>>,
+    gallery: Res<enemy_gallery::EnemyGallery>,
+    targeting: Res<enemy_target::Targeting>,
+    rig: Option<Res<CameraRig>>,
+) {
     if keys.just_pressed(KeyCode::F4) && game.autoplay.is_none() {
         game.debug_blow = true;
     }
@@ -7168,12 +7211,34 @@ fn hud_tick(keys: Res<ButtonInput<KeyCode>>, mut game: ResMut<Game>, hud: Option
         sheets,
         gauge,
         menu,
+        enemy_gauge,
+        scan,
         ..
     } = &mut *hud;
     if let Some(m) = menu {
         m.menu.update(&m.sheet.sequence);
     }
     gauge.update(&sheets.iter().map(|s| &s.sequence).collect::<Vec<_>>(), &s);
+    // The Scan gauge follows the lock manager's target (priority 7000, after
+    // the player's gauge).
+    scan.step(
+        enemy_gauge,
+        &sheets[0].sequence,
+        enemy_target::scan_view(&game, &gallery, &targeting),
+    );
+    // The reticle (priority 4000) follows the held target's TARGET shape,
+    // projected through the camera as last applied.
+    let held = rig.as_ref().and_then(|rig| {
+        enemy_target::reticle_view(&game, &gallery, &targeting)
+            .map(|(held, at)| (held, rig.camera.project(at)))
+    });
+    let Hud {
+        reticle,
+        field,
+        reticle_draw,
+        ..
+    } = &mut *hud;
+    *reticle_draw = reticle.step(&field.sequence, held, 0);
     // Form levels gained this frame queue their panels (FUN_1403edb90).
     if let Some(d) = game.drive.as_mut() {
         for up in std::mem::take(&mut d.level_ups) {
@@ -7220,8 +7285,6 @@ fn hud_present(
     skate: Res<crate::skate::Skate>,
     debug: Res<debug_menu::DebugMenu>,
     gallery: Res<enemy_gallery::EnemyGallery>,
-    targeting: Res<enemy_target::Targeting>,
-    game: Res<Game>,
     mut images: ResMut<Assets<Image>>,
 ) {
     let Some(mut hud) = hud else { return };
@@ -7231,6 +7294,9 @@ fn hud_present(
     let Hud {
         sheets,
         gauge,
+        enemy_gauge,
+        field,
+        reticle_draw,
         canvas,
         image,
         menu,
@@ -7245,6 +7311,16 @@ fn hud_present(
             texel_scale: s.texel_scale as f32,
         })
         .collect();
+    let field_sheet = textures.len();
+    textures.push(Texture {
+        rgba: &field.texture_rgba,
+        size: field.texture_size.map(|v| v as usize),
+        texel_scale: field.texel_scale as f32,
+    });
+    let mut lock_on = reticle_draw.take();
+    if let Some(Draw::Quads { sheet, .. }) = lock_on.as_mut() {
+        *sheet = field_sheet;
+    }
     // The command menu (priorities 0x14b5..0x14b7) draws before the gauge
     // (7000).
     let mut draws: Vec<Draw> = Vec::new();
@@ -7279,7 +7355,12 @@ fn hud_present(
         };
     }
     if !skate.replaces_hud() {
+        // The reticle (priority 4000) draws before the command menu.
+        if let Some(reticle) = lock_on {
+            draws.insert(0, reticle);
+        }
         draws.extend(gauge.draw(&sheets.iter().map(|s| &s.sequence).collect::<Vec<_>>()));
+        draws.extend(enemy_gauge.draw(&sheets[0].sequence, 0));
         if let Some((font_sheet, widths)) = menu_font.as_ref() {
             draws.extend(panels.draw(
                 &sheets[0].sequence,
@@ -7357,25 +7438,6 @@ fn hud_present(
             z: 0,
             sheet: *sheet,
         });
-    }
-    if !debug.open
-        && let Some((sheet, widths)) = menu_font.as_ref()
-    {
-        let white = textures.len();
-        textures.push(Texture {
-            rgba: &debug_menu::WHITE,
-            size: [1, 1],
-            texel_scale: 1.,
-        });
-        draws.extend(enemy_target::draws(
-            &game,
-            &gallery,
-            &targeting,
-            white,
-            *sheet,
-            widths,
-            Some(enemy_target::SCAN_BIT),
-        ));
     }
     // The debug menu (F3) draws over everything.
     if debug.open

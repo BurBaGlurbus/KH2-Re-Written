@@ -1,8 +1,13 @@
-//! Field follow camera (default mode), reimplemented from observations of the
-//! installed PC executable's camera update: the per-mode table (field of
-//! view, radius, lock radius, radius limits, height curve), the yaw follow
-//! that swings behind a moving player, the radius return, and the spring
-//! that eases the current eye and look-at points toward their targets.
+//! Field follow camera (mode 0) and lock-on camera (mode 2), from the installed
+//! PC executable's camera update: the per-mode table (field of view, radius,
+//! lock radius, radius limits, height curve), the yaw follow that swings
+//! behind a moving player, the radius return, and the spring that eases the
+//! current eye and look-at points toward their targets. The lock-on mode
+//! translates FUN_140176c70 (mode 2 update), FUN_140176ec0 (look point,
+//! screen-edge tests and yaw), FUN_140176710 (screen flags), FUN_140176bc0
+//! (zoom), FUN_140176a70 (bearing), FUN_140164520 (yaw ease and eye target),
+//! FUN_140164290 (radius return) and FUN_140176e40 (eye collision); the
+//! spring is FUN_140165700 / FUN_140165bd0.
 //!
 //! Positions here are in the game's own world space: Y points down, so
 //! "above the player" is negative Y. One `tick` is one 60 Hz frame (the
@@ -51,7 +56,7 @@ pub const FOLLOW_STICK_LIMIT: f32 = 0.9;
 /// Radius return toward the mode radius, units per frame.
 pub const RADIUS_RETURN: f32 = 0.5;
 /// Manual rotation, radians per frame at full input (default setting).
-pub const MANUAL_TURN: f32 = 0.052_359_9;
+pub const MANUAL_TURN: f32 = 0.052_359_88;
 /// Manual zoom, units per frame at full input.
 pub const MANUAL_ZOOM: f32 = 8.;
 /// Spring gains (default camera setting) and their per-unit speed change.
@@ -63,6 +68,35 @@ pub const DAMPING: f32 = 0.5;
 pub const REST_LENGTH: f32 = 1.;
 /// Distance the eye is kept off a camera collision surface.
 pub const COLLISION_OFFSET: f32 = 5.;
+
+/// Lock-on look point: the fraction of the way from the player's upper body
+/// toward the target's camera anchor (0x140623a28).
+pub const LOCK_LOOK_BLEND: f32 = 0.3;
+/// Height of the player's head point used for the off-screen test and the
+/// far-and-above test (0x1405b22e8, Y down).
+pub const HEAD_HEIGHT: f32 = 100.;
+/// The look point stays on the player when the head is farther than this from
+/// it (0x140623bf8) ...
+pub const FAR_LOOK_DISTANCE: f32 = 300.;
+/// ... and its direction points down more steeply than this (0x140623a4c).
+pub const FAR_LOOK_SLOPE: f32 = 0.5;
+/// Radius lost per frame for each tested point below the screen (0x140623b18).
+pub const EDGE_ZOOM: f32 = 2.;
+/// Yaw bias when the target leaves the left or right edge: 20 degrees
+/// (0x1405b22ec / 0x1405b22f0).
+pub const EDGE_YAW: f32 = 0.349_065_85;
+/// The screen test's layout-unit bounds: x, y (0x14071a478) and depth
+/// (near 1, far 4,000,000 as truncated from 0x1405b2bf0 / 0x1405b2bf4).
+pub const SCREEN_X: [f32; 2] = [32., 480.];
+pub const SCREEN_Y: [f32; 2] = [8., 408.];
+pub const SCREEN_DEPTH: [f32; 2] = [1., 4_000_000.];
+/// Screen test flags (FUN_140176710).
+pub const OFF_TOP: u32 = 1;
+pub const OFF_BOTTOM: u32 = 2;
+pub const OFF_LEFT: u32 = 4;
+pub const OFF_RIGHT: u32 = 8;
+pub const OFF_NEAR: u32 = 0x10;
+pub const OFF_FAR: u32 = 0x20;
 
 /// First hit on the segment `from` -> `to`: point and unit surface normal
 /// facing `from`.
@@ -174,6 +208,15 @@ fn sub(a: Vec3, b: Vec3) -> Vec3 {
     [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
 }
 
+fn normalize_or(a: Vec3, fallback: Vec3) -> Vec3 {
+    let length = dot(a, a).sqrt();
+    if length > 0. && length.is_finite() {
+        a.map(|c| c / length)
+    } else {
+        fallback
+    }
+}
+
 fn dot(a: Vec3, b: Vec3) -> f32 {
     a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
 }
@@ -236,14 +279,7 @@ impl FollowCamera {
         } else {
             approach(self.yaw, self.yaw_target, YAW_EASE)
         };
-        let at = self.look_at_target;
-        let d = self.radius - self.mode.radius_min;
-        let (s, c) = self.yaw.sin_cos();
-        self.eye_target = [
-            at[0] + self.radius * s,
-            at[1] + EYE_DROP - d * d * self.mode.up_curve,
-            at[2] + self.radius * c,
-        ];
+        self.place_eye_target(self.look_at_target);
         if snap {
             self.eye = self.eye_target;
             self.look_at = self.look_at_target;
@@ -252,23 +288,122 @@ impl FollowCamera {
         }
     }
 
+    /// FUN_140164520's eye target: the radius back along the yaw from the
+    /// anchor, 150 below it less the radius curve.
+    fn place_eye_target(&mut self, at: Vec3) {
+        let d = self.radius - self.mode.radius_min;
+        let (s, c) = self.yaw.sin_cos();
+        self.eye_target = [
+            at[0] + self.radius * s,
+            at[1] + EYE_DROP - d * d * self.mode.up_curve,
+            at[2] + self.radius * c,
+        ];
+    }
+
+    /// A world point on the 512x416 layout screen and its depth, from the
+    /// camera as last applied (eye, look-at, field of view): the view and
+    /// projection matrices (FUN_14019cfc0 / FUN_14019ce40) then FUN_140166a20,
+    /// which divides X and Y by depth and re-centres them. The focal scales
+    /// follow the 640x480 virtual screen: 0.8 wide, 0.8667 high.
+    pub fn project(&self, point: Vec3) -> Vec3 {
+        let forward = normalize_or(sub(self.look_at, self.eye), [0., 0., 1.]);
+        let down = normalize_or(
+            sub([0., 1., 0.], forward.map(|c| c * forward[1])),
+            [0., 1., 0.],
+        );
+        let right = cross(down, forward);
+        let offset = sub(point, self.eye);
+        let (x, y, z) = (dot(offset, right), dot(offset, down), dot(offset, forward));
+        let focal = 320. / (self.mode.fov * 0.5).tan();
+        let (x, y) = if z != 0. {
+            (x * (1. / z), y * (1. / z))
+        } else {
+            (x, y)
+        };
+        [x * focal * 0.8 + 256., y * focal * 0.866_666_7 + 208., z]
+    }
+
+    /// FUN_140176710: which screen edges a world point is beyond.
+    pub fn screen_flags(&self, point: Vec3) -> u32 {
+        let [x, y, z] = self.project(point);
+        let mut flags = 0;
+        if x < SCREEN_X[0] {
+            flags |= OFF_LEFT;
+        }
+        if SCREEN_X[1] < x {
+            flags |= OFF_RIGHT;
+        }
+        if y < SCREEN_Y[0] {
+            flags |= OFF_TOP;
+        }
+        if SCREEN_Y[1] < y {
+            flags |= OFF_BOTTOM;
+        }
+        if z < SCREEN_DEPTH[0] {
+            flags |= OFF_NEAR;
+        }
+        if SCREEN_DEPTH[1] < z {
+            flags |= OFF_FAR;
+        }
+        flags
+    }
+
+    /// FUN_140164290: the radius moves toward the mode's lock radius by one
+    /// frame's step, within the radius limits.
+    fn return_to_lock_radius(&mut self) {
+        let mode = self.mode;
+        if (self.radius - mode.lock_radius).abs() >= 1. {
+            if self.radius <= mode.lock_radius {
+                self.radius += 1.;
+                if self.radius >= mode.radius_max {
+                    self.radius = mode.radius_max;
+                }
+            } else {
+                self.radius -= 1.;
+                if self.radius <= mode.radius_min {
+                    self.radius = mode.radius_min;
+                }
+            }
+        }
+    }
+
+    /// FUN_140166430 / FUN_140166450: clamp to the mode's radius limits.
+    fn clamp_radius(&mut self) {
+        if self.radius <= self.mode.radius_min {
+            self.radius = self.mode.radius_min;
+        }
+        if self.mode.radius_max <= self.radius {
+            self.radius = self.mode.radius_max;
+        }
+    }
+
     /// One frame. `collide` returns the first camera-collision hit on a
     /// segment (see `segment_hit`).
     pub fn tick(&mut self, input: &CameraInput, collide: &dyn Fn(Vec3, Vec3) -> Hit) {
         self.look_at_target_prev = self.look_at_target;
         self.eye_target_prev = self.eye_target;
+        let speed_offset = input.speed - SPEED_REFERENCE;
+        // At 60 Hz the gain is halved; the look-at point adds its extra gain
+        // afterwards.
+        let gain = (SPRING_GAIN + speed_offset * SPRING_GAIN_PER_UNIT) * 0.5;
+        if let Some(anchor) = input.lock_target {
+            self.tick_lock(input, anchor, collide);
+            let feet_up = [
+                input.player_position[0],
+                input.player_position[1] - LOOK_AT_HEIGHT,
+                input.player_position[2],
+            ];
+            self.spring_to_targets(gain);
+            // FUN_140176e40: mode 2 clips only the eye, from the player's
+            // upper body, and does not feed the clip back to the target.
+            if let Some(hit) = collide(feet_up, self.eye) {
+                self.eye = pushed_off(hit);
+            }
+            return;
+        }
         let mode = self.mode;
         let mut snap = false;
-        let locked = input.lock_target.is_some();
-        if locked {
-            if (self.radius - mode.lock_radius).abs() >= 1. {
-                self.radius = if self.radius > mode.lock_radius {
-                    (self.radius - 1.).max(mode.radius_min)
-                } else {
-                    (self.radius + 1.).min(mode.radius_max)
-                };
-            }
-        } else if input.turn != 0. {
+        if input.turn != 0. {
             self.yaw = wrap(self.yaw + input.turn * MANUAL_TURN);
             self.yaw_target = self.yaw;
         } else if input.recenter {
@@ -277,14 +412,12 @@ impl FollowCamera {
             self.eye = self.eye_target;
             snap = input.magnitude != 0.;
         }
-        if !locked && input.zoom > 0. {
+        if input.zoom > 0. {
             self.radius = (self.radius + input.zoom * MANUAL_ZOOM).min(mode.radius_max);
-        } else if !locked && input.zoom < 0. {
+        } else if input.zoom < 0. {
             self.radius = (self.radius + input.zoom * MANUAL_ZOOM).max(mode.radius_min);
         }
-        let speed_offset = input.speed - SPEED_REFERENCE;
-        if !locked
-            && !snap
+        if !snap
             && input.moved
             && input.magnitude != 0.
             && input.turn == 0.
@@ -306,32 +439,18 @@ impl FollowCamera {
             }
         }
         self.place_targets(input.player_position, snap);
-        // Native mode 2 preserves the player-anchored eye target. Only its
-        // look target interpolates toward the selected actor's camera anchor.
-        if let Some(target) = input.lock_target {
-            let player = input.player_position;
-            let delta = sub(target, [player[0], player[1] - 100., player[2]]);
-            let distance = dot(delta, delta).sqrt();
-            if !(distance > 300. && delta[1] / distance > 0.5) {
-                self.look_at_target = [0, 1, 2]
-                    .map(|i| self.look_at_target[i] + 0.3 * (target[i] - self.look_at_target[i]));
-            }
-        }
-        let collision_origin = if locked {
-            [
-                input.player_position[0],
-                input.player_position[1] - LOOK_AT_HEIGHT,
-                input.player_position[2],
-            ]
-        } else {
-            self.look_at_target
-        };
-        if let Some(hit) = collide(collision_origin, self.eye_target) {
+        if let Some(hit) = collide(self.look_at_target, self.eye_target) {
             self.eye_target = pushed_off(hit);
         }
-        // At 60 Hz the gain is halved; the look-at point adds its extra gain
-        // afterwards.
-        let gain = (SPRING_GAIN + speed_offset * SPRING_GAIN_PER_UNIT) * 0.5;
+        self.spring_to_targets(gain);
+        if let Some(hit) = collide(self.look_at, self.eye) {
+            self.eye = pushed_off(hit);
+            self.eye_target = self.eye;
+        }
+    }
+
+    /// FUN_140165700: the current look-at and eye ease toward their targets.
+    fn spring_to_targets(&mut self, gain: f32) {
         self.look_at = spring(
             self.look_at,
             self.look_at_target,
@@ -339,10 +458,96 @@ impl FollowCamera {
             gain + LOOK_AT_EXTRA_GAIN,
         );
         self.eye = spring(self.eye, self.eye_target, self.eye_target_prev, gain);
-        if let Some(hit) = collide(self.look_at, self.eye) {
-            self.eye = pushed_off(hit);
-            self.eye_target = self.eye;
+    }
+
+    /// Mode 2 (FUN_140176c70): the look point blends toward the locked
+    /// target's camera anchor, the radius and yaw react to the target and the
+    /// player leaving the screen, and the eye target stays on the player.
+    fn tick_lock(
+        &mut self,
+        input: &CameraInput,
+        anchor: Vec3,
+        collide: &dyn Fn(Vec3, Vec3) -> Hit,
+    ) {
+        let player = input.player_position;
+        let feet_up = [player[0], player[1] - LOOK_AT_HEIGHT, player[2]];
+        // FUN_140176ec0 with k = 0.3.
+        let old_look_target = self.look_at_target;
+        let toward = sub(anchor, feet_up).map(|c| LOCK_LOOK_BLEND * c);
+        let look = [0, 1, 2].map(|i| toward[i] + feet_up[i]);
+        let head = [player[0], player[1] - HEAD_HEIGHT, player[2]];
+        let target_flags = self.screen_flags(anchor);
+        let head_flags = self.screen_flags(head);
+        let target_low = target_flags & (OFF_TOP | OFF_BOTTOM) == OFF_BOTTOM;
+        let head_low = head_flags & (OFF_TOP | OFF_BOTTOM) == OFF_BOTTOM;
+        if target_low {
+            self.radius -= EDGE_ZOOM;
         }
+        if head_low {
+            self.radius -= EDGE_ZOOM;
+        }
+        self.clamp_radius();
+        let to_head = sub(head, look);
+        let distance = dot(to_head, to_head).sqrt();
+        let slope = if distance != 0. {
+            to_head[1] * (1. / distance)
+        } else {
+            to_head[1]
+        };
+        // The bearing from the old look target to the player (FUN_140176a70).
+        let bearing = (player[0] - old_look_target[0]).atan2(player[2] - old_look_target[2]);
+        if distance > FAR_LOOK_DISTANCE && slope > FAR_LOOK_SLOPE {
+            self.look_at_target = feet_up;
+        } else {
+            if !target_low && !head_low {
+                self.return_to_lock_radius();
+            }
+            self.look_at_target = look;
+            let flags = if target_flags != 0 {
+                target_flags
+            } else {
+                head_flags
+            };
+            if flags != 0 {
+                let edge = if flags & OFF_LEFT != 0 {
+                    EDGE_YAW
+                } else if flags & OFF_RIGHT != 0 {
+                    -EDGE_YAW
+                } else {
+                    0.
+                };
+                self.yaw_target = wrap(edge + bearing);
+            }
+        }
+        if input.turn != 0. {
+            self.yaw = wrap(self.yaw + MANUAL_TURN * input.turn);
+            self.yaw_target = self.yaw;
+        }
+        // FUN_140176bc0: zoom with the right stick, one step per frame.
+        if input.zoom < 0. {
+            self.radius += input.zoom * MANUAL_ZOOM;
+            if self.radius <= self.mode.radius_min {
+                self.radius = self.mode.radius_min;
+            }
+        } else if input.zoom > 0. {
+            self.radius += input.zoom * MANUAL_ZOOM;
+            if self.mode.radius_max <= self.radius {
+                self.radius = self.mode.radius_max;
+            }
+        }
+        if input.recenter {
+            self.yaw_target = bearing;
+            self.radius = self.mode.lock_radius;
+        }
+        // FUN_140164520 with the player's upper body as the anchor, then the
+        // eye-target collision from that point (FUN_140164910).
+        let look_target = self.look_at_target;
+        self.yaw = approach(self.yaw, self.yaw_target, YAW_EASE);
+        self.place_eye_target(feet_up);
+        if let Some(hit) = collide(feet_up, self.eye_target) {
+            self.eye_target = pushed_off(hit);
+        }
+        self.look_at_target = look_target;
     }
 }
 
@@ -359,21 +564,22 @@ mod tests {
         }
     }
 
+    fn locked(position: Vec3, forward: Vec3, anchor: Vec3) -> (FollowCamera, CameraInput) {
+        let mut step = input(position, forward);
+        let camera = FollowCamera::new(OUTDOOR, &step);
+        step.lock_target = Some(anchor);
+        (camera, step)
+    }
+
     #[test]
     fn lock_looks_between_actors_but_keeps_the_eye_on_the_player_anchor() {
-        let mut step = input([0.; 3], [0., 0., 1.]);
-        let mut camera = FollowCamera::new(OUTDOOR, &step);
-        step.lock_target = Some([100., -50., 200.]);
+        let (mut camera, step) = locked([0.; 3], [0., 0., 1.], [100., -50., 200.]);
         camera.tick(&step, &|_, _| None);
+        // On screen: the radius returns toward the lock radius one unit a frame.
         assert_eq!(camera.radius, 419.);
-        assert_eq!(
-            camera.look_at_target,
-            [
-                f32::from_bits(0x41f0_0001),
-                -134.,
-                f32::from_bits(0x4270_0001)
-            ]
-        );
+        for (got, want) in camera.look_at_target.into_iter().zip([30., -134., 60.]) {
+            assert!((got - want).abs() < 1e-3);
+        }
         assert!(camera.eye_target[0].abs() < 0.001);
         assert!((camera.eye_target[2] + 419.).abs() < 0.001);
         for _ in 0..60 {
@@ -383,12 +589,110 @@ mod tests {
     }
 
     #[test]
-    fn a_distant_target_below_the_player_preserves_the_player_look_anchor() {
-        let mut step = input([0.; 3], [0., 0., 1.]);
-        let mut camera = FollowCamera::new(OUTDOOR, &step);
-        step.lock_target = Some([0., 600., 100.]);
+    fn a_distant_target_far_above_the_player_keeps_the_player_look_anchor() {
+        // Head to look point farther than 300 and pointing down: the target is
+        // high above, so the look point stays on the player's upper body.
+        let (mut camera, step) = locked([0.; 3], [0., 0., 1.], [0., -1500., 100.]);
         camera.tick(&step, &|_, _| None);
         assert_eq!(camera.look_at_target, [0., -170., 0.]);
+        // A target far below does not trigger the rule.
+        let (mut camera, step) = locked([0.; 3], [0., 0., 1.], [0., 600., 100.]);
+        camera.tick(&step, &|_, _| None);
+        assert_ne!(camera.look_at_target, [0., -170., 0.]);
+    }
+
+    #[test]
+    fn projection_matches_the_virtual_screen() {
+        let camera = FollowCamera::new(OUTDOOR, &input([0.; 3], [0., 0., 1.]));
+        // The look-at point is on the optical axis: the layout centre.
+        let [x, y, z] = camera.project(camera.look_at);
+        assert!((x - 256.).abs() < 1e-2 && (y - 208.).abs() < 1e-2);
+        assert!(z > 0.);
+        // 1.5 radians span the 512-wide layout: the edge is at tan(0.75).
+        let forward = normalize_or(sub(camera.look_at, camera.eye), [0., 0., 1.]);
+        let down = normalize_or(
+            sub([0., 1., 0.], forward.map(|c| c * forward[1])),
+            [0., 1., 0.],
+        );
+        let right = cross(down, forward);
+        let edge = camera.project(
+            [0, 1, 2].map(|i| camera.eye[i] + forward[i] * 500. + right[i] * 500. * 0.931_596_3),
+        );
+        assert!((edge[0] - 512.).abs() < 0.1, "{edge:?}");
+        assert!((edge[1] - 208.).abs() < 0.1, "{edge:?}");
+        assert_eq!(camera.screen_flags(camera.look_at), 0);
+        assert_eq!(camera.screen_flags([5000., -170., 0.]), OFF_RIGHT);
+        assert_eq!(camera.screen_flags([-5000., -170., 0.]), OFF_LEFT);
+        assert_eq!(
+            camera.screen_flags([0., -170., -2000.]) & OFF_NEAR,
+            OFF_NEAR
+        );
+    }
+
+    #[test]
+    fn a_target_beyond_a_side_edge_swings_the_yaw_target_with_a_bias() {
+        let (mut camera, step) = locked([0.; 3], [0., 0., 1.], [3000., -100., 0.]);
+        let flags = camera.screen_flags([3000., -100., 0.]);
+        assert_eq!(flags, OFF_RIGHT);
+        let look_before = camera.look_at_target;
+        camera.tick(&step, &|_, _| None);
+        // Bearing from the old look target to the player, 20 degrees off.
+        let bearing = (0. - look_before[0]).atan2(0. - look_before[2]);
+        assert!((camera.yaw_target - wrap(bearing - EDGE_YAW)).abs() < 1e-5);
+        // The yaw follows by at most 0.1745 a frame.
+        assert!(
+            (wrap(camera.yaw - camera.yaw_target)).abs() >= 0. && camera.yaw != camera.yaw_target
+        );
+    }
+
+    #[test]
+    fn a_target_below_the_screen_zooms_in_two_units_a_frame_down_to_the_minimum() {
+        // Straight below the optical axis, near the player: off the bottom.
+        let (mut camera, step) = locked([0.; 3], [0., 0., 1.], [0., 3000., -300.]);
+        assert_eq!(camera.screen_flags([0., 3000., -300.]) & 3, OFF_BOTTOM);
+        camera.tick(&step, &|_, _| None);
+        assert_eq!(camera.radius, 418.);
+        for _ in 0..200 {
+            camera.tick(&step, &|_, _| None);
+            assert!((OUTDOOR.radius_min..=OUTDOOR.radius_max).contains(&camera.radius));
+        }
+    }
+
+    #[test]
+    fn lock_accepts_manual_turn_zoom_and_recenter() {
+        let (mut camera, mut step) = locked([0.; 3], [0., 0., 1.], [0., -50., 300.]);
+        step.turn = 1.;
+        let yaw = camera.yaw;
+        camera.tick(&step, &|_, _| None);
+        assert!((camera.yaw - wrap(yaw + MANUAL_TURN)).abs() < 1e-6);
+        assert_eq!(camera.yaw_target, camera.yaw);
+        step.turn = 0.;
+        step.zoom = -1.;
+        camera.radius = 420.;
+        camera.tick(&step, &|_, _| None);
+        assert_eq!(camera.radius, 420. - 1. - MANUAL_ZOOM);
+        step.zoom = 0.;
+        step.recenter = true;
+        camera.tick(&step, &|_, _| None);
+        assert_eq!(camera.radius, 380.);
+    }
+
+    #[test]
+    fn lock_clips_the_eye_from_the_players_upper_body_without_moving_its_target() {
+        let wall = [[
+            [-1000., -1000., -100.],
+            [1000., -1000., -100.],
+            [0., 1000., -100.],
+        ]];
+        let (mut camera, step) = locked([0.; 3], [0., 0., 1.], [0., -50., 400.]);
+        camera.tick(&step, &|a, b| segment_hit(&wall, a, b));
+        assert!((camera.eye[2] - (-95.)).abs() < 1e-3);
+        // The eye target was clipped from the same point, 5 units off the
+        // wall; the post-spring clip never rewrites it.
+        assert!((camera.eye_target[2] - (-95.)).abs() < 1e-3);
+        camera.eye_target[2] = -300.;
+        camera.tick(&step, &|_, _| None);
+        assert!((camera.eye_target[2] + 419.).abs() < 1.5);
     }
 
     #[test]

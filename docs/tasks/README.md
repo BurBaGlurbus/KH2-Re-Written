@@ -139,6 +139,7 @@ Records through T128 retain historical commands and paths. See [the folder guide
 | [T129](T129-folder-structure.md) | Simple folders and names for contributors | NOT RUN final engineering checks while verification is in progress. |
 | [T130](T130-source-folder.md) | Group app folders under source and rename the validator | NOT RUN for the final merge; engineering checks above PASS on the branch. |
 | [T131](T131-source-group-data-effect-audio-extras.md) | Move data, effect, audio and extras under source | NOT RUN for the final merge; the build check above passes on the branch. |
+| [T132](T132-lock-camera-and-scan-gauge.md) | Lock-on camera (mode 2) and the Scan target gauge | PARTIAL. |
 | [T140](T140-game-over.md) | Sora's game over | PARTIAL. |
 | [T160](T160-level-up-and-bonus-levels.md) | Sora's level-up panels, level-up effect and bonus levels | PARTIAL. |
 | [T161](T161-prize-sprites-heal-effect-item-boxes.md) | Prize sprites, the heal effect and item treasure boxes | PARTIAL. |

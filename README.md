@@ -82,8 +82,10 @@ cargo run -p main --bin KH2RW --locked -- room '<selected-install-root>' '<priva
 In the generated arena, F3 → Summon enemies → Summoned actors lets you enable
 AI and combat for ordinary Shadow, Dusk and Soldier. Other enemies currently
 support animation inspection. F3's Scan option toggles the learned ability;
-equipping it shows the selected enemy's live HP in the debug target panel.
-Full roster combat and installed-game comparisons remain unfinished.
+equipping it shows the selected enemy's live HP in the original Scan gauge at the
+top right. While locked on, the camera follows the original lock-on camera
+(right stick still turns and zooms it). The lock-on reticle sprite is not drawn
+yet. Full roster combat and installed-game comparisons remain unfinished.
 
 ## Build and check
 

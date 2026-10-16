@@ -1,5 +1,6 @@
-//! Stable live actor/shape targeting. The status panel is an explicit debug
-//! presentation; native lock/Scan sprites and layout are not substituted.
+//! Stable live actor/shape targeting and the Scan gauge feed. The Scan gauge
+//! is the native GAUGE_ENEMY object (visual::enemy_gauge); the lock-on
+//! reticle sprite is not drawn.
 use super::*;
 use player::targeting::{self, Candidate, ManualCandidate, ManualInput, StableHolder, State};
 
@@ -283,25 +284,16 @@ pub fn camera_anchor(
     }
 }
 
-fn name_and_hp(
-    game: &Game,
-    gallery: &enemy_gallery::EnemyGallery,
-    id: TargetId,
-) -> Option<(Vec<u8>, i32, i32)> {
+/// A target's primary HP pool, live: current and maximum HP of an enabled,
+/// targetable actor.
+fn hp_pool(game: &Game, gallery: &enemy_gallery::EnemyGallery, id: TargetId) -> Option<(i32, i32)> {
     match id {
         TargetId::Legacy(_) => {
             let rt = game
                 .enemy
                 .as_ref()
                 .filter(|rt| rt.enabled && rt.enemy.targetable())?;
-            let name = gallery
-                .catalog
-                .entries
-                .iter()
-                .find(|entry| entry.object_id == 302)
-                .and_then(|entry| entry.name_bytes.clone())
-                .unwrap_or_else(|| pause_menu::encode_text("Shadow"));
-            Some((name, rt.enemy.hp, rt.enemy.stats.max_hp))
+            Some((rt.enemy.hp, rt.enemy.stats.max_hp))
         }
         TargetId::Gallery(id, _) => {
             let actor = gallery.actors.iter().find(|actor| actor.id == id)?;
@@ -309,173 +301,139 @@ fn name_and_hp(
                 .battle
                 .as_ref()
                 .filter(|battle| battle.brain.targetable())?;
-            let entry = &gallery.catalog.entries[actor.entry];
-            let name = entry
-                .name_bytes
-                .clone()
-                .unwrap_or_else(|| pause_menu::encode_text(&entry.name));
-            Some((name, battle.brain.hp(), battle.assets.stats.max_hp))
+            Some((battle.brain.hp(), battle.assets.stats.max_hp))
         }
     }
 }
 
-fn rect(bounds: [f32; 4], rgba: [f32; 4]) -> sprite_sequence::Quad {
-    let [x0, y0, x1, y1] = bounds;
-    sprite_sequence::Quad {
-        corners: [[x0, y0], [x1, y0], [x0, y1], [x1, y1]],
-        uv: [0, 0, 1, 1],
-        colors: [rgba; 4],
-        blend: 0,
+/// Whether the shape's HP pool is the primary one (TARGET record byte 1 is 0).
+fn primary_pool(gallery: &enemy_gallery::EnemyGallery, id: TargetId) -> bool {
+    match id {
+        TargetId::Gallery(actor, ordinal) => gallery
+            .actors
+            .iter()
+            .find(|a| a.id == actor)
+            .and_then(|a| a.battle.as_ref())
+            .and_then(|battle| battle.pose.targets.iter().find(|s| s.ordinal == ordinal))
+            .is_some_and(|shape| shape.parts == 0),
+        TargetId::Legacy(_) => true,
     }
 }
 
-/// The caller supplies the qualified Scan ability bit; None never guesses an
-/// ID or exposes HP. Uses the existing source font and a plain debug panel.
-pub fn draws(
+/// What FUN_1403dd440 would show for the current target: the owner has Scan
+/// (ability word bit 19, equipped through the selected source's item table),
+/// the target is a live actor, and the shape's HP pool is the primary one
+/// (secondary pools of multi-part targets are not modelled and show nothing).
+pub struct ScanView {
+    pub id: TargetId,
+    pub hp: i32,
+    pub max_hp: i32,
+}
+
+pub fn scan_view(
     game: &Game,
     gallery: &enemy_gallery::EnemyGallery,
     state: &Targeting,
-    white: usize,
-    font_sheet: usize,
-    widths: &[u8],
-    scan_ability: Option<u16>,
-) -> Vec<Draw> {
-    let mut label = pause_menu::encode_text(if state.holder.state == State::Locked {
-        "LOCK ON: "
-    } else {
-        "Target: "
-    });
-    let Some((name, hp, max_hp)) = state
-        .holder
-        .target
-        .and_then(|id| name_and_hp(game, gallery, id))
-    else {
-        return if state.limitation.is_some() {
-            status_draws(
-                &StatusView {
-                    label: &pause_menu::encode_text("Target unavailable"),
-                    hp: 0,
-                    max_hp: 0,
-                    scan_enabled: false,
-                    limitation: state.limitation,
-                },
-                white,
-                font_sheet,
-                widths,
-            )
-        } else {
-            Vec::new()
-        };
-    };
-    label.extend(name);
-    let equipped = scan_ability == Some(SCAN_BIT)
-        && game
-            .ability_source
-            .items
-            .get(&SCAN_ITEM)
-            .is_some_and(|&(bit, _)| bit == SCAN_BIT)
+) -> Option<ScanView> {
+    let equipped = game
+        .ability_source
+        .items
+        .get(&SCAN_ITEM)
+        .is_some_and(|&(bit, _)| bit == SCAN_BIT)
         && game.player.abilities.has(SCAN_BIT);
-    let primary_pool = match state.holder.target {
-        Some(TargetId::Gallery(id, ordinal)) => gallery
-            .actors
-            .iter()
-            .find(|actor| actor.id == id)
-            .and_then(|actor| actor.battle.as_ref())
-            .and_then(|battle| {
-                battle
-                    .pose
-                    .targets
-                    .iter()
-                    .find(|shape| shape.ordinal == ordinal)
-            })
-            .is_some_and(|shape| shape.parts == 0),
-        Some(TargetId::Legacy(_)) => true,
-        None => false,
-    };
-    let limitation = state.limitation.or(if equipped && !primary_pool {
-        Some("Secondary target HP pool unqualified")
-    } else {
-        None
-    });
-    status_draws(
-        &StatusView {
-            label: &label,
-            hp,
-            max_hp,
-            scan_enabled: equipped && primary_pool,
-            limitation,
-        },
-        white,
-        font_sheet,
-        widths,
-    )
-}
-
-struct StatusView<'a> {
-    label: &'a [u8],
-    hp: i32,
-    max_hp: i32,
-    scan_enabled: bool,
-    limitation: Option<&'static str>,
-}
-
-fn status_draws(
-    view: &StatusView<'_>,
-    white: usize,
-    font_sheet: usize,
-    widths: &[u8],
-) -> Vec<Draw> {
-    let font = field_command_menu::Font { widths, pad: 1 };
-    let mut quads = vec![rect([16., 42., 256., 83.], [0.03, 0.04, 0.07, 0.78])];
-    let size =
-        13_f32.min(13. * 226. / field_command_menu::text_width(view.label, &font, 13.).max(1.));
-    let mut glyphs =
-        field_command_menu::text_quads_sized(view.label, [22., 46.], [1.; 4], &font, size);
-    if view.scan_enabled {
-        let fraction = if view.max_hp > 0 {
-            view.hp.max(0) as f32 / view.max_hp as f32
-        } else {
-            0.
-        }
-        .clamp(0., 1.);
-        quads.push(rect([22., 69., 170., 76.], [0.08, 0.12, 0.12, 1.]));
-        quads.push(rect(
-            [22., 69., 22. + 148. * fraction, 76.],
-            [0.2, 0.95, 0.35, 1.],
-        ));
-        glyphs.extend(field_command_menu::text_quads_sized(
-            &pause_menu::encode_text(&format!("{}/{}", view.hp, view.max_hp)),
-            [176., 64.],
-            [1.; 4],
-            &font,
-            11.,
-        ));
+    if !equipped {
+        return None;
     }
-    let caption = view
-        .limitation
-        .unwrap_or("Target status (debug presentation)");
-    let caption = pause_menu::encode_text(caption);
-    let caption_size =
-        10_f32.min(10. * 226. / field_command_menu::text_width(&caption, &font, 10.).max(1.));
-    glyphs.extend(field_command_menu::text_quads_sized(
-        &caption,
-        [22., 84.],
-        [0.8, 0.85, 0.9, 1.],
-        &font,
-        caption_size,
-    ));
-    vec![
-        Draw::Quads {
-            quads,
-            z: 0,
-            sheet: white,
+    let id = state.holder.target?;
+    if !primary_pool(gallery, id) {
+        return None;
+    }
+    let (hp, max_hp) = hp_pool(game, gallery, id)?;
+    Some(ScanView { id, hp, max_hp })
+}
+
+/// The reticle's inputs (FUN_1403dd770): the held target's TARGET shape centre
+/// in game world space and how it is held (auto or manual, primary pool).
+pub fn reticle_view(
+    game: &Game,
+    gallery: &enemy_gallery::EnemyGallery,
+    state: &Targeting,
+) -> Option<(visual::lock_on::Held, [f32; 3])> {
+    if state.holder.state == State::None {
+        return None;
+    }
+    let id = state.holder.target?;
+    hp_pool(game, gallery, id)?;
+    let (centre, key) = match id {
+        TargetId::Legacy(ordinal) => (
+            game.enemy
+                .as_ref()
+                .and_then(|rt| enemy_targets(rt).get(ordinal).map(|s| s.centre))?,
+            1 << 40 | ordinal as u64,
+        ),
+        TargetId::Gallery(actor, ordinal) => (
+            gallery
+                .actors
+                .iter()
+                .find(|a| a.id == actor)?
+                .battle
+                .as_ref()?
+                .pose
+                .targets
+                .iter()
+                .find(|s| s.ordinal == ordinal)
+                .map(|s| s.centre.to_array())?,
+            (actor & 0xff_ffff) << 16 | (ordinal as u64 & 0xffff),
+        ),
+    };
+    Some((
+        visual::lock_on::Held {
+            key,
+            manual: state.holder.state == State::Locked,
+            primary_pool: primary_pool(gallery, id),
         },
-        Draw::Quads {
-            quads: glyphs,
-            z: 0,
-            sheet: font_sheet,
-        },
-    ]
+        to_world(centre),
+    ))
+}
+
+/// Drives the gauge like the lock manager: a new target (or the gauge being
+/// released) re-creates it from the pool (FUN_1403dd440); the same target's
+/// HP falling is a damage event (FUN_1403dcc10, with the trail) and rising a
+/// heal (FUN_1403dcbb0).
+#[derive(Default)]
+pub struct ScanTracker {
+    shown: Option<(TargetId, i32)>,
+}
+
+impl ScanTracker {
+    pub fn step(
+        &mut self,
+        gauge: &mut EnemyGauge,
+        seq: &sprite_sequence::Sequence,
+        view: Option<ScanView>,
+    ) {
+        match (self.shown, view) {
+            (_, None) => {
+                if self.shown.take().is_some() {
+                    gauge.hide();
+                }
+            }
+            (Some((id, hp)), Some(view)) if id == view.id => {
+                match view.hp.cmp(&hp) {
+                    std::cmp::Ordering::Less => gauge.damage(seq, view.hp),
+                    std::cmp::Ordering::Greater => gauge.set_hp(seq, view.hp),
+                    std::cmp::Ordering::Equal => {}
+                }
+                self.shown = Some((id, view.hp));
+            }
+            (_, Some(view)) => {
+                gauge.hide();
+                gauge.show(seq, view.hp, view.max_hp);
+                self.shown = Some((view.id, view.hp));
+            }
+        }
+        gauge.update(seq);
+    }
 }
 
 #[cfg(test)]
@@ -510,33 +468,77 @@ mod tests {
         assert_eq!(unlearned, [0x8001, 0, 0x8123]);
     }
 
+    fn flat_sequence() -> sprite_sequence::Sequence {
+        let animation = sprite_sequence::Animation {
+            flags: sprite_sequence::IS_ACTIVE | sprite_sequence::LINEAR,
+            sprite_group: 0,
+            frames: [0, 100],
+            translate: [0; 4],
+            pivot: [0; 4],
+            rotation: [0.; 6],
+            scale: [1.; 2],
+            scale_x: [1.; 2],
+            scale_y: [1.; 2],
+            curve: [0.; 4],
+            bounce: [0.; 4],
+            bounce_count: [0; 2],
+            blend: 0,
+            color: [0x8080_8080; 2],
+        };
+        let group = sprite_sequence::AnimationGroup {
+            animations: 0..1,
+            play_count: 0,
+            loop_frames: [0, 0],
+            light_position_x: 0,
+            text_position_y: 0,
+            text_scale: 0,
+            ui_padding: 0,
+            text_position_x: 11,
+        };
+        sprite_sequence::Sequence {
+            sprites: vec![sprite_sequence::Sprite {
+                uv: [0, 0, 10, 10],
+                scroll: [0.; 2],
+                colors: [0x8080_8080; 4],
+            }],
+            parts: vec![sprite_sequence::SpritePart {
+                rect: [0, 0, 10, 10],
+                sprite: 0,
+            }],
+            sprite_groups: std::iter::once(0..1).collect(),
+            animations: vec![animation],
+            groups: vec![group; 47],
+        }
+    }
+
+    fn view(actor: u64, hp: i32) -> Option<ScanView> {
+        Some(ScanView {
+            id: TargetId::Gallery(actor, 0),
+            hp,
+            max_hp: 300,
+        })
+    }
+
     #[test]
-    fn unequipped_scan_hides_hp_and_equipped_scan_uses_live_hp_ratio() {
-        let name = pause_menu::encode_text("LOCK ON: Synthetic");
-        let mut view = StatusView {
-            label: &name,
-            hp: 25,
-            max_hp: 100,
-            scan_enabled: false,
-            limitation: None,
-        };
-        let off = status_draws(&view, 0, 1, &[10; 224]);
-        let Draw::Quads { quads, .. } = &off[0] else {
-            panic!("status background missing")
-        };
-        assert_eq!(quads.len(), 1);
-        view.scan_enabled = true;
-        let on = status_draws(&view, 0, 1, &[10; 224]);
-        let Draw::Quads { quads, .. } = &on[0] else {
-            panic!("status background missing")
-        };
-        assert_eq!(quads.len(), 3);
-        assert_eq!(quads[2].corners[1][0], 59.);
-        view.hp = 50;
-        let changed = status_draws(&view, 0, 1, &[10; 224]);
-        let Draw::Quads { quads, .. } = &changed[0] else {
-            panic!("status background missing")
-        };
-        assert_eq!(quads[2].corners[1][0], 96.);
+    fn scan_tracker_follows_the_lock_managers_target_and_hp_events() {
+        let seq = flat_sequence();
+        let mut gauge = EnemyGauge::new(&seq);
+        let mut tracker = ScanTracker::default();
+        tracker.step(&mut gauge, &seq, None);
+        assert!(!gauge.active());
+        // A target appears: the gauge is created from its pool.
+        tracker.step(&mut gauge, &seq, view(1, 300));
+        assert!(gauge.active());
+        assert!(!gauge.draw(&seq, 0).is_empty());
+        // Damage to the same target is an event; the unchanged value is not.
+        tracker.step(&mut gauge, &seq, view(1, 100));
+        tracker.step(&mut gauge, &seq, view(1, 100));
+        assert!(gauge.active());
+        // A different target re-creates it, and no target releases it.
+        tracker.step(&mut gauge, &seq, view(2, 300));
+        assert!(gauge.active());
+        tracker.step(&mut gauge, &seq, None);
+        assert!(!gauge.active());
+        assert!(gauge.draw(&seq, 0).is_empty());
     }
 }

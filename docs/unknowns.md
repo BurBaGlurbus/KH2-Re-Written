@@ -64,3 +64,8 @@ implemented against fresh native holder/HP consumer evidence in the debug host. 
 other required enemy, encounter, unsupported action service and controlled
 installed comparison remains open; this does not complete the enemy roster.
 See [T125](tasks/T125-enemy-ai-and-combat.md).
+T132 (2026-10-16): the lock-on camera (mode 2) and the Scan target gauge are
+translated from the executable's routines. The lock-on reticle sprite, the
+camera anchor keyed by the target record group, camera collision internals and
+installed side-by-side captures remain open. See
+[T132](tasks/T132-lock-camera-and-scan-gauge.md).

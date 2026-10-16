@@ -3,7 +3,7 @@
 use super::*;
 
 pub const END: u64 = 1800;
-pub const CAPTURES: &[u64] = &[100, 160, 600, 800, 1100, 1400, 1800];
+pub const CAPTURES: &[u64] = &[100, 160, 200, 250, 320, 600, 800, 1100, 1400, 1800];
 pub const MODELS: &[&str] = &["M_EX020", "M_EX990", "M_EX010"];
 
 #[derive(Resource, Default)]
