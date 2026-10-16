@@ -5902,7 +5902,7 @@ fn simulate(
     }
     game.selected_target = selected.target.map(|t| t.centre);
     // The lock plays se000 #7 as it engages (also when the lock moves to
-    // another actor) and #8 when the toggle releases it.
+    // another actor) and #8 when the toggle or an untargetable target releases it.
     let other_actor = match (before, selected.id) {
         (
             Some(enemy_target::TargetId::Gallery(a, _)),
@@ -5913,7 +5913,11 @@ fn simulate(
     };
     if selected.locked && (!game.target_locked || other_actor) {
         game.sound_queue.push((SE_LOCK, "lock_on"));
-    } else if !selected.locked && game.target_locked && toggle {
+    } else if !selected.locked
+        && game.target_locked
+        && (toggle
+            || before.is_some_and(|id| enemy_target::untargetable_but_present(&game, &gallery, id)))
+    {
         game.sound_queue.push((SE_UNLOCK, "lock_off"));
     }
     game.target_locked = selected.locked;

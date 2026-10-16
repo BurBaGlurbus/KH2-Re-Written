@@ -270,17 +270,47 @@ pub fn camera_anchor(
                 .find(|a| a.id == actor)?
                 .battle
                 .as_ref()?;
-            battle
-                .pose
-                .camera
-                .first()
-                .or_else(|| battle.pose.targets.iter().find(|s| s.ordinal == ordinal))
-                .map(|s| s.centre.to_array())
+            // The lock reference is keyed by the held TARGET record's group:
+            // the camera anchor is the kind-7 record with that group, else
+            // the TARGET record itself.
+            let target = battle.pose.targets.iter().find(|s| s.ordinal == ordinal)?;
+            Some(
+                battle
+                    .pose
+                    .camera
+                    .iter()
+                    .find(|shape| shape.group == target.group)
+                    .unwrap_or(target)
+                    .centre
+                    .to_array(),
+            )
         }
         TargetId::Legacy(ordinal) => game
             .enemy
             .as_ref()
             .and_then(|rt| enemy_targets(rt).get(ordinal).map(|s| s.centre)),
+    }
+}
+
+/// The held target's actor still exists but can no longer be targeted: the
+/// lock manager's release through FUN_1403ba260 (which plays se000 #8). A
+/// vanished actor or a range release goes through FUN_1403dd280 silently.
+pub fn untargetable_but_present(
+    game: &Game,
+    gallery: &enemy_gallery::EnemyGallery,
+    id: TargetId,
+) -> bool {
+    match id {
+        TargetId::Legacy(_) => game
+            .enemy
+            .as_ref()
+            .is_some_and(|rt| rt.enabled && !rt.enemy.targetable()),
+        TargetId::Gallery(actor, _) => gallery
+            .actors
+            .iter()
+            .find(|a| a.id == actor)
+            .and_then(|a| a.battle.as_ref())
+            .is_some_and(|battle| !battle.brain.targetable()),
     }
 }
 

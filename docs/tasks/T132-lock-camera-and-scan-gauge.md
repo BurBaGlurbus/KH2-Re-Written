@@ -77,23 +77,32 @@ and yellow (auto) reticles sit on the locked actor, and the camera pulls in from
 200 bar, the red trail and the fading emptied-row tile as the decompile
 predicts.
 
-Uncertainty and NOT RUN: no controlled installed/rewrite side-by-side capture
-exists; the physical controller and R1/right-stick chords were not exercised
-(the camera reads the same pad bits the field camera already uses). Not
-modelled: the reticle's side panel (group 20, shown only for flagged targets)
-and its hide flag; the SE #8 on an untargetable release; the camera anchor keyed
-by the target record's group (the first group-zero camera shape is used) and the
-HIT-group activation filter; camera collision internals beyond the existing
-T060 triangle clip (surface type 5, dynamic objects); the zoom gate
-(a player-state gate and one pad bit); camera modes 1/6/8 transitions; the Scan gauge's
-stacking offset (zero while no other HUD slot registers) and secondary HP pools
-(no gauge is shown for them); a Scan equip change while locked re-creates the
-gauge at once, where the executable waits for the next lock event. The decompiled
-routines are private, single-pass and not independently audited, so coverage
-counts do not change and no complete function or 1:1 unit is marked PASS.
+Closed in the follow-up pass: the camera anchor is now the kind-7 record whose
+group equals the held TARGET record's group (else the TARGET record), and the
+release sound (#8) also plays when the held actor still exists but has become
+untargetable. A Scan equip change while locked matches the executable: the
+equip happens in the menu, whose global state releases the lock manager, and
+the gauge is created at the next acquisition event.
 
-Verdict: PARTIAL. The lock-on camera, Scan gauge and reticle now execute
-translated executable logic with real sprite data in the development room; the
-installed side-by-side comparison and the unmodelled items above remain open.
+Not reachable with the supported development actors (no observable difference
+today, kept as open units): the reticle's side panel (group 20; needs the
+target's counters at +0xd1c / +0xd20 above zero and a flag bit) and its hide
+flag, secondary HP pools (such actors are rejected at load), camera modes
+1/6/8 (area event cameras), the zoom gate (an actor flag that is never set).
+
+Still open: no controlled installed/rewrite side-by-side capture exists (needs
+the installed game run in a controlled scene); the physical controller and
+R1/right-stick chords were not exercised; camera collision internals beyond the
+T060 triangle clip (surface type 5 re-cast and the dynamic camera-collision
+object list; the room data carries no per-polygon surface type yet); the Scan
+gauge's stacking offset (zero while no other HUD slot is registered, the other
+registrants' slot heights are not modelled). The decompiled routines are
+private, single-pass and not independently audited, so coverage counts do not
+change and no complete function or 1:1 unit is marked PASS.
+
+Verdict: PARTIAL. The lock-on camera, Scan gauge and reticle execute translated
+executable logic with real sprite data in the development room; the installed
+side-by-side comparison and the open items above remain.
 Next: capture the installed game's lock-on camera and Scan gauge from a
-controlled scene, compare numerically, then close the unmodelled items above.
+controlled scene and compare numerically; add per-polygon surface types to the
+camera collision data and port the type 5 re-cast; model the HUD slot stack.

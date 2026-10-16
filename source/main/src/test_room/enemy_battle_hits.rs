@@ -771,6 +771,7 @@ mod tests {
     fn ellipse_body_uses_its_vertical_extent_and_strict_boundary() {
         let target = WorldShape {
             ordinal: 0,
+            group: 0,
             centre: Vec3::ZERO,
             radius: 20.,
             height: 60.,

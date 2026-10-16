@@ -22,6 +22,8 @@ pub struct EnemyBinding {
 #[derive(Clone, Debug)]
 pub struct HitShape {
     pub ordinal: usize,
+    /// Record group byte (the lock reference's key for the camera anchor).
+    pub group: u8,
     pub bone: usize,
     pub offset: Vec3,
     pub position_height: f32,
@@ -35,6 +37,7 @@ pub struct HitShape {
 #[derive(Clone, Debug)]
 pub struct WorldShape {
     pub ordinal: usize,
+    pub group: u8,
     pub centre: Vec3,
     pub radius: f32,
     pub height: f32,
@@ -165,14 +168,13 @@ impl EnemyCombat {
             .map_err(|e| e.to_string())?;
         let (body, targets, attacks) =
             collision_shapes(&collision, kind.model.skinning.bones.len())?;
-        let mut camera_entries = collision
+        let camera_entries = collision
             .iter()
             .enumerate()
             .filter(|(_, e)| e.kind == 7 && e.bone >= 0)
             .collect::<Vec<_>>();
-        // Native camera lookup prefers group zero, then the first kind-7
-        // record. Preserve source order within each preference.
-        camera_entries.sort_by_key(|(_, e)| e.group != 0);
+        // Source order is kept; the lock anchor picks the record whose group
+        // equals the held TARGET record's group.
         let camera = camera_entries
             .into_iter()
             .map(|(ordinal, e)| {
@@ -182,6 +184,7 @@ impl EnemyCombat {
                 }
                 Ok(HitShape {
                     ordinal,
+                    group: e.group,
                     bone,
                     offset: Vec3::from_array(e.position.map(f32::from)),
                     position_height: e.position_height as f32,
@@ -407,6 +410,7 @@ impl EnemyCombat {
                     }
                     Ok(WorldShape {
                         ordinal: shape.ordinal,
+                        group: shape.group,
                         centre,
                         radius: shape.radius,
                         height: shape.height,
@@ -465,6 +469,7 @@ fn collision_shapes(entries: &[object_collision::Entry], bones: usize) -> Result
         }
         let shape = HitShape {
             ordinal,
+            group: e.group,
             bone,
             offset: Vec3::from_array(e.position.map(|n| n as f32)),
             position_height: e.position_height as f32,
