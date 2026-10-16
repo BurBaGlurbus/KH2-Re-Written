@@ -325,6 +325,9 @@ pub struct LoadedRoom {
     /// Camera collision (BAR type 11, COCT layout) triangles in scene
     /// coordinates.
     pub camera_triangles: Vec<[Vec3; 3]>,
+    /// The same camera collision as full COCT records (planes and surface
+    /// attributes), for the executable's camera ray.
+    pub camera_collisions: Vec<room_collision::RoomCollision>,
     /// The map's type-14 environment record.
     pub environment: Option<Environment>,
 }
@@ -475,6 +478,7 @@ pub fn load_room_archive(
         }
     }
     let mut camera_triangles = Vec::new();
+    let mut camera_collisions = Vec::new();
     for entry in table
         .entries
         .iter()
@@ -486,6 +490,7 @@ pub fn load_room_archive(
         for (_, corners) in collision.triangle_indices()? {
             camera_triangles.push(corners.map(|i| scene_point(collision.vertex_bits[i as usize])));
         }
+        camera_collisions.push(collision);
     }
     let mut rgba_bytes = 0;
     for entry in table
@@ -590,6 +595,7 @@ pub fn load_room_archive(
         inspection_ground,
         collision_triangles,
         camera_triangles,
+        camera_collisions,
         environment: table
             .entries
             .iter()
@@ -766,6 +772,7 @@ pub fn arena(half_size: f32, wall_height: f32, tile: f32) -> (LoadedRoom, ArenaM
             inspection_ground: Some(0.),
             collision_triangles,
             camera_triangles,
+            camera_collisions: Vec::new(),
             environment: None,
         },
         ArenaMesh {

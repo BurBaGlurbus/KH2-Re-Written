@@ -221,3 +221,19 @@ fn projection_keeps_length_along_a_slope() {
     assert!((dot(p, p).sqrt() - 10.).abs() < 1e-4);
     assert!(dot(p, [h, h, 0.]).abs() < 1e-4);
 }
+
+#[test]
+fn the_camera_ray_keeps_nibble_four_polygons_and_reports_normal_and_surface() {
+    let (from, to) = ([0., -100., 0.], [600., -100., 0.]);
+    // The body query skips nibble-4 polygons; the camera query clears the filter.
+    let w = World::new(&room(0x14), !0).unwrap();
+    assert!(w.ray(from, to, 0xf).is_none());
+    let hit = w.camera_ray(from, to).unwrap();
+    assert_eq!(hit.point, [300., -100., 0.]);
+    assert_eq!(hit.normal, [-1., 0., 0.]);
+    assert_eq!(hit.surface, 4);
+    let w = World::new(&room(0x15), !0).unwrap();
+    assert_eq!(w.camera_ray(from, to).unwrap().surface, 5);
+    // Back faces are not hit.
+    assert!(w.camera_ray(to, from).is_none());
+}

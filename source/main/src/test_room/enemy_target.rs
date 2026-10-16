@@ -440,6 +440,7 @@ impl ScanTracker {
         &mut self,
         gauge: &mut EnemyGauge,
         seq: &sprite_sequence::Sequence,
+        slots: &visual::hud_slots::HudSlots,
         view: Option<ScanView>,
     ) {
         match (self.shown, view) {
@@ -462,7 +463,7 @@ impl ScanTracker {
                 self.shown = Some((view.id, view.hp));
             }
         }
-        gauge.update(seq);
+        gauge.update(seq, slots);
     }
 }
 
@@ -552,22 +553,52 @@ mod tests {
     #[test]
     fn scan_tracker_follows_the_lock_managers_target_and_hp_events() {
         let seq = flat_sequence();
-        let mut gauge = EnemyGauge::new(&seq);
+        let mut gauge = EnemyGauge::new(&seq, &mut visual::hud_slots::HudSlots::default());
         let mut tracker = ScanTracker::default();
-        tracker.step(&mut gauge, &seq, None);
+        tracker.step(
+            &mut gauge,
+            &seq,
+            &visual::hud_slots::HudSlots::default(),
+            None,
+        );
         assert!(!gauge.active());
         // A target appears: the gauge is created from its pool.
-        tracker.step(&mut gauge, &seq, view(1, 300));
+        tracker.step(
+            &mut gauge,
+            &seq,
+            &visual::hud_slots::HudSlots::default(),
+            view(1, 300),
+        );
         assert!(gauge.active());
         assert!(!gauge.draw(&seq, 0).is_empty());
         // Damage to the same target is an event; the unchanged value is not.
-        tracker.step(&mut gauge, &seq, view(1, 100));
-        tracker.step(&mut gauge, &seq, view(1, 100));
+        tracker.step(
+            &mut gauge,
+            &seq,
+            &visual::hud_slots::HudSlots::default(),
+            view(1, 100),
+        );
+        tracker.step(
+            &mut gauge,
+            &seq,
+            &visual::hud_slots::HudSlots::default(),
+            view(1, 100),
+        );
         assert!(gauge.active());
         // A different target re-creates it, and no target releases it.
-        tracker.step(&mut gauge, &seq, view(2, 300));
+        tracker.step(
+            &mut gauge,
+            &seq,
+            &visual::hud_slots::HudSlots::default(),
+            view(2, 300),
+        );
         assert!(gauge.active());
-        tracker.step(&mut gauge, &seq, None);
+        tracker.step(
+            &mut gauge,
+            &seq,
+            &visual::hud_slots::HudSlots::default(),
+            None,
+        );
         assert!(!gauge.active());
         assert!(gauge.draw(&seq, 0).is_empty());
     }

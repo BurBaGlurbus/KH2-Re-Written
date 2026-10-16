@@ -10,7 +10,9 @@
 //! art pixels scaled by the remainder, every completed row as a small tile
 //! stepping left by the tile group's text X (11).
 use crate::gauge::{Draw, X_ORIGIN};
+use crate::hud_slots::HudSlots;
 use data::sprite_sequence::{Modifiers, Player, Sequence};
+use player::follow_camera::spring_with;
 
 /// Root sprite (0x38, group 0x26): the label and the right edge every bar is
 /// anchored to.
@@ -34,6 +36,9 @@ const TILE_FADE: usize = 46;
 const MAX_ROWS: usize = 16;
 /// HP per row (the literal 200 in FUN_140183640).
 const ROW_HP: i32 = 200;
+/// The gauge's slot (0x12) and sub-slot (1) in the HUD stack (FUN_140182b10).
+const SLOT: usize = 18;
+const SUB: usize = 1;
 /// Bar art width (100, 0x140623be4).
 const BAR_ART: f32 = 100.;
 
@@ -61,10 +66,12 @@ pub struct EnemyGauge {
     hp_rem: i32,
     enabled: bool,
     frozen: bool,
-    /// The stacking offset (FUN_140182c60): the HUD's layout slot heights
-    /// registered above this gauge. Nothing else registers in this build, so
-    /// it stays zero.
-    stack_y: f32,
+    /// The stacking position (FUN_140182c60): the heights the lower HUD slots
+    /// registered, followed by a spring. Float current (+0x30), previous
+    /// (+0x34) and the integer base y (+0x2c).
+    stack_current: f32,
+    stack_previous: f32,
+    stack_y: i32,
 }
 
 /// C integer division.
@@ -74,7 +81,9 @@ fn rows_of(hp: i32) -> i32 {
 
 impl EnemyGauge {
     /// FUN_140182dd0: every sprite exists, hidden, and the layer is frozen.
-    pub fn new(seq: &Sequence) -> Self {
+    pub fn new(seq: &Sequence, slots: &mut HudSlots) -> Self {
+        slots.register(SLOT, SUB, 0);
+        let stack = slots.stack(SLOT, SUB);
         let mut elements = Vec::new();
         let mut push = |group: usize, parent: Option<usize>, offset: [f32; 2]| {
             elements.push(Element {
@@ -110,7 +119,9 @@ impl EnemyGauge {
             hp_rem: 0,
             enabled: false,
             frozen: true,
-            stack_y: 0.,
+            stack_current: stack as f32,
+            stack_previous: stack as f32,
+            stack_y: stack,
         }
     }
 
@@ -180,6 +191,24 @@ impl EnemyGauge {
         }
     }
 
+    /// FUN_140182c60: the base y follows the slot stack with the HUD spring
+    /// (gain 0.4, spring 1.2, damping 0.5, rest 0.1).
+    fn follow_stack(&mut self, slots: &HudSlots) {
+        self.stack_previous = self.stack_current;
+        let target = slots.stack(SLOT, SUB);
+        if target != self.stack_y {
+            let next = spring_with(
+                [self.stack_current, 0., 0.],
+                [target as f32, 0., 0.],
+                [self.stack_previous, 0., 0.],
+                0.4,
+                [1.2, 0.5, 0.1],
+            );
+            self.stack_current = next[0];
+            self.stack_y = next[0] as i32;
+        }
+    }
+
     /// FUN_140183640: sizes and shows the elements for the current values.
     fn layout(&mut self) {
         // FUN_140167070(6): every element of the layer is shown first.
@@ -235,10 +264,11 @@ impl EnemyGauge {
 
     /// One 60 Hz frame: the gauge's own logic (FUN_1401835f0), then each
     /// sprite's player in creation order.
-    pub fn update(&mut self, seq: &Sequence) {
+    pub fn update(&mut self, seq: &Sequence, slots: &HudSlots) {
         if !self.enabled || self.frozen {
             return;
         }
+        self.follow_stack(slots);
         self.layout();
         for element in &mut self.elements {
             element.player.update(seq, 1.);
@@ -261,7 +291,7 @@ impl EnemyGauge {
                     ]
                 }
                 // FUN_14016b330: the root's base is the stacking position.
-                None => [0., self.stack_y],
+                None => [0., self.stack_y as f32],
             };
             let e = &mut self.elements[i];
             e.base = base;
@@ -340,8 +370,8 @@ mod tests {
     #[test]
     fn a_hidden_gauge_neither_updates_nor_draws() {
         let seq = synthetic();
-        let mut gauge = EnemyGauge::new(&seq);
-        gauge.update(&seq);
+        let mut gauge = EnemyGauge::new(&seq, &mut HudSlots::default());
+        gauge.update(&seq, &HudSlots::default());
         assert!(gauge.draw(&seq, 0).is_empty());
         assert!(!gauge.active());
         assert_eq!(gauge.elements[0].player.time, 0.);
@@ -350,7 +380,7 @@ mod tests {
     #[test]
     fn rows_of_two_hundred_size_the_top_row_and_the_tiles() {
         let seq = synthetic();
-        let mut gauge = EnemyGauge::new(&seq);
+        let mut gauge = EnemyGauge::new(&seq, &mut HudSlots::default());
         gauge.show(&seq, 450, 1000);
         // 1000 HP: four completed rows plus a full top row; 450 HP sits in
         // the third row with 50 left in it.
@@ -371,7 +401,7 @@ mod tests {
         assert!(!shown.contains(&(6 + 5)));
         // Tiles step left by the tile group's text X.
         assert_eq!(gauge.elements[6 + 2 * 3].offset, [-33., 0.]);
-        let top = EnemyGauge::new(&seq);
+        let top = EnemyGauge::new(&seq, &mut HudSlots::default());
         assert!(top.elements.iter().all(|e| e.hidden));
         gauge.show(&seq, 1000, 1000);
         assert!(!gauge.elements[1].hidden);
@@ -380,11 +410,11 @@ mod tests {
     #[test]
     fn damage_starts_a_trail_from_the_previous_value_and_fades_emptied_rows() {
         let seq = synthetic();
-        let mut gauge = EnemyGauge::new(&seq);
+        let mut gauge = EnemyGauge::new(&seq, &mut HudSlots::default());
         gauge.show(&seq, 450, 1000);
-        gauge.update(&seq);
+        gauge.update(&seq, &HudSlots::default());
         gauge.damage(&seq, 250);
-        gauge.update(&seq);
+        gauge.update(&seq, &HudSlots::default());
         assert_eq!((gauge.hp, gauge.shadow), (250, 450));
         // The trail spans a full row because it is a row above the current.
         assert_eq!(gauge.shadow_rem, 200);
@@ -403,10 +433,10 @@ mod tests {
     #[test]
     fn zero_hp_leaves_an_empty_current_bar() {
         let seq = synthetic();
-        let mut gauge = EnemyGauge::new(&seq);
+        let mut gauge = EnemyGauge::new(&seq, &mut HudSlots::default());
         gauge.show(&seq, 120, 120);
         gauge.damage(&seq, 0);
-        gauge.update(&seq);
+        gauge.update(&seq, &HudSlots::default());
         assert_eq!((gauge.hp, gauge.hp_rem, gauge.rows), (0, 0, 0));
         assert_eq!(gauge.shadow_rem, 120);
     }
@@ -414,9 +444,9 @@ mod tests {
     #[test]
     fn the_root_anchors_children_and_bars_grow_left() {
         let seq = synthetic();
-        let mut gauge = EnemyGauge::new(&seq);
+        let mut gauge = EnemyGauge::new(&seq, &mut HudSlots::default());
         gauge.show(&seq, 100, 100);
-        gauge.update(&seq);
+        gauge.update(&seq, &HudSlots::default());
         let draws = gauge.draw(&seq, 3);
         assert!(!draws.is_empty());
         let Draw::Quads { sheet, .. } = &draws[0] else {
@@ -425,5 +455,36 @@ mod tests {
         assert_eq!(*sheet, 3);
         gauge.hide();
         assert!(gauge.draw(&seq, 3).is_empty());
+    }
+
+    #[test]
+    fn the_base_follows_the_registered_slot_heights_with_a_spring() {
+        let seq = synthetic();
+        let mut slots = HudSlots::default();
+        let mut gauge = EnemyGauge::new(&seq, &mut slots);
+        gauge.show(&seq, 100, 100);
+        gauge.update(&seq, &slots);
+        assert_eq!(gauge.stack_y, 0);
+        // A popup in a lower slot of the same sub-slot pushes the gauge down.
+        slots.register(3, SUB, 40);
+        let mut last = 0;
+        for _ in 0..80 {
+            gauge.update(&seq, &slots);
+            assert!(gauge.stack_y >= last && gauge.stack_y <= 40);
+            last = gauge.stack_y;
+        }
+        assert!(last >= 38, "{last}");
+        let Draw::Quads { quads, .. } = &gauge.draw(&seq, 0)[0] else {
+            panic!("root quads")
+        };
+        // The root's rectangle starts 85 (origin) + 0 and sits `last` lower.
+        assert!((quads[0].corners[0][1] - (-5. + last as f32)).abs() < 1.5);
+        // Other sub-slots do not move it.
+        slots.release(3, SUB);
+        slots.register(3, 0, 90);
+        for _ in 0..200 {
+            gauge.update(&seq, &slots);
+        }
+        assert!(gauge.stack_y <= 1);
     }
 }

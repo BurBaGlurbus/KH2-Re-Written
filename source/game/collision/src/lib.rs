@@ -102,6 +102,14 @@ pub struct World {
     quant: usize,
 }
 
+/// A camera segment hit (see `World::camera_ray`).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct CameraHit {
+    pub point: V3,
+    pub normal: V3,
+    pub surface: u32,
+}
+
 /// One polygon for presentation (collision overlays).
 pub struct PolyView {
     pub corners: Vec<V3>,
@@ -218,7 +226,14 @@ impl World {
     /// FUN_1401741c0 with the body filter `(attr & 0xf) != 4`
     /// (FUN_1401745c0(W, 0xf, 4, 1, 0)). Body and floor queries clear
     /// W+0xe7, so the nibble-5 class bypass never applies here.
-    fn gather(&self, node: usize, bx: &[i16; 6], class: u32, out: &mut Vec<u16>) {
+    fn gather(
+        &self,
+        node: usize,
+        bx: &[i16; 6],
+        class: u32,
+        skip_nibble4: bool,
+        out: &mut Vec<u16>,
+    ) {
         let Some(n) = self.nodes.get(node) else {
             return;
         };
@@ -237,7 +252,7 @@ impl World {
                     continue;
                 };
                 let a = p.attr;
-                if a & 0xf == 4 {
+                if skip_nibble4 && a & 0xf == 4 {
                     continue;
                 }
                 let pass = match class {
@@ -265,7 +280,7 @@ impl World {
             if child == -1 {
                 return;
             }
-            self.gather(child as usize, bx, class, out);
+            self.gather(child as usize, bx, class, skip_nibble4, out);
         }
     }
 
@@ -304,11 +319,30 @@ impl World {
 
     /// FUN_140173b30: nearest front-facing hit of a segment.
     pub fn ray(&self, p0: V3, p1: V3, class: u32) -> Option<(V3, u16)> {
+        self.ray_filtered(p0, p1, class, true)
+    }
+
+    /// The camera's segment query (FUN_140171210): the same ray with the
+    /// polygon filter cleared (FUN_1401745c0(W, 0, 0, 0, 0)), so nibble-4
+    /// polygons count, and class 0xf. Returns the hit point, the polygon's
+    /// stored plane normal and its surface nibble (`attr & 0xf`).
+    pub fn camera_ray(&self, p0: V3, p1: V3) -> Option<CameraHit> {
+        let (point, poly) = self.ray_filtered(p0, p1, 0xf, false)?;
+        let p = self.polys.get(poly as usize)?;
+        let plane = self.plane(p);
+        Some(CameraHit {
+            point,
+            normal: [plane[0], plane[1], plane[2]],
+            surface: p.attr & 0xf,
+        })
+    }
+
+    fn ray_filtered(&self, p0: V3, p1: V3, class: u32, skip_nibble4: bool) -> Option<(V3, u16)> {
         let lo = [p0[0].min(p1[0]), p0[1].min(p1[1]), p0[2].min(p1[2])];
         let hi = [p0[0].max(p1[0]), p0[1].max(p1[1]), p0[2].max(p1[2])];
         let bx = self.quantize([lo[0], lo[1], lo[2], hi[0], hi[1], hi[2]]);
         let mut list = Vec::new();
-        self.gather(0, &bx, class, &mut list);
+        self.gather(0, &bx, class, skip_nibble4, &mut list);
         let dir = sub(p1, p0);
         let mut best = 1.0e14f32;
         let mut hit = None;
@@ -495,7 +529,7 @@ fn sweep(w: &World, cb: &mut Cb) -> bool {
         c0[2].max(around[5]),
     ]);
     let mut list = Vec::new();
-    w.gather(0, &bx, class, &mut list);
+    w.gather(0, &bx, class, true, &mut list);
     let ret = if list.is_empty() {
         cb.result = c1;
         false

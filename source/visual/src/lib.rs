@@ -10,6 +10,7 @@ pub mod file_menu;
 pub mod footsteps;
 pub mod gauge;
 pub mod hud;
+pub mod hud_slots;
 pub mod input;
 pub mod level_up;
 pub mod lock_on;

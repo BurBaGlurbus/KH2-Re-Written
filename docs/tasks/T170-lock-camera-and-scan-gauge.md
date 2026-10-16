@@ -59,6 +59,17 @@ source stayed read-only; no vendor save, update or publication is involved.
    moves to another actor) and #8 when the toggle releases it.
 6. The combat tour keeps its three actors and lock schedule; it gains captures
    at 200, 250 and 320.
+7. Camera collision now is the executable's camera ray: `collision::World::
+   camera_ray` (the COCT segment query with the polygon filter cleared, so
+   nibble-4 polygons count) feeds `follow_camera::clip`, which pushes the end
+   5 units off the polygon's stored plane normal and, for a surface-5 polygon,
+   re-casts toward the end's horizontal position at the hit height. Rooms keep
+   their type-11 COCT records (`LoadedRoom::camera_collisions`); the generated
+   arena keeps plain triangles.
+8. `source/visual/src/hud_slots.rs`: the HUD slot-height table. The Scan gauge
+   is slot 18 / sub-slot 1; its base y follows the sum of the lower slots'
+   heights with the HUD spring (gain 0.4, spring 1.2, damping 0.5, rest 0.1).
+   No popup registers a height in this build, so the base stays at 0.
 
 ## Checks, uncertainty, verdict and next task
 
@@ -90,19 +101,26 @@ target's counters at +0xd1c / +0xd20 above zero and a flag bit) and its hide
 flag, secondary HP pools (such actors are rejected at load), camera modes
 1/6/8 (area event cameras), the zoom gate (an actor flag that is never set).
 
+Closed after that: camera collision uses the executable's camera ray (surface-5
+re-cast, nibble-4 polygons, stored plane normals; unit tests on a synthetic
+COCT, and a Twilight Town autoplay of 8520 ticks, 679 camera polygons, 126
+clipped frames, no errors, framing inspected), and the Scan gauge follows the HUD
+slot stack (spring and table ported with tests). The only objects that
+register slot heights are popup classes (item and info windows, radar) that
+the development room does not create, so the stack stays at zero here; nothing
+else is modelled for them.
+
 Still open: no controlled installed/rewrite side-by-side capture exists (needs
-the installed game run in a controlled scene); the physical controller and
-R1/right-stick chords were not exercised; camera collision internals beyond the
-T060 triangle clip (surface type 5 re-cast and the dynamic camera-collision
-object list; the room data carries no per-polygon surface type yet); the Scan
-gauge's stacking offset (zero while no other HUD slot is registered, the other
-registrants' slot heights are not modelled). The decompiled routines are
-private, single-pass and not independently audited, so coverage counts do not
-change and no complete function or 1:1 unit is marked PASS.
+the installed game run in a controlled scene; the owner chose to continue
+without one); the physical controller and R1/right-stick chords were not
+exercised; the dynamic camera-collision object list (spheres of flagged
+actors; the supported rooms create none) is not cast against. The decompiled
+routines are private, single-pass and not independently audited, so coverage
+counts do not change and no complete function or 1:1 unit is marked PASS.
 
 Verdict: PARTIAL. The lock-on camera, Scan gauge and reticle execute translated
 executable logic with real sprite data in the development room; the installed
 side-by-side comparison and the open items above remain.
-Next: capture the installed game's lock-on camera and Scan gauge from a
-controlled scene and compare numerically; add per-polygon surface types to the
-camera collision data and port the type 5 re-cast; model the HUD slot stack.
+Next: when a reference capture is allowed, compare the installed game's lock-on
+camera and Scan gauge numerically; port the dynamic camera-collision objects
+and the popups that register HUD slots when those objects exist.

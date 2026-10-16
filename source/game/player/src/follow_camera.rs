@@ -98,9 +98,18 @@ pub const OFF_RIGHT: u32 = 8;
 pub const OFF_NEAR: u32 = 0x10;
 pub const OFF_FAR: u32 = 0x20;
 
-/// First hit on the segment `from` -> `to`: point and unit surface normal
-/// facing `from`.
-pub type Hit = Option<(Vec3, Vec3)>;
+/// A camera segment hit: the point, the polygon's unit normal facing the
+/// segment's start and its surface nibble (5 marks the re-cast surface type).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct RayHit {
+    pub point: Vec3,
+    pub normal: Vec3,
+    pub surface: u32,
+}
+
+/// First hit on the segment `from` -> `to` (see `triangle_hit`, or the COCT
+/// query for a map's camera collision).
+pub type Cast<'a> = &'a dyn Fn(Vec3, Vec3) -> Option<RayHit>;
 
 fn cross(a: Vec3, b: Vec3) -> Vec3 {
     [
@@ -111,7 +120,7 @@ fn cross(a: Vec3, b: Vec3) -> Vec3 {
 }
 
 /// Nearest intersection of a segment with a triangle soup.
-pub fn segment_hit(triangles: &[[Vec3; 3]], from: Vec3, to: Vec3) -> Hit {
+pub fn triangle_hit(triangles: &[[Vec3; 3]], from: Vec3, to: Vec3) -> Option<RayHit> {
     let dir = sub(to, from);
     let mut best: Option<(f32, Vec3)> = None;
     for [a, b, c] in triangles {
@@ -143,11 +152,28 @@ pub fn segment_hit(triangles: &[[Vec3; 3]], from: Vec3, to: Vec3) -> Hit {
     if dot(n, dir) > 0. {
         n = n.map(|c| -c);
     }
-    Some(([0, 1, 2].map(|k| from[k] + dir[k] * t), n))
+    Some(RayHit {
+        point: [0, 1, 2].map(|k| from[k] + dir[k] * t),
+        normal: n,
+        surface: 0,
+    })
 }
 
-fn pushed_off((point, normal): (Vec3, Vec3)) -> Vec3 {
-    [0, 1, 2].map(|k| point[k] + normal[k] * COLLISION_OFFSET)
+/// FUN_140164940 with the default push-off: the segment `from` -> `to` is cast
+/// against the camera collision; on a hit the end moves to the hit point plus
+/// the polygon normal times 5. A surface-5 polygon re-casts from `from` to the
+/// end's horizontal position at the hit's height (the end offset by the
+/// previous target `prev`), and the re-cast point replaces the hit. Returns
+/// the clipped end.
+pub fn clip(prev: Vec3, from: Vec3, to: Vec3, cast: Cast) -> Option<Vec3> {
+    let hit = cast(from, to)?;
+    let mut end = hit.point;
+    if hit.surface == 5 {
+        let delta = sub(to, prev);
+        let probe = [delta[0] + prev[0], hit.point[1], delta[2] + prev[2]];
+        end = cast(from, probe).map_or(probe, |second| second.point);
+    }
+    Some([0, 1, 2].map(|k| end[k] + hit.normal[k] * COLLISION_OFFSET))
 }
 
 /// Per-frame inputs. Stick axes follow the pad convention: x right, y
@@ -224,6 +250,24 @@ fn dot(a: Vec3, b: Vec3) -> f32 {
 /// Eases `current` toward `target`: a spring on the distance with damping
 /// against the target's own motion (`target_prev` is last frame's target).
 pub fn spring(current: Vec3, target: Vec3, target_prev: Vec3, gain: f32) -> Vec3 {
+    spring_with(
+        current,
+        target,
+        target_prev,
+        gain,
+        [SPRING, DAMPING, REST_LENGTH],
+    )
+}
+
+/// FUN_140165bd0 with explicit constants `[spring, damping, rest length]`
+/// (the camera uses 2.5, 0.5, 1; the HUD slot stack 1.2, 0.5, 0.1).
+pub fn spring_with(
+    current: Vec3,
+    target: Vec3,
+    target_prev: Vec3,
+    gain: f32,
+    [spring_k, damping, rest]: [f32; 3],
+) -> Vec3 {
     let d = sub(current, target);
     let length = dot(d, d).sqrt();
     if length == 0. {
@@ -231,7 +275,7 @@ pub fn spring(current: Vec3, target: Vec3, target_prev: Vec3, gain: f32) -> Vec3
     }
     let v = sub(target_prev, target).map(|c| c * gain);
     let f = dot(d, v);
-    let scale = ((f / length) * DAMPING + (REST_LENGTH - length) * SPRING) * gain / length;
+    let scale = ((f / length) * damping + (rest - length) * spring_k) * gain / length;
     let out = [
         current[0] + d[0] * scale,
         current[1] + d[1] * scale,
@@ -377,9 +421,9 @@ impl FollowCamera {
         }
     }
 
-    /// One frame. `collide` returns the first camera-collision hit on a
-    /// segment (see `segment_hit`).
-    pub fn tick(&mut self, input: &CameraInput, collide: &dyn Fn(Vec3, Vec3) -> Hit) {
+    /// One frame. `cast` returns the first camera-collision hit on a segment
+    /// (see `triangle_hit`).
+    pub fn tick(&mut self, input: &CameraInput, cast: Cast) {
         self.look_at_target_prev = self.look_at_target;
         self.eye_target_prev = self.eye_target;
         let speed_offset = input.speed - SPEED_REFERENCE;
@@ -387,7 +431,7 @@ impl FollowCamera {
         // afterwards.
         let gain = (SPRING_GAIN + speed_offset * SPRING_GAIN_PER_UNIT) * 0.5;
         if let Some(anchor) = input.lock_target {
-            self.tick_lock(input, anchor, collide);
+            self.tick_lock(input, anchor, cast);
             let feet_up = [
                 input.player_position[0],
                 input.player_position[1] - LOOK_AT_HEIGHT,
@@ -396,8 +440,8 @@ impl FollowCamera {
             self.spring_to_targets(gain);
             // FUN_140176e40: mode 2 clips only the eye, from the player's
             // upper body, and does not feed the clip back to the target.
-            if let Some(hit) = collide(feet_up, self.eye) {
-                self.eye = pushed_off(hit);
+            if let Some(eye) = clip(self.eye_target_prev, feet_up, self.eye, cast) {
+                self.eye = eye;
             }
             return;
         }
@@ -439,13 +483,18 @@ impl FollowCamera {
             }
         }
         self.place_targets(input.player_position, snap);
-        if let Some(hit) = collide(self.look_at_target, self.eye_target) {
-            self.eye_target = pushed_off(hit);
+        if let Some(end) = clip(
+            self.eye_target_prev,
+            self.look_at_target,
+            self.eye_target,
+            cast,
+        ) {
+            self.eye_target = end;
         }
         self.spring_to_targets(gain);
-        if let Some(hit) = collide(self.look_at, self.eye) {
-            self.eye = pushed_off(hit);
-            self.eye_target = self.eye;
+        if let Some(eye) = clip(self.eye_target_prev, self.look_at, self.eye, cast) {
+            self.eye = eye;
+            self.eye_target = eye;
         }
     }
 
@@ -463,12 +512,7 @@ impl FollowCamera {
     /// Mode 2 (FUN_140176c70): the look point blends toward the locked
     /// target's camera anchor, the radius and yaw react to the target and the
     /// player leaving the screen, and the eye target stays on the player.
-    fn tick_lock(
-        &mut self,
-        input: &CameraInput,
-        anchor: Vec3,
-        collide: &dyn Fn(Vec3, Vec3) -> Hit,
-    ) {
+    fn tick_lock(&mut self, input: &CameraInput, anchor: Vec3, cast: Cast) {
         let player = input.player_position;
         let feet_up = [player[0], player[1] - LOOK_AT_HEIGHT, player[2]];
         // FUN_140176ec0 with k = 0.3.
@@ -544,8 +588,8 @@ impl FollowCamera {
         let look_target = self.look_at_target;
         self.yaw = approach(self.yaw, self.yaw_target, YAW_EASE);
         self.place_eye_target(feet_up);
-        if let Some(hit) = collide(feet_up, self.eye_target) {
-            self.eye_target = pushed_off(hit);
+        if let Some(end) = clip(self.eye_target_prev, feet_up, self.eye_target, cast) {
+            self.eye_target = end;
         }
         self.look_at_target = look_target;
     }
@@ -685,7 +729,7 @@ mod tests {
             [0., 1000., -100.],
         ]];
         let (mut camera, step) = locked([0.; 3], [0., 0., 1.], [0., -50., 400.]);
-        camera.tick(&step, &|a, b| segment_hit(&wall, a, b));
+        camera.tick(&step, &|a, b| triangle_hit(&wall, a, b));
         assert!((camera.eye[2] - (-95.)).abs() < 1e-3);
         // The eye target was clipped from the same point, 5 units off the
         // wall; the post-spring clip never rewrites it.
@@ -728,6 +772,45 @@ mod tests {
     }
 
     #[test]
+    fn a_surface_five_hit_is_recast_at_the_hit_height_toward_the_clipped_end() {
+        let second = std::cell::Cell::new(None);
+        let cast = |from: Vec3, to: Vec3| {
+            if to[1] == -50. {
+                Some(RayHit {
+                    point: [0., -100., -50.],
+                    normal: [0., 0., 1.],
+                    surface: 5,
+                })
+            } else {
+                second.set(Some((from, to)));
+                Some(RayHit {
+                    point: [3., -100., -80.],
+                    normal: [1., 0., 0.],
+                    surface: 0,
+                })
+            }
+        };
+        // Previous target (1, -40, 2) and new end (10, -50, -300).
+        let end = clip([1., -40., 2.], [0., -170., 0.], [10., -50., -300.], &cast).unwrap();
+        // The re-cast runs from the origin to the end's X and Z at the hit's Y.
+        assert_eq!(second.get(), Some(([0., -170., 0.], [10., -100., -300.])));
+        // The re-cast point replaces the hit; the first polygon's normal pushes it.
+        assert_eq!(end, [3. + 0., -100., -80. + 5.]);
+        // Other surfaces use the first hit directly.
+        let plain = |_: Vec3, _: Vec3| {
+            Some(RayHit {
+                point: [0., -10., -50.],
+                normal: [0., 0., 1.],
+                surface: 3,
+            })
+        };
+        assert_eq!(
+            clip([0.; 3], [0.; 3], [0., 0., -300.], &plain),
+            Some([0., -10., -45.])
+        );
+    }
+
+    #[test]
     fn wall_between_look_at_and_eye_pulls_the_eye_in() {
         // A wall at z = -100 across the path behind a player facing +Z.
         let wall = [[
@@ -737,10 +820,10 @@ mod tests {
         ]];
         let mut camera = FollowCamera::new(OUTDOOR, &input([0., 0., 0.], [0., 0., 1.]));
         camera.tick(&input([0., 0., 0.], [0., 0., 1.]), &|a, b| {
-            segment_hit(&wall, a, b)
+            triangle_hit(&wall, a, b)
         });
         assert!((camera.eye[2] - (-95.)).abs() < 1e-3);
-        assert!(segment_hit(&wall, [0., 0., 0.], [0., 0., -50.]).is_none());
+        assert!(triangle_hit(&wall, [0., 0., 0.], [0., 0., -50.]).is_none());
     }
 
     #[test]
