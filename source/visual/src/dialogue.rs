@@ -407,6 +407,17 @@ impl TalkWindow {
         }
     }
 
+    /// YS::WINDOW_BALLOON (FUN_1403bb270: font 3, colour id 5, type 0, no
+    /// tail) as the world map's message widget places it (FUN_140393760:
+    /// position (0x100, 0x30), alignment 2 = centred horizontally, top at
+    /// y) [I: alignment 2 read as the box's top edge].
+    pub fn balloon(seq: &Sequence, message: Vec<u8>, colour: u32, widths: &[u8]) -> Self {
+        let mut w = Self::new(seq, message, colour, widths);
+        w.tail = None;
+        w.position = [0x100, 0x30 + w.size.1 / 2];
+        w
+    }
+
     pub fn size(&self) -> (i32, i32) {
         self.size
     }

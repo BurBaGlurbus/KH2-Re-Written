@@ -149,9 +149,87 @@ pub fn close_up(centre: V3, radius: f32, height: f32, offset: [f32; 3], focal: f
     }
 }
 
+/// worldmap::EventCamera (FUN_140394150, update FUN_140394460): from the
+/// current camera to `target` seen from `target + offset` over `frames`.
+/// The eye runs a cubic Bézier whose inner points sit at 0.2 and 0.95 of
+/// the straight line (DAT_1405aaa3c / DAT_1405b1c74); the view direction
+/// turns linearly from the old one to −offset.
+#[derive(Clone, Debug, PartialEq)]
+pub struct EventCamera {
+    eye: [V3; 4],
+    from_direction: V3,
+    to_direction: V3,
+    time: f32,
+    frames: f32,
+    fov: f32,
+}
+
+impl EventCamera {
+    pub fn new(now: Pose, target: V3, offset: V3, frames: f32) -> Self {
+        let p3 = add(target, offset);
+        let p0 = now.eye;
+        Self {
+            eye: [p0, mix(p3, p0, 0.2), mix(p3, p0, 0.95), p3],
+            from_direction: [0, 1, 2].map(|i| now.target[i] - now.eye[i]),
+            to_direction: offset.map(|v| -v),
+            time: 0.,
+            frames,
+            fov: now.fov,
+        }
+    }
+
+    /// One tick (FUN_140394460 then FUN_14038ebc0 with no blend).
+    pub fn update(&mut self) -> Pose {
+        if self.time < self.frames {
+            self.time = (self.time + 1.).min(self.frames);
+        }
+        let t = if self.frames > 0. {
+            (self.time / self.frames).min(1.)
+        } else {
+            1.
+        };
+        let u = 1. - t;
+        let [p0, p1, p2, p3] = self.eye;
+        let eye = [0, 1, 2].map(|i| {
+            u.powf(3.) * p0[i]
+                + 3. * u.powf(2.) * t * p1[i]
+                + 3. * u * t.powf(2.) * p2[i]
+                + t.powf(3.) * p3[i]
+        });
+        let d = mix(self.to_direction, self.from_direction, t);
+        Pose {
+            eye,
+            target: add(eye, d),
+            fov: self.fov,
+        }
+    }
+
+    pub fn done(&self) -> bool {
+        self.time >= self.frames
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_event_camera_ends_at_its_target() {
+        let now = Pose {
+            eye: [0., -1000., -1000.],
+            target: [0., 0., 0.],
+            fov: 1.,
+        };
+        let mut c = EventCamera::new(now, [5000., -400., 0.], [0., -2000., -3000.], 90.);
+        let first = c.update();
+        assert!(first.eye[0] > 0. && first.eye[0] < 100.);
+        let mut last = first;
+        while !c.done() {
+            last = c.update();
+        }
+        assert_eq!(last.eye, [5000., -2400., -3000.]);
+        assert_eq!(last.target, [5000., -400., 0.]);
+    }
 
     #[test]
     fn close_up_frames_the_shape_from_behind_and_above() {
