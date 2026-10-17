@@ -99,7 +99,9 @@ pub struct Clip {
     pub release: Vec<(u32, Option<u16>)>,
     /// Earliest range trigger 2, "Blend to idle".
     pub blend_to_idle: Option<u32>,
-    /// Range trigger 3, "No gravity".
+    /// Range triggers 3, 24 and 30, the "no gravity" states (FUN_14040d810
+    /// sets obj+0x18c bit 5, bit 6 or bit 24; FUN_1403cb500 holds the height
+    /// for each).
     pub no_gravity: Vec<(u32, u32)>,
     /// Range triggers 0, 1 and 2: commands are taken while one is active
     /// (obj+0x18c & 0x1c, FUN_14040d810 / FUN_1401b15f0).
@@ -532,6 +534,8 @@ pub struct Player {
     square_held: bool,
     /// obj+0xd70: invulnerability frames left (FUN_1403d7e40).
     pub invulnerable: f32,
+    /// A no-gravity ANB range was active last tick (obj+0x120 bits 23 / 24).
+    was_floating: bool,
     /// Quick Run's mode 0x10 state.
     quick_run: Option<growth::QuickRun>,
     /// The speed effect Quick Run started this tick: element 0x6c + the
@@ -681,6 +685,7 @@ impl Player {
             dodge_ready: false,
             square_held: false,
             invulnerable: 0.,
+            was_floating: false,
             quick_run: None,
             quick_run_effect: None,
             glide: None,
@@ -1534,6 +1539,9 @@ impl Player {
         // on landing].
         let mut ground_request = [0f32; 2];
         let was_in_air = self.in_air();
+        if !was_in_air {
+            self.was_floating = false;
+        }
         let magnitude = input.direction[0].hypot(input.direction[1]).min(1.);
         // Any stick past the pad's dead zone moves (FUN_1403a8fa0: speed is
         // set whenever the stick magnitude is above 0).
@@ -2490,6 +2498,15 @@ impl Player {
             return self.glide_velocity(&row, height);
         }
         let floating = Clip::within(&self.clip(clips).no_gravity, self.frame);
+        // FUN_1403b4780 (the per-frame update): when a no-gravity range has
+        // just ended the arc is re-seeded as a plain fall from the current
+        // height, starting at the last tick's actual vertical speed (zero
+        // after a hover) — not from the curve's elapsed time, which would
+        // have dropped far below Sora while the range held him.
+        if self.was_floating && !floating {
+            self.arc = actor_physics::Arc::fall(self.position[1], self.vertical_speed);
+        }
+        self.was_floating = floating;
         // Mode 1 horizontal (FUN_1403cb360 → FUN_1403b7ad0 with 0.9, 0.95):
         // the velocity keeps 90% of itself and takes 10% of the stick
         // velocity, or decays ×0.95 without a stick. The stick only feeds it
@@ -4500,5 +4517,53 @@ mod tests {
             player.action,
             Action::Fall | Action::Land | Action::Idle
         ));
+    }
+
+    #[test]
+    fn a_no_gravity_range_ends_in_a_soft_fall_not_a_catch_up() {
+        let (p, mut c, w) = (params(), clips(), room());
+        // The air attack hovers from tick 10 to 30 of its clip.
+        c.attacks[3].clip.no_gravity = vec![(10, 30)];
+        c.attacks[3].clip.end = 80;
+        let mut player = Player::new([0., 0., 0.], 0.);
+        let jump = Input {
+            jump: true,
+            ..Input::default()
+        };
+        player.tick(&jump, &p, &c, &w);
+        for _ in 0..25 {
+            player.tick(&Input::default(), &p, &c, &w);
+        }
+        let press = Input {
+            attack: true,
+            ..Input::default()
+        };
+        player.tick(&press, &p, &c, &w);
+        assert_eq!(player.action, Action::AirAttack(3));
+        // Let the hop finish and the hover begin.
+        while player.frame < 14 {
+            player.tick(&Input::default(), &p, &c, &w);
+        }
+        let held = player.position[1];
+        while player.frame < 30 {
+            player.tick(&Input::default(), &p, &c, &w);
+            assert!((player.position[1] - held).abs() < 1., "hover drifts");
+        }
+        // Past the range the fall starts from rest and speeds up by about
+        // g a tick: six ticks later it has dropped a few units, where the
+        // curve's elapsed time (16+ ticks of hover) would have capped it.
+        for _ in 0..6 {
+            player.tick(&Input::default(), &p, &c, &w);
+        }
+        let dropped = held - player.position[1];
+        assert!(dropped > 1. && dropped < 12., "dropped {dropped}");
+        for _ in 0..10 {
+            player.tick(&Input::default(), &p, &c, &w);
+        }
+        assert!(
+            player.vertical_speed.abs() < 8.,
+            "{}",
+            player.vertical_speed
+        );
     }
 }
