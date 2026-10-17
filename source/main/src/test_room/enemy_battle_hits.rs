@@ -107,6 +107,7 @@ pub fn tick(game: &mut Game, actors: &mut [GalleryActor], tick: u64) {
         enemy_incoming_hits,
         enemy_outgoing_hits,
         world,
+        wall,
         ..
     } = game;
     let Some(rt) = enemy.as_mut() else { return };
@@ -367,6 +368,8 @@ pub fn tick(game: &mut Game, actors: &mut [GalleryActor], tick: u64) {
             .outgoing_previous
             .retain(|(key, _), _| live_keys.contains(key));
         if let Some((v, target, centre)) = outgoing {
+            // The volume hit an actor: it no longer tests the map (wall_hit.rs).
+            wall.struck(v.key);
             let rows = &rt.steps[&(v.atkp, v.sub)];
             let (aid, group) = rt.instance_ids[&v.key];
             let (counted, row) =

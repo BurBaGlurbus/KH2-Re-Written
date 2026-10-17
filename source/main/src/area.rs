@@ -740,6 +740,17 @@ impl MapWorld {
         }
     }
 
+    /// An attack volume's segment against the map (FUN_140171090, class 4)
+    /// in scene coordinates: the hit point is scene, the polygon normal
+    /// stays in the engine's space (it only turns an effect).
+    pub fn attack_hit(&self, from: [f32; 3], to: [f32; 3]) -> Option<collision::AttackHit> {
+        let hit = self.world.attack_ray(engine(from), engine(to))?;
+        Some(collision::AttackHit {
+            point: engine(hit.point),
+            ..hit
+        })
+    }
+
     /// The floor material under Sora as of the last move.
     pub fn floor_ground(&self) -> u8 {
         self.floor_ground.load(std::sync::atomic::Ordering::Relaxed)

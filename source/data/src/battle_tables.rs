@@ -68,6 +68,9 @@ pub struct Attack {
     pub combo_kind: u8,
     /// +0x10 (i16): Magnet's spin, units per tick around its centre.
     pub spin: i16,
+    /// +0x28: the extra downward reach of the volume's environment test
+    /// (FUN_1403d0bb0; 0 = none). Flags bit 0 (+0x12) enables the test.
+    pub env_reach: u8,
 }
 
 fn parse_row(rec: &[u8]) -> io::Result<Attack> {
@@ -98,6 +101,7 @@ fn parse_row(rec: &[u8]) -> io::Result<Attack> {
         hp_drain: rec[0x2f],
         combo_kind: rec[0x2e],
         spin: i16_at(rec, 0x10)?,
+        env_reach: rec[0x28],
     })
 }
 

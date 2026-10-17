@@ -226,6 +226,8 @@ pub struct Clips {
     /// Guard (motion 173) and its success recoil (motion 42), when loaded.
     pub guard: Option<Clip>,
     pub guard_recoil: Option<Clip>,
+    /// The recoil of a swing that met the map (motion 0x29), when loaded.
+    pub wall_recoil: Option<Clip>,
     /// The item-use motion (9), when loaded.
     pub item: Option<Clip>,
     /// The drive-start (0x34) and drive-in (0x35) motions, when the set
@@ -269,6 +271,16 @@ pub mod hurt {
 
 /// The hop an aerial hit gives (`DAT_1405b532c`, FUN_1403d4800).
 pub const AIR_HIT_HOP: f32 = 50.;
+/// Quick Run's effect element is this plus the ability's level (+0x6c in
+/// FUN_1403a96c0).
+pub const QUICK_RUN_EFFECT_BASE: u16 = 0x6c;
+/// The knock-slide strength of a swing's recoil off the map: FUN_1403d4650
+/// takes `DAT_1405b532c` (50) when the caller passes a negative strength.
+pub const WALL_RECOIL_STRENGTH: f32 = 50.;
+/// The recoil motions of FUN_1403d4650: on the ground (the next motion is
+/// the idle) and in the air (the next motion is the fall).
+pub const WALL_RECOIL_GROUND: u16 = 0x29;
+pub const WALL_RECOIL_AIR: u16 = 0x2b;
 /// Sora's `plyr` record (pref, id 1): Aerial Recovery's jump height (+0x50),
 /// horizontal speed (+0x54) and the ticks a blow must have run (+0x58).
 pub const RECOVERY_HEIGHT: f32 = 100.;
@@ -304,6 +316,10 @@ pub enum Action {
     Guard,
     /// Guard success recoil (motion 42).
     GuardRecoil,
+    /// The recoil of a Keyblade swing that met the map on the ground
+    /// (motion 0x29, FUN_1403d4650); in the air it is the scripted motion
+    /// 0x2b.
+    WallRecoil,
     /// Using an item (motion 9): actionable again from its range-2 tick.
     Item,
     /// The Drive command's start (motion 0x34, FUN_14040ce60): physics
@@ -518,6 +534,10 @@ pub struct Player {
     pub invulnerable: f32,
     /// Quick Run's mode 0x10 state.
     quick_run: Option<growth::QuickRun>,
+    /// The speed effect Quick Run started this tick: element 0x6c + the
+    /// ability's level of Sora's own effects, for levels above 1
+    /// (FUN_1403a96c0 / FUN_1403a9830 → FUN_1403b6670).
+    pub quick_run_effect: Option<u16>,
     /// Gliding (modes 0x11 / 0x12): the row in use (obj+0x108).
     glide: Option<growth::Row>,
     /// obj+0xe0 with +0xec set: the take-off velocity of the last arc
@@ -662,6 +682,7 @@ impl Player {
             square_held: false,
             invulnerable: 0.,
             quick_run: None,
+            quick_run_effect: None,
             glide: None,
             launch_velocity: None,
             shoot: false,
@@ -1100,6 +1121,42 @@ impl Player {
         Some(self.action)
     }
 
+    /// A Keyblade swing that met the map (the owner callback FUN_1403d63e0
+    /// of FUN_1403d1960): the swing counts as a connected hit without
+    /// advancing the combo (obj+0x120 bit 25 set, the step byte lowered),
+    /// then FUN_1403d4650 with its defaults: on the ground motion 0x29, a
+    /// knock-slide backward of 50 and the idle next; in the air motion
+    /// 0x2b, the fall next and the aerial hit's hop (FUN_1403d4800: height
+    /// 50, speed 50 × HitBackToJump backward). Returns the new action when
+    /// a motion started.
+    pub fn wall_recoil(&mut self, sstm: &actor_physics::Sstm, clips: &Clips) -> Option<Action> {
+        if self.dead() {
+            return None;
+        }
+        self.connected = true;
+        self.combo.step = self.combo.step.saturating_sub(1);
+        let back = [-self.yaw.sin(), -self.yaw.cos()];
+        if self.in_air() {
+            if !self.play_motion(WALL_RECOIL_AIR, 0., clips) {
+                return None;
+            }
+            self.queue_motion(4, 0.);
+            self.knock = None;
+            self.flight = None;
+            self.arc = actor_physics::Arc::launch(self.position[1], AIR_HIT_HOP);
+            self.jump_cut = JumpCut::default();
+            let v = WALL_RECOIL_STRENGTH * sstm.hit_back_to_jump;
+            self.air_velocity = [back[0] * v, back[1] * v];
+            self.sampler.reset();
+            self.vertical_speed = 0.;
+        } else {
+            clips.wall_recoil.as_ref()?;
+            self.begin_reaction(Action::WallRecoil);
+            self.recoil(back, WALL_RECOIL_STRENGTH);
+        }
+        Some(self.action)
+    }
+
     fn start(&mut self, action: Action, step: &mut Step) {
         self.action = action;
         self.frame = 0;
@@ -1134,6 +1191,7 @@ impl Player {
             (Action::Hurt(i), _) => &clips.hurt[i],
             (Action::Guard, _) => clips.guard.as_ref().unwrap_or(&clips.idle),
             (Action::GuardRecoil, _) => clips.guard_recoil.as_ref().unwrap_or(&clips.idle),
+            (Action::WallRecoil, _) => clips.wall_recoil.as_ref().unwrap_or(&clips.idle),
             (Action::Item, _) => clips.item.as_ref().unwrap_or(&clips.idle),
             (Action::Drive, _) => clips.drive.as_ref().unwrap_or(&clips.idle),
             (Action::DriveIn, _) => clips.drive_in.as_ref().unwrap_or(&clips.idle),
@@ -1386,6 +1444,10 @@ impl Player {
             return false;
         }
         self.quick_run = Some(growth::QuickRun::start(dir, &row));
+        // The dash's own effect: element level + 0x6c of Sora's effects for
+        // the second level and up (the levels' speed streaks).
+        let level = self.growth_level(growth::QUICK_RUN);
+        self.quick_run_effect = (level > 1).then(|| QUICK_RUN_EFFECT_BASE + level as u16);
         self.yaw = dir[0].atan2(dir[1]);
         self.square_held = true;
         self.invulnerable = row.run_invulnerable;
@@ -1743,6 +1805,7 @@ impl Player {
             Action::Hurt(_)
             | Action::Guard
             | Action::GuardRecoil
+            | Action::WallRecoil
             | Action::Item
             | Action::DriveIn => {
                 // Locked until the clip's range-2 tick (hurt 50, guard 52,
@@ -1877,6 +1940,7 @@ impl Player {
             Action::Hurt(i) => HURT_MOTIONS[i.min(HURT_MOTIONS.len() - 1)],
             Action::Guard => 173,
             Action::GuardRecoil => 42,
+            Action::WallRecoil => WALL_RECOIL_GROUND,
             Action::Item => 9,
             Action::Drive => 0x34,
             Action::DriveIn => 0x35,
@@ -2049,6 +2113,7 @@ impl Player {
             Action::Hurt(_)
             | Action::Guard
             | Action::GuardRecoil
+            | Action::WallRecoil
             | Action::Item
             | Action::DriveIn => {
                 let clip = self.clip(clips);
@@ -2674,7 +2739,14 @@ mod tests {
             drive: Some(Clip::looping(40, 40)),
             drive_in: None,
             growth: Vec::new(),
-            scripted: Vec::new(),
+            scripted: vec![(
+                WALL_RECOIL_AIR,
+                Clip {
+                    end: 40,
+                    ..Clip::default()
+                },
+                Vec::new(),
+            )],
             records: records(),
             spells: vec![
                 SpellClip {
@@ -2751,6 +2823,12 @@ mod tests {
             guard_recoil: Some(Clip {
                 end: 80,
                 blend_to_idle: Some(40),
+                ..Clip::default()
+            }),
+            wall_recoil: Some(Clip {
+                end: 60,
+                blend_to_idle: Some(40),
+                combo_windows: vec![(16, 60)],
                 ..Clip::default()
             }),
             item: Some(Clip {
@@ -3957,6 +4035,27 @@ mod tests {
         assert_eq!(run.action, Action::Growth(growth::motion::QUICK_RUN_END));
     }
 
+    #[test]
+    fn quick_run_starts_its_level_effect_from_the_second_level() {
+        let (p, c, w) = (params(), growth_clips(), room());
+        let square = Input {
+            guard: true,
+            guard_held: true,
+            direction: [1., 0.],
+            ..Input::default()
+        };
+        // Level 1 has no streak; levels 2 and 3 start element 0x6c + level
+        // of Sora's effects (110 and 111), once per dash.
+        for (level, want) in [(1u8, None), (2, Some(110u16)), (3, Some(111))] {
+            let mut run = grown(growth::QUICK_RUN);
+            run.abilities.growth[growth::QUICK_RUN] = level;
+            run.tick(&square, &p, &c, &w);
+            assert_eq!(run.action, Action::Growth(growth::motion::QUICK_RUN));
+            assert_eq!(run.quick_run_effect.take(), want, "level {level}");
+            assert_eq!(run.quick_run_effect, None);
+        }
+    }
+
     fn jump_peak(release_at: Option<u32>) -> f32 {
         let (p, c, w) = (params(), clips(), room());
         let mut player = Player::new([0.; 3], 0.);
@@ -4339,5 +4438,67 @@ mod tests {
         let r = player.take_released().unwrap();
         assert!(r.airborne);
         assert_eq!(player.mp.cur, 88);
+    }
+
+    #[test]
+    fn a_swing_that_meets_the_map_recoils_on_the_ground() {
+        let (p, c, w) = (params(), clips(), room());
+        let mut player = Player::new([0., 0., 0.], 0.);
+        player.combo = ptya::Combo { step: 2, finish: 1 };
+        let action = player.wall_recoil(&sstm(), &c);
+        // Motion 0x29, connected, the combo step lowered by one.
+        assert_eq!(action, Some(Action::WallRecoil));
+        assert_eq!(player.motion_id(&c), WALL_RECOIL_GROUND);
+        assert!(player.connected);
+        assert_eq!(player.combo.step, 1);
+        // The knock-slide of 50 × 0.1 per tick, decaying ×0.9, carries the
+        // body backward (the player faces +Z).
+        for _ in 0..30 {
+            player.tick(&Input::default(), &p, &c, &w);
+        }
+        assert!(player.position[2] < -10., "{:?}", player.position);
+        // Locked until the clip's range-2 tick, then the idle after the end.
+        assert_eq!(player.action, Action::WallRecoil);
+        for _ in 0..40 {
+            player.tick(&Input::default(), &p, &c, &w);
+        }
+        assert_eq!(player.action, Action::Idle);
+        // A step already at zero stays there.
+        player.combo.step = 0;
+        player.wall_recoil(&sstm(), &c);
+        assert_eq!(player.combo.step, 0);
+    }
+
+    #[test]
+    fn a_swing_that_meets_the_map_in_the_air_hops_back_and_falls() {
+        let (p, c, w) = (params(), clips(), room());
+        let mut player = Player::new([0., 100., 0.], 0.);
+        player.action = Action::Fall;
+        player.arc = actor_physics::Arc::fall(100., 0.);
+        assert!(player.in_air());
+        let action = player.wall_recoil(&sstm(), &c);
+        // Motion 0x2b, the fall queued after it, the aerial hit's hop
+        // (height 50) backward at 50 × HitBackToJump.
+        assert_eq!(action, Some(Action::Scripted(WALL_RECOIL_AIR)));
+        assert_eq!(player.queued, vec![(4, 0.)]);
+        assert!((player.arc.rise - actor_physics::rise_time(AIR_HIT_HOP)).abs() < 1e-4);
+        let speed = player.air_velocity[0].hypot(player.air_velocity[1]);
+        assert!((speed - 50. * sstm().hit_back_to_jump).abs() < 1e-5);
+        assert!(player.air_velocity[1] < 0.);
+        let top = (0..30)
+            .map(|_| {
+                player.tick(&Input::default(), &p, &c, &w);
+                player.position[1]
+            })
+            .fold(0f32, f32::max);
+        assert!(top > 140., "{top}");
+        // The recoil ends into the fall.
+        for _ in 0..30 {
+            player.tick(&Input::default(), &p, &c, &w);
+        }
+        assert!(matches!(
+            player.action,
+            Action::Fall | Action::Land | Action::Idle
+        ));
     }
 }

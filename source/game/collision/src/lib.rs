@@ -110,6 +110,17 @@ pub struct CameraHit {
     pub surface: u32,
 }
 
+/// An attack volume's environment hit (see `World::attack_ray`).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct AttackHit {
+    pub point: V3,
+    /// The polygon's stored plane normal (FUN_140173500 for a static map).
+    pub normal: V3,
+    /// The polygon's surface nibble (`attr & 0xf`, FUN_140170910); 1 picks
+    /// the hit effect's category 0x100, any other 2.
+    pub material: u32,
+}
+
 /// One polygon for presentation (collision overlays).
 pub struct PolyView {
     pub corners: Vec<V3>,
@@ -334,6 +345,22 @@ impl World {
             point,
             normal: [plane[0], plane[1], plane[2]],
             surface: p.attr & 0xf,
+        })
+    }
+
+    /// An attack volume's segment against the map (FUN_140171090 with
+    /// class 4): polygons with attribute bit 7, the polygon filter cleared
+    /// like the camera's (FUN_140163fc0 and the map's own call both reset
+    /// it), so nibble-4 polygons count. Returns the hit point, the plane
+    /// normal and the surface nibble.
+    pub fn attack_ray(&self, p0: V3, p1: V3) -> Option<AttackHit> {
+        let (point, poly) = self.ray_filtered(p0, p1, 4, false)?;
+        let p = self.polys.get(poly as usize)?;
+        let plane = self.plane(p);
+        Some(AttackHit {
+            point,
+            normal: [plane[0], plane[1], plane[2]],
+            material: p.attr & 0xf,
         })
     }
 

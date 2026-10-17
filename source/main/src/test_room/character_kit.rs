@@ -272,7 +272,8 @@ pub(super) fn load_kit(
     } else {
         0
     };
-    // Guard (PTYA 0x0b → motion 173) and its success recoil (motion 42).
+    // Guard (PTYA 0x0b → motion 173), its success recoil (motion 42) and the
+    // recoil of a swing that met the map (motion 0x29).
     motions.extend(read_with_fallback(source, &motion_set, fb, &SORA_GUARD)?);
     ids.extend(SORA_GUARD);
     // The drive-start (0x34) and drive-in (0x35) motions: base Sora's set
@@ -394,7 +395,10 @@ pub(super) fn load_kit(
         // The guard volumes (ATKP 161/162) live in the weapon's motions.
         let guard_at = battle_count + 3 + hurt_count;
         let found = motion::read_motion_ids_optional(source, set, &SORA_GUARD)?;
-        for (selected, own) in found.into_iter().zip(&motions[guard_at..guard_at + 2]) {
+        for (selected, own) in found
+            .into_iter()
+            .zip(&motions[guard_at..guard_at + SORA_GUARD.len()])
+        {
             if let Some(selected) = selected {
                 weapon_motions[k].insert(own.slot, selected);
             }
@@ -670,7 +674,7 @@ pub(super) fn load_kit(
         })
         .collect();
     let guard_at = field + 3 + hurt_count;
-    let drive_at = guard_at + 2;
+    let drive_at = guard_at + SORA_GUARD.len();
     let mut drive_clips = [None, None];
     let mut k = drive_at;
     for (i, present) in drive_present.iter().enumerate() {
@@ -702,6 +706,7 @@ pub(super) fn load_kit(
             .collect(),
         guard: Some(clip_list[guard_at].0.clone()),
         guard_recoil: Some(clip_list[guard_at + 1].0.clone()),
+        wall_recoil: Some(clip_list[guard_at + 2].0.clone()),
         item: (hurt_count > HURT_COUNT).then(|| clip_list[field + 3 + HURT_COUNT].0.clone()),
         drive: drive_clips[0].map(|i| clip_list[i].0.clone()),
         drive_in: drive_clips[1].map(|i| clip_list[i].0.clone()),
@@ -763,6 +768,7 @@ pub(super) fn load_kit(
     }
     both.push((Action::Guard, clip_list[guard_at].1));
     both.push((Action::GuardRecoil, clip_list[guard_at + 1].1));
+    both.push((Action::WallRecoil, clip_list[guard_at + 2].1));
     if let Some(i) = drive_clips[0] {
         both.push((Action::Drive, clip_list[i].1));
     }

@@ -91,6 +91,7 @@ mod party_room;
 mod prize_room;
 mod settings_room;
 mod spell_fx;
+mod wall_hit;
 mod weapon_trail;
 
 fn player_object_default() -> String {
@@ -329,6 +330,16 @@ enum EffectRequest {
     /// A system (00effect) element at a point, unrotated
     /// (FUN_1403d0f00 clash effects).
     System { id: u16, at: Vec3 },
+    /// A Keyblade swing that met the map (FUN_1403d1960): the weapon's hit
+    /// element of the ATKP effect on this surface class at the contact,
+    /// turned by the polygon normal's pitch and yaw (engine space).
+    Wall {
+        effect: u8,
+        material: u32,
+        contact: Vec3,
+        pitch: f32,
+        yaw: f32,
+    },
 }
 
 struct RunningEffect {
@@ -473,8 +484,9 @@ fn room_stock() -> std::collections::BTreeMap<u16, u8> {
     s
 }
 
-/// Guard (PTYA 0x0b) and its success recoil (guard-01).
-const SORA_GUARD: [u16; 2] = [173, 42];
+/// Guard (PTYA 0x0b), its success recoil (guard-01) and the recoil of a
+/// swing that met the map (FUN_1403d4650).
+const SORA_GUARD: [u16; 3] = [173, 42, player::WALL_RECOIL_GROUND];
 
 /// Public MotionSet names for the locomotion IDs used here.
 const LOCOMOTION: [(&str, u16); 6] = [
@@ -613,6 +625,15 @@ enum RoomWorld {
 }
 
 impl RoomWorld {
+    /// An attack volume's segment against the map's attack polygons (scene
+    /// coordinates in and out); the room's own triangles have none.
+    pub fn attack_hit(&self, from: Vec3, to: Vec3) -> Option<::collision::AttackHit> {
+        match self {
+            RoomWorld::Triangles(_) => None,
+            RoomWorld::Map(w) => w.attack_hit(from.to_array(), to.to_array()),
+        }
+    }
+
     /// The collision triangles in scene coordinates (for the skateboard).
     pub fn skate_triangles(&self) -> Vec<[Vec3; 3]> {
         match self {
@@ -945,6 +966,8 @@ struct Game {
     /// The shown kit's attack shapes by collision group (bone, offset,
     /// radius).
     sora_attack: HashMap<u8, Vec<(usize, Vec3, f32)>>,
+    /// The Keyblade swings' environment test (wall_hit.rs).
+    wall: wall_hit::WallHit,
     menu_up_queued: bool,
     menu_down_queued: bool,
     enemy: Option<EnemyRuntime>,
@@ -1627,6 +1650,10 @@ struct Loaded {
     params: Params,
     /// SSTM battle parameters (blow, hit-back, fall max).
     sstm: actor_physics::Sstm,
+    /// The 00battle ATKP table and the room Keyblade's attack spheres, for
+    /// the swings' environment test (wall_hit.rs).
+    atkp: Vec<u8>,
+    wall_blade: character_kit::Blade,
     abilities: AbilitySource,
     magic: Option<magic_room::MagicSource>,
     items: Option<item_room::ItemSource>,
@@ -2904,7 +2931,7 @@ fn load(
             basic_fk,
             params,
             pax: base_pax,
-            scripted: Vec::new(),
+            scripted: vec![player::WALL_RECOIL_AIR],
         },
     )?;
     let sora_body = kit.body.clone();
@@ -3378,7 +3405,20 @@ fn load(
             }
         }
     };
+    // The room Keyblade's attack spheres (obj/<model>.mdlx), for the map test.
+    let wall_blade = keyblades
+        .model(KINGDOM_KEY)
+        .and_then(|name| {
+            let mut library = data::path_lookup::Library::open(source).ok()?;
+            let found = library.find(&format!("obj/{name}.mdlx"))?;
+            Some(character_kit::blade_spheres(
+                &library.read_found(&found).ok()?,
+            ))
+        })
+        .unwrap_or_default();
     Ok(Loaded {
+        atkp: bar_entry(&battle, b"atkp")?.to_vec(),
+        wall_blade,
         board_motion,
         keyblades,
         weapon_model: config.object_model_name.clone(),
@@ -6393,6 +6433,7 @@ fn simulate(
             }
         }
     }
+    wall_hit::tick(&mut game, tick);
     combat_tick(&mut game, tick);
     prize_room::tick(&mut game, tick);
     if game.magic_tour
@@ -6582,6 +6623,28 @@ fn effects_tick(mut game: ResMut<Game>, rig: Res<CameraRig>, mut fx: ResMut<Effe
                 let d = to_world(direction.to_array());
                 let pitch = (-d[1]).atan2((d[0] * d[0] + d[2] * d[2]).sqrt());
                 let yaw = d[0].atan2(d[2]);
+                let world = ::effect::instance_matrix(
+                    to_world(contact.to_array()),
+                    [pitch, yaw, 0.],
+                    element.scale,
+                );
+                (pax, element, world, "hit", None)
+            }
+            EffectRequest::Wall {
+                effect,
+                material,
+                contact,
+                pitch,
+                yaw,
+            } => {
+                let Some(pax) = fx.weapon.clone() else {
+                    continue;
+                };
+                let mask = wall_hit::category(effect, material);
+                let Some(element) = pax.by_category(mask).cloned() else {
+                    game.event(serde_json::json!({"event":"effect_missing","tick":tick,"mask":format!("{mask:#x}")}));
+                    continue;
+                };
                 let world = ::effect::instance_matrix(
                     to_world(contact.to_array()),
                     [pitch, yaw, 0.],
@@ -7804,6 +7867,7 @@ fn combat_tick(game: &mut Game, tick: u64) {
         enemy_battle_tour,
         magic_tour,
         magic_shift,
+        wall,
         ..
     } = game;
     let Some(rt) = enemy.as_mut() else { return };
@@ -8012,6 +8076,10 @@ fn combat_tick(game: &mut Game, tick: u64) {
     let in_damage_motion = (10..=39).contains(&player.motion_id(clips));
     rt.sora_record.tick(1., in_damage_motion);
     rt.enemy.record.tick(1., false);
+    if let Some((instance, ..)) = &hit {
+        // The volume hit an actor: it no longer tests the map (wall_hit.rs).
+        wall.struck(*instance);
+    }
     if let Some((instance, atkp, sub, high, (attack_centre, target, target_radius), moving, key)) =
         hit
         && let Some(rows) = rt.steps.get(&(atkp, sub))
@@ -11074,6 +11142,11 @@ fn run(mut args: Vec<PathBuf>) -> Result<AppExit, Box<dyn std::error::Error>> {
             }
             magic_room::MagicRt::new(src, levels)
         }),
+        wall: wall_hit::WallHit::new(
+            loaded.sstm,
+            std::mem::take(&mut loaded.atkp),
+            std::mem::take(&mut loaded.wall_blade),
+        ),
         menu_up_queued: false,
         menu_down_queued: false,
         enemy: None,
@@ -11247,7 +11320,7 @@ fn run(mut args: Vec<PathBuf>) -> Result<AppExit, Box<dyn std::error::Error>> {
             };
             (
                 Effects {
-                    weapon: Some(Arc::new(e.weapon)),
+                    weapon: { Some(Arc::new(e.weapon)) },
                     enemy: e.enemy.map(Arc::new),
                     enemy_paxes: e
                         .enemy_paxes

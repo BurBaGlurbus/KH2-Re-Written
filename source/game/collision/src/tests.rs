@@ -237,3 +237,42 @@ fn the_camera_ray_keeps_nibble_four_polygons_and_reports_normal_and_surface() {
     // Back faces are not hit.
     assert!(w.camera_ray(to, from).is_none());
 }
+
+#[test]
+fn attack_ray_hits_only_class_four_polygons() {
+    // Bit 7 marks a polygon the attack test sees; the wall's normal faces
+    // −x, so a segment moving toward +x crosses its front.
+    let solid = World::new(&room(WALL | 0x80), !0).unwrap();
+    let hit = solid
+        .attack_ray([250., -100., 0.], [350., -100., 0.])
+        .expect("the wall is hit");
+    assert!((hit.point[0] - 300.).abs() < 1e-3);
+    assert_eq!(hit.normal, [-1., 0., 0.]);
+    assert_eq!(hit.material, 2);
+    // Without bit 7 the wall does not stop an attack.
+    let plain = World::new(&room(WALL), !0).unwrap();
+    assert!(
+        plain
+            .attack_ray([250., -100., 0.], [350., -100., 0.])
+            .is_none()
+    );
+    // The back of the plane and a segment that stops short are misses.
+    assert!(
+        solid
+            .attack_ray([350., -100., 0.], [250., -100., 0.])
+            .is_none()
+    );
+    assert!(
+        solid
+            .attack_ray([250., -100., 0.], [290., -100., 0.])
+            .is_none()
+    );
+    // The surface nibble is reported (material 1 selects category 0x100).
+    let ground = World::new(&room(0x81), !0).unwrap();
+    assert_eq!(
+        ground
+            .attack_ray([250., -100., 0.], [350., -100., 0.])
+            .map(|h| h.material),
+        Some(1)
+    );
+}

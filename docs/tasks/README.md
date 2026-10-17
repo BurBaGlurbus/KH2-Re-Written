@@ -148,4 +148,5 @@ Records through T128 retain historical commands and paths. See [the folder guide
 | [T163](T163-npc-push-and-pop-fade.md) | Twilight Town townspeople: pop-in and pop-out fade, and the push | PARTIAL. |
 | [T164](T164-journal-limits-missions-minigames-story-synthesis.md) | Journal: Limits, Missions, Minigames, Story and Synthesis Notes pages | PARTIAL. |
 | [T165](T165-launcher-empty-data-folder-check.md) | Launcher: every test from an empty data folder | PARTIAL. |
+| [T180](T180-combat-feel-map-hits-and-quick-run.md) | Combat feel: the Keyblade meeting the map, Quick Run's streak, the air combo's drop | PARTIAL. |
 | [T141](T141-ik-and-animation-parity.md) | IK aim chains, pole vectors and joint-space motion blends | PROGRESS. Master Form matches the PS2 routine; 87% of installed motions within 0.1. |

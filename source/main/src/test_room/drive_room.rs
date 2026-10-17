@@ -389,9 +389,10 @@ impl FormSources {
                         .chain(221..=227)
                         .chain(231..=234)
                         .chain(241..=248)
+                        .chain([player::WALL_RECOIL_AIR])
                         .collect()
                 } else {
-                    Vec::new()
+                    vec![player::WALL_RECOIL_AIR]
                 },
             },
         )
@@ -904,10 +905,12 @@ fn swap_kit(game: &mut Game, form: u8) -> Result<(), String> {
     };
     let shown = d.shown;
     d.previous_shown = shown;
-    let blade = game.enemy.as_mut().map_or_else(
-        || [Default::default(), Default::default()],
-        |rt| std::mem::replace(&mut rt.blade, incoming.blade.clone()),
-    );
+    // The swings' blade spheres follow the kit (the room Keyblade's map test
+    // and, when there is an enemy, its hit test).
+    let blade = std::mem::replace(&mut game.wall.blades, incoming.blade.clone());
+    if let Some(rt) = game.enemy.as_mut() {
+        rt.blade = incoming.blade.clone();
+    }
     let body = game
         .enemy
         .as_mut()
@@ -1608,6 +1611,7 @@ pub fn motion_effects(game: &mut Game) {
     let key = (game.action_started, game.player.action);
     let frame = game.player.frame;
     let clip = game.player.clip(&game.clips).clone();
+    let dash = game.player.quick_run_effect.take();
     let Some(d) = game.drive.as_mut() else { return };
     let from = match d.fx_scan {
         Some((s, a, f)) if (s, a) == key => Some(f),
@@ -1617,6 +1621,15 @@ pub fn motion_effects(game: &mut Game) {
     let Some(pax) = d.paxes.get(&d.shown).cloned() else {
         return;
     };
+    // Quick Run's speed effect starts with the dash, bound to Sora
+    // (FUN_1403b6670 on his own effects).
+    if let Some(id) = dash {
+        d.fx_requests.push(drive_fx::FxRequest {
+            pax: pax.clone(),
+            id,
+            owner: d.shown,
+        });
+    }
     for &(f, n) in &clip.effects {
         let due = match from {
             Some(prev) => f > prev && f <= frame,
