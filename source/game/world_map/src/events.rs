@@ -26,13 +26,18 @@ pub enum Op {
     },
     /// 0x100: preload objects (FUN_1403e0460(id | 0x40000000)).
     Preload(Vec<u32>),
-    /// 0x101: the BGM stops and the widget layout is named (FUN_14039e000).
-    StopBgm,
+    /// 0x101: the event's archive is named, `libretto/<lang>/wm<event>.bar`
+    /// (format 0x1405c0798, "fm" for languages 0 and 7, else "us"), and its
+    /// load starts (thunk_FUN_14039e000); FUN_14039d460(0) drops the load
+    /// cache's unused files.
+    Archive,
     /// 0x102: a 3D object widget in slot `.0` for object `.1`
     /// (worldmap::ObjWidget, FUN_140393920); the first hides the map.
     Widget(u32, u32),
-    /// 0x103 / 0x111: widget slot motions (entries of its motion set).
+    /// 0x103: the slot plays the first archive entry (FUN_140535440) and
+    /// queues the rest (FUN_140535420); 0x111 queues them all.
     WidgetMotion(u32, Vec<u32>),
+    WidgetQueue(u32, Vec<u32>),
     /// 0x104: the event camera to `target` from `target + offset` over
     /// `frames`, then a wait of as many frames (FUN_1403943f0).
     Camera {
@@ -43,12 +48,15 @@ pub enum Op {
     /// 0x105: the objects' looks refresh (FUN_1403940b0, 240 frames,
     /// FUN_140394050, sound 16008, 90 frames).
     Refresh,
-    /// 0x106: the widget layout loads (FUN_14039e340).
-    Layout,
+    /// 0x106: the script waits for the loads (FUN_14039e340) and keeps the
+    /// archive (FUN_14039cc40 → +0xa0).
+    WaitLoads,
     /// 0x107: later messages use WINDOW_TUTORIAL.
     TutorialWindows,
-    /// 0x108: BGM from the event's archive (thunk_FUN_1401dfbb0).
-    Bgm,
+    /// 0x108: the voice in this archive entry plays after the last stops
+    /// (thunk_FUN_1401df2f0, thunk_FUN_1401dfbb0 at volume 0x3fff): an
+    /// "ORIGIN" stub naming the voice file.
+    Voice(u32),
     /// 0x109: a widget's position (+0x318, w = 1); 0x10a: its rotation
     /// (+0x308, radians).
     WidgetPosition(u32, [f32; 3]),
@@ -110,18 +118,19 @@ pub fn read_script(bytes: &[u8]) -> Vec<Op> {
                 n: (f(w(0)) / 2.) as u32,
             },
             0x100 => Op::Preload(a.clone()),
-            0x101 => Op::StopBgm,
+            0x101 => Op::Archive,
             0x102 => Op::Widget(w(0), w(1)),
-            0x103 | 0x111 => Op::WidgetMotion(w(0), a.get(1..).unwrap_or(&[]).to_vec()),
+            0x103 => Op::WidgetMotion(w(0), a.get(1..).unwrap_or(&[]).to_vec()),
+            0x111 => Op::WidgetQueue(w(0), a.get(1..).unwrap_or(&[]).to_vec()),
             0x104 => Op::Camera {
                 target: v3(0),
                 offset: v3(3),
                 frames: f(w(6)),
             },
             0x105 => Op::Refresh,
-            0x106 => Op::Layout,
+            0x106 => Op::WaitLoads,
             0x107 => Op::TutorialWindows,
-            0x108 => Op::Bgm,
+            0x108 => Op::Voice(w(0)),
             0x109 => Op::WidgetPosition(w(0), v3(1)),
             0x10a => Op::WidgetRotation(w(0), v3(1)),
             0x10b => Op::WidgetViewPosition(v3(0)),
@@ -150,6 +159,31 @@ pub const REFRESH_SOUND: u32 = 0x3e88;
 /// Op 0x105's waits (DAT_1405b4b20, DAT_140623be0).
 pub const REFRESH_WAITS: [f32; 2] = [240., 90.];
 
+/// Op 0x101's archive: `sprintf("libretto/%s/wm%d.bar", lang, event)`.
+pub fn archive_name(event: u32, language: &str) -> String {
+    format!("libretto/{language}/wm{event}.bar")
+}
+
+/// An archive entry that holds an "ORIGIN" stub (BAR types 0x1f, 0x22 and
+/// 0x30, FUN_1403a64f0): the file the PC build loads in its place, named at
+/// +0x10 (`voice/wm/<lang>/<name>`).
+pub fn origin_path(stub: &[u8]) -> Option<String> {
+    if stub.get(..7)? != b"ORIGIN\0" {
+        return None;
+    }
+    let name = stub.get(0x10..)?;
+    let end = name.iter().position(|&b| b == 0).unwrap_or(name.len());
+    std::str::from_utf8(&name[..end]).ok().map(str::to_owned)
+}
+
+/// The installed voice file of an ORIGIN voice path: its base name in the
+/// language's event voices [I: FUN_14012db50's remap is not traced; every
+/// world map voice stub resolves this way in the selected install].
+pub fn voice_file(origin: &str, language: &str) -> Option<String> {
+    let name = origin.rsplit('/').next().filter(|n| !n.is_empty())?;
+    Some(format!("voice/{language}/event/{name}.win32.scd"))
+}
+
 /// What the player asks of the program this tick.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Action {
@@ -176,7 +210,10 @@ pub enum Action {
     /// apply.
     Refresh,
     Sound(u32),
-    StopBgm,
+    /// A widget op for the scene (widgets::Scene::apply).
+    Widgets(Op),
+    /// Op 0x108: the voice of this archive entry.
+    Voice(u32),
     Jump {
         world: u8,
         area: u8,
@@ -287,9 +324,19 @@ impl EventPlayer {
                 }
                 Op::RefreshNow => out.push(Action::Refresh),
                 Op::TutorialWindows => self.tutorial = true,
-                Op::StopBgm => out.push(Action::StopBgm),
                 Op::Jump { world, area } => out.push(Action::Jump { world, area }),
-                Op::Preload(_) | Op::Layout => {}
+                Op::Voice(entry) => out.push(Action::Voice(entry)),
+                op @ (Op::Widget(..)
+                | Op::WidgetMotion(..)
+                | Op::WidgetQueue(..)
+                | Op::WidgetPosition(..)
+                | Op::WidgetRotation(..)
+                | Op::WidgetViewPosition(_)
+                | Op::WidgetViewRotation(_)
+                | Op::RemoveWidget(_)
+                | Op::ClearWidgets) => out.push(Action::Widgets(op)),
+                // The program reads every archive before the map starts.
+                Op::Preload(_) | Op::Archive | Op::WaitLoads => {}
                 other => out.push(Action::Unported(other)),
             }
         }
@@ -343,6 +390,39 @@ mod tests {
         assert!(matches!(seen[2], (330, Action::Camera { frames: 90., .. })));
         // 90 camera frames then the 60-frame wait.
         assert_eq!(ticks, 481);
+    }
+
+    #[test]
+    fn widget_ops_and_voices_reach_the_program() {
+        let mut bytes = op(0x101, &[]);
+        bytes.extend(op(0x102, &[1, 0x895]));
+        bytes.extend(op(0x103, &[1, 5, 6]));
+        bytes.extend(op(0x111, &[1, 7]));
+        bytes.extend(op(0x108, &[4]));
+        let script = read_script(&bytes);
+        assert_eq!(script[2], Op::WidgetMotion(1, vec![5, 6]));
+        assert_eq!(script[3], Op::WidgetQueue(1, vec![7]));
+        let mut p = EventPlayer::new(0x1f6, script);
+        assert_eq!(
+            p.tick(),
+            vec![
+                Action::Widgets(Op::Widget(1, 0x895)),
+                Action::Widgets(Op::WidgetMotion(1, vec![5, 6])),
+                Action::Widgets(Op::WidgetQueue(1, vec![7])),
+                Action::Voice(4),
+            ]
+        );
+        assert_eq!(archive_name(0x1f6, "us"), "libretto/us/wm502.bar");
+        let mut stub = b"ORIGIN\0\x04".to_vec();
+        stub.extend([0; 8]);
+        stub.extend(b"voice/wm/us/wm00000ab\0\0");
+        let path = origin_path(&stub).unwrap();
+        assert_eq!(path, "voice/wm/us/wm00000ab");
+        assert_eq!(
+            voice_file(&path, "us").unwrap(),
+            "voice/us/event/wm00000ab.win32.scd"
+        );
+        assert!(origin_path(b"BAR\x01").is_none());
     }
 
     #[test]
