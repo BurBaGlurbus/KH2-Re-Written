@@ -5,9 +5,16 @@
 //! objects and draw groups), and the cursor (worldmap::Player, `WM_CURSOR`)
 //! flies with the stick under worldmap::ObjCamera.
 //!
-//! Not here yet: landing on a world and the room select (dk::WM_LANDING,
-//! #87), the info panels, the Gummi routes (#88), the world-opening events
-//! and the objects' effects (#89).
+//! Near an open world's symbol the cursor gets the landing reaction and the
+//! info panel (dk::WM_LANDING_INFO); the reaction button opens the landing
+//! menu (dk::WM_LANDING) under worldmap::CloseUpCamera, and a decided world
+//! point ends the program with its target (the jump, FUN_1403946d0).
+//!
+//! Not here yet: the jump into the field (entrance 0x63 arrivals), the
+//! Gummi routes (#88), the world-opening events, sounds and the objects'
+//! effects (#89).
+mod ui;
+
 use crate::area::{self, AreaSource, LoadedArea};
 use crate::test_room::{BobPart, RoomPart, spawn_bobs, spawn_model, spawn_room};
 use ::area::world_state;
@@ -34,9 +41,13 @@ use data::{
 use player::actor_physics::{self, ObjParams, Sampler};
 use std::{collections::HashMap, fs::OpenOptions, path::PathBuf, sync::Arc};
 use visual::area_fog::{FogMaterial, FogPlugin};
+use visual::field_command_menu::Font;
+use visual::overlay::{Ui2dFrame, Ui2dPlugin};
+use visual::world_map_menu::{self, Info, Menu};
 use visual::{controller, input};
 use world_map::{
-    camera::{ObjCamera, Pose},
+    camera::{self as wm_camera, ObjCamera, Pose},
+    landing::{self, Landing, Outcome},
     objects::{self, Switch},
 };
 
@@ -54,8 +65,8 @@ const SYMBOL_OPEN: u16 = 0xa1;
 /// visit, as the field tests use [test-room choice].
 const DEFAULT_STORY: (u32, u32) = (0x800, 0x895);
 /// Unattended runs: a fixed input script and the ticks captured.
-const AUTOPLAY_CAPTURES: [u64; 6] = [30, 150, 240, 360, 480, 600];
-const AUTOPLAY_END: u64 = 620;
+const AUTOPLAY_CAPTURES: [u64; 8] = [40, 130, 190, 270, 350, 430, 560, 700];
+const AUTOPLAY_END: u64 = 780;
 const WARM_UP_FRAMES: u32 = 90;
 
 /// What a world map object is (FUN_140393f50 by objentry sub-kind).
@@ -80,6 +91,11 @@ struct Actor {
     time: f32,
     drawn: bool,
     tint: [f32; 4],
+    /// The model's object-collision shapes (BAR type 23).
+    shapes: Vec<object_collision::Entry>,
+    /// A symbol that offers its reaction (state ≥ 2, record flag bit 1
+    /// clear: FUN_140390510's flag 0x40 is off).
+    reacts: bool,
 }
 
 #[derive(Component)]
@@ -117,9 +133,32 @@ struct WorldMap {
     frames: u32,
     stick: [f32; 3],
     autoplay: Option<PathBuf>,
+    /// Unattended runs decide the landing menu instead of cancelling it.
+    autoplay_decide: bool,
     captures_taken: usize,
     capture_pending: bool,
     log: Vec<serde_json::Value>,
+    /// Raw PADDATA bits of this tick and the pad record (FUN_14039c4c0).
+    raw: u64,
+    pad: controller::Pad,
+    /// The symbol actor whose reaction the cursor has (FUN_140407de0).
+    reaction: Option<usize>,
+    landing: Option<(Landing, Menu, usize)>,
+    info: Option<Info>,
+    /// The landing's target once a world point is decided.
+    jump: Option<world_state::Target>,
+    /// 03system 'cmd': each command's execute id (FUN_1403b68b0).
+    commands: HashMap<u16, u16>,
+}
+
+/// The 2D assets and the sheets they were uploaded to.
+#[derive(Resource)]
+struct UiRes {
+    ui: ui::Ui,
+    images: Vec<usize>,
+    pictures: Vec<usize>,
+    font: usize,
+    icon: usize,
 }
 
 struct Startup {
@@ -218,14 +257,21 @@ fn blend(attributes: u32) -> AlphaMode {
     }
 }
 
+/// An object's collision shapes (its BAR type-23 entry).
+fn read_shapes(archive: &[u8]) -> Vec<object_collision::Entry> {
+    bar::read_bar(archive)
+        .ok()
+        .and_then(|table| {
+            let e = table.entries.iter().find(|e| e.entry_type == 23)?;
+            let bytes = archive.get(e.offset as usize..e.offset as usize + e.size as usize)?;
+            object_collision::read(bytes).ok()
+        })
+        .unwrap_or_default()
+}
+
 /// The map body of an object: its object-collision entry of kind 4 (the
 /// cursor's is the same as Sora's: r 90, h 90, centre 115 up).
-fn map_body(archive: &[u8]) -> Option<Body> {
-    let table = bar::read_bar(archive).ok()?;
-    let e = table.entries.iter().find(|e| e.entry_type == 23)?;
-    let shapes =
-        object_collision::read(&archive[e.offset as usize..e.offset as usize + e.size as usize])
-            .ok()?;
+fn map_body(shapes: &[object_collision::Entry]) -> Option<Body> {
     let s = shapes.iter().find(|s| s.kind == 4)?;
     Some(Body {
         radius: s.radius as f32,
@@ -272,6 +318,7 @@ fn apply_world_state(
                 let record = state.record(entry.world).copied().unwrap_or_default();
                 let look = objects::symbol_look(entry.world, &record, eh_flag);
                 a.drawn = look.drawn;
+                a.reacts = look.drawn && look.reacts;
                 a.tint = look.tint.map(|c| c as f32 / 128.);
                 if a.motion != look.motion {
                     a.motion = look.motion;
@@ -402,6 +449,40 @@ fn setup(
     ));
 }
 
+/// Uploads the 2D sheets: the layout's images, the fonts and the
+/// world-point pictures.
+fn setup_ui(
+    mut ui: ResMut<UiRes>,
+    mut frame: ResMut<Ui2dFrame>,
+    mut images: ResMut<Assets<Image>>,
+) {
+    let ui = &mut *ui;
+    for k in 0..ui.ui.layout.image_sizes.len() {
+        if let Some(t) = ui.ui.layout.replacements.get_mut(k).and_then(Option::take) {
+            ui.images
+                .push(frame.add_sheet(&mut images, t.rgba, t.size, t.texel_scale));
+        }
+    }
+    for t in std::mem::take(&mut ui.ui.pictures) {
+        ui.pictures
+            .push(frame.add_sheet(&mut images, t.rgba, t.size, t.texel_scale));
+    }
+    let f = &mut ui.ui.font;
+    ui.font = frame.add_sheet(
+        &mut images,
+        std::mem::take(&mut f.rgba),
+        f.size,
+        f.texel_scale as f32,
+    );
+    let i = &mut ui.ui.icons;
+    ui.icon = frame.add_sheet(
+        &mut images,
+        std::mem::take(&mut i.rgba),
+        i.size,
+        i.texel_scale as f32,
+    );
+}
+
 /// The map objects and their motions, kept for the presentation.
 #[derive(Resource)]
 struct BobState(visual::scenery::LoadedBobs);
@@ -424,38 +505,250 @@ fn read_stick(
     }
     let (data, _, _) = input::read_devices(&keys, &mouse, 0., &pads);
     wm.stick = controller::analog(data.left);
+    wm.raw = controller::raw(&data);
 }
 
-/// Scripted stick for unattended runs: north, east, then south-west.
-fn autoplay_stick(tick: u64) -> [f32; 3] {
-    match tick {
-        40..160 => [0., -1., 1.],
-        160..280 => [1., 0., 1.],
-        280..400 => [-0.7, 0.7, 1.],
-        400..460 => [0., -1., 0.5],
+/// Scripted input for unattended runs: the landing menu at the start
+/// (open, a grid step, the episode list and back, then cancel or decide),
+/// then a flight north, east and south-west.
+fn autoplay_input(tick: u64, decide: bool) -> ([f32; 3], u16) {
+    use controller::button;
+    let press = |at: u64, b: u16| if tick == at || tick == at + 1 { b } else { 0 };
+    let buttons = press(60, button::TRIANGLE)
+        | press(150, button::RIGHT)
+        | press(210, button::R1)
+        | press(290, button::L1)
+        | press(
+            370,
+            if decide {
+                button::CROSS
+            } else {
+                button::CIRCLE
+            },
+        );
+    let stick = match tick {
+        440..560 => [0., -1., 1.],
+        560..680 => [1., 0., 1.],
+        680..760 => [-0.7, 0.7, 1.],
         _ => [0., 0., 0.],
-    }
+    };
+    (stick, buttons)
 }
 
 fn wrap_angle(a: f32) -> f32 {
     ::area::wrap(a)
 }
 
+/// A shape's world centre (FUN_1403c9c00) on an actor.
+fn shape_at(a: &Actor, s: &object_collision::Entry) -> [f32; 3] {
+    landing::shape_centre(
+        a.position,
+        a.yaw,
+        s.position.map(|v| v as f32),
+        s.position_height as f32,
+    )
+}
+
+/// FUN_140407de0 for the world map: the symbols whose kind-5 sphere meets
+/// the cursor's kind-1 sphere offer their command; the nearest wins (equal
+/// priority 100, score = distance).
+fn find_reaction(wm: &WorldMap) -> Option<usize> {
+    let cursor = &wm.actors[wm.cursor];
+    let probe = cursor.shapes.iter().find(|s| s.kind == 1 && s.shape == 3)?;
+    let at = shape_at(cursor, probe);
+    let mut best: Option<(f32, usize)> = None;
+    for (i, a) in wm.actors.iter().enumerate() {
+        if !matches!(a.kind, Kind::Symbol(_)) || !a.reacts {
+            continue;
+        }
+        // The shape's argument names a 'cmd' entry; landing's executes 0x9f
+        // (FUN_140394fc0).
+        for s in a.shapes.iter().filter(|s| {
+            s.kind == object_collision::REACTION
+                && s.shape == 3
+                && wm.commands.get(&(s.argument as u16)) == Some(&landing::LAND_EXEC)
+        }) {
+            let c = shape_at(a, s);
+            if landing::spheres_touch(c, s.radius as f32, at, probe.radius as f32) {
+                let d = c
+                    .iter()
+                    .zip(at)
+                    .map(|(p, q)| (p - q) * (p - q))
+                    .sum::<f32>()
+                    .sqrt();
+                if best.is_none_or(|(bd, _)| d < bd) {
+                    best = Some((d, i));
+                }
+            }
+        }
+    }
+    best.map(|(_, i)| i)
+}
+
+/// The symbol's world (Symbol actors only).
+fn actor_world(a: &Actor) -> Option<u8> {
+    match a.kind {
+        Kind::Symbol(e) => Some(e.world),
+        _ => None,
+    }
+}
+
+/// FUN_140396e50 → FUN_140396b80: the close-up of the landing's symbol for
+/// the menu mode, from its kind-7 shape, at the current camera's
+/// projection distance [I: 320 / tan(fov / 2), the 640-wide screen of the
+/// follow camera's conversion].
+fn close_up(a: &Actor, mode: u8, now: Pose) -> Pose {
+    let offset = wm_camera::CLOSE_UP[match mode {
+        landing::ROWS => 0,
+        landing::EPISODES => 2,
+        _ => 1,
+    }];
+    let (centre, radius, height) = match a.shapes.iter().find(|s| s.kind == 7) {
+        Some(s) => (shape_at(a, s), s.radius as f32, s.height as f32),
+        None => (a.position, 0., 0.),
+    };
+    let focal = 320. / (now.fov * 0.5).tan();
+    let mut pose = wm_camera::close_up(centre, radius, height, offset, focal);
+    if matches!(a.kind, Kind::Symbol(e) if e.object == 0x456) {
+        pose.fov = wm_camera::CLOSE_UP_FOV_EH;
+    }
+    pose
+}
+
+/// The landing reaction, the info panel and the landing menu for one tick
+/// (FUN_140394810 / FUN_140394fc0 / FUN_1403931f0). True while the menu
+/// holds the cursor.
+fn landing_tick(wm: &mut WorldMap, ui: &UiRes) -> bool {
+    let layout = &ui.ui.layout.layout;
+    let seq = &layout.sequences[world_map_menu::SEQUENCE];
+    if let Some((state, menu, symbol)) = wm.landing.as_mut() {
+        let symbol = *symbol;
+        let pressed = wm.pad.pressed;
+        let repeat = wm.pad.repeat;
+        let mut mode_changed = false;
+        if menu.ready(state) {
+            let (sounds, changes) = state.input(pressed, repeat);
+            mode_changed = changes
+                .iter()
+                .any(|c| matches!(c, landing::Change::Scene { .. }));
+            menu.apply(layout, state, &changes);
+            if !sounds.is_empty() || !changes.is_empty() {
+                wm.log
+                    .push(serde_json::json!({"event":"landing_input","tick":wm.tick,
+                    "sounds":sounds.iter().map(|s| *s as u8).collect::<Vec<_>>(),
+                    "changes":format!("{changes:?}"),"mode":state.mode,"cursor":state.cursor}));
+            }
+        }
+        menu.update(layout, state);
+        if mode_changed {
+            let mode = state.mode;
+            wm.pose = close_up(&wm.actors[symbol], mode, wm.pose);
+        }
+        // FUN_1403931f0 keeps the panel on the landing's world.
+        if menu.done() {
+            let outcome = state.outcome;
+            wm.log
+                .push(serde_json::json!({"event":"landing_closed","tick":wm.tick,
+                "outcome":format!("{outcome:?}")}));
+            wm.landing = None;
+            // FUN_140391f50: camera slot 2 goes; ObjCamera blends back.
+            wm.camera.suspend();
+            if let Some(Outcome::Land(target)) = outcome {
+                wm.jump = Some(target);
+            }
+        }
+    } else {
+        wm.reaction = find_reaction(wm);
+        // The reaction command (field logical 0x400, Triangle) lands.
+        if let Some(r) = wm.reaction
+            && wm.pad.pressed & 0x400 != 0
+            && let Some(world) = actor_world(&wm.actors[r])
+            && let Some(p) = ui.ui.worlds.get(&world)
+        {
+            // FUN_140394fc0: TT before its flag 2 and The World That Never
+            // Was between flags 0x35 and 0x37 play an event instead (#89).
+            let state = Landing::new(world, p.grid.clone(), p.default_target, p.episodes.clone());
+            let menu = Menu::new(
+                layout,
+                &state,
+                p.texts.clone(),
+                &p.pictures,
+                ui.ui.ws_i.clone(),
+            );
+            // The cursor turns to the symbol (FUN_1403b6420).
+            let (c, s) = (wm.actors[wm.cursor].position, wm.actors[r].position);
+            wm.actors[wm.cursor].yaw = (s[0] - c[0]).atan2(s[2] - c[2]);
+            wm.velocity = [0.; 2];
+            wm.pose = close_up(&wm.actors[r], state.mode, wm.pose);
+            wm.log.push(
+                serde_json::json!({"event":"landing_opened","tick":wm.tick,"world":world,
+                "mode":state.mode,"cells":state.cells.len(),"episodes":state.episodes.len()}),
+            );
+            wm.landing = Some((state, menu, r));
+        }
+    }
+    // FUN_140396a00 / FUN_1403966c0: the info panel follows the reacting
+    // (or landing) symbol's world.
+    let shown = match &wm.landing {
+        Some((state, _, _)) => Some(state.world),
+        None => wm.reaction.and_then(|r| actor_world(&wm.actors[r])),
+    };
+    match (shown, wm.info.as_mut()) {
+        (Some(w), Some(info)) if info.world == w && !info.closing() => {}
+        (Some(w), _) => {
+            if let Some(p) = ui.ui.worlds.get(&w) {
+                // The world's play time (save +0x244c) is not kept by this
+                // program: 0.
+                wm.info = Some(Info::new(
+                    seq,
+                    w,
+                    p.name.clone(),
+                    p.visits,
+                    p.battle_level,
+                    [0; 3],
+                ));
+            }
+        }
+        (None, Some(info)) => info.close(seq),
+        (None, None) => {}
+    }
+    if let Some(info) = wm.info.as_mut() {
+        info.update(seq);
+        if info.done() {
+            wm.info = None;
+        }
+    }
+    wm.landing.is_some()
+}
+
 /// One 60 Hz tick: the cursor (worldmap::Player with worldmap::ActionShip),
-/// the objects' motion clocks and the camera.
-fn tick(mut wm: ResMut<WorldMap>) {
+/// the landing, the objects' motion clocks and the camera.
+fn tick(mut wm: ResMut<WorldMap>, ui: Res<UiRes>) {
     if wm.frames < WARM_UP_FRAMES {
         return;
     }
     wm.tick += 1;
     if wm.autoplay.is_some() {
-        let t = wm.tick;
-        wm.stick = autoplay_stick(t);
+        let (stick, buttons) = autoplay_input(wm.tick, wm.autoplay_decide);
+        wm.stick = stick;
+        wm.raw = controller::raw(&controller::PadData {
+            buttons,
+            ..Default::default()
+        });
     }
+    // The world map reads the pad in field mode 1; the menu in mode 3
+    // (FUN_14039b580).
+    let raw = wm.raw;
+    if wm.landing.is_some() {
+        wm.pad.update_raw(raw, landing::pad::MODE, 1.);
+    } else {
+        wm.pad.update_raw(raw, controller::MODE_FIELD, 1.);
+    }
+    let held = landing_tick(&mut wm, &ui);
     // FUN_1403a8fa0's move request: the stick direction (up = away from
     // the camera, which looks along +Z) at the walk speed below magnitude
     // 0.8 and the run speed from it.
-    let [x, y, magnitude] = wm.stick;
+    let [x, y, magnitude] = if held { [0.; 3] } else { wm.stick };
     let len = x.hypot(y);
     let direction = if len > 0. {
         [x / len, -y / len]
@@ -519,16 +812,47 @@ fn tick(mut wm: ResMut<WorldMap>) {
         a.time += actor_physics::DT;
     }
     let cursor = wm.actors[ci].position;
-    let (eh, now) = (wm.eh_symbol, wm.pose);
-    wm.pose = wm.camera.update(cursor, eh, now);
+    // Camera slot 2 (the close-up) wins while the menu runs.
+    if !held {
+        let (eh, now) = (wm.eh_symbol, wm.pose);
+        wm.pose = wm.camera.update(cursor, eh, now);
+    }
     let t = wm.tick;
     if t.is_multiple_of(60) {
         let velocity = wm.velocity;
+        let reaction = wm.reaction.and_then(|r| actor_world(&wm.actors[r]));
         wm.log.push(serde_json::json!({"event":"cursor","tick":t,
-            "position":cursor,"motion":wanted,"velocity":velocity}));
+            "position":cursor,"motion":wanted,"velocity":velocity,"reaction":reaction}));
     }
 }
 
+/// This frame's 2D draws: the info panel and the landing menu.
+fn draw_ui(wm: Res<WorldMap>, ui: Res<UiRes>, mut frame: ResMut<Ui2dFrame>) {
+    let layout = &ui.ui.layout.layout;
+    let seq = &layout.sequences[world_map_menu::SEQUENCE];
+    let font = Font {
+        widths: &ui.ui.font.widths,
+        pad: 1,
+    };
+    let mut items = Vec::new();
+    if let Some((state, menu, _)) = &wm.landing {
+        items.extend(menu.draw(layout, state, &font));
+    }
+    if let Some(info) = &wm.info {
+        items.extend(info.draw(seq, &font));
+    }
+    for (sheet, quads) in items {
+        let slot = match sheet {
+            world_map_menu::Sheet::Image(k) => ui.images.get(k).copied(),
+            world_map_menu::Sheet::Picture(k) => ui.pictures.get(k).copied(),
+            world_map_menu::Sheet::Font => Some(ui.font),
+            world_map_menu::Sheet::Icon => Some(ui.icon),
+        };
+        if let Some(s) = slot {
+            frame.draws.push((s, quads));
+        }
+    }
+}
 /// Key time of a looping motion `ticks` after its start.
 fn motion_time(motion: &InterpolatedMotion, ticks: f32) -> f32 {
     let (start, end, fps, ret) = motion.frame_window().unwrap_or((0., 1., 30., 0.));
@@ -563,7 +887,7 @@ fn present(
     >,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<FogMaterial>>,
-    mut cameras: Query<&mut Transform, (With<MapCamera>, Without<ActorRoot>)>,
+    mut cameras: Query<(&mut Transform, &mut Projection), (With<MapCamera>, Without<ActorRoot>)>,
     mut shown: Local<Option<u64>>,
 ) {
     if *shown == Some(wm.tick) {
@@ -656,9 +980,15 @@ fn present(
             }
         }
     }
-    if let Ok(mut transform) = cameras.single_mut() {
+    if let Ok((mut transform, mut projection)) = cameras.single_mut() {
         *transform = Transform::from_translation(to_scene(wm.pose.eye))
             .looking_at(to_scene(wm.pose.target), Vec3::Y);
+        if let Projection::Perspective(p) = projection.as_mut() {
+            let fov = horizontal_to_vertical(wm.pose.fov);
+            if (p.fov - fov).abs() > 1e-6 {
+                p.fov = fov;
+            }
+        }
     }
 }
 
@@ -694,12 +1024,22 @@ fn finish(
             },
         );
     }
-    let done = wm.autoplay.is_some()
-        && wm.tick >= AUTOPLAY_END
-        && wm.captures_taken >= AUTOPLAY_CAPTURES.len();
+    // The jump (FUN_1403946d0 → FUN_140152990) ends the program here; the
+    // field does not take entrance 0x63 arrivals yet.
+    let jumped = wm.jump.is_some() && wm.autoplay.is_none();
+    let done = jumped
+        || wm.autoplay.is_some()
+            && wm.tick >= AUTOPLAY_END
+            && wm.captures_taken >= AUTOPLAY_CAPTURES.len();
     if closed.read().count() > 0 || keys.just_pressed(KeyCode::Escape) || done {
         for line in wm.log.drain(..) {
             println!("{line}");
+        }
+        if let Some(t) = wm.jump {
+            println!(
+                "{}",
+                serde_json::json!({"event":"jump","world":t.world,"area":t.area,"entrance":t.entrance})
+            );
         }
         exit.write(AppExit::Success);
     }
@@ -719,12 +1059,14 @@ fn parse_story(spec: &str) -> Result<(u32, u32)> {
 
 fn run(args: Vec<PathBuf>) -> Result<AppExit> {
     if args.len() < 2 {
-        return Err("usage: kh2fm wm <Steam-root> <manifest> [--from <world code>] [--story <first>:<last>]... [--load-only] [--autoplay <new-capture-dir>]".into());
+        return Err("usage: kh2fm wm <Steam-root> <manifest> [--from <world code>] [--story <first>:<last>]... [--touch <world point>,...] [--load-only] [--autoplay <new-capture-dir> [--decide]]".into());
     }
     let mut from = "tt".to_owned();
     let mut story = Vec::new();
     let mut load_only = false;
     let mut autoplay = None;
+    let mut decide = false;
+    let mut touched: Vec<u32> = Vec::new();
     let mut options = args[2..].iter();
     while let Some(option) = options.next() {
         let mut value = || -> Result<String> {
@@ -739,6 +1081,14 @@ fn run(args: Vec<PathBuf>) -> Result<AppExit> {
             Some("--story") => story.push(parse_story(&value()?)?),
             Some("--load-only") => load_only = true,
             Some("--autoplay") => autoplay = Some(PathBuf::from(value()?)),
+            Some("--decide") => decide = true,
+            // World points to mark touched (save points visited), as a
+            // save would hold them.
+            Some("--touch") => {
+                for p in value()?.split(',') {
+                    touched.push(p.trim().parse()?);
+                }
+            }
             _ => return Err("unknown world map option".into()),
         }
     }
@@ -764,12 +1114,16 @@ fn run(args: Vec<PathBuf>) -> Result<AppExit> {
     // events' scripts run on arrival; their world map events (#89) are
     // listed, not played.
     let (events, set) = src.progress_mut().play_queued_world_events();
+    for &p in &touched {
+        src.progress_mut().world.touch_point(p);
+    }
     let mut library = Library::open(&source)?;
     let mut actors = Vec::new();
     let mut cursor = None;
     type Loaded = (
         Option<Arc<InspectionModel>>,
         HashMap<u16, Arc<InterpolatedMotion>>,
+        Vec<object_collision::Entry>,
     );
     let mut models: HashMap<String, Loaded> = HashMap::new();
     let mut untextured = Vec::new();
@@ -806,9 +1160,13 @@ fn run(args: Vec<PathBuf>) -> Result<AppExit> {
                 Some(f) => read_motions(&library.read_found(&f)?, ids)?,
                 None => HashMap::new(),
             };
-            models.insert(name.clone(), (model, motions));
+            let shapes = library
+                .read(&format!("obj/{name}.mdlx"))
+                .map(|a| read_shapes(&a))
+                .unwrap_or_default();
+            models.insert(name.clone(), (model, motions, shapes));
         }
-        let (model, motions) = &models[&name];
+        let (model, motions, shapes) = &models[&name];
         if matches!(kind, Kind::Cursor) {
             cursor = Some(actors.len());
         }
@@ -825,6 +1183,8 @@ fn run(args: Vec<PathBuf>) -> Result<AppExit> {
             time: 0.,
             drawn: true,
             tint: [1.; 4],
+            shapes: shapes.clone(),
+            reacts: false,
         });
     }
     let cursor = cursor.ok_or("the world map has no cursor at this entrance")?;
@@ -839,6 +1199,21 @@ fn run(args: Vec<PathBuf>) -> Result<AppExit> {
             .find(|e| e.name_bytes == *name)
             .ok_or("03system entry missing")?;
         Ok(bytes[e.offset as usize..e.offset as usize + e.size as usize].to_vec())
+    };
+    // 'cmd': 0x30-byte records {u16 id, u16 execute, ...} after a version
+    // and a count.
+    let commands: HashMap<u16, u16> = {
+        let c = entry(&system, &system_bar, b"cmd\0")?;
+        let n = u32::from_le_bytes(c.get(4..8).ok_or("cmd count")?.try_into()?) as usize;
+        (0..n)
+            .filter_map(|k| {
+                let r = c.get(8 + k * 0x30..8 + k * 0x30 + 4)?;
+                Some((
+                    u16::from_le_bytes([r[0], r[1]]),
+                    u16::from_le_bytes([r[2], r[3]]),
+                ))
+            })
+            .collect()
     };
     let pref = entry(&system, &system_bar, b"pref")?;
     let pref_bar = bar::read_bar(&pref)?;
@@ -864,11 +1239,7 @@ fn run(args: Vec<PathBuf>) -> Result<AppExit> {
             .ok_or("PRTY record absent")?;
         params.apply_prty(&record.words);
     }
-    let body = library
-        .read("obj/WM_CURSOR.mdlx")
-        .ok()
-        .and_then(|a| map_body(&a))
-        .unwrap_or(area::SORA_BODY);
+    let body = map_body(&actors[cursor].shapes).unwrap_or(area::SORA_BODY);
     let collision = Some(loaded.take_collision());
     let start = actors[cursor].position;
     let initial = Pose {
@@ -893,9 +1264,17 @@ fn run(args: Vec<PathBuf>) -> Result<AppExit> {
         frames: 0,
         stick: [0.; 3],
         autoplay: autoplay.clone(),
+        autoplay_decide: decide,
         captures_taken: 0,
         capture_pending: false,
         log: Vec::new(),
+        raw: 0,
+        pad: controller::Pad::default(),
+        reaction: None,
+        landing: None,
+        info: None,
+        jump: None,
+        commands,
     };
     let progress = src.progress();
     apply_world_state(
@@ -917,7 +1296,8 @@ fn run(args: Vec<PathBuf>) -> Result<AppExit> {
         "hidden_map_objects":wm.hidden_bobs.iter().enumerate().filter(|(_, h)| **h).map(|(i, _)| i).collect::<Vec<_>>(),
         "actors":wm.actors.iter().map(|a| serde_json::json!({
             "kind":match a.kind { Kind::Cursor => "cursor".to_owned(), Kind::Symbol(e) => format!("symbol {:#x} world {}", e.object, e.world), Kind::Gumi(r) => format!("gumi {r}") },
-            "drawn":a.drawn,"motion":a.motion,"motions":a.motions.keys().collect::<Vec<_>>(),"position":a.position})).collect::<Vec<_>>(),
+            "drawn":a.drawn,"reacts":a.reacts,"yaw":a.yaw,"motion":a.motion,"motions":a.motions.keys().collect::<Vec<_>>(),"position":a.position,
+            "reaction":a.shapes.iter().filter(|s| s.kind == object_collision::REACTION).map(|s| (shape_at(a, s), s.radius, s.argument)).collect::<Vec<_>>()})).collect::<Vec<_>>(),
         "cursor_params":{"walk":params.walk,"run":params.run,"turn":params.turn,"inertia":params.word10,"drag":params.word11,"prty":prty_index},
         "body":{"radius":body.radius,"height":body.height,"offset":body.offset},
         "map_objects":loaded.bobs.placements.iter().enumerate().map(|(i, p)| serde_json::json!({
@@ -925,17 +1305,38 @@ fn run(args: Vec<PathBuf>) -> Result<AppExit> {
             "shown":!wm.hidden_bobs[i] && wm.bg_mask >> p.group & 1 != 0})).collect::<Vec<_>>(),
         "untextured":untextured});
     println!("{summary}");
+    let worlds: Vec<u8> = wm.actors.iter().filter_map(actor_world).collect();
+    let ui = ui::Ui::load(&source, &mut library, &src, &worlds)?;
+    let prepared: Vec<_> = worlds
+        .iter()
+        .filter_map(|w| ui.worlds.get(w).map(|p| (w, p)))
+        .map(|(w, p)| serde_json::json!({"world":w,"cells":p.grid.cells.iter().map(|c| c.map(|c| (c.point, c.picture, c.blocked.is_some()))).collect::<Vec<_>>(),
+            "default":format!("{:?}",p.default_target),"episodes":p.episodes.len(),"visits":p.visits,"battle_level":p.battle_level,"name_bytes":p.name.len()}))
+        .collect();
+    println!(
+        "{}",
+        serde_json::json!({"event":"landing_prepared","worlds":prepared,
+        "layout":{"props":ui.layout.layout.props.len(),"scenes":ui.layout.layout.scenes.len(),"images":ui.layout.image_sizes},
+        "pictures":ui.pictures.len(),"ws_i":ui.ws_i.is_some()})
+    );
     if load_only {
         return Ok(AppExit::Success);
     }
     let mut app = App::new();
     app.insert_resource(wm)
+        .insert_resource(UiRes {
+            ui,
+            images: Vec::new(),
+            pictures: Vec::new(),
+            font: 0,
+            icon: 0,
+        })
         .insert_resource(StartupRes(Some(Startup { room, area: loaded })))
         .insert_resource(Time::<Fixed>::from_hz(TICK_HZ))
         .insert_resource(ClearColor(Color::BLACK))
         .add_plugins(DefaultPlugins.set(WindowPlugin {
             primary_window: Some(Window {
-                title: "Kingdom Hearts II Re:Written (world map; rewrite) | WASD/stick fly, Esc exits"
+                title: "Kingdom Hearts II Re:Written (world map; rewrite) | WASD/stick fly, F land, Enter/Space/arrows/R/LShift menu, Esc exits"
                     .into(),
                 resolution: (1280, 720).into(),
                 ..default()
@@ -945,9 +1346,13 @@ fn run(args: Vec<PathBuf>) -> Result<AppExit> {
             ..default()
         }))
         .add_plugins(FogPlugin)
-        .add_systems(Startup, setup)
+        .add_plugins(Ui2dPlugin {
+            order: 1,
+            overlay: true,
+        })
+        .add_systems(Startup, (setup, setup_ui))
         .add_systems(FixedUpdate, (read_stick, tick).chain())
-        .add_systems(Update, (present, finish).chain());
+        .add_systems(Update, (present, draw_ui, finish).chain());
     Ok(app.run())
 }
 

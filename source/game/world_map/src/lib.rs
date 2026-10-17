@@ -3,6 +3,7 @@
 //! exe's `worldmap::*` and `dk::WM_*` classes. Positions are engine
 //! coordinates (Y down).
 pub mod camera;
+pub mod landing;
 pub mod objects;
 
 pub use camera::ObjCamera;

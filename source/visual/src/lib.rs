@@ -26,3 +26,4 @@ pub mod sound;
 pub mod sprite_player;
 pub mod title;
 pub mod title_banner;
+pub mod world_map_menu;

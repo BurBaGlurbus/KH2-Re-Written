@@ -120,9 +120,49 @@ impl ObjCamera {
     }
 }
 
+/// worldmap::CloseUpCamera offsets per landing menu mode (0x140748718 /
+/// 728 / 738): screen x and y and a distance scale. The two-row menu uses
+/// the first, the grid the second, the episode list the third.
+pub const CLOSE_UP: [[f32; 3]; 3] = [[0., 0., 1.], [-120., 40., 1.3], [200., 0., 1.2]];
+/// +0x58 (DAT_140748d70 / d74): 65 degrees, 105 for The World That Never
+/// Was symbol.
+pub const CLOSE_UP_FOV: f32 = 1.134_464;
+pub const CLOSE_UP_FOV_EH: f32 = 1.832_595_7;
+
+/// FUN_140396b80: the close-up of an object whose kind-7 shape has this
+/// world centre, radius and height. The view runs along (0, −height,
+/// −radius) at that length times the scale; the target moves by the screen
+/// offset at `focal` (the current camera's projection distance, +0x40)
+/// and the eye keeps the object's x.
+pub fn close_up(centre: V3, radius: f32, height: f32, offset: [f32; 3], focal: f32) -> Pose {
+    let d = [0., -height, -radius];
+    let len = (d[1] * d[1] + d[2] * d[2]).sqrt();
+    let n = if len != 0. { d.map(|v| v / len) } else { d };
+    let k = len * offset[2] / focal;
+    let target = add(centre, [k * offset[0], k * offset[1], 0.]);
+    let mut eye = add(target, n.map(|v| v * len * offset[2]));
+    eye[0] -= k * offset[0];
+    Pose {
+        eye,
+        target,
+        fov: CLOSE_UP_FOV,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn close_up_frames_the_shape_from_behind_and_above() {
+        let p = close_up([1000., -600., 0.], 4000., 500., CLOSE_UP[0], 500.);
+        assert_eq!(p.target, [1000., -600., 0.]);
+        assert!((p.eye[1] - -1100.).abs() < 1e-2 && (p.eye[2] - -4000.).abs() < 1e-2);
+        let grid = close_up([0.; 3], 3., 4., CLOSE_UP[1], 100.);
+        // len 5 × 1.3 / 100 per screen unit: the target moves left and down.
+        assert!((grid.target[0] - -7.8).abs() < 1e-4 && (grid.target[1] - 2.6).abs() < 1e-4);
+        assert_eq!(grid.eye[0], 0.);
+    }
 
     const NOW: Pose = Pose {
         eye: [0.; 3],
