@@ -87,6 +87,47 @@ pub struct SymbolLook {
     pub eh_effect: Option<u8>,
 }
 
+/// The object effect elements the world map starts by id (FUN_1403b6630 /
+/// FUN_1403b6670 → FUN_1402c6b30 on the object's PAX).
+pub mod effect {
+    /// FUN_1403900d0 (symbols) and FUN_140397240 (Gummi ships), op 0x105's
+    /// pre-refresh: a one-shot.
+    pub const PRE_REFRESH: u16 = 0;
+    /// FUN_140390460: a world with a new episode, after the arrival's
+    /// events (held at +0xd68).
+    pub const NEW_EPISODE: u16 = 4;
+}
+
+/// The effects a symbol holds (+0xd58, +0xd60, +0xd70) and the element
+/// each slot wants under this look; FUN_140390510 starts a slot's element
+/// only when the slot is empty and frees it when the look wants none.
+pub fn held_effects(look: &SymbolLook) -> [Option<u16>; 3] {
+    [
+        look.effect_3.then_some(3),
+        look.effect_5.then_some(5),
+        look.eh_effect.map(u16::from),
+    ]
+}
+
+/// FUN_1403900d0: the symbol's last applied record (+0xd38) had flag bit 0
+/// clear and the current one has it set.
+pub fn symbol_pre_refresh(before: &WorldRecord, after: &WorldRecord) -> bool {
+    before.flags & 1 == 0 && after.flags & 1 != 0
+}
+
+/// FUN_140397240: the ship's last applied slot state (+0xd40) was 1 and the
+/// current one is 2.
+pub fn gumi_pre_refresh(before: u8, after: u8) -> bool {
+    before == 1 && after == 2
+}
+
+/// FUN_140390460, per symbol (all set flag bit 31 of +0x6c8 at creation):
+/// its last applied state is above 1 and its world lists an unlocked
+/// episode still marked new (FUN_1403f0810 / FUN_1403f0b20).
+pub fn new_episode(state: u8, any_new: bool) -> bool {
+    state > 1 && any_new
+}
+
 /// FUN_140390510. `eh_flag` is story flag 0x481c.
 pub fn symbol_look(world: u8, record: &WorldRecord, eh_flag: bool) -> SymbolLook {
     let state = record.state;
@@ -266,6 +307,18 @@ mod tests {
         assert_eq!(symbol_look(0x12, &record(2, 0), false).eh_effect, Some(6));
         assert_eq!(symbol_look(0x12, &record(1, 0), true).eh_effect, None);
         assert_eq!(symbol(0x3a9).map(|s| s.world), Some(16));
+    }
+
+    #[test]
+    fn symbol_effects_follow_the_record() {
+        let flagged = symbol_look(2, &record(3, 1), false);
+        assert_eq!(held_effects(&flagged), [Some(3), Some(5), None]);
+        let eh = symbol_look(0x12, &record(2, 0), true);
+        assert_eq!(held_effects(&eh), [None, None, Some(8)]);
+        assert!(symbol_pre_refresh(&record(2, 0), &record(2, 1)));
+        assert!(!symbol_pre_refresh(&record(2, 1), &record(2, 1)));
+        assert!(gumi_pre_refresh(1, 2) && !gumi_pre_refresh(2, 2));
+        assert!(new_episode(2, true) && !new_episode(1, true) && !new_episode(3, false));
     }
 
     #[test]

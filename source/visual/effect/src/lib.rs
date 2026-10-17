@@ -275,6 +275,10 @@ pub struct Instance {
     next_serial: u64,
     /// SeqEffect EndType 2: a looping effect ends when its parts are gone.
     released: bool,
+    /// The bytes of the exe's shared particle heap (0x80000 at start-up,
+    /// FUN_1402bdb50 / FUN_1402c2480) this instance may hold; None: no
+    /// limit. Parts past it are not made, as FUN_1404af240 refuses them.
+    pub heap_limit: Option<usize>,
     /// SeqEffect EndType 3: remaining alpha and its per-frame step.
     fade: Option<(f32, f32)>,
 }
@@ -316,6 +320,7 @@ impl Instance {
             flags: [0; 3],
             next_serial: 1,
             released: false,
+            heap_limit: None,
             fade: None,
         })
     }
@@ -464,11 +469,33 @@ impl Instance {
         &self.dpd.pdata[self.pdata].entries[self.groups[group].entry].programs
     }
 
+    /// The bytes the live parts hold in the exe's particle heap.
+    pub fn heap_used(&self) -> usize {
+        let entries = &self.dpd.pdata[self.pdata].entries;
+        self.groups
+            .iter()
+            .map(|g| {
+                let live = g
+                    .parts
+                    .iter()
+                    .filter(|&&id| self.parts[id].is_some())
+                    .count();
+                live * part_bytes(&entries[g.entry])
+            })
+            .sum()
+    }
+
     /// FUN_1404b02f0 / FUN_1404aff20: a new part of `group` at frame 0,
     /// cursors on the first keyframes, create hooks run. A spawned part is
-    /// inserted after the group's first part.
-    fn create(&mut self, group: usize, ctx: &mut Ctx, parent: Option<usize>) -> usize {
+    /// inserted after the group's first part. With a heap limit, a part the
+    /// heap cannot hold is not made (FUN_1404af240 returns null).
+    fn create(&mut self, group: usize, ctx: &mut Ctx, parent: Option<usize>) -> Option<usize> {
         let entry = &ctx.dpd.pdata[self.pdata].entries[self.groups[group].entry];
+        if let Some(limit) = self.heap_limit
+            && self.heap_used() + part_bytes(entry) > limit
+        {
+            return None;
+        }
         let serial = self.next_serial;
         self.next_serial += 1;
         let parent = parent.and_then(|id| {
@@ -511,14 +538,16 @@ impl Instance {
         let list = &mut self.groups[group].parts;
         let at = list.len().min(1);
         list.insert(at, id);
-        id
+        Some(id)
     }
 
     fn spawn_groups(&mut self, ctx: &mut Ctx) {
         for g in 0..self.groups.len() {
             if self.groups[g].start <= self.time {
                 self.groups[g].start = i32::MAX;
-                let id = self.create(g, ctx, None);
+                let Some(id) = self.create(g, ctx, None) else {
+                    continue;
+                };
                 if let Some(p) = self.parts[id].as_mut() {
                     p.just_created = false;
                 }
@@ -533,7 +562,9 @@ impl Instance {
             if b.entry >= self.groups.len() {
                 continue;
             }
-            let id = self.create(b.entry, ctx, Some(emitter));
+            let Some(id) = self.create(b.entry, ctx, Some(emitter)) else {
+                continue;
+            };
             if let Some(p) = self.parts[id].as_mut() {
                 for (i, v) in b.position.iter().take(b.position_len).enumerate() {
                     p.set_f32(b.position_var + 4 * i, *v);
@@ -782,6 +813,13 @@ impl Instance {
             part.frame = next_frame(part.frame);
         }
     }
+}
+
+/// A part's block in the particle heap (FUN_1404b02f0's FUN_1404af240
+/// request: the work block and one cursor word pair per program, rounded
+/// to 16 bytes, plus the block header).
+fn part_bytes(entry: &data::object_effect::Entry) -> usize {
+    ((entry.work_size + 8 * entry.programs.len() + 0xf) & !0xf) + 0x10
 }
 
 /// A part frame one tick on, saturating at [`FRAME_CAP`].
