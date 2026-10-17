@@ -144,6 +144,7 @@ Records through T128 retain historical commands and paths. See [the folder guide
 | [T171](T171-world-map-state.md) | World map: world unlock state and progress tables | PROGRESS. |
 | [T172](T172-world-map-screen.md) | World map: screen, cursor flight, symbols and camera | PROGRESS. |
 | [T173](T173-world-map-landing.md) | World map: landing reaction, info panel and the World Menu | PROGRESS. |
+| [T174](T174-world-map-gummi-routes.md) | World map: Gummi route reaction, route menu and route panel | PROGRESS. |
 | [T140](T140-game-over.md) | Sora's game over | PARTIAL. |
 | [T160](T160-level-up-and-bonus-levels.md) | Sora's level-up panels, level-up effect and bonus levels | PARTIAL. |
 | [T161](T161-prize-sprites-heal-effect-item-boxes.md) | Prize sprites, the heal effect and item treasure boxes | PARTIAL. |

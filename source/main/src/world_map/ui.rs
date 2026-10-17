@@ -14,6 +14,7 @@ use visual::{
     menu_screen::{self, Menu2ld, Texture},
     world_map_menu::{self, MenuTexts},
 };
+use world_map::gummi::{self, Mission};
 use world_map::landing::{self, EpisodeRow};
 
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
@@ -94,6 +95,15 @@ fn battle_levels(bytes: &[u8], flag_set: impl Fn(u32) -> bool) -> Option<[u8; 19
     Some(sums)
 }
 
+/// What one Gummi route's info panel and menu show.
+pub struct PreparedRoute {
+    pub texts: MenuTexts,
+    pub name: Vec<u8>,
+    /// The route's normal and EX mission records [this program keeps no
+    /// Gummi records: all unplayed].
+    pub missions: [[Mission; 3]; 2],
+}
+
 pub struct Ui {
     pub layout: Menu2ld,
     pub font: SystemFont,
@@ -101,6 +111,7 @@ pub struct Ui {
     pub pictures: Vec<Texture>,
     pub ws_i: Option<sprite_sequence::Sequence>,
     pub worlds: HashMap<u8, Prepared>,
+    pub routes: HashMap<u8, PreparedRoute>,
     /// The loaded message tables in search order, sys.bar second (the
     /// 0xadc fallback's table).
     tables: [HashMap<u32, Vec<u8>>; 3],
@@ -129,6 +140,7 @@ impl Ui {
         library: &mut Library,
         src: &AreaSource,
         worlds: &[u8],
+        routes: &[u8],
     ) -> Result<Self> {
         let (i, o, h) = locate(library, "file/us/wm_ws.2ld")?;
         let layout = menu_screen::load(source, i, o, h)?;
@@ -190,8 +202,27 @@ impl Ui {
             pictures,
             ws_i,
             worlds: HashMap::new(),
+            routes: HashMap::new(),
             tables: [area, sys, journal],
         };
+        for &r in routes {
+            let texts = MenuTexts {
+                rows: [
+                    ui.message(gummi::route_row(r)),
+                    ui.message(landing::CANCEL_ROW),
+                ],
+                ..MenuTexts::default()
+            };
+            let name = ui.message(gummi::route_name(r));
+            ui.routes.insert(
+                r,
+                PreparedRoute {
+                    texts,
+                    name,
+                    missions: [[Mission::default(); 3]; 2],
+                },
+            );
+        }
         for &w in worlds {
             let mut prepared = ui.prepare(src, w, &stories);
             prepared.battle_level = levels.map(|l| l[w as usize]);

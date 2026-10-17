@@ -68,6 +68,9 @@ pub const EPISODE_ROWS: usize = 3;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Outcome {
     Land(Target),
+    /// The Gummi route menu's first row: the route's Gummi mission
+    /// (FUN_140398810 → FUN_1403946f0(route − 1)).
+    Route(u8),
     Cancel,
 }
 
@@ -211,6 +214,8 @@ pub struct Landing {
     pub outcome: Option<Outcome>,
     /// Set when the menu closed; the drawing side plays the close scene.
     pub closing: bool,
+    /// dk::WM_GLANDING: the Gummi route (1..=9) its two rows offer.
+    pub route: Option<u8>,
 }
 
 impl Landing {
@@ -244,7 +249,18 @@ impl Landing {
             notice: false,
             outcome: None,
             closing: false,
+            route: None,
         }
+    }
+
+    /// FUN_140398bd0 / FUN_140398270: the Gummi route menu, two rows on
+    /// the same layout scenes and groups as the two-row landing menu
+    /// (0x1405c2b98..: cursor 0xe/0x10/0xf, rows 0x3a/0x3c/0x3b and 0x39,
+    /// scenes 0, 2, 1); FUN_140398b10 / FUN_140398da0 take its input.
+    pub fn route_menu(route: u8) -> Self {
+        let mut l = Self::new(0xff, LandingGrid::default(), Target::NONE, Vec::new());
+        l.route = Some(route);
+        l
     }
 
     /// The scenes a new menu plays (FUN_1402ec3b0 then FUN_1402ec520).
@@ -303,10 +319,10 @@ impl Landing {
             }
             Pick::Row(row) => {
                 s.push(Sound::Decide);
-                let outcome = if row == 0 {
-                    Outcome::Land(self.default_target)
-                } else {
-                    Outcome::Cancel
+                let outcome = match (row, self.route) {
+                    (0, Some(r)) => Outcome::Route(r),
+                    (0, None) => Outcome::Land(self.default_target),
+                    _ => Outcome::Cancel,
                 };
                 self.close(outcome, c);
             }
@@ -551,6 +567,14 @@ mod tests {
         l.input(pad::DOWN, pad::DOWN);
         l.input(pad::DECIDE, 0);
         assert_eq!(l.outcome, Some(Outcome::Cancel));
+    }
+
+    #[test]
+    fn the_route_menu_starts_its_mission() {
+        let mut l = Landing::route_menu(3);
+        assert_eq!((l.mode, l.idle_scene()), (ROWS, 1));
+        l.input(pad::DECIDE, 0);
+        assert_eq!(l.outcome, Some(Outcome::Route(3)));
     }
 
     #[test]

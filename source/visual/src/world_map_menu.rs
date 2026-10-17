@@ -13,6 +13,7 @@ use crate::field_command_menu::Font;
 use crate::sprite_player::{self, Id, LightCur, Sprites, Text, text_quads};
 use data::menu_layout::{Layout, LayoutTask};
 use data::sprite_sequence::{Modifiers, Player, Quad, Sequence};
+use world_map::gummi::{self, Mission};
 use world_map::landing::{self, Change, Landing};
 
 /// The SEQD and image every sprite draws from.
@@ -355,6 +356,105 @@ impl Info {
     }
 }
 
+/// dk::WM_GLANDING_INFO (FUN_140398ef0, closed by FUN_140399cd0): the
+/// route's name frame with its star, and once its first mission is
+/// cleared, per mission row the rank, the EX rank and the score.
+pub struct RouteInfo {
+    pub route: u8,
+    sprites: Sprites,
+    name: Id,
+    state: usize,
+    closing: bool,
+}
+
+impl RouteInfo {
+    /// `missions` = the route's three normal and three EX records.
+    pub fn new(seq: &Sequence, route: u8, name: Vec<u8>, missions: [[Mission; 3]; 2]) -> Self {
+        let state = gummi::info_state(&missions[0]);
+        let groups = gummi::NAME_GROUPS[state];
+        let mut sprites = Sprites::default();
+        let mut t = Text::new(name, text_size(seq, groups[0]));
+        t.align = 2;
+        t.group_position = false;
+        let frame = sprites.create(seq, PRIO_INFO, IMAGE, groups[0], Some(groups[1]), Some(t));
+        let star_group = INFO_STAR[usize::from(state != 0)];
+        let star = sprites.create(seq, PRIO_INFO + 1, IMAGE, star_group, None, None);
+        sprites.attach(star, frame);
+        let g = &seq.groups[star_group];
+        sprites.get_mut(star).offset = [g.light_position_x as f32, 0.];
+        if let Some(t) = sprites.get_mut(frame).text.as_mut() {
+            t.offset = [-((g.text_scale / 2) as f32), 0.];
+        }
+        let child = |sprites: &mut Sprites, prio: u32, group: usize, at: [f32; 2]| {
+            let id = sprites.create(seq, prio, IMAGE, group, None, None);
+            sprites.attach(id, frame);
+            let s = sprites.get_mut(id);
+            s.die_with_parent = true;
+            s.offset = at;
+            id
+        };
+        if state != 0 {
+            let rows = if state == 1 { 2 } else { 3 };
+            let mut y = 0.;
+            for (&normal, &ex) in missions[0].iter().zip(&missions[1]).take(rows) {
+                let rank = gummi::RANK_GROUPS[(normal.rank as usize).min(16)];
+                child(&mut sprites, PRIO_INFO + 2, rank, [0., y]);
+                if ex.cleared {
+                    child(&mut sprites, PRIO_INFO + 2, 0x78, [0., y]);
+                    let rank = gummi::RANK_GROUPS[(ex.rank as usize).min(16)];
+                    child(&mut sprites, PRIO_INFO + 2, rank, [90., y]);
+                }
+                let (d, used) = landing::digits(normal.score as u32, 3);
+                child(&mut sprites, PRIO_INFO + 3, 0x90, [0., y]);
+                let pitch = seq.groups[0x90].text_position_x as f32;
+                for (i, &digit) in d.iter().rev().take(used).enumerate() {
+                    child(
+                        &mut sprites,
+                        PRIO_INFO + 3,
+                        0x86 + digit as usize,
+                        [-pitch * (i + 1) as f32, y],
+                    );
+                }
+                y += seq.groups[rank].ui_padding as f32;
+            }
+        }
+        Self {
+            route,
+            sprites,
+            name: frame,
+            state,
+            closing: false,
+        }
+    }
+
+    /// FUN_140399cd0: the frame plays its close group; the panel goes when
+    /// it ends.
+    pub fn close(&mut self, seq: &Sequence) {
+        if !self.closing {
+            self.closing = true;
+            self.sprites
+                .close(seq, self.name, gummi::NAME_GROUPS[self.state][2]);
+        }
+    }
+
+    pub fn closing(&self) -> bool {
+        self.closing
+    }
+
+    pub fn update(&mut self, seq: &Sequence) {
+        self.sprites.update(seq);
+    }
+
+    pub fn done(&self) -> bool {
+        self.closing && !self.sprites.alive(self.name)
+    }
+
+    pub fn draw(&self, seq: &Sequence, font: &Font) -> Vec<(Sheet, Vec<Quad>)> {
+        let mut items = Vec::new();
+        sprite_items(&self.sprites, seq, font, &mut items);
+        ordered(items)
+    }
+}
 /// Texts the landing menu shows, already resolved by the caller.
 #[derive(Clone, Debug, Default)]
 pub struct MenuTexts {

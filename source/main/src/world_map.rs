@@ -43,7 +43,7 @@ use std::{collections::HashMap, fs::OpenOptions, path::PathBuf, sync::Arc};
 use visual::area_fog::{FogMaterial, FogPlugin};
 use visual::field_command_menu::Font;
 use visual::overlay::{Ui2dFrame, Ui2dPlugin};
-use visual::world_map_menu::{self, Info, Menu};
+use visual::world_map_menu::{self, Info, Menu, RouteInfo};
 use visual::{controller, input};
 use world_map::{
     camera::{self as wm_camera, ObjCamera, Pose},
@@ -145,6 +145,8 @@ struct WorldMap {
     reaction: Option<usize>,
     landing: Option<(Landing, Menu, usize)>,
     info: Option<Info>,
+    /// dk::WM_GLANDING_INFO on the reacting (or chosen) Gummi route.
+    route_info: Option<RouteInfo>,
     /// The landing's target once a world point is decided.
     jump: Option<world_state::Target>,
     /// 03system 'cmd': each command's execute id (FUN_1403b68b0).
@@ -549,24 +551,27 @@ fn shape_at(a: &Actor, s: &object_collision::Entry) -> [f32; 3] {
     )
 }
 
-/// FUN_140407de0 for the world map: the symbols whose kind-5 sphere meets
-/// the cursor's kind-1 sphere offer their command; the nearest wins (equal
-/// priority 100, score = distance).
+/// FUN_140407de0 for the world map: the symbols and Gummi route objects
+/// whose kind-5 sphere meets the cursor's kind-1 sphere offer their
+/// command; the nearest wins (equal priority 100, score = distance).
 fn find_reaction(wm: &WorldMap) -> Option<usize> {
     let cursor = &wm.actors[wm.cursor];
     let probe = cursor.shapes.iter().find(|s| s.kind == 1 && s.shape == 3)?;
     let at = shape_at(cursor, probe);
     let mut best: Option<(f32, usize)> = None;
     for (i, a) in wm.actors.iter().enumerate() {
-        if !matches!(a.kind, Kind::Symbol(_)) || !a.reacts {
-            continue;
-        }
-        // The shape's argument names a 'cmd' entry; landing's executes 0x9f
-        // (FUN_140394fc0).
+        // A symbol offers landing (exec 0x9f) unless its flag 0x40 is on;
+        // a route object its route (exec 0x206) while drawn.
+        let exec = match a.kind {
+            Kind::Symbol(_) if a.reacts => landing::LAND_EXEC,
+            Kind::Gumi(_) if a.drawn => landing::ROUTE_EXEC,
+            _ => continue,
+        };
+        // The shape's argument names a 'cmd' entry (FUN_140394fc0).
         for s in a.shapes.iter().filter(|s| {
             s.kind == object_collision::REACTION
                 && s.shape == 3
-                && wm.commands.get(&(s.argument as u16)) == Some(&landing::LAND_EXEC)
+                && wm.commands.get(&(s.argument as u16)) == Some(&exec)
         }) {
             let c = shape_at(a, s);
             if landing::spheres_touch(c, s.radius as f32, at, probe.radius as f32) {
@@ -589,6 +594,14 @@ fn find_reaction(wm: &WorldMap) -> Option<usize> {
 fn actor_world(a: &Actor) -> Option<u8> {
     match a.kind {
         Kind::Symbol(e) => Some(e.world),
+        _ => None,
+    }
+}
+
+/// The route object's route (FUN_1403973f0: its spawn argument 1).
+fn actor_route(a: &Actor) -> Option<u8> {
+    match a.kind {
+        Kind::Gumi(r) => Some(r),
         _ => None,
     }
 }
@@ -653,14 +666,41 @@ fn landing_tick(wm: &mut WorldMap, ui: &UiRes) -> bool {
             wm.landing = None;
             // FUN_140391f50: camera slot 2 goes; ObjCamera blends back.
             wm.camera.suspend();
-            if let Some(Outcome::Land(target)) = outcome {
-                wm.jump = Some(target);
+            match outcome {
+                Some(Outcome::Land(target)) => wm.jump = Some(target),
+                // FUN_1403946f0 queues the route's Gummi mission task (not
+                // part of this program): the run ends as a jump does.
+                Some(Outcome::Route(route)) => {
+                    wm.log
+                        .push(serde_json::json!({"event":"gummi_mission","route":route}));
+                    wm.jump = Some(world_state::Target::NONE);
+                }
+                _ => {}
             }
         }
     } else {
         wm.reaction = find_reaction(wm);
-        // The reaction command (field logical 0x400, Triangle) lands.
+        // The reaction command (field logical 0x400, Triangle) on a route
+        // object opens the route menu (FUN_140394fc0 → FUN_140398bd0).
         if let Some(r) = wm.reaction
+            && wm.pad.pressed & 0x400 != 0
+            && let Some(route) = actor_route(&wm.actors[r])
+            && let Some(p) = ui.ui.routes.get(&route)
+        {
+            let state = Landing::route_menu(route);
+            let menu = Menu::new(layout, &state, p.texts.clone(), &[], None);
+            let (c, s) = (wm.actors[wm.cursor].position, wm.actors[r].position);
+            wm.actors[wm.cursor].yaw = (s[0] - c[0]).atan2(s[2] - c[2]);
+            wm.velocity = [0.; 2];
+            wm.pose = close_up(&wm.actors[r], landing::ROWS, wm.pose);
+            wm.log.push(
+                serde_json::json!({"event":"route_menu_opened","tick":wm.tick,"route":route}),
+            );
+            wm.landing = Some((state, menu, r));
+        }
+        // The reaction command (field logical 0x400, Triangle) lands.
+        if wm.landing.is_none()
+            && let Some(r) = wm.reaction
             && wm.pad.pressed & 0x400 != 0
             && let Some(world) = actor_world(&wm.actors[r])
             && let Some(p) = ui.ui.worlds.get(&world)
@@ -687,10 +727,33 @@ fn landing_tick(wm: &mut WorldMap, ui: &UiRes) -> bool {
             wm.landing = Some((state, menu, r));
         }
     }
+    // FUN_140394810: the route info follows the reacting (or chosen) route
+    // object (FUN_140399db0 / FUN_140399cd0).
+    let route = match &wm.landing {
+        Some((state, _, _)) => state.route,
+        None => wm.reaction.and_then(|r| actor_route(&wm.actors[r])),
+    };
+    match (route, wm.route_info.as_mut()) {
+        (Some(r), Some(info)) if info.route == r && !info.closing() => {}
+        (Some(r), _) => {
+            if let Some(p) = ui.ui.routes.get(&r) {
+                wm.route_info = Some(RouteInfo::new(seq, r, p.name.clone(), p.missions));
+            }
+        }
+        (None, Some(info)) => info.close(seq),
+        (None, None) => {}
+    }
+    if let Some(info) = wm.route_info.as_mut() {
+        info.update(seq);
+        if info.done() {
+            wm.route_info = None;
+        }
+    }
     // FUN_140396a00 / FUN_1403966c0: the info panel follows the reacting
     // (or landing) symbol's world.
     let shown = match &wm.landing {
-        Some((state, _, _)) => Some(state.world),
+        Some((state, _, _)) if state.route.is_none() => Some(state.world),
+        Some(_) => None,
         None => wm.reaction.and_then(|r| actor_world(&wm.actors[r])),
     };
     match (shown, wm.info.as_mut()) {
@@ -839,6 +902,9 @@ fn draw_ui(wm: Res<WorldMap>, ui: Res<UiRes>, mut frame: ResMut<Ui2dFrame>) {
         items.extend(menu.draw(layout, state, &font));
     }
     if let Some(info) = &wm.info {
+        items.extend(info.draw(seq, &font));
+    }
+    if let Some(info) = &wm.route_info {
         items.extend(info.draw(seq, &font));
     }
     for (sheet, quads) in items {
@@ -1059,7 +1125,7 @@ fn parse_story(spec: &str) -> Result<(u32, u32)> {
 
 fn run(args: Vec<PathBuf>) -> Result<AppExit> {
     if args.len() < 2 {
-        return Err("usage: kh2fm wm <Steam-root> <manifest> [--from <world code>] [--story <first>:<last>]... [--touch <world point>,...] [--load-only] [--autoplay <new-capture-dir> [--decide]]".into());
+        return Err("usage: kh2fm wm <Steam-root> <manifest> [--from <world code>] [--story <first>:<last>]... [--touch <world point>,...] [--slot <n>:<state>]... [--at <x>,<z>] [--load-only] [--autoplay <new-capture-dir> [--decide]]".into());
     }
     let mut from = "tt".to_owned();
     let mut story = Vec::new();
@@ -1067,6 +1133,8 @@ fn run(args: Vec<PathBuf>) -> Result<AppExit> {
     let mut autoplay = None;
     let mut decide = false;
     let mut touched: Vec<u32> = Vec::new();
+    let mut slots: Vec<(usize, u8)> = Vec::new();
+    let mut at: Option<[f32; 2]> = None;
     let mut options = args[2..].iter();
     while let Some(option) = options.next() {
         let mut value = || -> Result<String> {
@@ -1084,6 +1152,19 @@ fn run(args: Vec<PathBuf>) -> Result<AppExit> {
             Some("--decide") => decide = true,
             // World points to mark touched (save points visited), as a
             // save would hold them.
+            // A symbol slot's state (save +0x4158 + n − 1), as a save would
+            // hold it (the Gummi routes use slots 1..=9).
+            Some("--slot") => {
+                let v = value()?;
+                let (n, s) = v.split_once(':').ok_or("--slot wants <n>:<state>")?;
+                slots.push((n.trim().parse()?, s.trim().parse()?));
+            }
+            // Start the cursor at this ground position instead.
+            Some("--at") => {
+                let v = value()?;
+                let (x, z) = v.split_once(',').ok_or("--at wants <x>,<z>")?;
+                at = Some([x.trim().parse()?, z.trim().parse()?]);
+            }
             Some("--touch") => {
                 for p in value()?.split(',') {
                     touched.push(p.trim().parse()?);
@@ -1116,6 +1197,14 @@ fn run(args: Vec<PathBuf>) -> Result<AppExit> {
     let (events, set) = src.progress_mut().play_queued_world_events();
     for &p in &touched {
         src.progress_mut().world.touch_point(p);
+    }
+    for &(n, s) in &slots {
+        if let Some(slot) = n
+            .checked_sub(1)
+            .and_then(|i| src.progress_mut().world.symbol_slots.get_mut(i))
+        {
+            *slot = s;
+        }
     }
     let mut library = Library::open(&source)?;
     let mut actors = Vec::new();
@@ -1188,6 +1277,10 @@ fn run(args: Vec<PathBuf>) -> Result<AppExit> {
         });
     }
     let cursor = cursor.ok_or("the world map has no cursor at this entrance")?;
+    if let Some([x, z]) = at {
+        actors[cursor].position[0] = x;
+        actors[cursor].position[2] = z;
+    }
     // The cursor's movement block (FUN_14040a440 defaults, then the PRTY
     // record its objentry +0x4e names, FUN_14040a480).
     let system = library.read("03system.bin")?;
@@ -1273,6 +1366,7 @@ fn run(args: Vec<PathBuf>) -> Result<AppExit> {
         reaction: None,
         landing: None,
         info: None,
+        route_info: None,
         jump: None,
         commands,
     };
@@ -1306,7 +1400,8 @@ fn run(args: Vec<PathBuf>) -> Result<AppExit> {
         "untextured":untextured});
     println!("{summary}");
     let worlds: Vec<u8> = wm.actors.iter().filter_map(actor_world).collect();
-    let ui = ui::Ui::load(&source, &mut library, &src, &worlds)?;
+    let routes: Vec<u8> = wm.actors.iter().filter_map(actor_route).collect();
+    let ui = ui::Ui::load(&source, &mut library, &src, &worlds, &routes)?;
     let prepared: Vec<_> = worlds
         .iter()
         .filter_map(|w| ui.worlds.get(w).map(|p| (w, p)))
