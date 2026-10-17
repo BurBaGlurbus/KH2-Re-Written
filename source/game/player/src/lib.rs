@@ -190,6 +190,9 @@ pub struct AttackStep {
     pub hop_speed_min: f32,
     /// PTYA +0x3c: distance adjustment toward a target.
     pub hop_reach: f32,
+    /// PTYA flags bit 1: the hop's height cap rises by Sora's jump height
+    /// (FUN_1403d78d0 adds FUN_1403b5a40's value to +0x10).
+    pub hop_jump_reach: bool,
     /// PTYA +0x38: blend into the next motion when this one ends
     /// (FUN_1403d78d0 → FUN_1403c8310).
     pub blend: f32,
@@ -378,9 +381,11 @@ pub struct Input {
     /// XZ direction toward the current target, if any (Guard turns to it
     /// at its first tick: frame trigger 21, up to 360°).
     pub target: Option<[f32; 2]>,
-    /// Target height above the player (Y-up) and the two bodies' summed
-    /// radii, for aerial hops toward it (FUN_1403d78d0 / FUN_1403d7520).
-    pub target_rise: f32,
+    /// The vector from Sora's own TARGET point to the target's (x, y up, z):
+    /// the hop's direction, distance and rise (FUN_1403d7520 subtracts the two
+    /// shapes' points, not the target from Sora's feet).
+    pub hop_vector: Option<[f32; 3]>,
+    /// The two bodies' summed radii (FUN_1403d7520's return value).
     pub target_reach: f32,
     /// The current target's TARGET shape (the attack chooser's "target").
     pub target_shape: Option<ptya::Target>,
@@ -539,6 +544,9 @@ pub struct Player {
     pub invulnerable: f32,
     /// A no-gravity ANB range was active last tick (obj+0x120 bits 23 / 24).
     was_floating: bool,
+    /// Sora's jump height as FUN_1403b5a40 reads it (High Jump's row height
+    /// or the PRTY one), kept from the last tick for the hop cap.
+    jump_reach_height: f32,
     /// Quick Run's mode 0x10 state.
     quick_run: Option<growth::QuickRun>,
     /// The speed effect Quick Run started this tick: element 0x6c + the
@@ -689,6 +697,7 @@ impl Player {
             square_held: false,
             invulnerable: 0.,
             was_floating: false,
+            jump_reach_height: 0.,
             quick_run: None,
             quick_run_effect: None,
             glide: None,
@@ -1293,10 +1302,15 @@ impl Player {
             return;
         }
         let finite = |v: f32| if v.is_finite() { v } else { 0. };
-        let (height, dir, speed) = match input.target {
-            Some(t) if t[0].hypot(t[1]) > 1e-4 => {
-                let (lo, hi) = (finite(step.hop_min), finite(step.hop_max));
-                let rise = input.target_rise;
+        let (height, dir, speed) = match input.hop_vector {
+            Some(v) if v[0].hypot(v[2]) > 1e-4 => {
+                let t = [v[0], v[2]];
+                let lo = finite(step.hop_min);
+                let mut hi = finite(step.hop_max);
+                if step.hop_jump_reach {
+                    hi += self.jump_reach_height;
+                }
+                let rise = v[1];
                 let height = if rise < lo {
                     lo
                 } else if rise > hi {
@@ -1517,6 +1531,7 @@ impl Player {
 
     pub fn tick(&mut self, input: &Input, p: &Params, clips: &Clips, world: &impl World) -> Step {
         let mut step = Step::default();
+        self.jump_reach_height = self.jump_height(p).0;
         self.frame = self.frame.saturating_add(1);
         if self.action == Action::Item
             && clips.item.as_ref().and_then(|c| c.item_use) == Some(self.frame)
@@ -2703,6 +2718,7 @@ mod tests {
             hop_min: 0.,
             hop_speed_min: 0.,
             hop_reach: 0.,
+            hop_jump_reach: false,
             blend: 0.,
             root: Vec::new(),
         }
@@ -3100,7 +3116,7 @@ mod tests {
         let press = Input {
             attack: true,
             target: Some([400., 0.]),
-            target_rise: -100.,
+            hop_vector: Some([400., -100., 0.]),
             ..Input::default()
         };
         player.tick(&press, &p, &c, &w);
@@ -3109,6 +3125,43 @@ mod tests {
         // at 8 toward +X, then the first two-frame sample drags it ×0.95.
         assert!((player.arc.rise - actor_physics::rise_time(21.)).abs() < 1e-4);
         assert!((player.air_velocity[0] - 7.6).abs() < 1e-4);
+    }
+
+    #[test]
+    fn a_jump_reach_hop_may_rise_by_the_jump_height_above_its_cap() {
+        let (p, mut c, w) = (params(), clips(), room());
+        c.attacks[3].hop_max = 71.;
+        c.attacks[3].hop_min = 21.;
+        c.attacks[3].hop_speed = 8.;
+        let launch = |c: &Clips| {
+            let mut player = Player::new([0., 0., 0.], 0.);
+            player.tick(
+                &Input {
+                    jump: true,
+                    ..Input::default()
+                },
+                &p,
+                c,
+                &w,
+            );
+            for _ in 0..10 {
+                player.tick(&Input::default(), &p, c, &w);
+            }
+            let press = Input {
+                attack: true,
+                target: Some([40., 0.]),
+                hop_vector: Some([40., 150., 0.]),
+                ..Input::default()
+            };
+            player.tick(&press, &p, c, &w);
+            assert_eq!(player.action, Action::AirAttack(3));
+            player.arc.rise
+        };
+        // A rise of 150 against a cap of 71 ...
+        assert!((launch(&c) - actor_physics::rise_time(71.)).abs() < 1e-4);
+        // ... or of 71 plus the jump height (185) with the flag.
+        c.attacks[3].hop_jump_reach = true;
+        assert!((launch(&c) - actor_physics::rise_time(150.)).abs() < 1e-4);
     }
 
     /// A world that counts collide calls and moves freely on a flat floor.

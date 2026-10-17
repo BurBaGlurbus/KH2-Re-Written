@@ -152,4 +152,5 @@ Records through T128 retain historical commands and paths. See [the folder guide
 | [T181](T181-air-hover-ends-in-a-soft-fall.md) | Air moves: a no-gravity range ends in a soft fall | PARTIAL. |
 | [T182](T182-victim-hit-sound.md) | The victim's own hit sound | PARTIAL. |
 | [T183](T183-first-person-camera.md) | The first-person look camera (Select) | PARTIAL. |
+| [T184](T184-air-hop-measures-from-the-target-point.md) | The air hop's height and cap, measured as the executable does | PARTIAL. |
 | [T141](T141-ik-and-animation-parity.md) | IK aim chains, pole vectors and joint-space motion blends | PROGRESS. Master Form matches the PS2 routine; 87% of installed motions within 0.1. |

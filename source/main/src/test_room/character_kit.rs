@@ -643,6 +643,7 @@ pub(super) fn load_kit(
         hop_min: f32::from_bits(entry.float_bits[2]),
         hop_speed_min: f32::from_bits(entry.float_bits[3]),
         hop_reach: f32::from_bits(entry.float_bits[12]),
+        hop_jump_reach: entry.flag & player::ptya::flag::JUMP_REACH != 0,
         blend: f32::from_bits(entry.float_bits[11]),
         root: clip_poses[*index]
             .root

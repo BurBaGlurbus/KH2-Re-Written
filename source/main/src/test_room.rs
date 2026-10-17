@@ -6263,6 +6263,12 @@ fn simulate(
         game.sound_queue.push((SE_UNLOCK, "lock_off"));
     }
     game.target_locked = selected.locked;
+    // FUN_1403d7520: the hop's vector is the target's TARGET point minus
+    // Sora's own (his TARGET shape's point, not his feet).
+    let hop_vector = selected.target.map(|s| {
+        let p = enemy_target::player_targetcentre(&game).unwrap_or(game.player.position);
+        [s.centre[0] - p[0], s.centre[1] - p[1], s.centre[2] - p[2]]
+    });
     let target = selected.target.map(|s| {
         let p = game.player.position;
         [
@@ -6291,7 +6297,7 @@ fn simulate(
         // Square held (logical 0x200).
         guard_held: game.autoplay.is_none() && game.pad.held & 0x200 != 0,
         target: target.map(|t| [t[0], t[2]]),
-        target_rise: target.map_or(0., |t| t[1]),
+        hop_vector,
         target_reach: target.map_or(0., |t| t[3]),
         target_shape: shapes.first().copied(),
         nearby,
