@@ -1090,9 +1090,49 @@ struct CameraRig {
     /// Right-drag turn not yet consumed by a tick, in manual-turn units.
     pending_turn: f32,
     recenter_queued: bool,
+    /// Mouse-drag look not yet consumed by a tick (first person's pitch).
+    pending_look: f32,
+    /// First person last tick, and Sora's fade ramp (`actor+0xa10`: value and
+    /// step, FUN_1403b7810) with its end.
+    was_first_person: bool,
+    fade: FadeRamp,
     /// The map's camera collision in game world space.
     collision: CameraCollision,
     collision_hits: u64,
+}
+
+/// FUN_1403b7810's ramp: a value and its per-frame step toward `end`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct FadeRamp {
+    value: f32,
+    step: f32,
+    end: f32,
+}
+
+impl FadeRamp {
+    const SHOWN: FadeRamp = FadeRamp {
+        value: 1.,
+        step: 0.,
+        end: 1.,
+    };
+
+    /// `FUN_1403b7810(ramp, start, end, 30)`.
+    fn start(start: f32, end: f32) -> Self {
+        FadeRamp {
+            value: start,
+            step: (end - start) / follow_camera::FIRST_PERSON_FADE_FRAMES,
+            end,
+        }
+    }
+
+    fn tick(&mut self) {
+        self.value += self.step;
+        if (self.step > 0. && self.value >= self.end) || (self.step < 0. && self.value <= self.end)
+        {
+            self.value = self.end;
+            self.step = 0.;
+        }
+    }
 }
 
 /// The camera's collision: a map's COCT worlds queried like the executable's
@@ -1170,6 +1210,17 @@ fn start_map_effects(game: &mut Game, pax: &Arc<object_effect::Pax>, mask: u64, 
             }
         }
     }
+}
+
+/// FUN_1403ba300: first person is possible in a physics mode with flag bit 7
+/// (ground, air; not Quick Run's mode 0x10 or the glides' 0x11 / 0x12). The
+/// object flag bits it also tests (+0x18c bit 14, +0x194 bit 1) are not
+/// modelled.
+fn first_person_allowed(player: &Player) -> bool {
+    use player::growth::motion::{GLIDE, GLIDE_STAND, QUICK_RUN, QUICK_RUN_END};
+    !player.dead()
+        && !matches!(player.action, Action::Growth(m)
+            if (QUICK_RUN..=QUICK_RUN_END).contains(&m) || (GLIDE..=GLIDE_STAND).contains(&m))
 }
 
 fn camera_input(player: &Player, previous: [f32; 3], speed: f32) -> CameraInput {
@@ -2644,6 +2695,7 @@ fn player_params(
         fall_max: obj_params.fall_max,
         land_inertia: obj_params.word10,
         land_drag: obj_params.word11,
+        head_height: obj_params.head,
         step_height: STEP_HEIGHT,
         walk_threshold: WALK_THRESHOLD,
         radius: BODY_RADIUS,
@@ -5846,6 +5898,14 @@ fn simulate(
         (stick, jump, decide)
     };
     let (up, down) = if talking { (false, false) } else { (up, down) };
+    // First person: the "is moving" predicates the idle and run states test
+    // (FUN_1403a7830, FUN_1403a8f00) are false, so the left stick starts no
+    // walk or run [I: read from those two predicates, not from a capture].
+    let stick = if rig.camera.first_person {
+        Vec2::ZERO
+    } else {
+        stick
+    };
     // Camera-relative stick: forward is the view direction on the ground,
     // right is screen right.
     let eye = from_world(rig.camera.eye);
@@ -6525,6 +6585,35 @@ fn simulate(
         }
     }
     let mut camera = camera_input(&game.player, rig.previous_position, game.params.run_speed);
+    // First person (camera mode 1, Select): FUN_140165110 enters on the press,
+    // FUN_140165e30 reads the right stick's up/down bits (0xc0000) for the
+    // pitch and R3 to level it, and the idle states (FUN_1403a70a0,
+    // FUN_1403a9250) turn Sora in place by 3 degrees a frame while its left /
+    // right bits (20, 21) are held and a command is possible.
+    camera.select = game.pad.pressed & 0x40_0000 != 0;
+    camera.reset_pitch = game.pad.pressed & 0x2_0000 != 0;
+    camera.head_lift = game.params.head_height;
+    camera.first_person_ok = first_person_allowed(&game.player);
+    if game.autoplay.is_none() && game.pad.held & 0xc_0000 != 0 {
+        let [_, y, magnitude] = controller::analog(game.pad_data.right);
+        camera.look = y * magnitude;
+    }
+    let pending_look = rig.pending_look.clamp(-1., 1.);
+    if camera.look == 0. && pending_look != 0. {
+        camera.look = pending_look;
+        rig.pending_look -= pending_look;
+    }
+    if rig.camera.first_person && !game.player.dead() && game.player.can_command(&game.clips) {
+        let held = game.pad.held;
+        let mut amount =
+            (held & 0x20_0000 != 0) as i32 as f32 - (held & 0x10_0000 != 0) as i32 as f32;
+        if amount == 0. {
+            amount = turn.clamp(-1., 1.);
+        }
+        // A turn to the right lowers the scene yaw.
+        game.player.yaw -= amount * follow_camera::MANUAL_TURN;
+        camera.player_forward = to_world([game.player.yaw.sin(), 0., game.player.yaw.cos()]);
+    }
     camera.stick = [stick.x, -stick.y];
     camera.magnitude = stick.length().min(1.);
     camera.turn = turn.clamp(-1., 1.);
@@ -6552,6 +6641,17 @@ fn simulate(
         hit
     });
     *collision_hits += hits.get();
+    // Sora fades out as first person starts and back in as it ends (the ramp
+    // restarts from its far end each time, as FUN_1403b7810 does).
+    if rig.camera.first_person != rig.was_first_person {
+        rig.fade = if rig.camera.first_person {
+            FadeRamp::start(1., 0.)
+        } else {
+            FadeRamp::start(0., 1.)
+        };
+        rig.was_first_person = rig.camera.first_person;
+    }
+    rig.fade.tick();
     rig.previous_position = game.player.position;
     game.tick += 1;
     if let Some(action) = step.started {
@@ -8702,6 +8802,36 @@ type CameraOnly = (
     Without<MenuCamera>,
 );
 
+/// Sora's body parts and the Keyblade's.
+type SoraOrWeapon = Or<(With<SoraPart>, With<WeaponPart>)>;
+
+/// First person hides Sora (the ramp at `actor+0xa10`): his body and the
+/// Keyblade he carries fade with it [I: the weapon follows the owner's flag,
+/// FUN_1403d9fe0, not a measured capture].
+fn first_person_fade(
+    rig: Res<CameraRig>,
+    mut materials: ResMut<Assets<FogMaterial>>,
+    parts: Query<&MeshMaterial3d<FogMaterial>, SoraOrWeapon>,
+) {
+    let alpha = rig.fade.value.clamp(0., 1.);
+    for material in &parts {
+        let Some(current) = materials.get(&material.0) else {
+            continue;
+        };
+        if (current.base.base_color.alpha() - alpha).abs() < 1e-4 {
+            continue;
+        }
+        if let Some(mut m) = materials.get_mut(&material.0) {
+            m.base.base_color = Color::WHITE.with_alpha(alpha);
+            m.base.alpha_mode = if alpha < 1. {
+                AlphaMode::Blend
+            } else {
+                AlphaMode::Opaque
+            };
+        }
+    }
+}
+
 fn camera_control(
     motion: Res<AccumulatedMouseMotion>,
     mut rig: ResMut<CameraRig>,
@@ -8713,6 +8843,12 @@ fn camera_control(
     // right stick; its sensitivity is unresolved): 0.1 at Camera Speed 5.
     let speed = settings.current.camera_factor();
     rig.pending_turn = (rig.pending_turn + motion.delta.x * speed).clamp(-30., 30.);
+    // First person's pitch takes the vertical drag (up looks up).
+    if rig.camera.first_person {
+        rig.pending_look = (rig.pending_look + motion.delta.y * speed).clamp(-30., 30.);
+    } else {
+        rig.pending_look = 0.;
+    }
     let (eye, look_at, fov) = match talk.as_ref().and_then(|t| t.camera) {
         // The talk camera (FUN_140175e50): 60° in the game's horizontal
         // 4:3 sense, converted like the follow camera's.
@@ -11487,6 +11623,9 @@ fn run(mut args: Vec<PathBuf>) -> Result<AppExit, Box<dyn std::error::Error>> {
         previous_position: game.player.position,
         pending_turn: 0.,
         recenter_queued: false,
+        pending_look: 0.,
+        was_first_person: false,
+        fade: FadeRamp::SHOWN,
         collision_hits: 0,
         collision: CameraCollision::new(&loaded.room),
     };
@@ -11678,6 +11817,7 @@ fn run(mut args: Vec<PathBuf>) -> Result<AppExit, Box<dyn std::error::Error>> {
                 field_npc_present,
                 dissolve_present,
                 camera_control,
+                first_person_fade,
                 game_over::camera,
                 skate_camera,
             )

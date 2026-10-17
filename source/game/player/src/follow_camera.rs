@@ -9,6 +9,10 @@
 //! FUN_140164290 (radius return) and FUN_140176e40 (eye collision); the
 //! spring is FUN_140165700 / FUN_140165bd0.
 //!
+//! First-person mode (mode 1, toggled with Select) translates FUN_140165e30
+//! (its update and exit), the entry in FUN_140165110 and the mode-1 collision of
+//! FUN_140165700.
+//!
 //! Positions here are in the game's own world space: Y points down, so
 //! "above the player" is negative Y. One `tick` is one 60 Hz frame (the
 //! game's frame-time scale of 1). Camera collision uses the map's camera
@@ -97,6 +101,15 @@ pub const OFF_LEFT: u32 = 4;
 pub const OFF_RIGHT: u32 = 8;
 pub const OFF_NEAR: u32 = 0x10;
 pub const OFF_FAR: u32 = 0x20;
+
+/// First person: how far ahead of the head the look point sits (`0x1405b1da8`
+/// as the vector (0, 0, 350)).
+pub const FIRST_PERSON_REACH: f32 = 350.;
+/// First person: the pitch's limit, 70 degrees (`DAT_140718bf8` / `bfc`).
+pub const FIRST_PERSON_PITCH_LIMIT: f32 = 1.221_730_5;
+/// Frames Sora takes to fade out on entering first person and back in on
+/// leaving it (`DAT_140623bcc`).
+pub const FIRST_PERSON_FADE_FRAMES: f32 = 30.;
 
 /// A camera segment hit: the point, the polygon's unit normal facing the
 /// segment's start and its surface nibble (5 marks the re-cast surface type).
@@ -198,6 +211,20 @@ pub struct CameraInput {
     pub recenter: bool,
     /// The player's speed parameter (PRTY run speed in this test room).
     pub speed: f32,
+    /// Select was pressed this frame (logical pad bit 22).
+    pub select: bool,
+    /// R3 was pressed this frame (logical pad bit 17): first person levels
+    /// its pitch.
+    pub reset_pitch: bool,
+    /// The right stick's vertical deflection times its magnitude (pad
+    /// `+0x24` x `+0x2c`, up is negative), zero unless a camera up/down bit
+    /// (0xc0000) is held.
+    pub look: f32,
+    /// FUN_1403ba300: the player is in a state that allows first person (a
+    /// physics mode with flag bit 7: ground, air; not Quick Run or a glide).
+    pub first_person_ok: bool,
+    /// The head's height above the player's root (PRTY word 12).
+    pub head_lift: f32,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -212,6 +239,10 @@ pub struct FollowCamera {
     eye_target_prev: Vec3,
     look_at_target: Vec3,
     look_at_target_prev: Vec3,
+    /// Camera mode 1: the eye sits at Sora's head and looks along his facing.
+    pub first_person: bool,
+    /// First person's look pitch (+0xc8), positive looks up.
+    pub pitch: f32,
 }
 
 /// The executable's angle wrap into [-pi, pi].
@@ -304,6 +335,8 @@ impl FollowCamera {
             eye_target_prev: [0.; 3],
             look_at_target: [0.; 3],
             look_at_target_prev: [0.; 3],
+            first_person: false,
+            pitch: 0.,
         };
         camera.place_targets(input.player_position, true);
         camera
@@ -430,6 +463,14 @@ impl FollowCamera {
         // At 60 Hz the gain is halved; the look-at point adds its extra gain
         // afterwards.
         let gain = (SPRING_GAIN + speed_offset * SPRING_GAIN_PER_UNIT) * 0.5;
+        if self.first_person {
+            if input.lock_target.is_none() {
+                self.tick_first_person(input, gain, cast);
+                return;
+            }
+            // FUN_140164870: another camera mode drops first person.
+            self.first_person = false;
+        }
         if let Some(anchor) = input.lock_target {
             self.tick_lock(input, anchor, cast);
             let feet_up = [
@@ -446,6 +487,18 @@ impl FollowCamera {
             return;
         }
         let mode = self.mode;
+        // FUN_140165110: Select, while the player can look around, enters mode
+        // 1 and skips the follow and manual turns for this frame; the first
+        // person update starts on the next.
+        let entering = input.select && input.first_person_ok;
+        let masked = CameraInput {
+            turn: 0.,
+            zoom: 0.,
+            recenter: false,
+            moved: false,
+            ..*input
+        };
+        let input = if entering { &masked } else { input };
         let mut snap = false;
         if input.turn != 0. {
             self.yaw = wrap(self.yaw + input.turn * MANUAL_TURN);
@@ -495,6 +548,62 @@ impl FollowCamera {
         if let Some(eye) = clip(self.eye_target_prev, self.look_at, self.eye, cast) {
             self.eye = eye;
             self.eye_target = eye;
+        }
+        if entering {
+            self.first_person = true;
+            self.pitch = 0.;
+        }
+    }
+
+    /// Mode 1 (FUN_140165e30): the eye target is the head, the look target 350
+    /// units ahead of it along the player's facing, tilted by the pitch; the
+    /// right stick tilts it (clamped to 70 degrees) and R3 levels it. Select,
+    /// or a state that no longer allows it, leaves: the yaw snaps behind the
+    /// player and the field camera's targets return (FUN_140164520), eased by
+    /// the spring.
+    fn tick_first_person(&mut self, input: &CameraInput, gain: f32, cast: Cast) {
+        if !input.first_person_ok || input.select {
+            self.first_person = false;
+            self.yaw_target = behind(input.player_forward);
+            self.yaw = self.yaw_target;
+            self.place_targets(input.player_position, false);
+            self.spring_to_targets(gain);
+            if let Some(eye) = clip(self.eye_target_prev, self.look_at, self.eye, cast) {
+                self.eye = eye;
+                self.eye_target = eye;
+            }
+            return;
+        }
+        use std::f32::consts::PI;
+        if input.reset_pitch {
+            self.pitch = 0.;
+        }
+        let player = input.player_position;
+        let head = [player[0], player[1] - input.head_lift, player[2]];
+        self.eye_target = head;
+        // The yaw base is the player's facing: behind him, turned half way
+        // round (+0xc4 = +0x5c + pi).
+        self.yaw = behind(input.player_forward);
+        self.yaw_target = self.yaw;
+        let facing = self.yaw + PI;
+        self.pitch = wrap(self.pitch - input.look * MANUAL_TURN);
+        self.pitch = self
+            .pitch
+            .clamp(-FIRST_PERSON_PITCH_LIMIT, FIRST_PERSON_PITCH_LIMIT);
+        // (0, 0, 350) turned by the pitch about X then the facing about Y.
+        let (sp, cp) = self.pitch.sin_cos();
+        let (sf, cf) = facing.sin_cos();
+        let ahead = [
+            FIRST_PERSON_REACH * cp * sf,
+            -FIRST_PERSON_REACH * sp,
+            FIRST_PERSON_REACH * cp * cf,
+        ];
+        self.look_at_target = [0, 1, 2].map(|k| head[k] + ahead[k]);
+        self.spring_to_targets(gain);
+        // FUN_140165700 case 1: the look point stops at the first surface on
+        // the segment from it to the eye.
+        if let Some(hit) = cast(self.look_at, self.eye) {
+            self.look_at = hit.point;
         }
     }
 
@@ -643,6 +752,106 @@ mod tests {
         let (mut camera, step) = locked([0.; 3], [0., 0., 1.], [0., 600., 100.]);
         camera.tick(&step, &|_, _| None);
         assert_ne!(camera.look_at_target, [0., -170., 0.]);
+    }
+
+    fn first_person_input(forward: Vec3) -> CameraInput {
+        CameraInput {
+            first_person_ok: true,
+            head_lift: 150.,
+            ..input([10., 0., 20.], forward)
+        }
+    }
+
+    #[test]
+    fn select_enters_first_person_only_where_the_player_may_look_around() {
+        let mut step = first_person_input([0., 0., 1.]);
+        let mut camera = FollowCamera::new(OUTDOOR, &step);
+        step.select = true;
+        step.first_person_ok = false;
+        camera.tick(&step, &|_, _| None);
+        assert!(!camera.first_person);
+        step.first_person_ok = true;
+        camera.tick(&step, &|_, _| None);
+        assert!(camera.first_person);
+        assert_eq!(camera.pitch, 0.);
+    }
+
+    #[test]
+    fn first_person_puts_the_eye_target_at_the_head_and_looks_along_the_facing() {
+        let mut step = first_person_input([0., 0., 1.]);
+        let mut camera = FollowCamera::new(OUTDOOR, &step);
+        step.select = true;
+        camera.tick(&step, &|_, _| None);
+        step.select = false;
+        for _ in 0..400 {
+            camera.tick(&step, &|_, _| None);
+        }
+        // The eye settles at the head (the spring rests one unit from its
+        // target), the look point 350 ahead of it.
+        assert!(camera.first_person);
+        for (got, want) in camera.eye.into_iter().zip([10., -150., 20.]) {
+            assert!((got - want).abs() < 1.5, "{:?}", camera.eye);
+        }
+        // The player faces +Z in the camera's space, so the look point is
+        // 350 further along it.
+        for (got, want) in camera.look_at.into_iter().zip([10., -150., 370.]) {
+            assert!((got - want).abs() < 1.5, "{:?}", camera.look_at);
+        }
+    }
+
+    #[test]
+    fn first_person_pitch_follows_the_stick_and_stops_at_seventy_degrees() {
+        let mut step = first_person_input([1., 0., 0.]);
+        let mut camera = FollowCamera::new(OUTDOOR, &step);
+        step.select = true;
+        camera.tick(&step, &|_, _| None);
+        step.select = false;
+        // Stick up (negative) tilts up: positive pitch, the look target rises
+        // (negative Y).
+        step.look = -1.;
+        camera.tick(&step, &|_, _| None);
+        assert!((camera.pitch - MANUAL_TURN).abs() < 1e-6);
+        assert!(camera.look_at_target[1] < -150.);
+        for _ in 0..100 {
+            camera.tick(&step, &|_, _| None);
+        }
+        assert!((camera.pitch - FIRST_PERSON_PITCH_LIMIT).abs() < 1e-6);
+        // R3 levels it again.
+        step.look = 0.;
+        step.reset_pitch = true;
+        camera.tick(&step, &|_, _| None);
+        assert_eq!(camera.pitch, 0.);
+        assert!((camera.look_at_target[1] + 150.).abs() < 1e-3);
+    }
+
+    #[test]
+    fn first_person_look_point_stops_at_a_wall_and_select_leaves() {
+        let mut step = first_person_input([0., 0., 1.]);
+        let mut camera = FollowCamera::new(OUTDOOR, &step);
+        step.select = true;
+        camera.tick(&step, &|_, _| None);
+        step.select = false;
+        let wall = |_: Vec3, _: Vec3| {
+            Some(RayHit {
+                point: [10., -150., 100.],
+                normal: [0., 0., -1.],
+                surface: 0,
+            })
+        };
+        camera.tick(&step, &wall);
+        assert_eq!(camera.look_at, [10., -150., 100.]);
+        // Select, or a state that forbids it, leaves and puts the follow
+        // camera's yaw behind the player.
+        step.select = true;
+        camera.tick(&step, &|_, _| None);
+        assert!(!camera.first_person);
+        assert!(wrap(camera.yaw - behind([0., 0., 1.])).abs() < 1e-5);
+        let mut camera = FollowCamera::new(OUTDOOR, &step);
+        camera.first_person = true;
+        step.select = false;
+        step.first_person_ok = false;
+        camera.tick(&step, &|_, _| None);
+        assert!(!camera.first_person);
     }
 
     #[test]

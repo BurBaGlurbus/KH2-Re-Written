@@ -49,6 +49,9 @@ pub struct Params {
     /// range-42 movement (FUN_140422350 → FUN_1403b7ad0).
     pub land_inertia: f32,
     pub land_drag: f32,
+    /// PRTY word 12 (record +0x30): the head's height above the root, the
+    /// first-person camera's eye (FUN_1403b5c50).
+    pub head_height: f32,
     /// Test-room choice: highest ledge climbed without jumping.
     pub step_height: f32,
     /// Stick magnitude from which Sora runs (`DAT_140585c7c`, 0.8).
@@ -2677,6 +2680,7 @@ mod tests {
             fall_max: 16.,
             land_inertia: 0.9,
             land_drag: 0.8,
+            head_height: 100.,
             step_height: 20.,
             walk_threshold: 0.5,
             radius: 30.,
