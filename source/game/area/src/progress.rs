@@ -1,6 +1,8 @@
 //! Story progress flags and the per-area program table, driven by the
 //! 00progress.bin flag scripts (FUN_14039afc0 / FUN_14039a980 /
 //! FUN_140152e80).
+use crate::world_state::{WorldState, WorldTables};
+use std::sync::Arc;
 
 /// World codes in the exe's order (`PTR_140717210`): world index → code.
 pub const WORLDS: [&str; 19] = [
@@ -25,9 +27,17 @@ const GUARDED_ENTRY: usize = (0x1409a9f2c - 0x1409a98c0) / 6;
 /// one world share words with the next, as in the exe.
 const FLAG_WORDS: usize = 0x40 * 8 + 32;
 
-/// Operations the interpreter met but does not carry out (world map,
-/// mission and journal lists): `(op, words)`.
+/// Operations the interpreter met but does not carry out: `(op, words)`.
 pub type Skipped = Vec<(u8, Vec<u16>)>;
+
+/// FUN_1403a53a0 / FUN_1403a5420's table (0x1405c4320): in world 0x10, once
+/// `flag` is set the listed areas are blocked with `message`.
+const WORLD_10_BLOCKS: [(u32, [u8; 3], u16); 4] = [
+    (0x4040, [0x08, 0x0b, 0x10], 0xc2c0),
+    (0x4042, [0x00, 0x0b, 0x10], 0xc2c1),
+    (0x4043, [0x00, 0x08, 0x10], 0xc2c2),
+    (0x4049, [0x00, 0x08, 0x0b], 0xc2c3),
+];
 
 #[derive(Clone)]
 pub struct Progress {
@@ -36,8 +46,12 @@ pub struct Progress {
     pub programs: Vec<[i16; 3]>,
     /// Per-world arif set index (op 6, FUN_1403ab470: value − 1).
     pub arif_set: [i32; 19],
-    /// Per-world record bytes (op 13, FUN_1403f1e20 +1 / +2).
-    pub world_records: [[u8; 2]; 19],
+    /// World records, symbol slots, world events and world points (op 13
+    /// writes record bytes 1 and 2).
+    pub world: WorldState,
+    /// The world map tables; without them the link table and the world
+    /// events are not run.
+    pub(crate) world_tables: Option<Arc<WorldTables>>,
     /// Flag scripts by world index (00progress.bin BAR entries named by
     /// world code).
     scripts: Vec<Option<Vec<u8>>>,
@@ -48,6 +62,8 @@ pub struct Progress {
     /// `{message/flag, message2}` per 'dsa' entry (`DAT_1409ab7a8`); a
     /// non-zero first word blocks the destination.
     dsa_state: Vec<[u16; 2]>,
+    /// Set by `unblock_all`: also ignore the world-0x10 table.
+    unblocked: bool,
 }
 
 impl Progress {
@@ -57,12 +73,24 @@ impl Progress {
             flags: vec![0; FLAG_WORDS],
             programs: vec![[0; 3]; WORLDS.len() * AREAS_PER_WORLD],
             arif_set: [0; 19],
-            world_records: [[0; 2]; 19],
+            world: WorldState::default(),
+            world_tables: None,
             scripts,
             skipped: Vec::new(),
             dsa: Vec::new(),
             dsa_state: Vec::new(),
+            unblocked: false,
         }
+    }
+
+    /// Gives the progress the world map tables, so that setting a flag also
+    /// runs the link table and marks world events (FUN_14039afc0's tail).
+    pub fn set_world_tables(&mut self, tables: Arc<WorldTables>) {
+        self.world_tables = Some(tables);
+    }
+
+    pub fn world_tables(&self) -> Option<&WorldTables> {
+        self.world_tables.as_deref()
     }
 
     /// The 'dsa' entry: `u16 count`, then `count` `{world, area}` bytes.
@@ -86,6 +114,44 @@ impl Progress {
     /// the story point).
     pub fn unblock_all(&mut self) {
         self.dsa_state.fill([0; 2]);
+        self.unblocked = true;
+    }
+
+    /// FUN_1403a53a0: world 0x10's flag-blocked areas and their message.
+    fn world_10_block(&self, world: u8, area: u8) -> Option<u16> {
+        if world != 0x10 || self.unblocked {
+            return None;
+        }
+        WORLD_10_BLOCKS
+            .iter()
+            .find(|(flag, areas, _)| self.test(*flag) && areas.contains(&area))
+            .map(|&(_, _, message)| message)
+            .filter(|&m| m != 0)
+    }
+
+    fn dsa_index(&self, world: u8, area: u8) -> Option<usize> {
+        self.dsa.iter().position(|&[w, a]| w == world && a == area)
+    }
+
+    /// FUN_1403f0560: the destination has a 'dsa' entry that is blocked,
+    /// by its state word or (world 0x10) the flag table.
+    pub fn destination_blocked(&self, world: u8, area: u8) -> bool {
+        self.dsa_index(world, area).is_some_and(|i| {
+            self.dsa_state[i][0] != 0 || self.world_10_block(world, area).is_some()
+        })
+    }
+
+    /// FUN_1403f0470(world, area, 1) as FUN_1403f20c0 asks it: the message
+    /// of a blocked world point (the entry's second word, else world
+    /// 0x10's table; 0 when neither has one).
+    pub fn blocked_message(&self, world: u8, area: u8) -> u16 {
+        let Some(i) = self.dsa_index(world, area) else {
+            return 0;
+        };
+        match self.dsa_state[i][1] {
+            0 => self.world_10_block(world, area).unwrap_or(0),
+            m => m,
+        }
     }
 
     /// Destinations whose 'dsa' state word is set.
@@ -99,15 +165,14 @@ impl Progress {
     }
 
     /// FUN_1403f0560 / FUN_1403f0470: the message word of the first 'dsa'
-    /// entry for the destination while it is blocked. The exe's second
-    /// route (a world-0x10 special table) does not apply to other worlds.
+    /// entry for the destination while it is blocked; with a zero state
+    /// word, world 0x10's flag table (FUN_1403a53a0) can still block it.
     pub fn blocked(&self, world: u8, area: u8) -> Option<u16> {
-        let i = self
-            .dsa
-            .iter()
-            .position(|&[w, a]| w == world && a == area)?;
-        let m = self.dsa_state[i][0];
-        (m != 0).then_some(m)
+        let i = self.dsa_index(world, area)?;
+        match self.dsa_state[i][0] {
+            0 => self.world_10_block(world, area),
+            m => Some(m),
+        }
     }
 
     fn word(flag: u32) -> (usize, u32) {
@@ -131,16 +196,21 @@ impl Progress {
         self.programs[world as usize * AREAS_PER_WORLD + area as usize]
     }
 
-    /// FUN_14039afc0: sets `flag`, then runs its script. The trailing
-    /// item/ability checks and the system notifications after the script
-    /// (FUN_1403c4720 tests, FUN_1403f0ea0 …) do not change the program
-    /// table and are not carried out.
+    /// FUN_14039afc0: sets `flag`, runs its script, then the link table,
+    /// the world events and the world points (`world_state`). The item and
+    /// ability checks after the script (FUN_1403c4720 tests and the flags
+    /// they set), FUN_1403ee4a0 and FUN_1403e66c0 are not carried out.
     pub fn set(&mut self, flag: u32) {
-        let world = (flag as i32 >> 10) as usize;
         let (w, bit) = Self::word(flag);
         if let Some(v) = self.flags.get_mut(w) {
             *v |= bit;
         }
+        self.run_flag_script(flag);
+        self.after_flag(flag);
+    }
+
+    fn run_flag_script(&mut self, flag: u32) {
+        let world = (flag as i32 >> 10) as usize;
         let Some(Some(script)) = self.scripts.get(world).cloned() else {
             return;
         };
@@ -200,6 +270,17 @@ impl Progress {
                         }
                     }
                 }
+                // FUN_1403e3930 / FUN_1403e3910 per word.
+                8 => {
+                    for &f in &words {
+                        self.set_menu_flag(f as u32);
+                    }
+                }
+                9 => {
+                    for &f in &words {
+                        self.clear_menu_flag(f as u32);
+                    }
+                }
                 12 => {
                     for &f in &words {
                         if f == 0xffff || !self.test(f as u32) {
@@ -209,11 +290,12 @@ impl Progress {
                 }
                 13 => {
                     if let (Some(r), Some(&b3), Some(&w0)) = (
-                        self.world_records.get_mut(world),
+                        self.world.records.get_mut(world),
                         script.get(at + 3),
                         words.first(),
                     ) {
-                        *r = [b3, w0 as u8];
+                        r.landing_set = b3;
+                        r.value = w0 as u8;
                     }
                 }
                 _ => self.skipped.push((op, words)),

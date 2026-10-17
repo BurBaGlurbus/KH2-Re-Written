@@ -7,6 +7,7 @@ use ::area::{
     Area, PlayerProbe, Request, Spawn,
     progress::{self, Progress},
     script::{self, Location, ScriptRandom},
+    world_state::WorldTables,
 };
 use bevy::prelude::Vec3;
 use collision::{Body, Query};
@@ -171,6 +172,17 @@ impl AreaSource {
                 progress_bytes.get(e.offset as usize..e.offset as usize + e.size as usize)
         {
             progress.set_dsa(b);
+        }
+        // The world map tables (FUN_14039acd0, FUN_1403f1470, FUN_1403f2250):
+        // with them a flag set also runs the link table and marks world
+        // events, and a new game first runs world event 0 (FUN_1403df060).
+        if let (Ok(landing), Ok(points)) = (
+            library.read("70landing.bar"),
+            library.read("00worldpoint.bin"),
+        ) && let Ok(tables) = WorldTables::read(&progress_bytes, &landing, &points)
+        {
+            progress.set_world_tables(Arc::new(tables));
+            progress.start_world_events();
         }
         for &(first, last) in story {
             for flag in first..=last {

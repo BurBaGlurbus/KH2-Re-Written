@@ -3,6 +3,7 @@
 //! Positions are engine coordinates (Y down).
 pub mod progress;
 pub mod script;
+pub mod world_state;
 pub mod zone;
 
 use data::ard::{Entity, SpawnPoint, SpawnSet};

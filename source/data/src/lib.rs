@@ -58,6 +58,7 @@ pub mod unencrypted_payload;
 pub mod vif;
 pub mod vpu;
 pub mod weapon_entry;
+pub mod world_map;
 
 pub const RECORD_SIZE: usize = 32;
 pub const MAX_INDEX_BYTES: usize = 32 * 1024 * 1024;

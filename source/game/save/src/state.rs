@@ -19,9 +19,31 @@ pub const FLAGS: usize = 0x1c90;
 pub const FLAG_WORDS: usize = 19 * 8;
 /// Per-world arif set byte (FUN_1403ab470: `DAT_1409abc9c[world]`).
 pub const ARIF: usize = 0x23ec;
-/// Per-world record words (FUN_1403f1e20: `DAT_1409ad89c + world * 4`; the
-/// map program uses bytes 1 and 2).
+/// Per-world record words (FUN_1403f1e20: `DAT_1409ad89c + world * 4`:
+/// world map state, landing set, progress value, flags).
 pub const WORLD_RECORDS: usize = 0x3fec;
+/// World-point (save point) bits (FUN_1403f2270: `DAT_1409ab7a0`).
+pub const WORLD_POINTS: usize = 0x1ef0;
+pub const WORLD_POINT_WORDS: usize = 2;
+/// Menu flag words (FUN_1403e38f0: `DAT_1409abc40`).
+pub const MENU_FLAGS: usize = 0x2390;
+pub const MENU_FLAG_WORDS: usize = 7;
+/// World-event bits (FUN_1403deab0: `DAT_1409ad8e8`).
+pub const WORLD_EVENTS: usize = 0x4038;
+pub const WORLD_EVENT_WORDS: usize = 8;
+/// Queued world events (`DAT_1409ad908`) and their `u8` count
+/// (`DAT_1409ada07`).
+pub const EVENT_QUEUE: usize = 0x4058;
+pub const EVENT_QUEUE_COUNT: usize = 0x4157;
+/// Symbol slots 1..=0x15 (FUN_1403f1e10: `DAT_1409ada08 + slot − 1`).
+pub const SYMBOL_SLOTS: usize = 0x4158;
+pub const SYMBOL_SLOT_COUNT: usize = 0x15;
+/// Episode open and NEW bits (`DAT_1409ada28`, `DAT_1409ada38`).
+pub const EPISODES: usize = 0x4178;
+pub const EPISODES_NEW: usize = 0x4188;
+pub const EPISODE_WORDS: usize = 4;
+/// The world map's draw-group set (`DAT_1409ada49`, FUN_1403f0b70).
+pub const DRAW_GROUP_SET: usize = 0x4199;
 /// Shared EXP (camp status "Experience", FUN_140354340).
 pub const EXP: usize = 0x36e0;
 /// Shortcut command ids (camp Customize, `DAT_1409acfa8`).
@@ -53,7 +75,15 @@ pub struct Persistent {
     pub programs: Vec<[i16; 3]>,
     pub flags: Vec<u32>,
     pub arif: [u8; 19],
-    pub world_records: [[u8; 2]; 19],
+    pub world_records: [[u8; 4]; 19],
+    pub world_points: [u32; WORLD_POINT_WORDS],
+    pub menu_flags: [u32; MENU_FLAG_WORDS],
+    pub world_events: [u32; WORLD_EVENT_WORDS],
+    pub event_queue: Vec<u8>,
+    pub symbol_slots: [u8; SYMBOL_SLOT_COUNT],
+    pub episodes: [u32; EPISODE_WORDS],
+    pub episodes_new: [u32; EPISODE_WORDS],
+    pub draw_group_set: u8,
 }
 
 impl Default for Persistent {
@@ -75,8 +105,26 @@ impl Default for Persistent {
             programs: vec![[0; 3]; PROGRAM_ENTRIES],
             flags: vec![0; FLAG_WORDS],
             arif: [0; 19],
-            world_records: [[0; 2]; 19],
+            world_records: [[0; 4]; 19],
+            world_points: [0; WORLD_POINT_WORDS],
+            menu_flags: [0; MENU_FLAG_WORDS],
+            world_events: [0; WORLD_EVENT_WORDS],
+            event_queue: Vec::new(),
+            symbol_slots: [0; SYMBOL_SLOT_COUNT],
+            episodes: [0; EPISODE_WORDS],
+            episodes_new: [0; EPISODE_WORDS],
+            draw_group_set: 0,
         }
+    }
+}
+
+fn words<const N: usize>(data: &SaveData, at: usize) -> [u32; N] {
+    std::array::from_fn(|i| data.u32_at(at + i * 4))
+}
+
+fn set_words(data: &mut SaveData, at: usize, words: &[u32]) {
+    for (i, w) in words.iter().enumerate() {
+        data.set_u32(at + i * 4, *w);
     }
 }
 
@@ -107,13 +155,10 @@ impl Persistent {
         for (i, a) in arif.iter_mut().enumerate() {
             *a = data.u8_at(ARIF + i);
         }
-        let mut world_records = [[0u8; 2]; 19];
-        for (i, r) in world_records.iter_mut().enumerate() {
-            *r = [
-                data.u8_at(WORLD_RECORDS + i * 4 + 1),
-                data.u8_at(WORLD_RECORDS + i * 4 + 2),
-            ];
-        }
+        let world_records =
+            std::array::from_fn(|i| std::array::from_fn(|k| data.u8_at(WORLD_RECORDS + i * 4 + k)));
+        let queued = (data.u8_at(EVENT_QUEUE_COUNT) as usize).min(EVENT_QUEUE_COUNT - EVENT_QUEUE);
+        let event_queue = (0..queued).map(|i| data.u8_at(EVENT_QUEUE + i)).collect();
         Self {
             world: data.u8_at(field::WORLD),
             area: data.u8_at(field::AREA),
@@ -132,6 +177,14 @@ impl Persistent {
             flags,
             arif,
             world_records,
+            world_points: words(data, WORLD_POINTS),
+            menu_flags: words(data, MENU_FLAGS),
+            world_events: words(data, WORLD_EVENTS),
+            event_queue,
+            symbol_slots: std::array::from_fn(|i| data.u8_at(SYMBOL_SLOTS + i)),
+            episodes: words(data, EPISODES),
+            episodes_new: words(data, EPISODES_NEW),
+            draw_group_set: data.u8_at(DRAW_GROUP_SET),
         }
     }
 
@@ -168,9 +221,24 @@ impl Persistent {
             data.set_u8(ARIF + i, *a);
         }
         for (i, r) in self.world_records.iter().enumerate() {
-            data.set_u8(WORLD_RECORDS + i * 4 + 1, r[0]);
-            data.set_u8(WORLD_RECORDS + i * 4 + 2, r[1]);
+            for (k, b) in r.iter().enumerate() {
+                data.set_u8(WORLD_RECORDS + i * 4 + k, *b);
+            }
         }
+        set_words(data, WORLD_POINTS, &self.world_points);
+        set_words(data, MENU_FLAGS, &self.menu_flags);
+        set_words(data, WORLD_EVENTS, &self.world_events);
+        let queued = self.event_queue.len().min(EVENT_QUEUE_COUNT - EVENT_QUEUE);
+        for (i, id) in self.event_queue.iter().take(queued).enumerate() {
+            data.set_u8(EVENT_QUEUE + i, *id);
+        }
+        data.set_u8(EVENT_QUEUE_COUNT, queued as u8);
+        for (i, s) in self.symbol_slots.iter().enumerate() {
+            data.set_u8(SYMBOL_SLOTS + i, *s);
+        }
+        set_words(data, EPISODES, &self.episodes);
+        set_words(data, EPISODES_NEW, &self.episodes_new);
+        data.set_u8(DRAW_GROUP_SET, self.draw_group_set);
         data.seal();
     }
 }
@@ -205,7 +273,15 @@ mod tests {
         p.programs[2 * 0x40 + 8] = [3, -1, 7];
         p.flags[2 * 8 + 1] = 0xdead_beef;
         p.arif[2] = 4;
-        p.world_records[2] = [1, 9];
+        p.world_records[2] = [2, 1, 9, 3];
+        p.world_points = [1 << 13, 1 << 9];
+        p.menu_flags[6] = 0x8000_0001;
+        p.world_events[0] = 1;
+        p.event_queue = vec![2, 7];
+        p.symbol_slots[20] = 2;
+        p.episodes[1] = 2;
+        p.episodes_new[3] = 0x10;
+        p.draw_group_set = 9;
         p.write(&mut image);
         assert!(SaveData::from_bytes(image.bytes()).is_ok());
         assert_eq!(Persistent::read(&image), p);
