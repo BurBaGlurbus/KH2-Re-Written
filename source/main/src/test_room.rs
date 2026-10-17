@@ -9248,13 +9248,14 @@ fn finish(
     }
     if keys.just_pressed(KeyCode::F1) {
         game.show_collision = !game.show_collision;
-        if let Ok(mut visibility) = overlay.single_mut() {
-            *visibility = if game.show_collision {
-                Visibility::Visible
-            } else {
-                Visibility::Hidden
-            };
-        }
+    }
+    // F1 and the debug menu's View tab both switch the overlay.
+    if let Ok(mut visibility) = overlay.single_mut() {
+        visibility.set_if_neq(if game.show_collision {
+            Visibility::Visible
+        } else {
+            Visibility::Hidden
+        });
     }
     let autoplay_done = game.autoplay.is_some()
         && game.tick >= game.autoplay_end

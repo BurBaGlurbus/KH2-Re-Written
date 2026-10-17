@@ -1,10 +1,20 @@
 //! The test room's debug menu (F3, or both stick buttons on a controller):
-//! give items, restore and level Sora, change Drive form, control the enemy
-//! and warp between areas. A development aid, not part of the original
-//! game: a plain box and list drawn on the HUD canvas. The field is paused
-//! while it is open.
+//! give items, restore and level Sora, change Drive form, control the enemy,
+//! preview enemy animations and warp between areas. A development aid, not
+//! part of the original game: a plain box and list drawn on the HUD canvas.
+//! The field is paused while it is open.
+//!
+//! Lists with many rows (items, enemies, motions, rooms) take typed letters
+//! as a search: only rows containing them stay. The enemy animation preview
+//! has tabs (Tab / Shift+Tab, L1 / R1, or Left / Right on a row with no
+//! value to change) and keeps playing behind the menu.
 use super::*;
+use bevy::input::{
+    ButtonState,
+    keyboard::{Key, KeyboardInput},
+};
 use player::forms;
+use std::sync::OnceLock;
 
 /// Effects the menu leaves switched on.
 #[derive(Clone, Copy, Debug, Default)]
@@ -18,8 +28,9 @@ pub struct Cheats {
 /// One white texel, for the box and the highlight bar.
 pub const WHITE: [u8; 4] = [255; 4];
 
-/// Rows shown at once, and the layout in HUD units (512 × 416).
-const ROWS: usize = 15;
+/// Lines shown at once (header lines and rows together), and the layout in
+/// HUD units (512 × 416).
+const LINES: usize = 15;
 const ROW_HEIGHT: f32 = 19.;
 const TEXT_SIZE: f32 = 14.;
 const BOX: [f32; 4] = [96., 36., 416., 400.];
@@ -32,6 +43,10 @@ const MAX_SPELL: u8 = 3;
 const MAX_STOCK: u8 = 99;
 /// Frames a result line stays in the footer.
 const NOTICE_FRAMES: u32 = 120;
+/// Longest search the menu keeps.
+const MAX_SEARCH: usize = 24;
+/// A second of preview playback is this many field ticks.
+const TICKS_PER_SECOND: f32 = 60.;
 
 const FORMS: [(u8, &str); 6] = [
     (forms::VALOR, "Valor Form"),
@@ -42,6 +57,48 @@ const FORMS: [(u8, &str); 6] = [
     (forms::ANTI, "Antiform"),
 ];
 
+/// The tabs of the enemy animation preview.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum PreviewTab {
+    /// Play, pause, step, jump to a frame, loop and speed.
+    #[default]
+    Playback,
+    /// Every motion in the enemy's motion set, by name.
+    Motions,
+    /// The enemy script's named actions and the motions they request.
+    Actions,
+    /// Skeleton, model and collision overlays.
+    View,
+    /// AI and combat, defeat, respawn and removal.
+    Enemy,
+}
+
+impl PreviewTab {
+    const ALL: [Self; 5] = [
+        Self::Playback,
+        Self::Motions,
+        Self::Actions,
+        Self::View,
+        Self::Enemy,
+    ];
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::Playback => "Playback",
+            Self::Motions => "Motions",
+            Self::Actions => "Actions",
+            Self::View => "View",
+            Self::Enemy => "Enemy",
+        }
+    }
+
+    /// The tab `by` places along, wrapping around.
+    fn shifted(self, by: i32) -> Self {
+        let at = Self::ALL.iter().position(|&t| t == self).unwrap_or(0) as i32;
+        Self::ALL[(at + by).rem_euclid(Self::ALL.len() as i32) as usize]
+    }
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 enum Page {
     #[default]
@@ -51,50 +108,101 @@ enum Page {
     Growth,
     Enemies,
     Roster(enemy_catalog::Category),
+    /// The summoned enemies.
     Actors,
-    Animation,
-    EnemyActions,
-    Motions,
+    /// The animation preview of the selected summoned enemy.
+    Preview(PreviewTab),
     /// The worlds with installed rooms.
     Warp,
     /// One world's rooms.
     Rooms(u8),
 }
 
+impl Page {
+    /// Pages whose rows can be narrowed by typing.
+    fn searchable(self) -> bool {
+        matches!(
+            self,
+            Self::Items
+                | Self::Roster(_)
+                | Self::Actors
+                | Self::Preview(PreviewTab::Motions | PreviewTab::Actions)
+                | Self::Warp
+                | Self::Rooms(_)
+        )
+    }
+
+    /// Lines above the rows: for the preview the tab strip and two lines
+    /// about the playing motion, and the search line on searchable pages.
+    fn header_lines(self) -> usize {
+        let preview = if matches!(self, Self::Preview(_)) {
+            3
+        } else {
+            0
+        };
+        preview + usize::from(self.searchable())
+    }
+
+    fn visible_rows(self) -> usize {
+        LINES - self.header_lines()
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Action {
     Page(Page),
+    /// A row that only shows a value.
+    Info,
     Restore,
     KnockOut,
     LevelUp,
-    Bonus,
-    Invincible,
-    Scan,
-    Defeat,
-    Respawn,
-    Freeze,
+    BonusLevel,
+    ToggleInvincible,
+    ToggleScan,
+    DefeatBattleTarget,
+    RespawnBattleTarget,
+    ToggleFreezeBattleTarget,
     FillItems,
     Item(u16),
     Form(u8),
     Growth(usize),
     Summon(usize),
-    Actor(u64),
-    Motion(usize),
-    Battle,
-    BattleDefeat,
-    BattleRespawn,
-    FreezeAnimation,
-    LoopAnimation,
-    RestartAnimation,
-    StepAnimation,
-    AnimationRate,
-    RootAnimation,
+    SelectActor(u64),
+    /// Plays the motion at this index in the enemy's motion list.
+    PlayMotion(usize),
+    EnableBattle,
+    DefeatSummoned,
+    RespawnSummoned,
+    PlayPause,
+    /// One whole frame forward (`true`) or back.
+    StepFrame(bool),
+    /// Left and Right move the paused frame.
+    GoToFrame,
+    /// Pauses this many percent of the way through the motion.
+    JumpToPercent(u8),
+    Replay,
+    ToggleLoop,
+    PlaybackSpeed,
+    ToggleRootMotion,
+    ToggleSkeleton,
+    ToggleHideModel,
+    ToggleCollisionOverlay,
     RemoveActor,
     ClearActors,
     Warp(u8, u8),
     /// The current room becomes its world's launcher start.
     SaveStart,
     Close,
+}
+
+impl Action {
+    /// Whether Left and Right change this row's value.
+    fn adjustable(self) -> bool {
+        matches!(
+            self,
+            Self::Item(_) | Self::Growth(_) | Self::PlaybackSpeed | Self::GoToFrame
+        )
+    }
 }
 
 struct Row {
@@ -108,6 +216,12 @@ struct Row {
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct View {
     heading: Vec<u8>,
+    /// The preview's tabs, and whether each is the open one.
+    tabs: Vec<(Vec<u8>, bool)>,
+    /// Lines about the playing motion, above the rows.
+    info: Vec<Vec<u8>>,
+    /// The search line, on pages that take typed letters.
+    search: Option<Vec<u8>>,
     /// Label, value (drawn on the right) and whether the row can be used.
     rows: Vec<(Vec<u8>, Vec<u8>, bool)>,
     selected: Option<usize>,
@@ -127,15 +241,31 @@ pub struct DebugMenu {
     /// The current world's saved launcher start (read on opening Warp).
     saved: Option<(u8, u8)>,
     notice: Option<(String, u32)>,
+    /// Letters typed on a searchable page; only rows containing them stay.
+    search: String,
     pub view: View,
 }
 
 impl DebugMenu {
     pub fn show_enemy_actors(&mut self) {
         self.open = true;
-        self.page = Page::Actors;
-        self.cursor = 0;
+        self.go_to(Page::Actors, 0);
+    }
+
+    /// Opens the animation preview on tab number `tab` with `search`
+    /// typed (for the unattended tour).
+    pub fn show_preview(&mut self, tab: usize, search: &str) {
+        self.open = true;
+        self.go_to(Page::Preview(PreviewTab::ALL[tab % 5]), 0);
+        self.search = search.into();
+    }
+
+    /// Opens `page` with the cursor on row `cursor` and no search.
+    fn go_to(&mut self, page: Page, cursor: usize) {
+        self.page = page;
+        self.cursor = cursor;
         self.top = 0;
+        self.search.clear();
     }
 }
 
@@ -152,12 +282,38 @@ struct Input {
     toggle: bool,
     confirm: bool,
     back: bool,
+    /// Backspace alone (it also counts as `back`).
+    erase: bool,
+    /// Tabs to move this frame: Tab or R1 forward, Shift+Tab or L1 back.
+    tab: i32,
     /// This frame's arrow step (a press or a repeat).
     step: Option<Dir>,
 }
 
 fn text(s: &str) -> Vec<u8> {
     pause_menu::encode_text(s)
+}
+
+/// The system font's codes back into lower case ASCII, for searching.
+fn plain(bytes: &[u8]) -> String {
+    static TABLE: OnceLock<[char; 256]> = OnceLock::new();
+    let table = TABLE.get_or_init(|| {
+        let mut table = ['\u{fffd}'; 256];
+        for c in (0x20u8..0x7f).map(char::from) {
+            let code = pause_menu::encode_text(&c.to_string())[0] as usize;
+            // Characters the font lacks encode as a space.
+            if (code != 0x01 || c == ' ') && table[code] == '\u{fffd}' {
+                table[code] = c.to_ascii_lowercase();
+            }
+        }
+        table
+    });
+    bytes.iter().map(|&b| table[b as usize]).collect()
+}
+
+/// Whether typing `c` adds to the search (letters the menu font can show).
+fn searchable_char(c: char) -> bool {
+    c.is_ascii_alphanumeric() || "-.:/'!?%,".contains(c)
 }
 
 fn read_input(
@@ -170,6 +326,16 @@ fn read_input(
     let sticks = pad_pressed(GamepadButton::LeftThumb)
         && pad_pressed(GamepadButton::RightThumb)
         && (pad_just(GamepadButton::LeftThumb) || pad_just(GamepadButton::RightThumb));
+    let shift = keys.pressed(KeyCode::ShiftLeft) || keys.pressed(KeyCode::ShiftRight);
+    let tab = if pad_just(GamepadButton::RightTrigger) {
+        1
+    } else if pad_just(GamepadButton::LeftTrigger) {
+        -1
+    } else if keys.just_pressed(KeyCode::Tab) {
+        if shift { -1 } else { 1 }
+    } else {
+        0
+    };
     let mut input = Input {
         toggle: keys.just_pressed(KeyCode::F3) || sticks,
         confirm: keys.just_pressed(KeyCode::Enter)
@@ -179,6 +345,8 @@ fn read_input(
         back: keys.just_pressed(KeyCode::Escape)
             || keys.just_pressed(KeyCode::Backspace)
             || pad_just(GamepadButton::East),
+        erase: keys.just_pressed(KeyCode::Backspace),
+        tab,
         step: None,
     };
     let down = |d: Dir| {
@@ -255,42 +423,132 @@ fn cap_of(id: u16) -> u8 {
 
 /// Sets a stock count in the battle items and the camp (the camp shows the
 /// battle's stock while one exists), and a spell's level.
-fn set_stock(game: &mut Game, camp: Option<&mut CampRes>, id: u16, n: u8) {
-    let n = n.min(cap_of(id));
-    let set = |s: &mut std::collections::BTreeMap<u16, u8>| {
-        if n == 0 {
-            s.remove(&id);
+fn set_stock(game: &mut Game, camp: Option<&mut CampRes>, id: u16, count: u8) {
+    let count = count.min(cap_of(id));
+    let set = |stock: &mut std::collections::BTreeMap<u16, u8>| {
+        if count == 0 {
+            stock.remove(&id);
         } else {
-            s.insert(id, n);
+            stock.insert(id, count);
         }
     };
-    if let Some(it) = game.items.as_mut() {
-        set(&mut it.stock);
+    if let Some(items) = game.items.as_mut() {
+        set(&mut items.stock);
     }
-    if let Some(c) = camp {
-        set(&mut c.stock);
+    if let Some(camp) = camp {
+        set(&mut camp.stock);
     }
-    if let Some(t) = ELEMENT_ITEMS.iter().position(|&e| e == id)
-        && let Some(m) = game.magic.as_mut()
+    if let Some(element) = ELEMENT_ITEMS.iter().position(|&e| e == id)
+        && let Some(magic) = game.magic.as_mut()
     {
-        m.levels[t] = n;
+        magic.levels[element] = count;
     }
 }
 
 /// The next bonus level Sora has a row in and has not taken.
 fn next_bonus(game: &Game) -> Option<u8> {
-    let rt = game.enemy.as_ref()?;
-    let bons = &game.drive.as_ref()?.src.growth.bons;
-    let count = u32::from_le_bytes(bons.get(4..8)?.try_into().ok()?) as usize;
+    let battle = game.enemy.as_ref()?;
+    let bonus_table = &game.drive.as_ref()?.src.growth.bons;
+    let count = u32::from_le_bytes(bonus_table.get(4..8)?.try_into().ok()?) as usize;
     (0..count)
-        .filter_map(|k| bons.get(8 + k * 16..8 + k * 16 + 16))
-        .filter(|r| r[1] == 1 && !rt.bonus_taken.contains(&r[0]))
-        .map(|r| r[0])
+        .filter_map(|k| bonus_table.get(8 + k * 16..8 + k * 16 + 16))
+        .filter(|record| record[1] == 1 && !battle.bonus_taken.contains(&record[0]))
+        .map(|record| record[0])
         .min()
 }
 
 fn on_off(on: bool) -> Vec<u8> {
     text(if on { "On" } else { "Off" })
+}
+
+/// A catalog enemy's name as the game prints it. An enemy with no known
+/// name is "Unidentified enemy"; its model code stays in the value column.
+fn entry_name(entry: &enemy_catalog::Entry) -> Vec<u8> {
+    match &entry.name_bytes {
+        Some(bytes) => bytes.clone(),
+        None if entry.category == enemy_catalog::Category::Unresolved => text("Unidentified enemy"),
+        None => text(&entry.name),
+    }
+}
+
+fn enemy_name(
+    gallery: &enemy_gallery::EnemyGallery,
+    actor: &enemy_gallery::GalleryActor,
+) -> Vec<u8> {
+    entry_name(&gallery.catalog.entries[actor.entry])
+}
+
+/// A motion's name for the menu. The motion set names its entries with bare
+/// codes ("02A"), so a motion is named by the script actions that request
+/// it ("appear, idle").
+fn motion_title(kind: &enemy_catalog::Kind, index: usize) -> String {
+    let names = kind.action_names_for_slot(kind.motions[index].slot);
+    match names.as_slice() {
+        [] => "Unnamed motion".into(),
+        [one] => one.clone(),
+        [first, second] => format!("{first}, {second}"),
+        [first, second, rest @ ..] => format!("{first}, {second} and {} more", rest.len()),
+    }
+}
+
+/// The motion set's own code for a motion, with its slot number.
+fn motion_code(kind: &enemy_catalog::Kind, index: usize) -> String {
+    let motion = &kind.motions[index];
+    match motion.name.trim() {
+        "" => format!("Slot {}", motion.slot),
+        code => format!("{code}, slot {}", motion.slot),
+    }
+}
+
+/// "12.5 / 48": the frame now showing and the motion's last frame.
+fn frame_text(actor: &enemy_gallery::GalleryActor) -> String {
+    match actor.timeline() {
+        Some(timeline) => format!("{:.1} / {:.0}", actor.frame, timeline.end),
+        None => "No motion".into(),
+    }
+}
+
+/// The two lines above a preview's rows: the enemy and motion, then the
+/// frame, speed and play state.
+fn preview_info(
+    gallery: &enemy_gallery::EnemyGallery,
+    actor: Option<&enemy_gallery::GalleryActor>,
+) -> Vec<Vec<u8>> {
+    let Some(actor) = actor else {
+        return vec![text("No enemy selected"), Vec::new()];
+    };
+    let motion = if actor.battle.is_some() {
+        "AI is in control".to_string()
+    } else if let Some(choice) = actor.motion_choice {
+        format!(
+            "{}, {}",
+            motion_title(&actor.kind, choice),
+            motion_code(&actor.kind, choice)
+        )
+    } else {
+        "Bind pose".into()
+    };
+    let mut first = enemy_name(gallery, actor);
+    first.extend(text(&format!(" - {motion}")));
+    let state = if actor.battle.is_some() {
+        "AI"
+    } else if actor.paused {
+        "Paused"
+    } else if actor.looping {
+        "Playing, looping"
+    } else {
+        "Playing"
+    };
+    let second = match actor.timeline() {
+        Some(timeline) => format!(
+            "Frame {}   {:.0} fps   {:.2}x   {state}",
+            frame_text(actor),
+            timeline.fps,
+            actor.rate
+        ),
+        None => "Pick a motion on the Motions tab".into(),
+    };
+    vec![first, text(&second)]
 }
 
 fn rows(
@@ -307,19 +565,19 @@ fn rows(
         action,
         enabled,
     };
-    let rt = game.enemy.as_ref();
+    let battle = game.enemy.as_ref();
     match page {
         Page::Main => {
-            let level = rt.map(|rt| (rt.level, (rt.level as usize) < rt.sora_levels.len()));
+            let level = battle.map(|b| (b.level, (b.level as usize) < b.sora_levels.len()));
             let busy = area.is_some_and(|a| a.transition.is_some() || a.pending.is_some());
-            let mut v = vec![
+            let mut list = vec![
                 row(
                     "Items",
                     Action::Page(Page::Items),
                     game.items.is_some() || camp.is_some(),
                 ),
                 row("Restore HP, MP and Drive", Action::Restore, true),
-                row("Knock Sora out", Action::KnockOut, rt.is_some()),
+                row("Knock Sora out", Action::KnockOut, battle.is_some()),
                 Row {
                     value: level.map_or_else(Vec::new, |(l, _)| text(&format!("Lv {l}"))),
                     ..row("Level up", Action::LevelUp, level.is_some_and(|l| l.1))
@@ -330,8 +588,12 @@ fn rows(
                     game.drive.is_some(),
                 ),
                 Row {
-                    value: next_bonus(game).map_or_else(Vec::new, |id| text(&format!("#{id}"))),
-                    ..row("Bonus level", Action::Bonus, next_bonus(game).is_some())
+                    value: next_bonus(game).map_or_else(Vec::new, |id| text(&format!("No. {id}"))),
+                    ..row(
+                        "Bonus level",
+                        Action::BonusLevel,
+                        next_bonus(game).is_some(),
+                    )
                 },
                 row("Growth levels", Action::Page(Page::Growth), true),
                 row("Summon enemies", Action::Page(Page::Enemies), true),
@@ -339,7 +601,7 @@ fn rows(
                     value: on_off(game.player.abilities.has(enemy_target::SCAN_BIT)),
                     ..row(
                         "Scan",
-                        Action::Scan,
+                        Action::ToggleScan,
                         game.ability_slots
                             .iter()
                             .any(|s| s & 0x7fff == enemy_target::SCAN_ITEM),
@@ -347,48 +609,56 @@ fn rows(
                 },
                 Row {
                     value: on_off(game.cheats.invincible),
-                    ..row("Invincible", Action::Invincible, rt.is_some())
+                    ..row("Invincible", Action::ToggleInvincible, battle.is_some())
                 },
                 row(
                     "Defeat battle target",
-                    Action::Defeat,
-                    rt.is_some_and(|rt| rt.enemy.alive()),
+                    Action::DefeatBattleTarget,
+                    battle.is_some_and(|b| b.enemy.alive()),
                 ),
-                row("Respawn battle target", Action::Respawn, rt.is_some()),
+                row(
+                    "Respawn battle target",
+                    Action::RespawnBattleTarget,
+                    battle.is_some(),
+                ),
                 Row {
                     value: on_off(game.cheats.enemy_frozen),
-                    ..row("Freeze battle target", Action::Freeze, rt.is_some())
+                    ..row(
+                        "Freeze battle target",
+                        Action::ToggleFreezeBattleTarget,
+                        battle.is_some(),
+                    )
                 },
                 row("Warp", Action::Page(Page::Warp), area.is_some() && !busy),
             ];
-            v.push(row("Close", Action::Close, true));
-            v
+            list.push(row("Close", Action::Close, true));
+            list
         }
         Page::Items => {
-            let mut v = vec![row("Fill every item", Action::FillItems, true)];
+            let mut list = vec![row("Fill every item", Action::FillItems, true)];
             for (id, name) in item_list(camp, game) {
-                v.push(Row {
+                list.push(Row {
                     label: name,
                     value: text(&stock_of(game, camp, id).to_string()),
                     action: Action::Item(id),
                     enabled: true,
                 });
             }
-            v
+            list
         }
         Page::Forms => {
-            let d = game.drive.as_ref();
-            let idle = d.is_some_and(|d| !d.active && d.change.is_none());
-            let mut v: Vec<Row> = FORMS
+            let drive = game.drive.as_ref();
+            let idle = drive.is_some_and(|d| !d.active && d.change.is_none());
+            let mut list: Vec<Row> = FORMS
                 .iter()
-                .map(|&(f, name)| row(name, Action::Form(f), idle))
+                .map(|&(form, name)| row(name, Action::Form(form), idle))
                 .collect();
-            v.push(row(
+            list.push(row(
                 "Revert",
                 Action::Form(0),
-                d.is_some_and(|d| d.active && d.change.is_none()),
+                drive.is_some_and(|d| d.active && d.change.is_none()),
             ));
-            v
+            list
         }
         Page::Growth => game
             .ability_source
@@ -416,35 +686,51 @@ fn rows(
             .collect(),
         Page::Enemies => {
             use enemy_catalog::Category;
-            let mut v: Vec<Row> = [Category::Heartless, Category::Nobody, Category::Unresolved]
-                .into_iter()
-                .map(|c| {
-                    let count = gallery
-                        .catalog
-                        .entries
-                        .iter()
-                        .filter(|e| e.category == c)
-                        .count();
-                    Row {
-                        value: text(&count.to_string()),
-                        ..row(c.label(), Action::Page(Page::Roster(c)), count > 0)
-                    }
-                })
-                .collect();
-            v.push(Row {
+            let mut list = Vec::new();
+            if let Some(actor) = gallery.selected_actor() {
+                list.push(Row {
+                    value: enemy_name(gallery, actor),
+                    ..row(
+                        "Animation preview",
+                        Action::Page(Page::Preview(PreviewTab::Playback)),
+                        true,
+                    )
+                });
+            }
+            list.extend(
+                [Category::Heartless, Category::Nobody, Category::Unresolved]
+                    .into_iter()
+                    .map(|category| {
+                        let count = gallery
+                            .catalog
+                            .entries
+                            .iter()
+                            .filter(|e| e.category == category)
+                            .count();
+                        Row {
+                            value: text(&count.to_string()),
+                            ..row(
+                                category.label(),
+                                Action::Page(Page::Roster(category)),
+                                count > 0,
+                            )
+                        }
+                    }),
+            );
+            list.push(Row {
                 value: text(&gallery.actors.len().to_string()),
                 ..row(
-                    "Summoned actors",
+                    "Summoned enemies",
                     Action::Page(Page::Actors),
                     !gallery.actors.is_empty(),
                 )
             });
-            v.push(row(
-                "Clear summons",
+            list.push(row(
+                "Remove every summoned enemy",
                 Action::ClearActors,
                 !gallery.actors.is_empty(),
             ));
-            v
+            list
         }
         Page::Roster(category) => gallery
             .catalog
@@ -452,127 +738,169 @@ fn rows(
             .iter()
             .enumerate()
             .filter(|(_, e)| e.category == category)
-            .map(|(i, e)| Row {
-                label: e.name_bytes.clone().unwrap_or_else(|| text(&e.name)),
+            .map(|(index, e)| Row {
+                label: entry_name(e),
                 value: text(&if !e.model_available {
-                    "No model".into()
+                    "No model".to_string()
                 } else if !e.motions_available {
-                    "No motions".into()
+                    "No motions".to_string()
+                } else if e.name_bytes.is_none() {
+                    e.model_name.replace('_', " ")
                 } else {
-                    format!("#{:04x}", e.object_id)
+                    String::new()
                 }),
-                action: Action::Summon(i),
+                action: Action::Summon(index),
                 enabled: e.model_available,
             })
             .collect(),
         Page::Actors => gallery
             .actors
             .iter()
-            .map(|a| {
-                let e = &gallery.catalog.entries[a.entry];
+            .map(|actor| {
+                let mut label = enemy_name(gallery, actor);
+                label.extend(text(&format!(" ({})", actor.id)));
                 Row {
-                    label: e.name_bytes.clone().unwrap_or_else(|| text(&e.name)),
-                    value: text(&format!("#{}", a.id)),
-                    action: Action::Actor(a.id),
+                    label,
+                    value: text(&match actor.motion_choice {
+                        Some(choice) => motion_title(&actor.kind, choice),
+                        None => "Bind pose".into(),
+                    }),
+                    action: Action::SelectActor(actor.id),
                     enabled: true,
                 }
             })
             .collect(),
-        Page::Animation => {
-            let Some(a) = gallery.selected_actor() else {
+        Page::Preview(tab) => {
+            let Some(actor) = gallery.selected_actor() else {
+                return vec![row("Summon an enemy first", Action::Info, false)];
+            };
+            let controllable = actor.battle.is_none();
+            let playable = controllable && actor.timeline().is_some();
+            match tab {
+                PreviewTab::Playback => {
+                    let length = actor.timeline().map_or_else(String::new, |t| {
+                        format!("{:.0} frames, {:.2} s", t.length(), t.seconds())
+                    });
+                    vec![
+                        Row {
+                            value: text(if actor.paused { "Paused" } else { "Playing" }),
+                            ..row("Play / pause", Action::PlayPause, playable)
+                        },
+                        row("Step forward one frame", Action::StepFrame(true), playable),
+                        row("Step back one frame", Action::StepFrame(false), playable),
+                        Row {
+                            value: text(&frame_text(actor)),
+                            ..row("Go to frame", Action::GoToFrame, playable)
+                        },
+                        row("Jump to start", Action::JumpToPercent(0), playable),
+                        row("Jump to middle", Action::JumpToPercent(50), playable),
+                        row("Jump to end", Action::JumpToPercent(100), playable),
+                        row("Replay from start", Action::Replay, playable),
+                        Row {
+                            value: on_off(actor.looping),
+                            ..row("Loop", Action::ToggleLoop, playable)
+                        },
+                        Row {
+                            value: text(&format!("{:.2}x", actor.rate)),
+                            ..row("Playback speed", Action::PlaybackSpeed, playable)
+                        },
+                        Row {
+                            value: text(&length),
+                            ..row("Length", Action::Info, false)
+                        },
+                    ]
+                }
+                PreviewTab::Motions => actor
+                    .kind
+                    .motions
+                    .iter()
+                    .enumerate()
+                    .map(|(index, motion)| Row {
+                        label: text(&motion_title(&actor.kind, index)),
+                        value: text(&if motion.status.is_some() {
+                            "Unavailable".to_string()
+                        } else if actor.motion_choice == Some(index) {
+                            "Playing".to_string()
+                        } else {
+                            motion_code(&actor.kind, index)
+                        }),
+                        action: Action::PlayMotion(index),
+                        enabled: controllable && motion.status.is_none(),
+                    })
+                    .collect(),
+                PreviewTab::Actions => actor
+                    .kind
+                    .action_choices()
+                    .into_iter()
+                    .map(|(label, index)| Row {
+                        label: text(&label),
+                        value: text(if actor.motion_choice == Some(index) {
+                            "Playing"
+                        } else {
+                            ""
+                        }),
+                        action: Action::PlayMotion(index),
+                        enabled: controllable && actor.kind.motions[index].status.is_none(),
+                    })
+                    .collect(),
+                PreviewTab::View => vec![
+                    Row {
+                        value: on_off(gallery.overlays.skeleton),
+                        ..row("Skeleton", Action::ToggleSkeleton, true)
+                    },
+                    Row {
+                        value: on_off(gallery.overlays.hide_model),
+                        ..row("Hide model", Action::ToggleHideModel, true)
+                    },
+                    Row {
+                        value: on_off(game.show_collision),
+                        ..row("Collision overlay", Action::ToggleCollisionOverlay, true)
+                    },
+                    Row {
+                        value: on_off(actor.apply_root),
+                        ..row("Root motion", Action::ToggleRootMotion, controllable)
+                    },
+                ],
+                PreviewTab::Enemy => vec![
+                    row(
+                        "Enable AI and combat",
+                        Action::EnableBattle,
+                        actor.battle.is_none()
+                            && super::enemy_battle::supported(
+                                &gallery.catalog.entries[actor.entry],
+                            ),
+                    ),
+                    Row {
+                        value: text(&actor.battle.as_ref().map_or_else(
+                            || "Preview only".into(),
+                            |b| format!("HP {} {}", b.brain.hp(), b.brain.description()),
+                        )),
+                        ..row(
+                            "Defeat this enemy",
+                            Action::DefeatSummoned,
+                            actor.battle.is_some(),
+                        )
+                    },
+                    row(
+                        "Respawn this enemy",
+                        Action::RespawnSummoned,
+                        actor.battle.is_some(),
+                    ),
+                    row("Remove this enemy", Action::RemoveActor, true),
+                    row("Choose another enemy", Action::Page(Page::Actors), true),
+                ],
+            }
+        }
+        Page::Warp => {
+            let Some(area) = area else {
                 return Vec::new();
             };
-            vec![
-                row(
-                    "Enable AI and combat",
-                    Action::Battle,
-                    a.battle.is_none()
-                        && super::enemy_battle::supported(&gallery.catalog.entries[a.entry]),
-                ),
-                Row {
-                    value: text(&a.battle.as_ref().map_or_else(
-                        || "Preview".into(),
-                        |b| format!("HP {} {}", b.brain.hp(), b.brain.description()),
-                    )),
-                    ..row(
-                        "Defeat summoned enemy",
-                        Action::BattleDefeat,
-                        a.battle.is_some(),
-                    )
-                },
-                row(
-                    "Respawn summoned enemy",
-                    Action::BattleRespawn,
-                    a.battle.is_some(),
-                ),
-                row(
-                    "Named action motions",
-                    Action::Page(Page::EnemyActions),
-                    !a.kind.action_choices().is_empty(),
-                ),
-                row(
-                    "Choose motion",
-                    Action::Page(Page::Motions),
-                    !a.kind.motions.is_empty(),
-                ),
-                Row {
-                    value: on_off(a.frozen),
-                    ..row("Freeze animation", Action::FreezeAnimation, true)
-                },
-                Row {
-                    value: on_off(a.looping),
-                    ..row("Loop animation", Action::LoopAnimation, true)
-                },
-                Row {
-                    value: text(&format!("{:.2}x", a.rate)),
-                    ..row("Playback speed", Action::AnimationRate, true)
-                },
-                Row {
-                    value: on_off(a.apply_root),
-                    ..row("Root translation", Action::RootAnimation, true)
-                },
-                row("Restart motion", Action::RestartAnimation, true),
-                row("Step one frame", Action::StepAnimation, true),
-                row("Remove actor", Action::RemoveActor, true),
-            ]
-        }
-        Page::Motions => gallery.selected_actor().map_or_else(Vec::new, |a| {
-            a.kind
-                .motions
-                .iter()
-                .enumerate()
-                .map(|(i, m)| Row {
-                    label: text(&format!("{} {}", m.slot, m.name)),
-                    value: text(if m.status.is_some() {
-                        "Unavailable"
-                    } else {
-                        ""
-                    }),
-                    action: Action::Motion(i),
-                    enabled: m.status.is_none(),
-                })
-                .collect()
-        }),
-        Page::EnemyActions => gallery.selected_actor().map_or_else(Vec::new, |a| {
-            a.kind
-                .action_choices()
-                .into_iter()
-                .map(|(label, i)| Row {
-                    label: text(&label),
-                    value: text(&a.kind.motions[i].slot.to_string()),
-                    action: Action::Motion(i),
-                    enabled: a.kind.motions[i].status.is_none(),
-                })
-                .collect()
-        }),
-        Page::Warp => {
-            let Some(a) = area else { return Vec::new() };
-            let (world, here) = (a.current.world, a.current.area);
+            let (world, here) = (area.current.world, area.current.area);
             let code = ::area::progress::WORLDS[world as usize];
             let saved = crate::launcher::field_start(code).map(|_| {
                 saved.map_or_else(|| text("Default"), |(n, _)| text(&format!("{code}{n:02}")))
             });
-            let mut v = vec![Row {
+            let mut list = vec![Row {
                 value: saved.clone().unwrap_or_default(),
                 ..row(
                     &format!("Start here next launch ({code}{here:02})"),
@@ -580,44 +908,66 @@ fn rows(
                     saved.is_some(),
                 )
             }];
-            v.extend(
+            list.extend(
                 (0..::area::progress::WORLDS.len() as u8)
-                    .filter(|&w| !a.source.rooms(w).is_empty())
+                    .filter(|&w| !area.source.rooms(w).is_empty())
                     .map(|w| Row {
                         value: if w == world {
                             text("Here")
                         } else {
-                            text(&format!("{} rooms", a.source.rooms(w).len()))
+                            text(&format!("{} rooms", area.source.rooms(w).len()))
                         },
                         ..row(area::world_name(w), Action::Page(Page::Rooms(w)), true)
                     }),
             );
-            v
+            list
         }
-        Page::Rooms(w) => {
-            let Some(a) = area else { return Vec::new() };
-            let code = ::area::progress::WORLDS[w as usize];
-            let current = (a.current.world, a.current.area);
-            a.source
-                .rooms(w)
+        Page::Rooms(world) => {
+            let Some(area) = area else {
+                return Vec::new();
+            };
+            let code = ::area::progress::WORLDS[world as usize];
+            let current = (area.current.world, area.current.area);
+            area.source
+                .rooms(world)
                 .iter()
-                .map(|&n| Row {
-                    label: a
+                .map(|&room| Row {
+                    label: area
                         .source
-                        .place_name(w, n)
+                        .place_name(world, room)
                         .cloned()
-                        .unwrap_or_else(|| text(&format!("Room {n:02}"))),
-                    value: if (w, n) == current {
+                        .unwrap_or_else(|| text(&format!("Room {room:02}"))),
+                    value: if (world, room) == current {
                         text("Here")
                     } else {
-                        text(&format!("{code}{n:02}"))
+                        text(&format!("{code}{room:02}"))
                     },
-                    action: Action::Warp(w, n),
-                    enabled: (w, n) != current,
+                    action: Action::Warp(world, room),
+                    enabled: (world, room) != current,
                 })
                 .collect()
         }
     }
+}
+
+/// `rows`, narrowed to the ones containing the typed search.
+fn listed(
+    menu: &DebugMenu,
+    game: &Game,
+    area: Option<&AreaRes>,
+    camp: Option<&CampRes>,
+    gallery: &enemy_gallery::EnemyGallery,
+) -> Vec<Row> {
+    let mut list = rows(menu.page, menu.saved, game, area, camp, gallery);
+    if menu.page.searchable() && !menu.search.is_empty() {
+        list.retain(|row| {
+            let words = format!("{} {}", plain(&row.label), plain(&row.value));
+            menu.search
+                .split_whitespace()
+                .all(|word| words.contains(word))
+        });
+    }
+    list
 }
 
 fn heading(page: Page) -> String {
@@ -627,22 +977,26 @@ fn heading(page: Page) -> String {
         Page::Forms => "Debug - Drive form".into(),
         Page::Growth => "Debug - Growth levels".into(),
         Page::Enemies => "Debug - Summon enemies".into(),
-        Page::Roster(c) => format!("Summon - {}", c.label()),
-        Page::Actors => "Debug - Summoned actors".into(),
-        Page::Animation => "Enemy animation preview".into(),
-        Page::EnemyActions => "Enemy - Action candidates".into(),
-        Page::Motions => "Enemy - Source motions".into(),
+        Page::Roster(category) => format!("Summon - {}", category.label()),
+        Page::Actors => "Debug - Summoned enemies".into(),
+        Page::Preview(_) => "Enemy animation preview".into(),
         Page::Warp => "Debug - Warp".into(),
-        Page::Rooms(w) => format!("Debug - {}", area::world_name(w)),
+        Page::Rooms(world) => format!("Debug - {}", area::world_name(world)),
     }
 }
 
 fn footer(page: Page) -> &'static str {
     match page {
-        Page::Items | Page::Growth | Page::Animation => "Left/Right change   Esc back",
-        Page::Roster(_) => "Enter summon   Esc back",
         Page::Main => "Enter select   F3 close",
-        Page::Rooms(_) => "Enter warp   Esc back",
+        Page::Items => "Left/Right change   type to search   Esc back",
+        Page::Growth => "Left/Right change   Esc back",
+        Page::Roster(_) => "Enter summon   type to search   Esc back",
+        Page::Actors => "Enter preview   type to search   Esc back",
+        Page::Preview(PreviewTab::Motions) => "Enter play   type to search   Tab next tab",
+        Page::Preview(PreviewTab::Actions) => "Enter play (script candidates)   Tab next tab",
+        Page::Preview(_) => "Tab next tab   Left/Right change   F3 hide",
+        Page::Rooms(_) => "Enter warp   type to search   Esc back",
+        Page::Warp => "Enter select   type to search   Esc back",
         _ => "Enter select   Esc back",
     }
 }
@@ -660,54 +1014,56 @@ fn act(
     gallery: &mut enemy_gallery::EnemyGallery,
 ) -> Option<String> {
     match action {
-        Action::Scan => {
+        Action::Info => None,
+        Action::ToggleScan => {
             let enabled = !game.player.abilities.has(enemy_target::SCAN_BIT);
             Some(match enemy_target::set_scan(game, camp, enabled) {
                 Ok(()) => format!("Scan {}", if enabled { "on" } else { "off" }),
                 Err(e) => e,
             })
         }
-        Action::Battle => {
+        Action::EnableBattle => {
             gallery.queue_battle();
             Some("Loading source AI and combat".into())
         }
-        Action::BattleDefeat => {
+        Action::DefeatSummoned => {
             gallery.defeat_selected();
             None
         }
-        Action::BattleRespawn => {
+        Action::RespawnSummoned => {
             gallery.respawn_selected();
             None
         }
-        Action::Page(p) => {
+        Action::Page(page) => {
             if menu.page == Page::Main {
                 menu.main_cursor = menu.cursor;
             }
-            menu.page = p;
-            menu.cursor = 0;
-            menu.top = 0;
-            match (p, area.as_deref()) {
-                (Page::Warp, Some(a)) => {
-                    let code = ::area::progress::WORLDS[a.current.world as usize];
+            menu.go_to(page, 0);
+            match (page, area.as_deref()) {
+                (Page::Warp, Some(area)) => {
+                    let code = ::area::progress::WORLDS[area.current.world as usize];
                     menu.saved = crate::launcher::saved_start(&crate::launcher::data_dir(), code);
                 }
                 // A world's rooms open on the current room.
-                (Page::Rooms(w), Some(a)) if w == a.current.world => {
-                    let rooms = a.source.rooms(w);
-                    menu.cursor = rooms.iter().position(|&n| n == a.current.area).unwrap_or(0);
+                (Page::Rooms(world), Some(area)) if world == area.current.world => {
+                    let rooms = area.source.rooms(world);
+                    menu.cursor = rooms
+                        .iter()
+                        .position(|&room| room == area.current.area)
+                        .unwrap_or(0);
                 }
                 _ => {}
             }
             None
         }
         Action::SaveStart => {
-            let a = area?;
-            let code = ::area::progress::WORLDS[a.current.world as usize];
-            let (n, entrance) = (a.current.area, a.current.state.entrance);
-            match crate::launcher::save_start(code, n, entrance) {
+            let area = area?;
+            let code = ::area::progress::WORLDS[area.current.world as usize];
+            let (room, entrance) = (area.current.area, area.current.state.entrance);
+            match crate::launcher::save_start(code, room, entrance) {
                 Ok(_) => {
-                    menu.saved = Some((n, entrance));
-                    Some(format!("{code}{n:02} is this world's start"))
+                    menu.saved = Some((room, entrance));
+                    Some(format!("{code}{room:02} is this world's start"))
                 }
                 Err(e) => Some(format!("Start not saved: {e}")),
             }
@@ -717,11 +1073,11 @@ fn act(
             None
         }
         Action::Restore => {
-            if let Some(rt) = game.enemy.as_mut() {
-                rt.sora_hp = rt.sora_target.max_hp;
-                rt.ko_ticks = 0;
-            } else if let Some(h) = hud {
-                h.stats.hp = h.stats.max_hp;
+            if let Some(battle) = game.enemy.as_mut() {
+                battle.sora_hp = battle.sora_target.max_hp;
+                battle.ko_ticks = 0;
+            } else if let Some(hud) = hud {
+                hud.stats.hp = hud.stats.max_hp;
             }
             let mp = &mut game.player.mp;
             (mp.cur, mp.remaining, mp.total) = (mp.max, 0., 0.);
@@ -748,34 +1104,34 @@ fn act(
         Action::LevelUp => {
             let tick = game.tick;
             let Game { enemy, log, .. } = game;
-            let rt = enemy.as_mut()?;
-            let next = rt.sora_levels.get(rt.level as usize - 1)?.exp;
-            let need = next.saturating_sub(rt.exp_total).max(1);
-            prize_room::grant_exp(rt, need, log, tick);
-            Some(format!("Level {}", rt.level))
+            let battle = enemy.as_mut()?;
+            let next = battle.sora_levels.get(battle.level as usize - 1)?.exp;
+            let need = next.saturating_sub(battle.exp_total).max(1);
+            prize_room::grant_exp(battle, need, log, tick);
+            Some(format!("Level {}", battle.level))
         }
-        Action::Bonus => {
+        Action::BonusLevel => {
             // A battle's bonus level (FUN_1403edca0): the next one Sora has
             // a row in.
             let id = next_bonus(game)?;
-            let bons = game.drive.as_ref()?.src.growth.bons.clone();
+            let bonus_table = game.drive.as_ref()?.src.growth.bons.clone();
             let Game { enemy, player, .. } = game;
-            super::level_growth::apply_bonus(enemy.as_mut()?, player, &bons, id).ok()?;
+            super::level_growth::apply_bonus(enemy.as_mut()?, player, &bonus_table, id).ok()?;
             Some(format!("Bonus level {id}"))
         }
-        Action::Invincible => {
+        Action::ToggleInvincible => {
             game.cheats.invincible = !game.cheats.invincible;
             None
         }
-        Action::Freeze => {
+        Action::ToggleFreezeBattleTarget => {
             game.cheats.enemy_frozen = !game.cheats.enemy_frozen;
             None
         }
-        Action::Defeat => {
+        Action::DefeatBattleTarget => {
             game.enemy.as_mut()?.enemy.defeat();
             Some("Enemy defeated".into())
         }
-        Action::Respawn => {
+        Action::RespawnBattleTarget => {
             game.enemy.as_mut()?.enemy.respawn();
             Some("Enemy respawned".into())
         }
@@ -784,8 +1140,8 @@ fn act(
                 set_stock(game, camp.as_deref_mut(), id, cap_of(id));
             }
             // Empty battle slots take their item back.
-            if let Some(it) = game.items.as_mut() {
-                for (slot, &auto) in it.slots.iter_mut().zip(&it.originals) {
+            if let Some(items) = game.items.as_mut() {
+                for (slot, &auto) in items.slots.iter_mut().zip(&items.originals) {
                     if *slot == 0 {
                         *slot = auto;
                     }
@@ -794,17 +1150,17 @@ fn act(
             Some("Every item filled".into())
         }
         Action::Item(id) => {
-            let n = stock_of(game, camp.as_deref(), id) as i32 + step;
-            set_stock(game, camp, id, n.clamp(0, cap_of(id) as i32) as u8);
+            let count = stock_of(game, camp.as_deref(), id) as i32 + step;
+            set_stock(game, camp, id, count.clamp(0, cap_of(id) as i32) as u8);
             None
         }
-        Action::Form(f) => {
-            let d = game.drive.as_ref()?;
-            let (active, changing) = (d.active, d.change.is_some());
+        Action::Form(form) => {
+            let drive = game.drive.as_ref()?;
+            let (active, changing) = (drive.active, drive.change.is_some());
             if changing {
                 return None;
             }
-            if f == 0 {
+            if form == 0 {
                 if active {
                     drive_room::start_change(game, 0);
                     menu.open = false;
@@ -816,7 +1172,7 @@ fn act(
             }
             // A full gauge gives the form its full time.
             game.player.drive.refill();
-            drive_room::start_change(game, f);
+            drive_room::start_change(game, form);
             menu.open = false;
             None
         }
@@ -824,78 +1180,99 @@ fn act(
             game.ability_source
                 .inventory
                 .change_growth(&mut game.ability_slots, family, step)?;
-            if let Some(c) = camp {
-                c.ability_slots.clone_from(&game.ability_slots);
+            if let Some(camp) = camp {
+                camp.ability_slots.clone_from(&game.ability_slots);
             }
             drive_room::rebuild_abilities(game, None);
             Some("Growth level changed; equip it in Abilities".into())
         }
-        Action::Summon(i) => {
-            let p = Vec3::from_array(game.player.position);
+        Action::Summon(entry) => {
+            let from = Vec3::from_array(game.player.position);
             let yaw = game.player.yaw;
-            let at = p + Quat::from_rotation_y(yaw) * Vec3::new(0., 0., 350.);
-            gallery.queue_summon(i, at, yaw + std::f32::consts::PI);
+            let at = from + Quat::from_rotation_y(yaw) * Vec3::new(0., 0., 350.);
+            gallery.queue_summon(entry, at, yaw + std::f32::consts::PI);
             menu.open = false;
             Some("Loading selected enemy".into())
         }
-        Action::Actor(id) => {
+        Action::SelectActor(id) => {
             gallery.select(id);
-            menu.page = Page::Animation;
-            menu.cursor = 0;
-            menu.top = 0;
+            menu.go_to(Page::Preview(PreviewTab::Playback), 0);
             None
         }
-        Action::Motion(i) => {
-            gallery.queue_motion(i);
-            menu.open = false;
+        // The menu stays open: the motion plays behind it.
+        Action::PlayMotion(index) => {
+            gallery.queue_motion(index);
             None
         }
-        Action::FreezeAnimation => {
-            gallery.toggle_frozen();
+        Action::PlayPause => {
+            gallery.toggle_paused();
             None
         }
-        Action::LoopAnimation => {
-            gallery.toggle_loop();
+        Action::StepFrame(forward) => {
+            gallery.step_frame(forward);
             None
         }
-        Action::RestartAnimation => {
+        Action::GoToFrame => {
+            gallery.scrub(step as f32);
+            None
+        }
+        Action::JumpToPercent(percent) => {
+            gallery.go_to_fraction(f32::from(percent) / 100.);
+            None
+        }
+        Action::Replay => {
             gallery.restart();
             None
         }
-        Action::StepAnimation => {
-            gallery.step();
+        Action::ToggleLoop => {
+            gallery.toggle_loop();
             None
         }
-        Action::AnimationRate => {
-            gallery.change_rate(step as f32 * 0.25);
+        Action::PlaybackSpeed => {
+            gallery.change_speed(step);
             None
         }
-        Action::RootAnimation => {
+        Action::ToggleRootMotion => {
             gallery.toggle_root();
+            None
+        }
+        Action::ToggleSkeleton => {
+            let overlays = &mut gallery.overlays;
+            overlays.skeleton = !overlays.skeleton;
+            // A hidden model needs the skeleton to show anything.
+            overlays.hide_model &= overlays.skeleton;
+            None
+        }
+        Action::ToggleHideModel => {
+            let overlays = &mut gallery.overlays;
+            overlays.hide_model = !overlays.hide_model;
+            overlays.skeleton |= overlays.hide_model;
+            None
+        }
+        Action::ToggleCollisionOverlay => {
+            game.show_collision = !game.show_collision;
             None
         }
         Action::RemoveActor => {
             gallery.remove_selected();
-            menu.page = Page::Actors;
-            menu.cursor = 0;
-            menu.top = 0;
+            menu.go_to(Page::Actors, 0);
             None
         }
         Action::ClearActors => {
             gallery.clear();
             Some("Summons cleared".into())
         }
-        Action::Warp(world, n) => {
-            let a = area?;
-            if a.transition.is_some() || a.pending.is_some() {
+        Action::Warp(world, room) => {
+            let area = area?;
+            if area.transition.is_some() || area.pending.is_some() {
                 return None;
             }
-            a.transition = Some(Transition {
+            area.transition = Some(Transition {
                 stage: Stage::Closing,
                 iris: None,
                 fade: Fade::default(),
-                target: (world, n, 0),
-                job: start_area_job(&a.source, (world, n, 0)),
+                target: (world, room, 0),
+                job: start_area_job(&area.source, (world, room, 0)),
             });
             menu.open = false;
             None
@@ -903,11 +1280,31 @@ fn act(
     }
 }
 
+/// The row to start on when a preview tab opens: the motion now playing.
+fn playing_row(
+    page: Page,
+    menu: &DebugMenu,
+    game: &Game,
+    area: Option<&AreaRes>,
+    camp: Option<&CampRes>,
+    gallery: &enemy_gallery::EnemyGallery,
+) -> usize {
+    let Some(choice) = gallery.selected_actor().and_then(|a| a.motion_choice) else {
+        return 0;
+    };
+    rows(page, menu.saved, game, area, camp, gallery)
+        .iter()
+        .position(|row| row.action == Action::PlayMotion(choice))
+        .unwrap_or(0)
+}
+
 /// Opens, drives and closes the menu (Update, so presses are not missed
 /// between fixed ticks).
 #[allow(clippy::too_many_arguments)]
 pub fn tick(
     mut keys: ResMut<ButtonInput<KeyCode>>,
+    mut key_events: MessageReader<KeyboardInput>,
+    time: Res<Time>,
     pads: Query<(&Gamepad, Option<&Name>)>,
     mut menu: ResMut<DebugMenu>,
     mut game: ResMut<Game>,
@@ -917,6 +1314,15 @@ pub fn tick(
     mut gallery: ResMut<enemy_gallery::EnemyGallery>,
     mut gallery_notice: Local<String>,
 ) {
+    let typed: Vec<char> = key_events
+        .read()
+        .filter(|event| event.state == ButtonState::Pressed)
+        .filter_map(|event| match &event.logical_key {
+            Key::Character(characters) => Some(characters.chars().collect::<Vec<_>>()),
+            _ => None,
+        })
+        .flatten()
+        .collect();
     if *gallery_notice != gallery.status {
         *gallery_notice = gallery.status.clone();
         eprintln!("Enemy preview: {}", gallery.status);
@@ -929,8 +1335,15 @@ pub fn tick(
         }
     }
     if game.autoplay.is_some() {
-        if game.enemy_tour && menu.open {
-            menu.view = build_view(&mut menu, &game, area.as_deref(), camp.as_deref(), &gallery);
+        if game.enemy_tour {
+            enemy_tour::show_page(game.captures_taken, &mut menu, &mut gallery);
+        }
+        if game.enemy_tour && (menu.open || menu.view != View::default()) {
+            menu.view = if menu.open {
+                build_view(&mut menu, &game, area.as_deref(), camp.as_deref(), &gallery)
+            } else {
+                View::default()
+            };
             if let Some(h) = hud.as_deref_mut() {
                 h.updated = true;
             }
@@ -950,27 +1363,48 @@ pub fn tick(
             return;
         }
         menu.open = true;
-        menu.page = Page::Main;
-        menu.cursor = menu.main_cursor;
-        menu.top = 0;
+        // The preview reopens where it was left; everything else starts at
+        // the main page.
+        if matches!(menu.page, Page::Preview(_)) && gallery.selected_actor().is_some() {
+            menu.top = 0;
+        } else {
+            menu.go_to(Page::Main, menu.main_cursor);
+        }
     } else if input.toggle {
         menu.open = false;
     } else {
-        let list = rows(
-            menu.page,
-            menu.saved,
-            &game,
-            area.as_deref(),
-            camp.as_deref(),
-            &gallery,
-        );
+        // Typed letters narrow the list; Backspace and Esc take them back
+        // before they leave the page.
+        let mut back = input.back;
+        if menu.page.searchable() {
+            let before = menu.search.clone();
+            for c in typed.iter().copied().filter(|&c| searchable_char(c)) {
+                if menu.search.len() < MAX_SEARCH {
+                    menu.search.push(c.to_ascii_lowercase());
+                }
+            }
+            if back && !menu.search.is_empty() {
+                if input.erase {
+                    menu.search.pop();
+                } else {
+                    menu.search.clear();
+                }
+                back = false;
+            }
+            if menu.search != before {
+                menu.cursor = 0;
+                menu.top = 0;
+            }
+        }
+        let list = listed(menu, &game, area.as_deref(), camp.as_deref(), &gallery);
         let count = list.len();
+        let visible = menu.page.visible_rows();
         menu.cursor = menu.cursor.min(count.saturating_sub(1));
         if count > 0 {
             if keys.just_pressed(KeyCode::PageDown) {
-                menu.cursor = (menu.cursor + ROWS).min(count - 1);
+                menu.cursor = (menu.cursor + visible).min(count - 1);
             } else if keys.just_pressed(KeyCode::PageUp) {
-                menu.cursor = menu.cursor.saturating_sub(ROWS);
+                menu.cursor = menu.cursor.saturating_sub(visible);
             } else if keys.just_pressed(KeyCode::Home) {
                 menu.cursor = 0;
             } else if keys.just_pressed(KeyCode::End) {
@@ -979,32 +1413,45 @@ pub fn tick(
         }
         let selected = list.get(menu.cursor);
         let mut run = None;
+        let mut tab = input.tab;
         match input.step {
             Some(Dir::Up) if count > 0 => menu.cursor = (menu.cursor + count - 1) % count,
             Some(Dir::Down) if count > 0 => menu.cursor = (menu.cursor + 1) % count,
             Some(d @ (Dir::Left | Dir::Right)) => {
-                if let Some(r) = selected.filter(|r| {
-                    matches!(
-                        r.action,
-                        Action::Item(_) | Action::Growth(_) | Action::AnimationRate
-                    )
-                }) {
-                    run = Some((r.action, if d == Dir::Left { -1 } else { 1 }));
+                let direction = if d == Dir::Left { -1 } else { 1 };
+                if let Some(row) = selected.filter(|r| r.action.adjustable()) {
+                    run = Some((row.action, direction));
+                } else {
+                    // Rows with no value to change leave Left and Right free
+                    // for the preview's tabs.
+                    tab = direction;
                 }
             }
             _ => {}
         }
-        if input.confirm
-            && let Some(r) = selected.filter(|r| r.enabled)
+        if let Page::Preview(current) = menu.page
+            && tab != 0
         {
-            run = Some((r.action, 1));
-        } else if input.back {
+            let next = Page::Preview(current.shifted(tab));
+            let cursor = playing_row(
+                next,
+                menu,
+                &game,
+                area.as_deref(),
+                camp.as_deref(),
+                &gallery,
+            );
+            menu.go_to(next, cursor);
+        } else if input.confirm
+            && let Some(row) = selected.filter(|r| r.enabled)
+        {
+            run = Some((row.action, 1));
+        } else if back {
             match menu.page {
                 Page::Main => menu.open = false,
                 // Back to the world list, on the world just left.
-                Page::Rooms(w) => {
-                    menu.page = Page::Warp;
-                    menu.cursor = rows(
+                Page::Rooms(world) => {
+                    let cursor = rows(
                         Page::Warp,
                         menu.saved,
                         &game,
@@ -1013,30 +1460,13 @@ pub fn tick(
                         &gallery,
                     )
                     .iter()
-                    .position(|r| r.action == Action::Page(Page::Rooms(w)))
+                    .position(|r| r.action == Action::Page(Page::Rooms(world)))
                     .unwrap_or(0);
-                    menu.top = 0;
+                    menu.go_to(Page::Warp, cursor);
                 }
-                Page::Roster(_) | Page::Actors => {
-                    menu.page = Page::Enemies;
-                    menu.cursor = 0;
-                    menu.top = 0;
-                }
-                Page::Motions | Page::EnemyActions => {
-                    menu.page = Page::Animation;
-                    menu.cursor = 0;
-                    menu.top = 0;
-                }
-                Page::Animation => {
-                    menu.page = Page::Actors;
-                    menu.cursor = 0;
-                    menu.top = 0;
-                }
-                _ => {
-                    menu.page = Page::Main;
-                    menu.cursor = menu.main_cursor;
-                    menu.top = 0;
-                }
+                Page::Roster(_) | Page::Actors => menu.go_to(Page::Enemies, 0),
+                Page::Preview(_) => menu.go_to(Page::Actors, 0),
+                _ => menu.go_to(Page::Main, menu.main_cursor),
             }
         }
         if let Some((action, step)) = run {
@@ -1055,6 +1485,11 @@ pub fn tick(
                 menu.notice = Some((n, NOTICE_FRAMES));
             }
         }
+    }
+    // The preview keeps playing behind its own tabs (the field is paused
+    // while the menu is open, so its clock does not).
+    if menu.open && matches!(menu.page, Page::Preview(_)) {
+        enemy_gallery::advance(&mut gallery, time.delta_secs() * TICKS_PER_SECOND);
     }
     if let Some((_, frames)) = menu.notice.as_mut() {
         *frames = frames.saturating_sub(1);
@@ -1082,31 +1517,43 @@ fn build_view(
     camp: Option<&CampRes>,
     gallery: &enemy_gallery::EnemyGallery,
 ) -> View {
-    let list = rows(menu.page, menu.saved, game, area, camp, gallery);
+    let list = listed(menu, game, area, camp, gallery);
+    let visible = menu.page.visible_rows();
     menu.cursor = menu.cursor.min(list.len().saturating_sub(1));
-    menu.top = scroll(menu.cursor, menu.top);
+    menu.top = scroll(menu.cursor, menu.top, visible);
     let footer = match &menu.notice {
-        Some((n, _)) => n.clone(),
-        None if list.len() > ROWS => {
+        Some((notice, _)) => notice.clone(),
+        None if list.len() > visible => {
             format!("{}   {}/{}", footer(menu.page), menu.cursor + 1, list.len())
         }
         None => footer(menu.page).to_string(),
     };
-    let footer = if matches!(
-        menu.page,
-        Page::Animation | Page::Motions | Page::EnemyActions
-    ) && let Some(a) = gallery.selected_actor()
-    {
-        format!("Frame {:.1}   {}", a.frame, footer)
-    } else {
-        footer
+    let (tabs, info) = match menu.page {
+        Page::Preview(open) => (
+            PreviewTab::ALL
+                .iter()
+                .map(|&tab| (text(tab.label()), tab == open))
+                .collect(),
+            preview_info(gallery, gallery.selected_actor()),
+        ),
+        _ => (Vec::new(), Vec::new()),
     };
+    let search = menu.page.searchable().then(|| {
+        text(&if menu.search.is_empty() {
+            "Search: type to filter".to_string()
+        } else {
+            format!("Search: {}   ({} found)", menu.search, list.len())
+        })
+    });
     View {
         heading: text(&heading(menu.page)),
+        tabs,
+        info,
+        search,
         rows: list
             .into_iter()
             .skip(menu.top)
-            .take(ROWS)
+            .take(visible)
             .map(|r| (r.label, r.value, r.enabled))
             .collect(),
         selected: Some(menu.cursor - menu.top),
@@ -1115,11 +1562,11 @@ fn build_view(
 }
 
 /// The first row shown, moved just enough to keep the cursor in view.
-fn scroll(cursor: usize, top: usize) -> usize {
+fn scroll(cursor: usize, top: usize, visible: usize) -> usize {
     if cursor < top {
         cursor
-    } else if cursor >= top + ROWS {
-        cursor + 1 - ROWS
+    } else if cursor >= top + visible {
+        cursor + 1 - visible
     } else {
         top
     }
@@ -1146,14 +1593,60 @@ pub fn draws(view: &View, white: usize, font_sheet: usize, widths: &[u8]) -> Vec
     let mut glyphs = Vec::new();
     let cell = 24. * TEXT_SIZE / 18.;
     let line = |y: f32| y + (ROW_HEIGHT - cell) / 2.;
+    let inner_width = x1 - x0 - MARGIN * 2.;
     glyphs.extend(field_command_menu::text_quads_sized(
         &view.heading,
         [x0 + MARGIN, line(y0 + 6.)],
         [1.; 4],
         &font,
-        fit(&view.heading, TEXT_SIZE + 2., x1 - x0 - MARGIN * 2.),
+        fit(&view.heading, TEXT_SIZE + 2., inner_width),
     ));
-    let top = y0 + 34.;
+    let mut top = y0 + 34.;
+    if !view.tabs.is_empty() {
+        // The tab strip: the open tab on a bar, the others dim.
+        let mut x = x0 + MARGIN;
+        for (label, open) in &view.tabs {
+            let width = field_command_menu::text_width(label, &font, TEXT_SIZE - 1.);
+            if *open {
+                shapes.push(rect(
+                    x - 4.,
+                    top,
+                    x + width + 4.,
+                    top + ROW_HEIGHT,
+                    [1., 1., 1., 0.3],
+                ));
+            }
+            glyphs.extend(field_command_menu::text_quads_sized(
+                label,
+                [x, line(top)],
+                if *open { [1.; 4] } else { [0.6, 0.6, 0.6, 1.] },
+                &font,
+                TEXT_SIZE - 1.,
+            ));
+            x += width + 14.;
+        }
+        top += ROW_HEIGHT;
+    }
+    for info in &view.info {
+        glyphs.extend(field_command_menu::text_quads_sized(
+            info,
+            [x0 + MARGIN, line(top)],
+            [0.7, 0.85, 1., 1.],
+            &font,
+            fit(info, TEXT_SIZE - 1., inner_width),
+        ));
+        top += ROW_HEIGHT;
+    }
+    if let Some(search) = &view.search {
+        glyphs.extend(field_command_menu::text_quads_sized(
+            search,
+            [x0 + MARGIN, line(top)],
+            [1., 0.9, 0.5, 1.],
+            &font,
+            fit(search, TEXT_SIZE - 1., inner_width),
+        ));
+        top += ROW_HEIGHT;
+    }
     for (i, (label, value, enabled)) in view.rows.iter().enumerate() {
         let y = top + i as f32 * ROW_HEIGHT;
         if view.selected == Some(i) {
@@ -1170,25 +1663,18 @@ pub fn draws(view: &View, white: usize, font_sheet: usize, widths: &[u8]) -> Vec
         } else {
             [0.5, 0.5, 0.5, 1.]
         };
+        let value_width = field_command_menu::text_width(value, &font, TEXT_SIZE);
         glyphs.extend(field_command_menu::text_quads_sized(
             label,
             [x0 + MARGIN, line(y)],
             colour,
             &font,
-            fit(
-                label,
-                TEXT_SIZE,
-                x1 - x0
-                    - MARGIN * 2.
-                    - field_command_menu::text_width(value, &font, TEXT_SIZE)
-                    - 8.,
-            ),
+            fit(label, TEXT_SIZE, inner_width - value_width - 8.),
         ));
         if !value.is_empty() {
-            let w = field_command_menu::text_width(value, &font, TEXT_SIZE);
             glyphs.extend(field_command_menu::text_quads_sized(
                 value,
-                [x1 - MARGIN - w, line(y)],
+                [x1 - MARGIN - value_width, line(y)],
                 colour,
                 &font,
                 TEXT_SIZE,
@@ -1200,7 +1686,7 @@ pub fn draws(view: &View, white: usize, font_sheet: usize, widths: &[u8]) -> Vec
         [x0 + MARGIN, line(y1 - ROW_HEIGHT - 6.)],
         [0.7, 0.7, 0.7, 1.],
         &font,
-        fit(&view.footer, TEXT_SIZE - 2., x1 - x0 - MARGIN * 2.),
+        fit(&view.footer, TEXT_SIZE - 2., inner_width),
     ));
     vec![
         Draw::Quads {
@@ -1222,9 +1708,11 @@ mod tests {
 
     #[test]
     fn scroll_keeps_the_cursor_in_view() {
-        assert_eq!(scroll(20, 0), 20 + 1 - ROWS);
-        assert_eq!(scroll(3, 10), 3);
-        assert_eq!(scroll(12, 5), 5);
+        assert_eq!(scroll(20, 0, 15), 20 + 1 - 15);
+        assert_eq!(scroll(3, 10, 15), 3);
+        assert_eq!(scroll(12, 5, 15), 5);
+        // A page with header lines shows fewer rows.
+        assert_eq!(scroll(12, 0, 11), 2);
     }
 
     #[test]
@@ -1234,9 +1722,40 @@ mod tests {
     }
 
     #[test]
+    fn preview_tabs_wrap_in_both_directions() {
+        assert_eq!(PreviewTab::Playback.shifted(1), PreviewTab::Motions);
+        assert_eq!(PreviewTab::Playback.shifted(-1), PreviewTab::Enemy);
+        assert_eq!(PreviewTab::Enemy.shifted(1), PreviewTab::Playback);
+        assert_eq!(PreviewTab::View.shifted(5), PreviewTab::View);
+    }
+
+    #[test]
+    fn header_lines_leave_room_for_the_rows() {
+        assert_eq!(Page::Main.visible_rows(), LINES);
+        assert_eq!(Page::Items.visible_rows(), LINES - 1);
+        assert_eq!(
+            Page::Preview(PreviewTab::Playback).visible_rows(),
+            LINES - 3
+        );
+        assert_eq!(Page::Preview(PreviewTab::Motions).visible_rows(), LINES - 4);
+    }
+
+    #[test]
+    fn search_reads_back_what_the_menu_font_shows() {
+        assert_eq!(plain(&text("Shadow 12")), "shadow 12");
+        assert_eq!(plain(&text("Idle: slot 3.")), "idle: slot 3.");
+        assert_eq!(plain(&text("N_HIT")), "n hit");
+        assert!(searchable_char('a') && searchable_char('7') && searchable_char('-'));
+        assert!(!searchable_char('_') && !searchable_char('#'));
+    }
+
+    #[test]
     fn draws_put_text_inside_the_box() {
         let view = View {
             heading: text("Debug"),
+            tabs: vec![(text("Playback"), true), (text("Motions"), false)],
+            info: vec![text("Shadow - Idle"), text("Frame 1.0 / 48")],
+            search: Some(text("Search: type to filter")),
             rows: vec![(text("Items"), text("12"), true)],
             selected: Some(0),
             footer: text("F3 close"),

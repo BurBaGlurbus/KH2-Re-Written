@@ -770,7 +770,7 @@ impl BattleActor {
 
 pub fn tick(mut game: ResMut<Game>, mut gallery: ResMut<EnemyGallery>) {
     let tick = game.tick.saturating_sub(1);
-    let basic_fk = gallery.basic_fk;
+    let forward_kinematics_only = gallery.forward_kinematics_only;
     let Some(rt) = game.enemy.as_mut() else {
         return;
     };
@@ -784,7 +784,7 @@ pub fn tick(mut game: ResMut<Game>, mut gallery: ResMut<EnemyGallery>) {
         if battle.error.is_some() {
             continue;
         }
-        battle.paused = actor.frozen || game.cheats.enemy_frozen;
+        battle.paused = actor.paused || game.cheats.enemy_frozen;
         battle
             .brain
             .follow_capture(game.magic.as_ref().map_or(&[], |m| m.volumes.as_slice()));
@@ -796,7 +796,7 @@ pub fn tick(mut game: ResMut<Game>, mut gallery: ResMut<EnemyGallery>) {
             Ok((choice, key)) => {
                 actor.position = Vec3::from_array(battle.brain.position());
                 actor.yaw = battle.brain.yaw();
-                if let Err(e) = actor.battle_pose(choice, key, basic_fk) {
+                if let Err(e) = actor.battle_pose(choice, key, forward_kinematics_only) {
                     actor.error = Some(e)
                 }
                 super::enemy_motion_fx::scan(&mut game, actor);

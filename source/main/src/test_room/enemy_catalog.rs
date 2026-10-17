@@ -248,7 +248,7 @@ impl Catalog {
 
     /// Full sequential inspection denominator, for a private caller-selected
     /// report. Sampling success qualifies this evaluator, not reference poses.
-    pub fn audit(&self, source: &ProbeSource, basic_fk: bool) -> serde_json::Value {
+    pub fn audit(&self, source: &ProbeSource, forward_kinematics_only: bool) -> serde_json::Value {
         let mut cache = HashMap::new();
         let mut rows = Vec::new();
         for (index, entry) in self.entries.iter().enumerate() {
@@ -276,7 +276,7 @@ impl Catalog {
                                 }
                                 let mut samples = Vec::new();
                                 for frame in [window.0, (window.0 + window.1) * 0.5, window.1] {
-                                    let pose = if basic_fk {
+                                    let pose = if forward_kinematics_only {
                                         if frame < 0. { return Err("basic FK cannot sample negative source keys; use the evaluated profile".into()); }
                                         kind.model.skinning.sample_fk(&selected.motion, frame.round() as u32)?
                                     } else {
@@ -308,7 +308,7 @@ impl Catalog {
                 "category":entry.category,"classification":entry.classification,"reused_same_model_and_animation":reused,"inspection":detail
             }));
         }
-        serde_json::json!({"schema_version":1,"summary":self.summary(),"objects":rows,"distinct_model_and_animation_pairs":cache.len(),"evaluator":if basic_fk {"basic FK"} else {"motion evaluator IK/constraints"},"installed_comparison":"NOT RUN"})
+        serde_json::json!({"schema_version":1,"summary":self.summary(),"objects":rows,"distinct_model_and_animation_pairs":cache.len(),"evaluator":if forward_kinematics_only {"basic FK"} else {"motion evaluator IK/constraints"},"installed_comparison":"NOT RUN"})
     }
 
     pub fn load_kind(&self, source: &ProbeSource, index: usize) -> Result<Kind> {
@@ -510,6 +510,28 @@ impl Kind {
         source_action_choices(&self.actions, self.variants, &self.motions)
     }
 
+    /// The names of the script actions that request the motion in `slot`,
+    /// in script order, with underscores as spaces. The motion set's own
+    /// names are bare codes, so these are the readable names.
+    pub fn action_names_for_slot(&self, slot: usize) -> Vec<String> {
+        let mut names: Vec<String> = Vec::new();
+        for action in &self.actions {
+            let requests_slot = action.motions.iter().any(|request| {
+                let logical = request.logical_motion as usize;
+                if self.variants {
+                    logical == slot / 4
+                } else {
+                    logical == slot
+                }
+            });
+            let name = String::from_utf8_lossy(&action.name).replace('_', " ");
+            if requests_slot && !names.contains(&name) {
+                names.push(name);
+            }
+        }
+        names
+    }
+
     /// Only an unambiguous literal source action in a direct-index set can
     /// supply the development preview's appearance/idle shortcut.
     pub fn unique_action_motion(&self, name: &[u8]) -> Option<usize> {
@@ -579,7 +601,7 @@ fn source_action_choices(
 ) -> Vec<(String, usize)> {
     let mut choices = Vec::new();
     for action in actions {
-        let name = String::from_utf8_lossy(&action.name);
+        let name = String::from_utf8_lossy(&action.name).replace('_', " ");
         for request in &action.motions {
             let Some(base) = request
                 .logical_motion
@@ -596,12 +618,9 @@ fn source_action_choices(
                 };
                 if let Some((index, _)) = motions.iter().enumerate().find(|(_, m)| m.slot == slot) {
                     let label = if variants {
-                        format!(
-                            "{name}: motion {} variant {variant} [candidate]",
-                            request.logical_motion
-                        )
+                        format!("{name} - variant {variant}, slot {slot}")
                     } else {
-                        format!("{name}: motion {} [candidate]", request.logical_motion)
+                        format!("{name} - slot {slot}")
                     };
                     if !choices.contains(&(label.clone(), index)) {
                         choices.push((label, index));
@@ -697,8 +716,53 @@ mod tests {
             variants.iter().map(|c| c.1).collect::<Vec<_>>(),
             [2, 3, 4, 5]
         );
-        assert!(variants[1].0.contains("motion 2 variant 2"));
-        assert!(variants.iter().all(|c| c.0.ends_with("[candidate]")));
+        assert_eq!(variants[1].0, "generated action - variant 2, slot 10");
+        assert_eq!(direct[1].0, "generated action - slot 3");
+    }
+
+    #[test]
+    fn motions_are_named_by_the_script_actions_that_request_them() {
+        let action = |name: &[u8], logical_motion| enemy_actions::Action {
+            name: name.to_vec(),
+            registration: 0,
+            callback: 0,
+            flags: 0,
+            motions: vec![enemy_actions::MotionCandidate {
+                instruction: 0,
+                trap: 11,
+                logical_motion,
+            }],
+            unresolved_motion_requests: 0,
+            callback_error: None,
+        };
+        let mut kind = Kind::synthetic(
+            data::model_inspection::InspectionModel {
+                index: String::new(),
+                ordinal: 0,
+                bar_ordinal: 0,
+                excluded_linked_groups: 0,
+                parts: Vec::new(),
+                poses: Vec::new(),
+                skinning: Default::default(),
+                textures: None,
+                texture_routes: Vec::new(),
+            },
+            Vec::new(),
+            Vec::new(),
+        );
+        kind.actions = vec![
+            action(b"atk_claw", 3),
+            action(b"idle", 3),
+            action(b"idle", 3),
+            action(b"leave", 5),
+        ];
+        assert_eq!(kind.action_names_for_slot(3), ["atk claw", "idle"]);
+        assert_eq!(kind.action_names_for_slot(5), ["leave"]);
+        assert!(kind.action_names_for_slot(4).is_empty());
+        kind.variants = true;
+        // Four slots per logical motion: slots 12 to 15 are motion 3.
+        assert_eq!(kind.action_names_for_slot(14), ["atk claw", "idle"]);
+        assert!(kind.action_names_for_slot(3).is_empty());
     }
 
     #[test]

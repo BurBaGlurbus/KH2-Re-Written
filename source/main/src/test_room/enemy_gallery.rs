@@ -8,11 +8,13 @@ use super::{
     spawn_model,
 };
 use bevy::prelude::*;
-use data::{motion, probe_source::ProbeSource};
+use data::{model_pose::ModelPose, motion, probe_source::ProbeSource};
 use std::sync::Arc;
-use visual::area_fog::FogMaterial;
+use visual::area_fog::{AddFogged, FogMaterial};
 
 pub const MAX_ACTORS: usize = 16;
+/// The playback speeds the preview steps through.
+pub const SPEEDS: [f32; 9] = [0.1, 0.25, 0.5, 0.75, 1., 1.5, 2., 3., 4.];
 const MAX_PENDING: usize = 32;
 
 #[derive(Component)]
@@ -25,6 +27,23 @@ pub struct GalleryPart {
     revision: u64,
 }
 
+/// The bone lines drawn over (or instead of) an actor's model.
+#[derive(Component)]
+pub struct GallerySkeleton {
+    actor: u64,
+    /// The pose revision the lines show; `u64::MAX` until first drawn.
+    revision: u64,
+}
+
+/// What the preview draws besides the model.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct PreviewOverlays {
+    /// Bone lines, joint to parent joint.
+    pub skeleton: bool,
+    /// The model's meshes are hidden, so the skeleton shows alone.
+    pub hide_model: bool,
+}
+
 pub struct GalleryActor {
     pub battle: Option<super::enemy_battle::BattleActor>,
     pub id: u64,
@@ -35,14 +54,17 @@ pub struct GalleryActor {
     pub motion_choice: Option<usize>,
     /// Source key time, not an inferred simulation/action frame.
     pub frame: f32,
-    pub frozen: bool,
+    /// Where each bone's joint sits in model space (root motion removed
+    /// when `apply_root` is off), for the skeleton overlay.
+    pub joints: Vec<Vec3>,
+    pub paused: bool,
     pub looping: bool,
     pub rate: f32,
     pub apply_root: bool,
     pub error: Option<String>,
     root: Entity,
     selected_motion: Option<Arc<motion::SelectedMotion>>,
-    window: Option<Window>,
+    timeline: Option<Timeline>,
     pose: Vec<Vec3>,
     dirty: bool,
     revision: u64,
@@ -50,23 +72,35 @@ pub struct GalleryActor {
     preview_idle: Option<usize>,
 }
 
-#[derive(Clone, Copy, Debug)]
-struct Window {
-    start: f32,
-    end: f32,
-    fps: f32,
-    repeat: f32,
+/// A motion's playable range, in source key frames.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Timeline {
+    /// First playable key frame (can be negative).
+    pub start: f32,
+    /// Last playable key frame.
+    pub end: f32,
+    /// Key frames per second.
+    pub fps: f32,
+    /// Where a looping motion jumps back to after `end`.
+    pub loop_start: f32,
 }
 
 impl GalleryActor {
+    /// The loaded motion's playable range, if a motion is loaded.
+    pub fn timeline(&self) -> Option<Timeline> {
+        self.timeline
+    }
+
     pub(super) fn battle_pose(
         &mut self,
         choice: usize,
         key: f32,
-        basic_fk: bool,
+        forward_kinematics_only: bool,
     ) -> Result<(), String> {
         let motion = self.battle.as_ref().ok_or("battle absent")?.motion.clone();
-        self.pose = sample(&self.kind, &motion, key, false, basic_fk)?;
+        let sampled = sample(&self.kind, &motion, key, false, forward_kinematics_only)?;
+        self.pose = sampled.points;
+        self.joints = sampled.joints;
         self.motion_choice = Some(choice);
         self.selected_motion = Some(motion);
         self.frame = key;
@@ -76,17 +110,18 @@ impl GalleryActor {
     }
 }
 
-impl Window {
+impl Timeline {
     fn read(motion: &motion::SelectedMotion) -> Result<Self, String> {
-        let (start, end, fps, repeat) = motion.motion.frame_window().map_err(|e| e.to_string())?;
-        if [start, end, fps, repeat].iter().any(|n| !n.is_finite())
+        let (start, end, fps, loop_start) =
+            motion.motion.frame_window().map_err(|e| e.to_string())?;
+        if [start, end, fps, loop_start].iter().any(|n| !n.is_finite())
             || start.abs() > 16_777_216.
             || end < start
             || end.abs() > 16_777_216.
             || fps <= 0.
             || fps > 240.
-            || repeat.abs() > 16_777_216.
-            || repeat > end
+            || loop_start.abs() > 16_777_216.
+            || loop_start > end
         {
             return Err("motion frame window outside inspection profile".into());
         }
@@ -96,7 +131,7 @@ impl Window {
             fps,
             // A return time before the playable start repeats at the start;
             // this is an explicit inspection playback choice.
-            repeat: repeat.clamp(start, end),
+            loop_start: loop_start.clamp(start, end),
         })
     }
 
@@ -104,8 +139,43 @@ impl Window {
         let next = frame + ticks * self.fps / 60. * rate;
         if next <= self.end {
             next
-        } else if looping && self.repeat < self.end {
-            self.repeat + (next - self.end).rem_euclid(self.end - self.repeat)
+        } else if looping && self.loop_start < self.end {
+            self.loop_start + (next - self.end).rem_euclid(self.end - self.loop_start)
+        } else {
+            self.end
+        }
+    }
+
+    /// Key frames in the playable range.
+    pub fn length(self) -> f32 {
+        self.end - self.start
+    }
+
+    /// Seconds the playable range lasts at the source rate.
+    pub fn seconds(self) -> f32 {
+        self.length() / self.fps
+    }
+
+    /// The key frame `fraction` (0 to 1) of the way through the range.
+    fn at_fraction(self, fraction: f32) -> f32 {
+        self.start + self.length() * fraction.clamp(0., 1.)
+    }
+
+    /// The whole key frame one step from `frame`: forward takes the next
+    /// frame boundary, back the previous one. A looping motion wraps at
+    /// its ends; otherwise the step stops there.
+    fn step_frame(self, frame: f32, forward: bool, looping: bool) -> f32 {
+        let next = if forward {
+            frame.floor() + 1.
+        } else {
+            frame.ceil() - 1.
+        };
+        if (self.start..=self.end).contains(&next) {
+            next
+        } else if !looping {
+            next.clamp(self.start, self.end)
+        } else if forward {
+            self.start
         } else {
             self.end
         }
@@ -136,7 +206,10 @@ pub struct EnemyGallery {
     pub actors: Vec<GalleryActor>,
     pub selected: Option<u64>,
     pub status: String,
-    pub(super) basic_fk: bool,
+    /// Skeleton and model visibility for every actor.
+    pub overlays: PreviewOverlays,
+    /// Only the plain bone chain poses the model (no IK or constraints).
+    pub(super) forward_kinematics_only: bool,
     next_id: u64,
     pending: Vec<Request>,
     garbage: Vec<(u64, Entity)>,
@@ -144,7 +217,7 @@ pub struct EnemyGallery {
 }
 
 impl EnemyGallery {
-    pub fn new(source: Arc<ProbeSource>, catalog: Catalog, basic_fk: bool) -> Self {
+    pub fn new(source: Arc<ProbeSource>, catalog: Catalog, forward_kinematics_only: bool) -> Self {
         Self {
             target_params: None,
             lock_range: None,
@@ -153,7 +226,8 @@ impl EnemyGallery {
             actors: Vec::new(),
             selected: None,
             status: "Select a source enemy and summon an inspection actor".into(),
-            basic_fk,
+            overlays: PreviewOverlays::default(),
+            forward_kinematics_only,
             next_id: 1,
             pending: Vec::new(),
             garbage: Vec::new(),
@@ -235,28 +309,58 @@ impl EnemyGallery {
         }
     }
 
-    pub fn toggle_frozen(&mut self) {
+    pub fn toggle_paused(&mut self) {
         if let Some(actor) = self.selected_actor_mut() {
-            actor.frozen = !actor.frozen;
+            actor.paused = !actor.paused;
         }
     }
 
+    /// Plays the motion again from its first frame.
     pub fn restart(&mut self) {
         if let Some(actor) = self.selected_actor_mut()
-            && let Some(window) = actor.window
+            && let Some(timeline) = actor.timeline
         {
-            actor.frame = window.start;
+            actor.frame = timeline.start;
+            actor.paused = false;
             actor.dirty = true;
         }
     }
 
-    pub fn step(&mut self) {
+    /// Moves one whole key frame, forward or back, and pauses there.
+    pub fn step_frame(&mut self, forward: bool) {
         if let Some(actor) = self.selected_actor_mut()
-            && let Some(window) = actor.window
+            && let Some(timeline) = actor.timeline
         {
-            actor.frozen = true;
-            actor.frame = window.advance(actor.frame, 1., 1., actor.looping);
+            actor.paused = true;
+            actor.frame = timeline.step_frame(actor.frame, forward, actor.looping);
             actor.dirty = true;
+        }
+    }
+
+    /// Pauses on `frame`, held inside the motion's range.
+    pub fn go_to_frame(&mut self, frame: f32) {
+        if frame.is_finite()
+            && let Some(actor) = self.selected_actor_mut()
+            && let Some(timeline) = actor.timeline
+        {
+            actor.paused = true;
+            actor.frame = frame.clamp(timeline.start, timeline.end);
+            actor.dirty = true;
+        }
+    }
+
+    /// Pauses `fraction` (0 to 1) of the way through the motion.
+    pub fn go_to_fraction(&mut self, fraction: f32) {
+        if let Some(timeline) = self.selected_actor().and_then(|a| a.timeline) {
+            self.go_to_frame(timeline.at_fraction(fraction));
+        }
+    }
+
+    /// Moves the paused frame by `frames` (negative goes back).
+    pub fn scrub(&mut self, frames: f32) {
+        if let Some(actor) = self.selected_actor() {
+            let target = actor.frame + frames;
+            self.go_to_frame(target);
         }
     }
 
@@ -274,9 +378,19 @@ impl EnemyGallery {
         }
     }
 
-    pub fn change_rate(&mut self, change: f32) {
-        if let Some(actor) = self.selected_actor() {
-            self.set_rate(actor.rate + change);
+    /// Moves the playback speed to the next preset above (`direction` > 0)
+    /// or below the current one.
+    pub fn change_speed(&mut self, direction: i32) {
+        let Some(rate) = self.selected_actor().map(|a| a.rate) else {
+            return;
+        };
+        let next = if direction > 0 {
+            SPEEDS.iter().copied().find(|&s| s > rate + 1e-3)
+        } else {
+            SPEEDS.iter().rev().copied().find(|&s| s < rate - 1e-3)
+        };
+        if let Some(next) = next {
+            self.set_rate(next);
         }
     }
 
@@ -326,6 +440,7 @@ pub fn service(
     world: Option<Res<SceneRoot>>,
     area: Option<Res<AreaRes>>,
     parts: Query<(&GalleryPart, &Mesh3d, &MeshMaterial3d<FogMaterial>)>,
+    skeletons: Query<(&GallerySkeleton, &Mesh3d, &MeshMaterial3d<FogMaterial>)>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<FogMaterial>>,
     mut images: ResMut<Assets<Image>>,
@@ -341,8 +456,16 @@ pub fn service(
     // materialized, so clearing immediately after summoning also releases GPU
     // resources instead of accumulating hidden meshes/textures.
     for (id, root) in gallery.garbage.drain(..) {
-        for (part, mesh, material) in &parts {
-            if part.actor == id {
+        let owned = parts
+            .iter()
+            .map(|(part, mesh, material)| (part.actor, mesh, material))
+            .chain(
+                skeletons
+                    .iter()
+                    .map(|(lines, mesh, material)| (lines.actor, mesh, material)),
+            );
+        for (actor, mesh, material) in owned {
+            if actor == id {
                 meshes.remove(mesh.0.id());
                 if let Some(material) = materials.remove(material.0.id())
                     && let Some(image) = material.base.base_color_texture
@@ -393,7 +516,7 @@ pub fn service(
                     .find(|a| a.id == id)
                     .ok_or("actor absent")?;
                 actor.battle = Some(battle);
-                actor.frozen = false;
+                actor.paused = false;
                 actor.apply_root = false;
                 actor.error = None;
                 gallery.status = format!("Actor {id}: AI and combat enabled");
@@ -500,6 +623,23 @@ fn summon(
             });
         }
     }
+    let joints = joint_origins(&kind.model.poses[0], Vec3::ZERO);
+    commands.spawn((
+        GallerySkeleton {
+            actor: id,
+            revision: u64::MAX,
+        },
+        ChildOf(root),
+        Mesh3d(meshes.add(skeleton_mesh(&bone_links(&kind), &joints))),
+        MeshMaterial3d(materials.add_plain(StandardMaterial {
+            base_color: Color::WHITE,
+            unlit: true,
+            cull_mode: None,
+            ..default()
+        })),
+        Transform::default(),
+        Visibility::Hidden,
+    ));
     gallery.actors.push(GalleryActor {
         battle: None,
         id,
@@ -509,14 +649,15 @@ fn summon(
         yaw,
         motion_choice: None,
         frame: 0.,
-        frozen: false,
+        joints,
+        paused: false,
         looping: true,
         rate: 1.,
         apply_root: true,
         error: None,
         root,
         selected_motion: None,
-        window: None,
+        timeline: None,
         pose,
         dirty: false,
         revision: 0,
@@ -594,15 +735,15 @@ fn load_motion(gallery: &mut EnemyGallery, id: u64, choice: usize) -> Result<(),
             || actor.kind.load_motion(choice).map_err(|e| e.to_string()),
             Ok,
         )?;
-    let window = Window::read(&motion)?;
+    let timeline = Timeline::read(&motion)?;
     // Evaluate before replacing the working clip. An unsupported candidate
     // leaves the actor's previous pose/playback intact and reports the failure.
-    let pose = sample(
+    let sampled = sample(
         &actor.kind,
         &motion,
-        window.start,
+        timeline.start,
         actor.apply_root,
-        gallery.basic_fk,
+        gallery.forward_kinematics_only,
     )?;
     let actor = gallery
         .actors
@@ -611,9 +752,10 @@ fn load_motion(gallery: &mut EnemyGallery, id: u64, choice: usize) -> Result<(),
         .ok_or("inspection actor absent")?;
     actor.motion_choice = Some(choice);
     actor.selected_motion = Some(motion);
-    actor.window = Some(window);
-    actor.frame = window.start;
-    actor.pose = pose;
+    actor.timeline = Some(timeline);
+    actor.frame = timeline.start;
+    actor.pose = sampled.points;
+    actor.joints = sampled.joints;
     actor.revision += 1;
     actor.error = None;
     actor.dirty = false;
@@ -626,14 +768,64 @@ fn load_motion(gallery: &mut EnemyGallery, id: u64, choice: usize) -> Result<(),
     Ok(())
 }
 
+/// One evaluated pose: the model's vertices and where each bone's joint is.
+struct Sampled {
+    points: Vec<Vec3>,
+    joints: Vec<Vec3>,
+}
+
+/// Each bone's joint position (the translation row of its matrix), moved by
+/// `offset`.
+fn joint_origins(pose: &ModelPose, offset: Vec3) -> Vec<Vec3> {
+    pose.matrix_bits
+        .iter()
+        .map(|m| {
+            Vec3::new(
+                f32::from_bits(m[12]),
+                f32::from_bits(m[13]),
+                f32::from_bits(m[14]),
+            ) - offset
+        })
+        .collect()
+}
+
+/// Pairs of (parent, child) joint indices, one per bone with a parent.
+fn bone_links(kind: &Kind) -> Vec<(usize, usize)> {
+    let bones = &kind.model.skinning.bones;
+    bones
+        .iter()
+        .enumerate()
+        .filter_map(|(child, bone)| {
+            let parent = usize::try_from(bone.header_i32[1]).ok()?;
+            (parent < bones.len() && parent != child).then_some((parent, child))
+        })
+        .collect()
+}
+
+/// Line segments joining each joint to its parent, orange at the parent
+/// end and yellow at the child end.
+fn skeleton_mesh(links: &[(usize, usize)], joints: &[Vec3]) -> Mesh {
+    const PARENT_END: [f32; 4] = [1., 0.45, 0.1, 1.];
+    const CHILD_END: [f32; 4] = [1., 1., 0.3, 1.];
+    let mut positions = Vec::new();
+    let mut colors = Vec::new();
+    for &(parent, child) in links {
+        if let (Some(from), Some(to)) = (joints.get(parent), joints.get(child)) {
+            positions.extend([from.to_array(), to.to_array()]);
+            colors.extend([PARENT_END, CHILD_END]);
+        }
+    }
+    visual::room::line_mesh(positions, colors)
+}
+
 fn sample(
     kind: &Kind,
     motion: &motion::SelectedMotion,
     frame: f32,
     apply_root: bool,
-    basic_fk: bool,
-) -> Result<Vec<Vec3>, String> {
-    let (pose, root) = if basic_fk {
+    forward_kinematics_only: bool,
+) -> Result<Sampled, String> {
+    let (pose, root) = if forward_kinematics_only {
         if frame < 0. {
             return Err(
                 "basic FK cannot sample negative source keys; use the evaluated profile".into(),
@@ -666,7 +858,11 @@ fn sample(
     if points.iter().any(|p| !p.is_finite()) {
         return Err("motion produced a nonfinite vertex".into());
     }
-    Ok(points)
+    let joints = joint_origins(&pose, offset);
+    if joints.iter().any(|p| !p.is_finite()) {
+        return Err("motion produced a nonfinite joint".into());
+    }
+    Ok(Sampled { points, joints })
 }
 
 /// Called by the parent simulation with its elapsed inspection ticks. This is
@@ -684,19 +880,21 @@ pub fn advance(gallery: &mut EnemyGallery, ticks: f32) {
         if actor.battle.is_some() {
             continue;
         }
-        if !actor.frozen
+        if !actor.paused
             && !actor.looping
             && ticks > 0.
-            && actor.window.is_some_and(|window| actor.frame >= window.end)
+            && actor
+                .timeline
+                .is_some_and(|timeline| actor.frame >= timeline.end)
             && let Some(choice) = actor.preview_idle.take()
         {
             idle_previews.push((actor.id, choice));
         }
-        if let Some(window) = actor.window
-            && !actor.frozen
+        if let Some(timeline) = actor.timeline
+            && !actor.paused
             && ticks > 0.
         {
-            let next = window.advance(actor.frame, ticks, actor.rate, actor.looping);
+            let next = timeline.advance(actor.frame, ticks, actor.rate, actor.looping);
             actor.dirty |= next != actor.frame;
             actor.frame = next;
         }
@@ -708,14 +906,15 @@ pub fn advance(gallery: &mut EnemyGallery, ticks: f32) {
                 motion,
                 actor.frame,
                 actor.apply_root,
-                gallery.basic_fk,
+                gallery.forward_kinematics_only,
             ) {
-                Ok(pose) => {
-                    actor.pose = pose;
+                Ok(sampled) => {
+                    actor.pose = sampled.points;
+                    actor.joints = sampled.joints;
                     actor.revision += 1;
                 }
                 Err(error) => {
-                    actor.frozen = true;
+                    actor.paused = true;
                     gallery.status = format!("Actor {} playback failed: {error}", actor.id);
                     append_warnings(&mut gallery.status, &actor.kind);
                     actor.error = Some(error);
@@ -749,10 +948,22 @@ pub fn advance(gallery: &mut EnemyGallery, ticks: f32) {
     }
 }
 
+type PartQuery = (
+    &'static mut GalleryPart,
+    &'static Mesh3d,
+    &'static mut Visibility,
+);
+type SkeletonQuery = (
+    &'static mut GallerySkeleton,
+    &'static Mesh3d,
+    &'static mut Visibility,
+);
+
 pub fn present(
     gallery: Res<EnemyGallery>,
     mut roots: Query<(&GalleryRoot, &mut Transform, &mut Visibility)>,
-    mut parts: Query<(&mut GalleryPart, &Mesh3d)>,
+    mut parts: Query<PartQuery, (Without<GalleryRoot>, Without<GallerySkeleton>)>,
+    mut skeletons: Query<SkeletonQuery, Without<GalleryRoot>>,
     mut meshes: ResMut<Assets<Mesh>>,
 ) {
     for (root, mut transform, mut visibility) in &mut roots {
@@ -767,7 +978,13 @@ pub fn present(
             };
         }
     }
-    for (mut part, mesh) in &mut parts {
+    let model_visibility = if gallery.overlays.hide_model {
+        Visibility::Hidden
+    } else {
+        Visibility::Inherited
+    };
+    for (mut part, mesh, mut visibility) in &mut parts {
+        visibility.set_if_neq(model_visibility);
         if let Some(actor) = gallery.actors.iter().find(|a| a.id == part.actor)
             && part.revision != actor.revision
             && let Some(mut mesh) = meshes.get_mut(mesh.0.id())
@@ -778,6 +995,25 @@ pub fn present(
                 .map(|&i| actor.pose[i as usize].to_array());
             visual::room::update_positions(&mut mesh, positions);
             part.revision = actor.revision;
+        }
+    }
+    let skeleton_visibility = if gallery.overlays.skeleton {
+        Visibility::Inherited
+    } else {
+        Visibility::Hidden
+    };
+    for (mut lines, mesh, mut visibility) in &mut skeletons {
+        visibility.set_if_neq(skeleton_visibility);
+        // Hidden lines are not redrawn; they catch up when shown.
+        if !gallery.overlays.skeleton {
+            continue;
+        }
+        if let Some(actor) = gallery.actors.iter().find(|a| a.id == lines.actor)
+            && lines.revision != actor.revision
+            && let Some(mut mesh) = meshes.get_mut(mesh.0.id())
+        {
+            *mesh = skeleton_mesh(&bone_links(&actor.kind), &actor.joints);
+            lines.revision = actor.revision;
         }
     }
 }
@@ -930,18 +1166,19 @@ mod tests {
             yaw: 0.,
             motion_choice: None,
             frame: 5.,
-            frozen: false,
+            joints: Vec::new(),
+            paused: false,
             looping: true,
             rate: 1.,
             apply_root: true,
             error: None,
             root,
             selected_motion: Some(Arc::new(motion)),
-            window: Some(Window {
+            timeline: Some(Timeline {
                 start: 4.,
                 end: 24.,
                 fps: 30.,
-                repeat: 8.,
+                loop_start: 8.,
             }),
             pose: Vec::new(),
             dirty: false,
@@ -966,19 +1203,19 @@ mod tests {
         let mut a = actor(1, Entity::PLACEHOLDER);
         let motion = Arc::get_mut(a.selected_motion.as_mut().unwrap()).unwrap();
         motion.motion.interpolated_header_words[32] = (-5_f32).to_bits();
-        let window = Window::read(motion).unwrap();
-        assert_eq!(window.start, -5.);
-        assert_eq!(window.advance(-5., 2., 1., false), -4.);
+        let timeline = Timeline::read(motion).unwrap();
+        assert_eq!(timeline.start, -5.);
+        assert_eq!(timeline.advance(-5., 2., 1., false), -4.);
         assert!(sample(&a.kind, motion, -5., true, true).is_err());
     }
 
     #[test]
     fn source_fps_and_return_window_control_playback() {
-        let w = Window {
+        let w = Timeline {
             start: 4.,
             end: 24.,
             fps: 30.,
-            repeat: 8.,
+            loop_start: 8.,
         };
         assert_eq!(w.advance(w.start, 2., 1., true), 5.);
         assert_eq!(w.advance(23., 6., 1., true), 10.);
@@ -989,18 +1226,18 @@ mod tests {
 
     #[test]
     fn zero_length_or_nonlooping_motion_holds_its_last_pose() {
-        let w = Window {
+        let w = Timeline {
             start: 4.,
             end: 4.,
             fps: 30.,
-            repeat: 4.,
+            loop_start: 4.,
         };
         assert_eq!(w.advance(4., 2., 1., true), 4.);
-        let w = Window {
+        let w = Timeline {
             start: 0.,
             end: 8.,
             fps: 30.,
-            repeat: 8.,
+            loop_start: 8.,
         };
         assert_eq!(w.advance(7., 20., 1., true), 8.);
     }
@@ -1013,19 +1250,20 @@ mod tests {
         gallery.actors.push(actor(1, world.spawn_empty().id()));
         gallery.actors.push(actor(2, world.spawn_empty().id()));
         gallery.select(1);
-        gallery.toggle_frozen();
+        gallery.toggle_paused();
         gallery.select(2);
-        gallery.step();
+        gallery.step_frame(true);
         advance(&mut gallery, 0.);
-        assert!(gallery.actors.iter().all(|a| a.frozen));
+        assert!(gallery.actors.iter().all(|a| a.paused));
         assert_eq!(gallery.actors[0].frame, 5.);
         assert_eq!(gallery.actors[0].revision, 0);
-        assert_eq!(gallery.actors[1].frame, 5.5);
+        assert_eq!(gallery.actors[1].frame, 6.);
         assert_eq!(gallery.actors[1].revision, 1);
         assert!(!gallery.actors[1].dirty);
         gallery.restart();
         advance(&mut gallery, 0.);
         assert_eq!(gallery.actors[1].frame, 4.);
+        assert!(!gallery.actors[1].paused);
         assert_eq!(gallery.actors[1].revision, 2);
         gallery.set_rate(f32::NAN);
         assert_eq!(gallery.actors[1].rate, 1.);
@@ -1034,6 +1272,51 @@ mod tests {
         gallery.toggle_loop();
         assert!(!gallery.actors[1].looping);
         assert!(gallery.actors[0].looping);
+    }
+
+    #[test]
+    fn stepping_and_jumping_land_on_whole_frames_inside_the_range() {
+        let t = Timeline {
+            start: 4.,
+            end: 24.,
+            fps: 30.,
+            loop_start: 8.,
+        };
+        assert_eq!(t.step_frame(5.5, true, false), 6.);
+        assert_eq!(t.step_frame(5.5, false, false), 5.);
+        assert_eq!(t.step_frame(6., false, false), 5.);
+        assert_eq!(t.step_frame(24., true, false), 24.);
+        assert_eq!(t.step_frame(24., true, true), 4.);
+        assert_eq!(t.step_frame(4., false, true), 24.);
+        assert_eq!(t.step_frame(4., false, false), 4.);
+        assert_eq!((t.length(), t.seconds()), (20., 20. / 30.));
+        assert_eq!(t.at_fraction(0.5), 14.);
+        assert_eq!(t.at_fraction(2.), 24.);
+    }
+
+    #[test]
+    fn go_to_frame_pauses_and_playback_speed_moves_between_presets() {
+        let fixture = Fixture::new();
+        let mut world = World::new();
+        let mut gallery = fixture.gallery();
+        gallery.actors.push(actor(1, world.spawn_empty().id()));
+        gallery.select(1);
+        gallery.go_to_fraction(0.5);
+        assert!(gallery.actors[0].paused);
+        assert_eq!(gallery.actors[0].frame, 14.);
+        gallery.scrub(-100.);
+        assert_eq!(gallery.actors[0].frame, 4.);
+        gallery.go_to_frame(f32::NAN);
+        assert_eq!(gallery.actors[0].frame, 4.);
+        gallery.change_speed(1);
+        assert_eq!(gallery.actors[0].rate, 1.5);
+        gallery.change_speed(-1);
+        gallery.change_speed(-1);
+        assert_eq!(gallery.actors[0].rate, 0.75);
+        for _ in 0..20 {
+            gallery.change_speed(1);
+        }
+        assert_eq!(gallery.actors[0].rate, 4.);
     }
 
     #[test]

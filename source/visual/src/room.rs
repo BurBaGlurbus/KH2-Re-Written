@@ -645,6 +645,18 @@ pub fn mesh(positions: Vec<[f32; 3]>, uvs: Vec<[f32; 2]>, colors: Vec<[f32; 4]>)
     .with_inserted_attribute(Mesh::ATTRIBUTE_COLOR, colors)
 }
 
+/// Coloured line segments (two vertices per segment) for debug overlays.
+pub fn line_mesh(positions: Vec<[f32; 3]>, colors: Vec<[f32; 4]>) -> Mesh {
+    let uvs = vec![[0., 0.]; positions.len()];
+    Mesh::new(
+        PrimitiveTopology::LineList,
+        RenderAssetUsages::MAIN_WORLD | RenderAssetUsages::RENDER_WORLD,
+    )
+    .with_inserted_attribute(Mesh::ATTRIBUTE_POSITION, positions)
+    .with_inserted_attribute(Mesh::ATTRIBUTE_UV_0, uvs)
+    .with_inserted_attribute(Mesh::ATTRIBUTE_COLOR, colors)
+}
+
 /// Updates an animated part without replacing its CPU vertex allocation.
 /// The caller still obtains the mesh through `Assets::get_mut`, so Bevy's
 /// normal asset change tracking and GPU upload path are preserved.

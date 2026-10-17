@@ -2,8 +2,13 @@
 //! this does not execute the enemy scripts or assert their action semantics.
 use super::*;
 
-pub const CAPTURES: &[u64] = &[50, 90, 130, 170, 210, 250, 280];
+/// The field stops when the debug menu opens at `END`, so the menu's pages
+/// are captured at that same tick, one per capture after `FIRST_PAGE_CAPTURE`.
+pub const CAPTURES: &[u64] = &[
+    50, 90, 130, 170, 210, 250, 280, 280, 280, 280, 280, 280, 280, 280,
+];
 pub const END: u64 = 280;
+pub const FIRST_PAGE_CAPTURE: usize = 6;
 pub const MODELS: &[&str] = &["M_EX020", "M_EX990", "M_EX350_04", "M_EX760_RAW"];
 const DUSK_ACTIONS: &[&[u8]] = &[b"atk_craw", b"atk_kick", b"atk_walk"];
 
@@ -84,5 +89,29 @@ pub fn tick(
     }
     if tick == END {
         debug.show_enemy_actors();
+    }
+}
+
+/// The menu page for the capture about to be taken: the summoned list, then
+/// the preview's Playback, Motions, Actions and View tabs, then (menu closed)
+/// the skeleton over the model and the skeleton alone.
+pub fn show_page(
+    capture: usize,
+    debug: &mut debug_menu::DebugMenu,
+    gallery: &mut enemy_gallery::EnemyGallery,
+) {
+    let Some(step) = capture.checked_sub(FIRST_PAGE_CAPTURE).filter(|&s| s > 0) else {
+        return;
+    };
+    if let Some(first) = gallery.actors.first().map(|a| a.id) {
+        gallery.select(first);
+    }
+    gallery.overlays.skeleton = step >= 4;
+    gallery.overlays.hide_model = step >= 6;
+    if step >= 5 {
+        debug.open = false;
+    } else {
+        // The Actions tab (step 3) shows a typed search.
+        debug.show_preview(step - 1, if step == 3 { "move" } else { "" });
     }
 }
