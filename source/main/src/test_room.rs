@@ -1017,10 +1017,12 @@ struct Game {
     /// serial and frame their triggers were last scanned at.
     actor_poses: HashMap<u64, (Vec3, f32)>,
     actor_scan: HashMap<u64, (u64, f32)>,
-    /// Weapon trail: the action tick and clip frame last scanned, and the
-    /// calibrated bone length.
-    trail_scan: Option<(u64, u32)>,
+    /// Weapon trail: whether its effect is alive (the exe's handle at
+    /// `obj+0xc00`, FUN_1403effa0), and the calibrated bone length.
+    trail_live: bool,
     trail_length: Option<f32>,
+    /// Effect owners whose running instances are to be released.
+    fx_release: Vec<u8>,
     /// Map effect groups to end (None = all of them).
     fx_clear_map: Vec<Option<u8>>,
     /// The area's map effects still to be started (a new area).
@@ -11364,8 +11366,9 @@ fn run(mut args: Vec<PathBuf>) -> Result<AppExit, Box<dyn std::error::Error>> {
         fx_queue: Vec::new(),
         actor_poses: HashMap::new(),
         actor_scan: HashMap::new(),
-        trail_scan: None,
+        trail_live: false,
         trail_length: None,
+        fx_release: Vec::new(),
         fx_clear_map: Vec::new(),
         map_fx_pending: true,
         sound_stops: Vec::new(),
