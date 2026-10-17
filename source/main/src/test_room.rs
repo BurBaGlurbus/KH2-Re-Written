@@ -91,6 +91,7 @@ mod party_room;
 mod prize_room;
 mod settings_room;
 mod spell_fx;
+mod victim_hit;
 mod wall_hit;
 mod weapon_trail;
 
@@ -296,6 +297,9 @@ struct EffectSources {
     enemy: Option<object_effect::Pax>,
     /// The other battle enemies' object effects by objentry id.
     enemy_paxes: Vec<(u32, object_effect::Pax)>,
+    /// The sound bank number each enemy object carries (objentry id, 0 for
+    /// the room's own enemy), read from the bank's header like the exe.
+    enemy_banks: HashMap<u32, u16>,
     system: Option<object_effect::Pax>,
     atlas: visual::effects::Atlas,
 }
@@ -330,6 +334,10 @@ enum EffectRequest {
     /// A system (00effect) element at a point, unrotated
     /// (FUN_1403d0f00 clash effects).
     System { id: u16, at: Vec3 },
+    /// The victim's own hit sound (FUN_140410d60 -> FUN_1403dadf0): bank of
+    /// the victim's effects x 1000 + an alternating bit + a class from the
+    /// ATKP reaction. `key` tells victims apart for the alternation.
+    VictimSound { object: u32, reaction: u8, key: u64 },
     /// A Keyblade swing that met the map (FUN_1403d1960): the weapon's hit
     /// element of the ATKP effect on this surface class at the contact,
     /// turned by the polygon normal's pitch and yaw (engine space).
@@ -355,6 +363,7 @@ struct Effects {
     weapon: Option<Arc<object_effect::Pax>>,
     enemy: Option<Arc<object_effect::Pax>>,
     enemy_paxes: HashMap<u32, Arc<object_effect::Pax>>,
+    enemy_banks: HashMap<u32, u16>,
     system: Option<Arc<object_effect::Pax>>,
     running: Vec<RunningEffect>,
     rng: ::effect::Rng,
@@ -968,6 +977,8 @@ struct Game {
     sora_attack: HashMap<u8, Vec<(usize, Vec3, f32)>>,
     /// The Keyblade swings' environment test (wall_hit.rs).
     wall: wall_hit::WallHit,
+    /// Hits each victim has taken, for the alternating hit sound.
+    victim_hits: HashMap<u64, u8>,
     menu_up_queued: bool,
     menu_down_queued: bool,
     enemy: Option<EnemyRuntime>,
@@ -3215,10 +3226,32 @@ fn load(
     let effects = match &config.effects {
         Some(e) => {
             use visual::effects::{load_atlas, load_pax};
+            // Each enemy object's own sound bank (the `se/obj/seNNN` asset of
+            // its archive): registered under its header number, which is the
+            // thousand of the ids its hits play.
+            let mut enemy_banks = HashMap::new();
+            let mut register = |key: u32, index: &str, ordinal: usize, hash: [u8; 16]| {
+                if let Some(bytes) = sound::object_bank(source, index, ordinal, hash)
+                    && let Ok(number) = banks.insert(bytes)
+                {
+                    enemy_banks.insert(key, number);
+                }
+            };
+            if let Some(l) = &e.enemy {
+                register(0, &l.index, l.ordinal, l.name_hash);
+            }
+            if let Ok(library) = data::path_lookup::Library::open(source) {
+                for &(id, name) in &enemy_battle::SUPPORTED {
+                    if let Some(f) = library.find(&format!("obj/{name}.a.us")) {
+                        register(id, f.index, f.ordinal, f.name_hash);
+                    }
+                }
+            }
             let pax = |l: &Locator| load_pax(source, &l.index, l.ordinal, l.name_hash);
             Some(EffectSources {
                 weapon: pax(&e.weapon)?,
                 enemy: e.enemy.as_ref().map(pax).transpose()?,
+                enemy_banks,
                 enemy_paxes: data::path_lookup::Library::open(source)
                     .map(|mut library| {
                         enemy_battle::SUPPORTED
@@ -6630,6 +6663,18 @@ fn effects_tick(mut game: ResMut<Game>, rig: Res<CameraRig>, mut fx: ResMut<Effe
                 );
                 (pax, element, world, "hit", None)
             }
+            EffectRequest::VictimSound {
+                object,
+                reaction,
+                key,
+            } => {
+                if let Some(&bank) = fx.enemy_banks.get(&object)
+                    && let Some(id) = victim_hit::sound(bank, reaction, &mut game.victim_hits, key)
+                {
+                    game.sound_queue.push((id, "victim_hit"));
+                }
+                continue;
+            }
             EffectRequest::Wall {
                 effect,
                 material,
@@ -8128,6 +8173,11 @@ fn combat_tick(game: &mut Game, tick: u64) {
             // FUN_1403d12c0: the attacker's obj+0x120 bit 25, which lets
             // the next press chain the combo.
             player.connected = true;
+            effect_queue.push(EffectRequest::VictimSound {
+                object: 0,
+                reaction: rows[row].reaction,
+                key: 0,
+            });
             // FUN_1403a8800: the row's DriveDrain fills the gauge (the
             // Shadow is a ZAKO).
             let (mp_charging, boost) = (player.mp_charging, player.abilities.drive_boost);
@@ -11142,6 +11192,7 @@ fn run(mut args: Vec<PathBuf>) -> Result<AppExit, Box<dyn std::error::Error>> {
             }
             magic_room::MagicRt::new(src, levels)
         }),
+        victim_hits: HashMap::new(),
         wall: wall_hit::WallHit::new(
             loaded.sstm,
             std::mem::take(&mut loaded.atkp),
@@ -11327,6 +11378,7 @@ fn run(mut args: Vec<PathBuf>) -> Result<AppExit, Box<dyn std::error::Error>> {
                         .into_iter()
                         .map(|(id, p)| (id, Arc::new(p)))
                         .collect(),
+                    enemy_banks: e.enemy_banks,
                     system: e.system.map(Arc::new),
                     running: Vec::new(),
                     rng: ::effect::Rng::default(),
@@ -11343,6 +11395,7 @@ fn run(mut args: Vec<PathBuf>) -> Result<AppExit, Box<dyn std::error::Error>> {
                 weapon: None,
                 enemy: None,
                 enemy_paxes: HashMap::new(),
+                enemy_banks: HashMap::new(),
                 system: None,
                 running: Vec::new(),
                 rng: ::effect::Rng::default(),

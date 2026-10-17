@@ -10,11 +10,12 @@ This repository rewrites Kingdom Hearts II Final Mix for Windows, reading the ow
 
 ## Local builds and disk use
 
-Use `build.bat` (or `powershell -NoProfile -File tools/Build-Launcher.ps1`)
-for an optimized KH2FM launcher with its model/image viewers. The batch entry
-point retains its existing optional `skate3` feature; the PowerShell helper
-enables it only with `-Skate3`. This selects three binaries instead of every
-research probe. `build.bat -Debug` uses the
+Use `build-release.bat` (or `powershell -NoProfile -File tools/Build-Launcher.ps1`)
+for an optimized KH2FM launcher with its model/image viewers. The batch scripts
+are `build-release`, `build-release-skate3`, `build-debug` and
+`build-debug-skate3`; the `-skate3` ones enable the optional `skate3` feature,
+as does `-Skate3` on the PowerShell helper. This selects three binaries instead
+of every research probe. The `build-debug` scripts use the
 faster development profile; add `-LauncherOnly` when only the launcher changed
 and the viewers are already available. The helper prints the launcher path;
 add `-Timings` to write a Cargo report under `target/cargo-timings/`.

@@ -150,4 +150,5 @@ Records through T128 retain historical commands and paths. See [the folder guide
 | [T165](T165-launcher-empty-data-folder-check.md) | Launcher: every test from an empty data folder | PARTIAL. |
 | [T180](T180-combat-feel-map-hits-and-quick-run.md) | Combat feel: the Keyblade meeting the map, Quick Run's streak, the air combo's drop | PARTIAL. |
 | [T181](T181-air-hover-ends-in-a-soft-fall.md) | Air moves: a no-gravity range ends in a soft fall | PARTIAL. |
+| [T182](T182-victim-hit-sound.md) | The victim's own hit sound | PARTIAL. |
 | [T141](T141-ik-and-animation-parity.md) | IK aim chains, pole vectors and joint-space motion blends | PROGRESS. Master Form matches the PS2 routine; 87% of installed motions within 0.1. |
