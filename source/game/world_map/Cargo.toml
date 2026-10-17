@@ -1,0 +1,12 @@
+[package]
+name = "world_map"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+area = { path = "../area" }
+
+[lints]
+workspace = true

@@ -33,6 +33,8 @@ pub fn forward(yaw: f32) -> [f32; 3] {
 pub const PLAYER: u32 = 566;
 pub const FRIEND_1: u32 = 567;
 pub const FRIEND_2: u32 = 568;
+/// The world map cursor (`WM_CURSOR`, objentry type 0x11 sub-kind 2).
+pub const WORLD_MAP_CURSOR: u32 = 0x3a1;
 
 /// A spawn object (the 0x58-byte runtime record).
 #[derive(Clone, Debug)]
@@ -221,9 +223,14 @@ impl Area {
         out
     }
 
-    /// The player entity this entrance uses, if any.
+    /// The player entity this entrance uses, if any: the party leader, or on
+    /// the world map the cursor (FUN_140393f50 sub-kind 2 creates it as the
+    /// player-class worldmap::Player).
     pub fn player_spawn(spawns: &[Spawn]) -> Option<&Spawn> {
-        spawns.iter().find(|s| s.entity.object == PLAYER)
+        spawns
+            .iter()
+            .find(|s| s.entity.object == PLAYER)
+            .or_else(|| spawns.iter().find(|s| s.entity.object == WORLD_MAP_CURSOR))
     }
 
     /// FUN_1403a4f90 / FUN_1403ff000 for one frame. `blocked(world, area)`

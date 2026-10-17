@@ -23,6 +23,9 @@ pub struct GeometryPart {
     pub packet_ordinal: usize,
     pub texture_index: i32,
     pub is_opaque: bool,
+    /// The mesh group's header word 0 (draw attributes; bit 0 = the
+    /// translucent pass, bits 6..10 = part group).
+    pub attributes: u32,
     pub vertex_base: usize,
     pub uv_base: usize,
     pub assignments: Vec<Vec<PositionBinding>>,
@@ -161,6 +164,7 @@ fn assemble(structure: &ModelStructure, groups: &[PacketGroup]) -> io::Result<Ge
                 packet_ordinal,
                 texture_index: header[1],
                 is_opaque: header[0] & 1 == 0,
+                attributes: header[0] as u32,
                 vertex_base,
                 uv_base,
                 assignments,

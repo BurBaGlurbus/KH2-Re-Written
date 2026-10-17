@@ -8,6 +8,7 @@ members = [
     "source/game/collision",
     "source/game/event",
     "source/game/save",
+    "source/game/world_map",
     "source/visual/effect",
     "source/audio",
     "source/data",

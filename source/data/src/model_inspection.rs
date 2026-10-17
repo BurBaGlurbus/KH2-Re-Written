@@ -41,6 +41,9 @@ pub struct InspectionPart {
     pub packet_ordinal: usize,
     pub texture_index: i32,
     pub source_is_opaque: bool,
+    /// The mesh group's header word 0 ([`model_geometry::GeometryPart`]).
+    #[serde(skip)]
+    pub attributes: u32,
     pub indices: Vec<u32>,
     pub cross_part_corners: usize,
     /// The mesh's part group, bits 6..10 of its descriptor word 0 (what a
@@ -123,6 +126,7 @@ fn parts(geometry: &Geometry, poses: &[ModelPose]) -> io::Result<Vec<InspectionP
             packet_ordinal: part.packet_ordinal,
             texture_index: part.texture_index,
             source_is_opaque: part.is_opaque,
+            attributes: part.attributes,
             indices,
             cross_part_corners,
             mesh_group: 0,
@@ -549,6 +553,7 @@ mod tests {
                 packet_ordinal: 0,
                 texture_index: 0,
                 is_opaque: false,
+                attributes: 1,
                 vertex_base: base,
                 uv_base: 0,
                 assignments: vec![

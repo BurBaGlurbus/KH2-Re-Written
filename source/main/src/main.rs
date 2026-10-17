@@ -21,6 +21,7 @@ mod skate_hud;
 mod skate_rig;
 mod test_room;
 mod title;
+mod world_map;
 
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -49,13 +50,14 @@ fn run(program: &str, args: Vec<PathBuf>) -> ExitCode {
         },
         "tt" | "eh" => test_room::main(args, false),
         "event" => cutscene::main(args, false),
+        "wm" => world_map::main(args, false),
         "--version" => {
             println!("KH2RW {}", env!("CARGO_PKG_VERSION"));
             ExitCode::SUCCESS
         }
         _ => {
             eprintln!(
-                "usage: kh2fm [title|room|talk|play|tt|eh|event|--version] [program arguments]"
+                "usage: kh2fm [title|room|talk|play|tt|eh|event|wm|--version] [program arguments]"
             );
             ExitCode::FAILURE
         }

@@ -480,6 +480,20 @@ impl AreaSource {
         self.place_names.get(&(world, area))
     }
 
+    /// The story state the area programs come from.
+    pub fn progress(&self) -> &Progress {
+        &self.progress
+    }
+
+    pub fn progress_mut(&mut self) -> &mut Progress {
+        &mut self.progress
+    }
+
+    /// The 00objentry record of an object id.
+    pub fn object(&self, id: u32) -> Option<&objentry::ObjectEntry> {
+        self.object_index.get(&id).map(|&i| &self.objects[i])
+    }
+
     /// The installed areas of a world, in area order.
     pub fn rooms(&self, world: u8) -> &[u8] {
         self.rooms.get(world as usize).map_or(&[], Vec::as_slice)

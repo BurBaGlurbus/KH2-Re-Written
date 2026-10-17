@@ -17,6 +17,7 @@ data = { path = "../data" }
 player = { path = "../game/player" }
 enemy = { path = "../game/enemy" }
 save = { path = "../game/save" }
+world_map = { path = "../game/world_map" }
 validation = { path = "../../validation" }
 skate_source = { path = "../extras/skateboard/source" }
 # The optional Skate 3 skateboard (GPL-3.0-only, extras/skateboard/engine); see T103.

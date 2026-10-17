@@ -745,7 +745,7 @@ enum Stage {
 struct SceneRoot(Entity);
 
 #[derive(Component)]
-struct RoomPart;
+pub(crate) struct RoomPart;
 
 /// A scrolling chunk's UV animation (UVSC record, draw-01 §7).
 #[derive(Component)]
@@ -839,7 +839,7 @@ fn uv_scroll_tick(
 
 /// A map chunk's background group bit (`NO_GROUP` = always drawn).
 #[derive(Component)]
-struct BgChunk(u8);
+pub(crate) struct BgChunk(pub(crate) u8);
 
 #[derive(Resource)]
 struct Game {
@@ -3762,7 +3762,7 @@ struct Startup {
 }
 
 /// Spawns one textured mesh per model part under `parent`, in part order.
-fn spawn_model(
+pub(crate) fn spawn_model(
     commands: &mut Commands,
     model: &model_inspection::InspectionModel,
     pose: &[Vec3],
@@ -4099,14 +4099,14 @@ fn area_transition(
 #[derive(Component)]
 struct BobRoot;
 #[derive(Component)]
-struct BobPart {
-    placement: usize,
-    ordinal: usize,
+pub(crate) struct BobPart {
+    pub(crate) placement: usize,
+    pub(crate) ordinal: usize,
 }
 
 /// Creates the meshes of an area's map objects (those whose group bit is
 /// set draw; the others are hidden and switch with the mask).
-fn spawn_bobs(
+pub(crate) fn spawn_bobs(
     commands: &mut Commands,
     meshes: &mut Assets<Mesh>,
     materials: &mut Assets<FogMaterial>,
@@ -4591,7 +4591,7 @@ fn field_npc_present(
 /// Spawns a room's map models and its collision overlay under `parent`,
 /// tagged so an area change can remove them.
 #[allow(clippy::too_many_arguments)]
-fn spawn_room(
+pub(crate) fn spawn_room(
     commands: &mut Commands,
     meshes: &mut Assets<Mesh>,
     materials: &mut Assets<FogMaterial>,

@@ -404,6 +404,7 @@ mod tests {
             packet_ordinal: 0,
             texture_index: texture,
             is_opaque: true,
+            attributes: 0,
             vertex_base: 0,
             uv_base: base,
             assignments: Vec::new(),

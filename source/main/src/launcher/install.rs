@@ -405,7 +405,7 @@ pub struct Test {
     pub program: &'static str,
 }
 
-pub const TESTS: [Test; 5] = [
+pub const TESTS: [Test; 6] = [
     Test {
         name: "Title screen",
         blurb: "Disney and Square Enix logos, intro, title menu",
@@ -430,6 +430,11 @@ pub const TESTS: [Test; 5] = [
         name: "Cutscene: Roxas and Axel",
         blurb: "Betwixt and Between, before the fight (event 613)",
         program: "event",
+    },
+    Test {
+        name: "World map",
+        blurb: "Fly the cursor between the world symbols",
+        program: "wm",
     },
 ];
 
@@ -665,11 +670,11 @@ pub fn combined_room_config(arena: &Path, talk: &Path) -> Result<PathBuf, String
 /// `kh2fm` arguments for a test on a bound folder: the program, the folder,
 /// its manifest, the config and the launch file's options.
 pub fn test_args(dir: &Path, program: &str, b: &Bound) -> Result<Vec<String>, String> {
-    // The event player reads everything by name from the bound folder and
-    // checks the source itself; it needs no private config.
-    if program == "event" {
+    // The event player and the world map read everything by name from the
+    // bound folder and check the source themselves; no private config.
+    if program == "event" || program == "wm" {
         return Ok(vec![
-            "event".into(),
+            program.into(),
             b.folder.to_string_lossy().into_owned(),
             b.manifest.to_string_lossy().into_owned(),
         ]);
@@ -1031,7 +1036,7 @@ mod tests {
         );
         for t in TESTS.iter() {
             let mut args = test_args(&data, t.program, &bound).unwrap();
-            if t.program == "event" {
+            if t.program == "event" || t.program == "wm" {
                 args.push("--load-only".into());
             } else {
                 args.extend(["--frames".into(), "240".into()]);
