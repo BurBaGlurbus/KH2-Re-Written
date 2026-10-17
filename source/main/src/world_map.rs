@@ -17,7 +17,7 @@
 //! The map's effects run per draw group and the world symbols hold their
 //! effects by world state.
 //!
-//! Not here yet: the jump into the field (entrance 0x63 arrivals).
+//! A decided world point opens the field there (`--field`).
 mod effects;
 mod scene;
 mod ui;
@@ -182,6 +182,8 @@ struct WorldMap {
     autoplay: Option<PathBuf>,
     /// Unattended runs decide the landing menu instead of cancelling it.
     autoplay_decide: bool,
+    /// Where the landing's field comes from (`--field`).
+    field: Option<FieldHandoff>,
     captures_taken: usize,
     capture_pending: bool,
     log: Vec<serde_json::Value>,
@@ -1940,8 +1942,8 @@ fn finish(
             },
         );
     }
-    // The jump (FUN_1403946d0 → FUN_140152990) ends the program here; the
-    // field does not take entrance 0x63 arrivals yet.
+    // The jump (FUN_1403946d0 → FUN_140152990): the world map ends and,
+    // given a field config to start from, the field opens at the target.
     let jumped = wm.jump.is_some() && wm.autoplay.is_none();
     let done = jumped
         || wm.autoplay.is_some()
@@ -1956,9 +1958,60 @@ fn finish(
                 "{}",
                 serde_json::json!({"event":"jump","world":t.world,"area":t.area,"entrance":t.entrance})
             );
+            if let Some(h) = &wm.field {
+                println!("{}", start_field(h, t, wm.autoplay.is_some()));
+            }
         }
         exit.write(AppExit::Success);
     }
+}
+
+/// What the landing needs to open the field: the arena config whose
+/// sources the field uses, the selected install and the story ranges.
+struct FieldHandoff {
+    arena: PathBuf,
+    root: PathBuf,
+    manifest: PathBuf,
+    story: Vec<[u32; 2]>,
+}
+
+/// Writes the field config for `target` and, unless the run is unattended,
+/// starts the field there as a new `kh2fm room` process (the game's area
+/// jump FUN_140152990 loads it in place; this rewrite's programs run one
+/// window each). A spawn-id target (FUN_14039fbc0) is not resolved yet.
+fn start_field(
+    h: &FieldHandoff,
+    target: world_state::Target,
+    unattended: bool,
+) -> serde_json::Value {
+    let Some(code) = ::area::progress::WORLDS.get(target.world as usize) else {
+        return serde_json::json!({"event":"field_rejected","reason":"world outside the table"});
+    };
+    if let Some(spawn) = target.spawn {
+        return serde_json::json!({"event":"field_rejected","reason":"spawn-id target","spawn":spawn});
+    }
+    let config = match crate::launcher::landing_room_config(
+        &h.arena,
+        code,
+        target.area,
+        target.entrance,
+        &h.story,
+    ) {
+        Ok(c) => c,
+        Err(e) => return serde_json::json!({"event":"field_rejected","reason":e}),
+    };
+    let started = !unattended
+        && std::env::current_exe()
+            .and_then(|exe| {
+                std::process::Command::new(exe)
+                    .arg("room")
+                    .args([&h.root, &h.manifest, &config])
+                    .spawn()
+            })
+            .is_ok();
+    serde_json::json!({"event":"field_start","world":code,"area":target.area,
+        "entrance":target.entrance,"config":config.file_name().map(|n| n.to_string_lossy().into_owned()),
+        "started":started})
 }
 
 fn parse_story(spec: &str) -> Result<(u32, u32)> {
@@ -1975,7 +2028,7 @@ fn parse_story(spec: &str) -> Result<(u32, u32)> {
 
 fn run(args: Vec<PathBuf>) -> Result<AppExit> {
     if args.len() < 2 {
-        return Err("usage: kh2fm wm <Steam-root> <manifest> [--from <world code>] [--story <first>:<last>]... [--touch <world point>,...] [--slot <n>:<state>]... [--at <x>,<z>] [--event <id>]... [--load-only] [--autoplay <new-capture-dir> [--decide]]".into());
+        return Err("usage: kh2fm wm <Steam-root> <manifest> [--from <world code>] [--story <first>:<last>]... [--touch <world point>,...] [--slot <n>:<state>]... [--at <x>,<z>] [--event <id>]... [--field <test-room config>] [--load-only] [--autoplay <new-capture-dir> [--decide]]".into());
     }
     let mut from = "tt".to_owned();
     let mut story = Vec::new();
@@ -1986,6 +2039,7 @@ fn run(args: Vec<PathBuf>) -> Result<AppExit> {
     let mut slots: Vec<(usize, u8)> = Vec::new();
     let mut extra_events: Vec<u32> = Vec::new();
     let mut at: Option<[f32; 2]> = None;
+    let mut field: Option<PathBuf> = None;
     let mut options = args[2..].iter();
     while let Some(option) = options.next() {
         let mut value = || -> Result<String> {
@@ -2025,6 +2079,8 @@ fn run(args: Vec<PathBuf>) -> Result<AppExit> {
                 let (x, z) = v.split_once(',').ok_or("--at wants <x>,<z>")?;
                 at = Some([x.trim().parse()?, z.trim().parse()?]);
             }
+            // A test-room config whose sources the landing's field uses.
+            Some("--field") => field = Some(PathBuf::from(value()?)),
             Some("--touch") => {
                 for p in value()?.split(',') {
                     touched.push(p.trim().parse()?);
@@ -2235,6 +2291,12 @@ fn run(args: Vec<PathBuf>) -> Result<AppExit> {
         stick: [0.; 3],
         autoplay: autoplay.clone(),
         autoplay_decide: decide,
+        field: field.map(|arena| FieldHandoff {
+            arena,
+            root: args[0].clone(),
+            manifest: args[1].clone(),
+            story: story.iter().map(|&(a, b)| [a, b]).collect(),
+        }),
         captures_taken: 0,
         capture_pending: false,
         log: Vec::new(),

@@ -29,7 +29,9 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use visual::overlay::{Ui2dFrame, Ui2dPlugin};
 
-pub use install::{data_dir, field_args, field_start, play_args, save_start, saved_start};
+pub use install::{
+    data_dir, field_args, field_start, landing_room_config, play_args, save_start, saved_start,
+};
 
 // Palette.
 const TEXT: u32 = 0xf2f5fb;

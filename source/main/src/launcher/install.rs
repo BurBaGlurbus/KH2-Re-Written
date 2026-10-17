@@ -500,16 +500,6 @@ pub fn field_room_config(
     saved: Option<(u8, u8)>,
 ) -> Result<PathBuf, String> {
     let default = field_start(world).ok_or_else(|| format!("no field test for world {world}"))?;
-    let bytes =
-        read_limited(arena, CONFIG_LIMIT).map_err(|e| format!("{}: {e}", arena.display()))?;
-    let mut room: serde_json::Value =
-        serde_json::from_slice(&bytes).map_err(|e| format!("{}: {e}", arena.display()))?;
-    let o = room
-        .as_object_mut()
-        .ok_or("The arena config is not an object.")?;
-    for key in ["arena", "enemy", "spawn", "npc", "room_selection"] {
-        o.remove(key);
-    }
     // KH2FM_TT_STORY=<last flag, e.g. 0x860> sets tt flags 0x800..=last
     // (default: the whole first-visit range); KH2FM_TT_AREA=<area>[:<entrance>]
     // picks Twilight Town's starting area over the saved one.
@@ -535,14 +525,55 @@ pub fn field_room_config(
         })
         .or(saved)
         .unwrap_or(default);
+    write_field_config(arena, world, start, &[story], &format!("test-room-{world}"))
+}
+
+/// The field config the world map's landing jumps to (FUN_1403946d0 →
+/// FUN_140152990): the arena config's sources with `world`'s `area` at
+/// `entrance` and the world map's story ranges.
+pub fn landing_room_config(
+    arena: &Path,
+    world: &str,
+    area: u8,
+    entrance: u8,
+    story: &[[u32; 2]],
+) -> Result<PathBuf, String> {
+    write_field_config(
+        arena,
+        world,
+        (area, entrance),
+        story,
+        "test-room-wm-landing",
+    )
+}
+
+/// Writes `<name>.json` beside the arena config: its actor, HUD, menu and
+/// sound sources with a field area in place of the arena and its enemy.
+fn write_field_config(
+    arena: &Path,
+    world: &str,
+    start: (u8, u8),
+    story: &[[u32; 2]],
+    name: &str,
+) -> Result<PathBuf, String> {
+    let bytes =
+        read_limited(arena, CONFIG_LIMIT).map_err(|e| format!("{}: {e}", arena.display()))?;
+    let mut room: serde_json::Value =
+        serde_json::from_slice(&bytes).map_err(|e| format!("{}: {e}", arena.display()))?;
+    let o = room
+        .as_object_mut()
+        .ok_or("The arena config is not an object.")?;
+    for key in ["arena", "enemy", "spawn", "npc", "room_selection"] {
+        o.remove(key);
+    }
     o.insert(
         "area".into(),
-        serde_json::json!({"world":world,"area":start.0,"entrance":start.1,"story":[story]}),
+        serde_json::json!({"world":world,"area":start.0,"entrance":start.1,"story":story}),
     );
     let dir = arena.parent().unwrap_or(Path::new("."));
     let (out, next) = (
-        dir.join(format!("test-room-{world}.json")),
-        dir.join(format!("test-room-{world}.json.new")),
+        dir.join(format!("{name}.json")),
+        dir.join(format!("{name}.json.new")),
     );
     let bytes = serde_json::to_vec_pretty(&room).map_err(|e| e.to_string())?;
     fs::write(&next, bytes)
@@ -672,13 +703,6 @@ pub fn combined_room_config(arena: &Path, talk: &Path) -> Result<PathBuf, String
 pub fn test_args(dir: &Path, program: &str, b: &Bound) -> Result<Vec<String>, String> {
     // The event player and the world map read everything by name from the
     // bound folder and check the source themselves; no private config.
-    if program == "event" || program == "wm" {
-        return Ok(vec![
-            program.into(),
-            b.folder.to_string_lossy().into_owned(),
-            b.manifest.to_string_lossy().into_owned(),
-        ]);
-    }
     // A launch file of this build (a developer's own config) wins; without
     // one the configs are made from the file names in TEST_CONFIGS.
     let own = |name: &str| {
@@ -688,6 +712,21 @@ pub fn test_args(dir: &Path, program: &str, b: &Bound) -> Result<Vec<String>, St
             .filter(|(config, _)| config_identity(config).as_deref() == Some(b.identity.as_str()))
     };
     let made = |key: &str| made_config(dir, b, key);
+    if program == "event" || program == "wm" {
+        let mut args = vec![
+            program.to_owned(),
+            b.folder.to_string_lossy().into_owned(),
+            b.manifest.to_string_lossy().into_owned(),
+        ];
+        // The world map's landing starts the field from the arena config's
+        // sources when one is at hand.
+        if program == "wm"
+            && let Some(arena) = own("launch").map(|(a, _)| a).or_else(|| made("room").ok())
+        {
+            args.extend(["--field".to_owned(), arena.to_string_lossy().into_owned()]);
+        }
+        return Ok(args);
+    }
     let (command, config, options) = match program {
         "title" => {
             let (config, options) = match own("launch-title") {
@@ -816,6 +855,21 @@ mod tests {
         let eh = read(field_room_config(&arena, "eh", None).unwrap());
         assert_eq!(eh["area"]["area"].as_u64(), Some(EH_START.0 as u64));
         assert!(field_room_config(&arena, "al", None).is_err());
+    }
+
+    #[test]
+    fn a_landing_config_names_the_target_and_story() {
+        let f = Fixture::new();
+        let arena = f.0.join("arena.json");
+        fs::write(&arena, br#"{"arena":{},"enemy":{},"hud":"h"}"#).unwrap();
+        let out = landing_room_config(&arena, "tt", 9, 0x63, &[[0x800, 0x895]]).unwrap();
+        assert_eq!(out.file_name().unwrap(), "test-room-wm-landing.json");
+        let v: serde_json::Value = serde_json::from_slice(&fs::read(out).unwrap()).unwrap();
+        assert_eq!(
+            v["area"],
+            serde_json::json!({"world":"tt","area":9,"entrance":0x63,"story":[[0x800,0x895]]})
+        );
+        assert!(v.get("enemy").is_none() && v["hud"] == "h");
     }
 
     #[test]
