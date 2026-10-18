@@ -405,7 +405,7 @@ pub struct Test {
     pub program: &'static str,
 }
 
-pub const TESTS: [Test; 6] = [
+pub const TESTS: [Test; 7] = [
     Test {
         name: "Title screen",
         blurb: "Disney and Square Enix logos, intro, title menu",
@@ -430,6 +430,11 @@ pub const TESTS: [Test; 6] = [
         name: "Cutscene: Roxas and Axel",
         blurb: "Betwixt and Between, before the fight (event 613)",
         program: "event",
+    },
+    Test {
+        name: "Sephiroth (Hollow Bastion)",
+        blurb: "The meeting (event 601), the fight and the aftermath (event 602)",
+        program: "sephiroth",
     },
     Test {
         name: "World map",
@@ -533,6 +538,47 @@ pub fn field_room_config(
         &[story],
         &format!("test-room-{world}"),
     )
+}
+
+/// Where the Sephiroth fight starts: Hollow Bastion area 1 under the map
+/// program the meeting event jumps to (262), battle program 75 (spawn set
+/// `b_60`), at the set's player placement facing the boss. Scene coordinates
+/// (x, probe height, -z of the engine placement) and scene yaw (pi - engine
+/// yaw 0).
+const SEPHIROTH_PROGRAMS: [i16; 3] = [262, 75, 262];
+const SEPHIROTH_SPAWN: [f32; 3] = [-324.849, 300., -783.13];
+
+/// The Sephiroth room config: the arena config's actor, HUD, menu, sound and
+/// combat sources (its `enemy` block keeps the combat tables) with Hollow
+/// Bastion's area 1 in place of the arena.
+pub fn sephiroth_room_config(arena: &Path) -> Result<PathBuf, String> {
+    let bytes =
+        read_limited(arena, CONFIG_LIMIT).map_err(|e| format!("{}: {e}", arena.display()))?;
+    let mut room: serde_json::Value =
+        serde_json::from_slice(&bytes).map_err(|e| format!("{}: {e}", arena.display()))?;
+    let o = room
+        .as_object_mut()
+        .ok_or("The arena config is not an object.")?;
+    for key in ["arena", "npc", "room_selection"] {
+        o.remove(key);
+    }
+    o.insert(
+        "area".into(),
+        serde_json::json!({"world":"hb","area":1,"entrance":0,"story":[],"stay":true,
+            "programs":SEPHIROTH_PROGRAMS}),
+    );
+    o.insert("spawn".into(), serde_json::json!(SEPHIROTH_SPAWN));
+    o.insert("spawn_yaw".into(), serde_json::json!(std::f32::consts::PI));
+    let dir = arena.parent().unwrap_or(Path::new("."));
+    let (out, next) = (
+        dir.join("test-room-sephiroth.json"),
+        dir.join("test-room-sephiroth.json.new"),
+    );
+    let bytes = serde_json::to_vec_pretty(&room).map_err(|e| e.to_string())?;
+    fs::write(&next, bytes)
+        .and_then(|()| fs::rename(&next, &out))
+        .map_err(|e| e.to_string())?;
+    Ok(out)
 }
 
 /// The field config the world map's landing jumps to (FUN_1403946d0 →
@@ -762,6 +808,13 @@ pub fn test_args(dir: &Path, program: &str, b: &Bound) -> Result<Vec<String>, St
             };
             let saved = saved_start(dir, program);
             ("room", field_room_config(&arena, program, saved)?, options)
+        }
+        "sephiroth" => {
+            let (arena, options) = match own("launch") {
+                Some(own) => own,
+                None => (made("room")?, Vec::new()),
+            };
+            ("sephiroth", sephiroth_room_config(&arena)?, options)
         }
         other => return Err(format!("unknown test {other}")),
     };
@@ -1107,7 +1160,7 @@ mod tests {
         );
         for t in TESTS.iter() {
             let mut args = test_args(&data, t.program, &bound).unwrap();
-            if t.program == "event" || t.program == "wm" {
+            if matches!(t.program, "event" | "wm" | "sephiroth") {
                 args.push("--load-only".into());
             } else {
                 args.extend(["--frames".into(), "240".into()]);

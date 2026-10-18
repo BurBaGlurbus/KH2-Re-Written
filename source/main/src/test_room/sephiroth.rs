@@ -17,10 +17,14 @@ enum Stage {
     Won,
 }
 
+/// Ticks between the boss's last blow and the room closing for the outro.
+const OUTRO_DELAY: u64 = 240;
+
 #[derive(Resource, Default)]
 pub struct Fight {
     stage: Stage,
     actor: Option<u64>,
+    won_at: Option<u64>,
 }
 
 pub fn tick(
@@ -28,6 +32,7 @@ pub fn tick(
     mut gallery: ResMut<EnemyGallery>,
     area: Option<Res<AreaRes>>,
     mut fight: ResMut<Fight>,
+    mut exit: MessageWriter<AppExit>,
 ) {
     if !game.sephiroth {
         return;
@@ -87,7 +92,24 @@ pub fn tick(
                 .map(|b| b.brain.alive());
             if alive == Some(false) {
                 fight.stage = Stage::Won;
+                fight.won_at = Some(tick);
                 game.event(serde_json::json!({"event":"sephiroth_defeated","tick":tick}));
+            }
+        }
+        Stage::Won => {
+            if let (Some(at), Some(file)) = (fight.won_at, game.sephiroth_result.clone())
+                && tick >= at + OUTRO_DELAY
+            {
+                fight.won_at = None;
+                match std::fs::write(&file, b"won") {
+                    Ok(()) => {
+                        exit.write(AppExit::Success);
+                    }
+                    Err(e) => {
+                        game.autoplay_failed = true;
+                        game.event(serde_json::json!({"event":"sephiroth_result_failed","reason":e.to_string()}));
+                    }
+                }
             }
         }
         _ => {}

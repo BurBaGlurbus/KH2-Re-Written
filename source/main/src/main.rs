@@ -15,6 +15,7 @@ mod keyblade_board;
 mod launcher;
 mod npcs;
 mod save_files;
+mod sephiroth;
 mod skate;
 #[cfg(feature = "skate3")]
 mod skate_hud;
@@ -50,6 +51,7 @@ fn run(program: &str, args: Vec<PathBuf>) -> ExitCode {
         },
         "tt" | "eh" => test_room::main(args, false),
         "event" => cutscene::main(args, false),
+        "sephiroth" => sephiroth::main(args, false),
         "wm" => world_map::main(args, false),
         "--version" => {
             println!("KH2RW {}", env!("CARGO_PKG_VERSION"));
@@ -57,7 +59,7 @@ fn run(program: &str, args: Vec<PathBuf>) -> ExitCode {
         }
         _ => {
             eprintln!(
-                "usage: kh2fm [title|room|talk|play|tt|eh|event|wm|--version] [program arguments]"
+                "usage: kh2fm [title|room|talk|play|tt|eh|event|sephiroth|wm|--version] [program arguments]"
             );
             ExitCode::FAILURE
         }

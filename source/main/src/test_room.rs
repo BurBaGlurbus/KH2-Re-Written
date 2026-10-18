@@ -946,6 +946,9 @@ struct Game {
     /// The Sephiroth fight (`--sephiroth`): the room's own Shadow is off and
     /// the boss is summoned from the area's placement.
     sephiroth: bool,
+    /// `--sephiroth-result <file>`: written with `won` after the boss dies, then
+    /// the room closes (the chained run goes on to the outro).
+    sephiroth_result: Option<PathBuf>,
     /// `--magic-tour`: the scripted spell and combo run (magic_tour.rs).
     magic_tour: bool,
     /// The Drive form the tour casts in (`--magic-form`, 0 = none) and the
@@ -11208,6 +11211,7 @@ fn run(mut args: Vec<PathBuf>) -> Result<AppExit, Box<dyn std::error::Error>> {
     let mut enemy_tour = false;
     let mut enemy_battle_tour = false;
     let mut sephiroth = false;
+    let mut sephiroth_result: Option<PathBuf> = None;
     let mut magic_tour = false;
     let mut party_hit_tour = false;
     let mut magic_form = 0u8;
@@ -11262,6 +11266,14 @@ fn run(mut args: Vec<PathBuf>) -> Result<AppExit, Box<dyn std::error::Error>> {
                 );
             }
             Some("--sephiroth") => sephiroth = true,
+            Some("--sephiroth-result") => {
+                sephiroth_result = Some(
+                    options
+                        .next()
+                        .cloned()
+                        .ok_or("sephiroth result file absent")?,
+                )
+            }
             Some("--enemy-combat-tour") if autoplay.is_none() => {
                 enemy_battle_tour = true;
                 autoplay = Some(
@@ -11604,6 +11616,7 @@ fn run(mut args: Vec<PathBuf>) -> Result<AppExit, Box<dyn std::error::Error>> {
         enemy_tour,
         enemy_battle_tour,
         sephiroth,
+        sephiroth_result,
         magic_tour,
         magic_form,
         magic_shift,
