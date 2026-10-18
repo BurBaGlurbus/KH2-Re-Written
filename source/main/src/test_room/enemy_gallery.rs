@@ -485,10 +485,10 @@ pub fn service(
         };
         let result = match request {
             Request::Battle { actor: id } => (|| {
-                if area.is_some() {
+                let game = game.as_deref_mut().ok_or("battle session absent")?;
+                if area.is_some() && !game.sephiroth {
                     return Err("AI host currently requires the generated flat test room".into());
                 }
-                let game = game.as_deref_mut().ok_or("battle session absent")?;
                 let rt = game
                     .enemy
                     .as_ref()

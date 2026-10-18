@@ -8,6 +8,7 @@ mod load;
 mod screen;
 mod texa;
 
+use crate::test_room::{BgChunk, TexaWorkers, UvScroll, spawn_room, texa_advance, uv_scroll_apply};
 use bevy::{
     app::AppExit,
     core_pipeline::tonemapping::{DebandDither, Tonemapping},
@@ -24,10 +25,11 @@ use data::{
 };
 use event::Timeline;
 use std::{collections::HashMap, fs::OpenOptions, path::PathBuf, sync::Arc};
+use visual::area_fog::{FogMaterial, FogPlugin};
 use visual::dialogue;
 use visual::hud::SystemFont;
 use visual::overlay::{LayoutMaterial, Ui2dFrame, Ui2dPlugin};
-use visual::room::{mesh, rgba_image, upload};
+use visual::room::{mesh, rgba_image};
 use visual::sound;
 
 /// Event frames per second.
@@ -101,6 +103,44 @@ struct Startup {
 #[derive(Resource)]
 struct StartupRes(Option<Startup>);
 
+/// The area's background group mask when the event starts; `BgGrupe` toggles
+/// bits of it as the event plays.
+#[derive(Resource)]
+struct BgGroups {
+    initial: u64,
+    shown: Option<u64>,
+}
+
+/// Shows and hides the map's chunks as the event's background groups change,
+/// and runs the map's texture and UV animation on the event clock.
+#[allow(clippy::too_many_arguments)]
+fn room_animation(
+    event: Res<Event>,
+    mut bg: ResMut<BgGroups>,
+    mut chunks: Query<(&BgChunk, &mut Visibility)>,
+    added: Query<(), Added<BgChunk>>,
+    workers: Option<ResMut<TexaWorkers>>,
+    scrolls: Query<&UvScroll>,
+    mut images: ResMut<Assets<Image>>,
+    mut materials: ResMut<Assets<FogMaterial>>,
+) {
+    let mask = event.timeline.bg_mask(bg.initial, event.frame);
+    if bg.shown != Some(mask) || !added.is_empty() {
+        bg.shown = Some(mask);
+        for (chunk, mut visibility) in &mut chunks {
+            *visibility = if visual::room::chunk_visible(chunk.0, mask) {
+                Visibility::Inherited
+            } else {
+                Visibility::Hidden
+            };
+        }
+    }
+    if let Some(mut workers) = workers {
+        texa_advance(&mut workers, event.tick, &mut images);
+    }
+    uv_scroll_apply(event.tick as i64, scrolls.iter(), &mut materials);
+}
+
 const VOICE_KEY: u32 = 8_000_000;
 const MUSIC_KEY: u32 = 8_100_000;
 const SE_KEY: u32 = 8_200_000;
@@ -126,6 +166,8 @@ fn setup(
     mut overlay: ResMut<Overlay>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
+    mut fog_materials: ResMut<Assets<FogMaterial>>,
+    bg: Res<BgGroups>,
     mut layout_materials: ResMut<Assets<LayoutMaterial>>,
     mut images: ResMut<Assets<Image>>,
     mut frame: ResMut<Ui2dFrame>,
@@ -135,56 +177,21 @@ fn setup(
     let world = commands
         .spawn((Transform::default(), Visibility::default()))
         .id();
-    for room in &room.rooms {
-        let handles: Vec<_> = room
-            .textures
-            .iter()
-            .map(|t| upload(t, &mut images))
-            .collect();
-        for chunk in &room.model.chunks {
-            if chunk.indices.is_empty() {
-                continue;
-            }
-            let vertex = |i: &u32| &chunk.vertices[*i as usize];
-            let positions = chunk
-                .indices
-                .iter()
-                .map(|i| vertex(i).position_bits.map(f32::from_bits))
-                .collect();
-            let uvs = chunk
-                .indices
-                .iter()
-                .map(|i| vertex(i).uv_bits.map(f32::from_bits))
-                .collect();
-            let colors = chunk
-                .indices
-                .iter()
-                .map(|i| vertex(i).color_bits.map(f32::from_bits))
-                .collect();
-            let texture = room
-                .textures
-                .iter()
-                .position(|t| t.environment_ordinal as i16 == chunk.texture_index)
-                .map(|i| handles[i].clone());
-            commands.spawn((
-                ChildOf(world),
-                Mesh3d(meshes.add(mesh(positions, uvs, colors))),
-                MeshMaterial3d(materials.add(StandardMaterial {
-                    base_color: Color::WHITE,
-                    base_color_texture: texture,
-                    unlit: true,
-                    cull_mode: None,
-                    alpha_mode: if chunk.transparency_flag == 0 {
-                        AlphaMode::Opaque
-                    } else {
-                        AlphaMode::Blend
-                    },
-                    ..default()
-                })),
-                Transform::default(),
-            ));
-        }
-    }
+    // The map is drawn by the field's own room renderer (texture regions,
+    // fog, UV scroll, TEXA, background groups).
+    spawn_room(
+        &mut commands,
+        &mut meshes,
+        &mut fog_materials,
+        &mut images,
+        &room,
+        world,
+        false,
+        bg.initial,
+    );
+    let clear = room.environment.map_or(Color::BLACK, |e| {
+        Color::srgb_u8(e.clear[0], e.clear[1], e.clear[2])
+    });
     // One image per (actor, texture environment), shared by its parts so a
     // texture animation repaints them all.
     let mut shared: HashMap<(usize, usize), (Handle<Image>, u32)> = HashMap::new();
@@ -307,7 +314,7 @@ fn setup(
         Camera3d::default(),
         Camera {
             order: -2,
-            clear_color: ClearColorConfig::Custom(Color::BLACK),
+            clear_color: ClearColorConfig::Custom(clear),
             ..default()
         },
         bevy::camera::RenderTarget::Image(overlay.scene.clone().into()),
@@ -827,7 +834,7 @@ fn finish(
 
 fn run(args: Vec<PathBuf>) -> Result<AppExit, Box<dyn std::error::Error>> {
     if args.len() < 2 {
-        return Err("usage: kh2fm event <Steam-root> <manifest> [--event tt:19:613] [--load-only] [--autoplay <new-capture-dir>] [--captures f1,f2,...]".into());
+        return Err("usage: kh2fm event <Steam-root> <manifest> [--event tt:19:613] [--load-only] [--bg-mask <hex>] [--autoplay <new-capture-dir>] [--captures f1,f2,...]".into());
     }
     let mut id = load::EventId {
         world: "tt".into(),
@@ -835,6 +842,7 @@ fn run(args: Vec<PathBuf>) -> Result<AppExit, Box<dyn std::error::Error>> {
         name: "613".into(),
     };
     let mut load_only = false;
+    let mut bg_mask = u64::MAX;
     let mut autoplay = None;
     let mut captures = vec![
         10., 100., 200., 300., 400., 520., 600., 700., 760., 900., 1000.,
@@ -844,6 +852,13 @@ fn run(args: Vec<PathBuf>) -> Result<AppExit, Box<dyn std::error::Error>> {
         match option.to_str() {
             Some("--load-only") => load_only = true,
             Some("--autoplay") => autoplay = options.next().cloned(),
+            Some("--bg-mask") => {
+                let value = options
+                    .next()
+                    .and_then(|v| v.to_str())
+                    .ok_or("bg mask absent")?;
+                bg_mask = u64::from_str_radix(value.trim_start_matches("0x"), 16)?;
+            }
             Some("--captures") => {
                 captures = options
                     .next()
@@ -984,6 +999,10 @@ fn run(args: Vec<PathBuf>) -> Result<AppExit, Box<dyn std::error::Error>> {
         &loaded.commands,
     ))
     .insert_resource(StartupRes(Some(Startup { room: loaded.room })))
+    .insert_resource(BgGroups {
+        initial: bg_mask,
+        shown: None,
+    })
     .insert_resource(Time::<Fixed>::from_hz(TICK_HZ))
     .insert_resource(ClearColor(Color::BLACK))
     .add_plugins(DefaultPlugins.set(WindowPlugin {
@@ -996,6 +1015,7 @@ fn run(args: Vec<PathBuf>) -> Result<AppExit, Box<dyn std::error::Error>> {
         close_when_requested: false,
         ..default()
     }))
+    .add_plugins(FogPlugin)
     .add_plugins(Ui2dPlugin {
         order: 0,
         overlay: false,
@@ -1009,6 +1029,7 @@ fn run(args: Vec<PathBuf>) -> Result<AppExit, Box<dyn std::error::Error>> {
             fx::present,
             texa::animate,
             blur::drive,
+            room_animation,
             compose,
             finish,
         )

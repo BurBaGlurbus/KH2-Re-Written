@@ -123,6 +123,13 @@ pub enum Command {
     },
     /// 0x0F
     Setup,
+    /// 0x16 BgGrupe (FUN_1402daa70): shows or hides map background group
+    /// `group` (a bit of the area's group mask) at `frame`.
+    BgGroup {
+        frame: i16,
+        group: u8,
+        show: bool,
+    },
     /// 0x10
     Start {
         fade_in: i16,
@@ -442,6 +449,11 @@ fn command(opcode: u16, record: &[u8]) -> io::Result<Command> {
             message: c.u16()?,
             hide: c.i16()?,
         },
+        0x16 => Command::BgGroup {
+            frame: c.i16()?,
+            group: c.u8()?,
+            show: c.u8()? != 0,
+        },
         0x17 => Command::Blur {
             frame: c.i16()?,
             switch: c.u8()?,
@@ -602,6 +614,28 @@ mod tests {
         out.extend(opcode.to_le_bytes());
         out.extend(payload);
         out
+    }
+
+    #[test]
+    fn decodes_a_background_group_toggle() {
+        let mut script = record(0x16, &[0x00, 0x00, 0x01, 0x01]);
+        script.extend(record(0x16, &[0x2c, 0x01, 0x07, 0x00]));
+        script.extend([0, 0]);
+        assert_eq!(
+            read(&script).unwrap(),
+            vec![
+                Command::BgGroup {
+                    frame: 0,
+                    group: 1,
+                    show: true
+                },
+                Command::BgGroup {
+                    frame: 300,
+                    group: 7,
+                    show: false
+                }
+            ]
+        );
     }
 
     #[test]

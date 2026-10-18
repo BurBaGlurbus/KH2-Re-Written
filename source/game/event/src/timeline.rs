@@ -88,6 +88,8 @@ pub struct Timeline {
     pub fades: Vec<Fade>,
     /// (frame, flag) of `WideMask` (0x22).
     pub wide_masks: Vec<(i32, i16)>,
+    /// `BgGrupe` (0x16): (frame, group bit, shown) in script order.
+    pub bg_groups: Vec<(i32, u8, bool)>,
     /// `SetBgm` (frame, bank, bgm).
     pub set_bgm: Vec<(i32, i16, i16)>,
     /// `SeqPlayBgm` records.
@@ -112,6 +114,19 @@ fn track(t: &mut Timeline, id: i16) -> &mut ActorTrack {
 }
 
 impl Timeline {
+    /// The background group mask at `frame`: `initial` with every `BgGrupe`
+    /// at or before the frame applied in script order (bit `group` of the
+    /// area's mask, FUN_140162a00 show / FUN_1401629b0 hide).
+    pub fn bg_mask(&self, initial: u64, frame: f32) -> u64 {
+        self.bg_groups
+            .iter()
+            .filter(|(at, ..)| *at as f32 <= frame)
+            .fold(initial, |mask, &(_, group, show)| {
+                let bit = 1u64.checked_shl(u32::from(group)).unwrap_or(0);
+                if show { mask | bit } else { mask & !bit }
+            })
+    }
+
     pub fn new(commands: &[Command]) -> Self {
         let mut t = Timeline::default();
         for c in commands {
@@ -188,6 +203,9 @@ impl Timeline {
                     message: *message,
                     hide: *hide != 0,
                 }),
+                Command::BgGroup { frame, group, show } => {
+                    t.bg_groups.push((*frame as i32, *group, *show))
+                }
                 Command::Voices(v) => t
                     .voices
                     .extend(v.iter().map(|v| (v.frame as i32, v.name.clone()))),
@@ -287,5 +305,42 @@ impl Timeline {
             .into_iter()
             .filter_map(|(k, v)| v.map(|v| (k, v)))
             .collect()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn background_groups_apply_in_script_order() {
+        let commands = [
+            Command::BgGroup {
+                frame: 0,
+                group: 1,
+                show: true,
+            },
+            Command::BgGroup {
+                frame: 100,
+                group: 0,
+                show: false,
+            },
+            Command::BgGroup {
+                frame: 200,
+                group: 0,
+                show: true,
+            },
+        ];
+        let timeline = Timeline::new(&commands);
+        assert_eq!(timeline.bg_mask(0b1, 50.), 0b11);
+        assert_eq!(timeline.bg_mask(0b1, 100.), 0b10);
+        assert_eq!(timeline.bg_mask(0b1, 250.), 0b11);
+        // A group past the mask's width changes nothing.
+        let wide = Timeline::new(&[Command::BgGroup {
+            frame: 0,
+            group: 70,
+            show: true,
+        }]);
+        assert_eq!(wide.bg_mask(5, 10.), 5);
     }
 }
