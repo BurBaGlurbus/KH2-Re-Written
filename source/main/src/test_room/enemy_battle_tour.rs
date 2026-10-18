@@ -4,7 +4,16 @@ use super::*;
 
 pub const END: u64 = 1800;
 pub const CAPTURES: &[u64] = &[100, 160, 200, 250, 320, 600, 800, 1100, 1400, 1800];
-pub const MODELS: &[&str] = &["M_EX020", "M_EX990", "M_EX010"];
+const DEFAULT_MODELS: &[&str] = &["M_EX020", "M_EX990", "M_EX010"];
+
+/// The models the tour summons: `KH2RW_TOUR_MODELS=N_HB630` (comma
+/// separated) replaces the three ordinary enemies, for one-boss runs.
+fn models() -> Vec<String> {
+    match std::env::var("KH2RW_TOUR_MODELS") {
+        Ok(list) if !list.is_empty() => list.split(',').map(str::to_owned).collect(),
+        _ => DEFAULT_MODELS.iter().map(|m| (*m).to_owned()).collect(),
+    }
+}
 
 #[derive(Resource, Default)]
 pub struct Checks {
@@ -25,16 +34,14 @@ pub fn tick(
     }
     let tick = game.tick;
     if tick == 5 {
-        for (model, offset) in MODELS.iter().zip([
+        for (model, offset) in models().iter().zip([
             Vec3::new(-80., 0., 150.),
             Vec3::new(80., 0., 180.),
             Vec3::new(150., 0., 250.),
         ]) {
-            if let Some(entry) =
-                gallery.catalog.entries.iter().position(|e| {
-                    e.model_name == *model && e.model_available && e.motions_available
-                })
-            {
+            if let Some(entry) = gallery.catalog.entries.iter().position(|e| {
+                e.model_name == model.as_str() && e.model_available && e.motions_available
+            }) {
                 let at = Vec3::from_array(game.player.position) + offset;
                 gallery.queue_summon(entry, at, std::f32::consts::PI);
                 game.event(serde_json::json!({"event":"enemy_combat_tour_summon",
@@ -118,10 +125,11 @@ pub fn tick(
     if tick == END {
         // This finite exercise requires both directions of actual damage.
         // It does not pass an AI, timing, enemy inventory or gameplay gate.
-        let pass = gallery.actors.len() == MODELS.len()
-            && MODELS.iter().all(|model| {
+        let models = models();
+        let pass = gallery.actors.len() == models.len()
+            && models.iter().all(|model| {
                 gallery.actors.iter().any(|actor| {
-                    gallery.catalog.entries[actor.entry].model_name == *model
+                    gallery.catalog.entries[actor.entry].model_name == model.as_str()
                         && actor.battle.is_some()
                         && actor.error.is_none()
                         && actor

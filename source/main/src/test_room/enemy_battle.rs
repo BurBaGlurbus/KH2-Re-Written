@@ -471,11 +471,22 @@ pub struct BattleActor {
     pub error: Option<String>,
 }
 /// The supported enemies' objentry ids and model names.
-pub const SUPPORTED: [(u32, &str); 3] = [(301, "M_EX010"), (302, "M_EX020"), (318, "M_EX990")];
+pub const SUPPORTED: [(u32, &str); 4] = [
+    (301, "M_EX010"),
+    (302, "M_EX020"),
+    (318, "M_EX990"),
+    (SEPHIROTH, "N_HB630"),
+];
+/// Sephiroth's objentry id (model N_HB630): the one boss run by the
+/// object script alone.
+pub const SEPHIROTH: u32 = 2230;
 pub fn supported(e: &Entry) -> bool {
     matches!(
         (e.object_id, e.model_name.as_str(), e.character),
-        (301, "M_EX010", 1000) | (302, "M_EX020", 1001) | (318, "M_EX990", 3000)
+        (301, "M_EX010", 1000)
+            | (302, "M_EX020", 1001)
+            | (318, "M_EX990", 3000)
+            | (SEPHIROTH, "N_HB630", 5044)
     )
 }
 pub fn target_params(source: &ProbeSource) -> Result<player::targeting::Params, String> {
@@ -552,7 +563,13 @@ impl BattleActor {
         if kind.variants {
             return Err("contextual motion variants are not qualified for battle".into());
         }
-        let binding = if entry.character == 3000 {
+        let binding = if entry.object_id == SEPHIROTH {
+            // Provisional until the exe's object-to-ENMP lookup is traced.
+            EnemyBinding {
+                enmp_id: 34,
+                prize_id: None,
+            }
+        } else if entry.character == 3000 {
             EnemyBinding {
                 enmp_id: 41,
                 prize_id: Some(6),
@@ -674,7 +691,9 @@ impl BattleActor {
             );
         }
         let clips = Arc::new(Clips(clips));
-        let brain = if std::env::var("KH2RW_ENEMY_AI").is_ok_and(|v| v == "script") {
+        let brain = if entry.object_id == SEPHIROTH
+            || std::env::var("KH2RW_ENEMY_AI").is_ok_and(|v| v == "script")
+        {
             Brain::Script(Box::new(super::enemy_script::ScriptBrain::load(
                 source,
                 &entry.model_name,
