@@ -154,4 +154,5 @@ Records through T128 retain historical commands and paths. See [the folder guide
 | [T183](T183-first-person-camera.md) | The first-person look camera (Select) | PARTIAL. |
 | [T185](T185-keyblade-trail-ends-with-its-window.md) | The Keyblade's trail ends with its window | PASS in the room; PARTIAL against the original. |
 | [T190](T190-command-lockout-and-controller-vibration.md) | Frame triggers 16 and 31: the command lockout and controller vibration | PARTIAL. |
+| [T191](T191-hit-effect-ring.md) | The eight most recent hit effects stay, the displaced one fades | PARTIAL. |
 | [T141](T141-ik-and-animation-parity.md) | IK aim chains, pole vectors and joint-space motion blends | PROGRESS. Master Form matches the PS2 routine; 87% of installed motions within 0.1. |
