@@ -14,6 +14,7 @@ use bevy::{
     camera::visibility::RenderLayers,
     core_pipeline::tonemapping::{DebandDither, Tonemapping},
     image::ImageSampler,
+    input::gamepad::{GamepadRumbleIntensity, GamepadRumbleRequest},
     input::mouse::AccumulatedMouseMotion,
     prelude::*,
     render::render_resource::{Extent3d, TextureDimension, TextureFormat},
@@ -972,6 +973,14 @@ struct Game {
     dust_scan: Option<(u64, Action, u32)>,
     /// The scan of the actor's own frame-8 sounds.
     move_se_scan: Option<(u64, Action, u32)>,
+    /// Vibration: the waves, the running one, this tick's motor bytes (set
+    /// once per simulation tick, sent to the pad by `rumble_output`) and the
+    /// frame trigger 31 scan.
+    vibration: Option<player::vibration::Library>,
+    rumble: player::vibration::Playback,
+    motors: [u8; 2],
+    motors_fresh: bool,
+    vibration_scan: Option<(u64, Action, u32)>,
     /// The shown kit's attack shapes by collision group (bone, offset,
     /// radius).
     sora_attack: HashMap<u8, Vec<(usize, Vec3, f32)>>,
@@ -1445,6 +1454,18 @@ fn clip_for(selected: &motion::SelectedMotion) -> Result<(Clip, u32), Box<dyn st
                     clip.face_target.push((frame, deg as f32));
                 }
             }
+            // A vibration wave (FUN_14040dd70 case 0x1f): its id at +4.
+            31 => {
+                if let Some(&id) = record.parameters.first() {
+                    clip.vibrations.push((frame, id as u8));
+                }
+            }
+            // The command lockout (FUN_14040dd70 case 0x10): ticks at +4.
+            16 => {
+                if let Some(&ticks) = record.parameters.first() {
+                    clip.command_lockout.push((frame, ticks as f32));
+                }
+            }
             1 => {
                 if let Some(&n) = record.parameters.first() {
                     clip.effects.push((frame, n));
@@ -1718,6 +1739,8 @@ struct Loaded {
     /// the swings' environment test (wall_hit.rs).
     atkp: Vec<u8>,
     wall_blade: character_kit::Blade,
+    /// The vibration waves of the battle archive's `vbrt` block.
+    vibration: Option<player::vibration::Library>,
     abilities: AbilitySource,
     magic: Option<magic_room::MagicSource>,
     items: Option<item_room::ItemSource>,
@@ -3506,6 +3529,7 @@ fn load(
     Ok(Loaded {
         atkp: bar_entry(&battle, b"atkp")?.to_vec(),
         wall_blade,
+        vibration: vibration_library(&battle),
         board_motion,
         keyblades,
         weapon_model: config.object_model_name.clone(),
@@ -6672,6 +6696,7 @@ fn simulate(
         );
     }
     sora_sounds(&mut game);
+    sora_vibration(&mut game);
     sora_dust(&mut game);
     if tick.is_multiple_of(60) {
         let (position, yaw, action) = (game.player.position, game.player.yaw, game.player.action);
@@ -7432,6 +7457,85 @@ fn dissolve_present(
 
 /// Frame-8 sound triggers of Sora's current clip (the Keyblade's motion)
 /// reached since the last scan; a new action or a loop rescans from 0.
+/// The battle archive's vibration waves: the `vbrt` block's `vibr` table and
+/// its type 47 entries in order.
+fn vibration_library(battle: &[u8]) -> Option<player::vibration::Library> {
+    let table = bar::read_bar(battle).ok()?;
+    let block = table.entries.iter().find(|e| e.name_bytes == *b"vbrt")?;
+    let start = block.offset.max(0) as usize;
+    let bytes = battle.get(start..start.checked_add(block.size as usize)?)?;
+    let inner = bar::read_bar(bytes).ok()?;
+    let slice = |e: &data::bar::BarEntry| {
+        let at = e.offset.max(0) as usize;
+        bytes.get(at..at.checked_add(e.size as usize)?)
+    };
+    let vibr = inner.entries.iter().find(|e| e.name_bytes == *b"vibr")?;
+    let waves: Option<Vec<&[u8]>> = inner
+        .entries
+        .iter()
+        .filter(|e| e.entry_type == 47)
+        .map(slice)
+        .collect();
+    player::vibration::Library::read(slice(vibr)?, &waves?)
+}
+
+/// Frame trigger 31 on Sora's motion starts a wave, and the callback
+/// (FUN_14019b1d0) turns the running one into this tick's motor bytes.
+fn sora_vibration(game: &mut Game) {
+    let key = (game.action_started, game.player.action);
+    let frame = game.player.motion_frame(&game.clips);
+    let from = match game.vibration_scan {
+        Some((s, a, f)) if (s, a) == key && f <= frame => Some(f),
+        _ => None,
+    };
+    game.vibration_scan = Some((key.0, key.1, frame));
+    let due: Vec<u8> = game
+        .player
+        .clip(&game.clips)
+        .vibrations
+        .iter()
+        .filter(|&&(at, _)| from.is_none_or(|f| at > f) && at <= frame)
+        .map(|&(_, id)| id)
+        .collect();
+    for id in due {
+        if let Some(wave) = game.vibration.as_ref().and_then(|l| l.find(id)) {
+            game.rumble.start(wave);
+            let tick = game.tick;
+            game.event(serde_json::json!({"event":"vibration_start","tick":tick,"id":id}));
+        }
+    }
+    game.motors = game.rumble.tick();
+    game.motors_fresh = true;
+}
+
+/// The pad's motors (FUN_14039bbe0 → XInputSetState): sent once per
+/// simulation tick for one tick's length. The room has no Config page, so the
+/// vibration bit (default on) is taken as set.
+fn rumble_output(
+    mut game: ResMut<Game>,
+    pads: Query<Entity, With<Gamepad>>,
+    mut requests: MessageWriter<GamepadRumbleRequest>,
+) {
+    if !std::mem::take(&mut game.motors_fresh) {
+        return;
+    }
+    let (strong_motor, weak_motor) = player::vibration::motors(game.motors);
+    for gamepad in &pads {
+        if strong_motor == 0. && weak_motor == 0. {
+            requests.write(GamepadRumbleRequest::Stop { gamepad });
+        } else {
+            requests.write(GamepadRumbleRequest::Add {
+                gamepad,
+                duration: std::time::Duration::from_secs_f32(1. / 60.),
+                intensity: GamepadRumbleIntensity {
+                    strong_motor,
+                    weak_motor,
+                },
+            });
+        }
+    }
+}
+
 fn sora_sounds(game: &mut Game) {
     let clip = game.poses[&(game.player.action, game.player.armed)];
     let frame = game.player.motion_frame(&game.clips);
@@ -11289,6 +11393,11 @@ fn run(mut args: Vec<PathBuf>) -> Result<AppExit, Box<dyn std::error::Error>> {
         map_pax: None,
         dust_scan: None,
         move_se_scan: None,
+        vibration: loaded.vibration.take(),
+        rumble: player::vibration::Playback::default(),
+        motors: [0; 2],
+        motors_fresh: false,
+        vibration_scan: None,
         sora_attack: std::mem::take(&mut loaded.kit.attack),
         party: loaded
             .party
@@ -11776,6 +11885,7 @@ fn run(mut args: Vec<PathBuf>) -> Result<AppExit, Box<dyn std::error::Error>> {
         )
         .add_systems(Update, crate::skate::toggle)
         .add_systems(Update, settings_room::apply_settings)
+        .add_systems(Update, rumble_output)
         .add_systems(
             FixedUpdate,
             (
