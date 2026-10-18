@@ -120,6 +120,9 @@ pub struct Clip {
     /// Frame trigger 16: at a tick the command lockout (`obj+0xb94`) is set to
     /// this many ticks (FUN_14040dd70 case 0x10).
     pub command_lockout: Vec<(u32, f32)>,
+    /// Range trigger 46 (`obj+0x194` bit 1, FUN_14040d810 case 0x2e): first
+    /// person is refused while one holds (FUN_1403ba300).
+    pub no_first_person: Vec<(u32, u32)>,
     /// Frame trigger 31: at a tick the vibration wave `id` starts
     /// (FUN_14040dd70 case 0x1f → FUN_1403eefc0).
     pub vibrations: Vec<(u32, u8)>,
@@ -1263,6 +1266,11 @@ impl Player {
     /// An ANB range 0, 1 or 2 covers the current motion frame.
     fn actionable(&self, clips: &Clips) -> bool {
         Clip::within(&self.clip(clips).actionable, self.motion_frame(clips))
+    }
+
+    /// Whether range 46 covers the current motion frame.
+    pub fn first_person_blocked(&self, clips: &Clips) -> bool {
+        Clip::within(&self.clip(clips).no_first_person, self.motion_frame(clips))
     }
 
     /// FUN_1403ba070's main path: a range 0 to 2 is active and the command
@@ -3260,6 +3268,21 @@ mod tests {
             player.tick(&Input::default(), &p, &c, &w);
         }
         assert_eq!(player.command_lock, 0.);
+    }
+
+    #[test]
+    fn range_46_blocks_first_person_while_it_holds() {
+        let (p, mut c, w) = (params(), clips(), room());
+        for clip in [&mut c.idle, &mut c.field_idle] {
+            clip.no_first_person = vec![(2, 4)];
+        }
+        let mut player = Player::new([0., 0., 0.], 0.);
+        let mut blocked = Vec::new();
+        for _ in 0..6 {
+            player.tick(&Input::default(), &p, &c, &w);
+            blocked.push(player.first_person_blocked(&c));
+        }
+        assert_eq!(blocked, [false, true, true, true, false, false]);
     }
 
     #[test]

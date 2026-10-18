@@ -1261,12 +1261,15 @@ fn start_map_effects(game: &mut Game, pax: &Arc<object_effect::Pax>, mask: u64, 
 }
 
 /// FUN_1403ba300: first person is possible in a physics mode with flag bit 7
-/// (ground, air; not Quick Run's mode 0x10 or the glides' 0x11 / 0x12). The
-/// object flag bits it also tests (+0x18c bit 14, +0x194 bit 1) are not
-/// modelled.
-fn first_person_allowed(player: &Player) -> bool {
+/// (ground, air; not Quick Run's mode 0x10 or the glides' 0x11 / 0x12), with
+/// `obj+0x194` bit 1 (range trigger 46) clear and `obj+0x18c` bit 14 clear.
+/// Bit 14 is the riding state (`obj+0x2b0`, the ridden object, replaces the
+/// actor in `FUN_14040d810` / `FUN_14040e4e0` when it is set); no rideable
+/// object exists in the room, so it is always clear here.
+fn first_person_allowed(player: &Player, clips: &Clips) -> bool {
     use player::growth::motion::{GLIDE, GLIDE_STAND, QUICK_RUN, QUICK_RUN_END};
     !player.dead()
+        && !player.first_person_blocked(clips)
         && !matches!(player.action, Action::Growth(m)
             if (QUICK_RUN..=QUICK_RUN_END).contains(&m) || (GLIDE..=GLIDE_STAND).contains(&m))
 }
@@ -1470,6 +1473,8 @@ fn clip_for(selected: &motion::SelectedMotion) -> Result<(Clip, u32), Box<dyn st
                 clip.windows.push((start, stop, record.trigger, p));
             }
             3 | 24 | 30 => clip.no_gravity.push((start, stop)),
+            // obj+0x194 bit 1 (FUN_14040d810 case 0x2e): no first person.
+            46 => clip.no_first_person.push((start, stop)),
             27 => clip.invulnerable.push((start, stop)),
             42 => clip.inertia.push((start, stop)),
             // 28 turns toward the lock-on target, 22 toward the command
@@ -6669,7 +6674,7 @@ fn simulate(
     camera.select = game.pad.pressed & 0x40_0000 != 0;
     camera.reset_pitch = game.pad.pressed & 0x2_0000 != 0;
     camera.head_lift = game.params.head_height;
-    camera.first_person_ok = first_person_allowed(&game.player);
+    camera.first_person_ok = first_person_allowed(&game.player, &game.clips);
     if game.autoplay.is_none() && game.pad.held & 0xc_0000 != 0 {
         let [_, y, magnitude] = controller::analog(game.pad_data.right);
         camera.look = y * magnitude;
