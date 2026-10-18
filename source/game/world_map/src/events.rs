@@ -222,6 +222,11 @@ pub enum Action {
         world: u8,
         area: u8,
     },
+    /// Op 0x10f: the jump by program id (FUN_14039fbc0 resolves it).
+    JumpProgram {
+        world: u8,
+        program: u16,
+    },
     /// Logged, not carried out here.
     Unported(Op),
 }
@@ -329,6 +334,10 @@ impl EventPlayer {
                 Op::RefreshNow => out.push(Action::Refresh),
                 Op::TutorialWindows => self.tutorial = true,
                 Op::Jump { world, area } => out.push(Action::Jump { world, area }),
+                Op::JumpSpawn { world, spawn } => out.push(Action::JumpProgram {
+                    world,
+                    program: spawn as u16,
+                }),
                 Op::Voice(entry) => out.push(Action::Voice(entry)),
                 Op::ShipToHollowBastion => out.push(Action::ShipToHollowBastion),
                 op @ (Op::Widget(..)

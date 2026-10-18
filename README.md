@@ -89,9 +89,10 @@ yet. Full roster combat and installed-game comparisons remain unfinished.
 
 ## Build and check
 
-`build.bat` builds the optimized launcher and its two viewers. Use
-`build.bat -Debug` for faster development builds, and add `-LauncherOnly` when
-the viewers are already built. Compact development symbols and Rust's bundled
+`build-release.bat` builds the optimized launcher and its two viewers;
+`build-debug.bat` makes the faster development build. The `-skate3` variants
+(`build-release-skate3.bat`, `build-debug-skate3.bat`) enable the `skate3`
+feature. Add `-LauncherOnly` when the viewers are already built. Compact development symbols and Rust's bundled
 LLVM linker reduce build-output overhead; see
 [local build options and cleanup](CONTRIBUTING.md#local-builds-and-disk-use).
 

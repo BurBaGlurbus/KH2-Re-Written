@@ -195,6 +195,22 @@ impl Target {
     }
 }
 
+/// FUN_14039fbc0: a jump by program id lands in the area `07localset.bin`
+/// lists for it in `world`'s table (bsearch), at entrance 0, with that id
+/// as the map, battle and event programs (the target's +4/+6/+8). None when
+/// the world's table has no such id (the exe would read through a null
+/// record).
+pub fn resolve_program(areas: &[Vec<(u16, u16)>], world: u8, program: u16) -> Option<Target> {
+    let table = areas.get(world as usize)?;
+    let i = table.binary_search_by_key(&program, |r| r.0).ok()?;
+    Some(Target {
+        world,
+        area: table[i].1 as u8,
+        entrance: 0,
+        spawn: Some(program),
+    })
+}
+
 /// FUN_140154e20: the world map, at the entrance beside `from_world` (0
 /// when the table has none).
 pub fn world_map_entry(from_world: u8) -> Target {
@@ -702,6 +718,26 @@ mod tests {
             event: ev,
             script,
         }
+    }
+
+    #[test]
+    fn program_jumps_find_their_area() {
+        let areas = vec![
+            vec![],
+            vec![(0x33, 0), (0x38, 1)],
+            vec![(0x33, 9), (0x40, 4)],
+        ];
+        assert_eq!(
+            resolve_program(&areas, 2, 0x40),
+            Some(Target {
+                world: 2,
+                area: 4,
+                entrance: 0,
+                spawn: Some(0x40),
+            })
+        );
+        assert_eq!(resolve_program(&areas, 2, 0x41), None);
+        assert_eq!(resolve_program(&areas, 9, 0x33), None);
     }
 
     #[test]
