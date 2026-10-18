@@ -564,9 +564,13 @@ impl BattleActor {
             return Err("contextual motion variants are not qualified for battle".into());
         }
         let binding = if entry.object_id == SEPHIROTH {
-            // Provisional until the exe's object-to-ENMP lookup is traced.
+            // [U] Provisional: the exe's object-to-ENMP lookup is not traced yet
+            // (T200). KH2RW_SEPH_ENMP picks another row for development runs.
             EnemyBinding {
-                enmp_id: 34,
+                enmp_id: std::env::var("KH2RW_SEPH_ENMP")
+                    .ok()
+                    .and_then(|v| v.parse().ok())
+                    .unwrap_or(34),
                 prize_id: None,
             }
         } else if entry.character == 3000 {
