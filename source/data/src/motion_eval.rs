@@ -1155,21 +1155,53 @@ fn aim_axes(dir: Vec3, pole: Option<Vec3>) -> (Vec3, Vec3) {
 /// linear mix of the X and Y axes (re-normalised), Z = X x Y and Y = Z x X
 /// again. `weight` 0 gives `from` (the motion being left) and 1 gives `to`.
 /// `parents` is each joint's parent index (negative for roots), parents
-/// first. The reference's special handling of IK-flagged joints is not
-/// reproduced; both poses' joints are blended as plain local matrices.
+/// first. Every joint is blended as a plain local matrix
+/// ([`blend_poses_with_helpers`] with no helper joints).
 pub fn blend_poses(parents: &[i32], from: &[World], to: &[World], weight: f32) -> Vec<World> {
+    blend_poses_with_helpers(parents, &[], from, to, weight)
+}
+
+/// [`blend_poses`] with the reference's helper joints (bone record +0xc bit
+/// 0): FUN_1401c55e0 re-expresses every other joint relative to its nearest
+/// ancestor that is not a helper (FUN_1401a7a80), so that joint blends there
+/// with FUN_1401c3970 and a helper's turn does not reach it; a helper blends
+/// relative to its own parent with FUN_1401c6150, which mixes the two axes
+/// that agree most between the poses and rebuilds the third and then the
+/// second by cross products. `helpers[j]` marks the helpers (missing entries
+/// are not). The IK chains' own blend (FUN_1401c57b0, chain joints mixed by
+/// position and solved again) is not reproduced.
+pub fn blend_poses_with_helpers(
+    parents: &[i32],
+    helpers: &[bool],
+    from: &[World],
+    to: &[World],
+    weight: f32,
+) -> Vec<World> {
     let n = from.len().min(to.len()).min(parents.len());
     let root = World {
         rotation: IDENTITY,
         translation: [0.; 3],
         scale: [1.; 3],
     };
+    let helper = |j: usize| helpers.get(j).copied().unwrap_or(false);
+    // The joint a joint blends against: its parent for a helper, else the
+    // nearest ancestor that is not one (FUN_1401a7a80).
+    let anchor = |j: usize| -> i32 {
+        let mut p = parents[j];
+        if helper(j) {
+            return p;
+        }
+        while p >= 0 && (p as usize) < n && helper(p as usize) {
+            p = parents[p as usize];
+        }
+        p
+    };
     let lerp =
         |a: Vec3, b: Vec3| -> Vec3 { std::array::from_fn(|k| a[k] + (b[k] - a[k]) * weight) };
-    // A pose's parent-relative rotation and translation of joint `j`.
+    // A pose's anchor-relative rotation and translation of joint `j`.
     let local = |pose: &[World], j: usize| -> (Quat, Vec3) {
-        let parent = parents[j];
-        let p = if parent < 0 {
+        let parent = anchor(j);
+        let p = if parent < 0 || parent as usize >= n {
             &root
         } else {
             &pose[parent as usize]
@@ -1199,20 +1231,25 @@ pub fn blend_poses(parents: &[i32], from: &[World], to: &[World], weight: f32) -
             }
             let (ra, ta) = local(from, j);
             let (rb, tb) = local(to, j);
-            let x = normalize(lerp(rotate(ra, [1., 0., 0.]), rotate(rb, [1., 0., 0.])));
-            let y = normalize(lerp(rotate(ra, [0., 1., 0.]), rotate(rb, [0., 1., 0.])));
-            let rotation = match (x, y) {
-                (Some(x), Some(y)) => match normalize(cross(x, y)) {
-                    Some(z) => normalize(cross(z, x)).map_or(rb, |y| from_basis(x, y, z)),
-                    None => rb,
-                },
-                _ => rb,
+            let rotation = if helper(j) {
+                blend_axes_aligned(ra, rb, weight)
+            } else {
+                let x = normalize(lerp(rotate(ra, [1., 0., 0.]), rotate(rb, [1., 0., 0.])));
+                let y = normalize(lerp(rotate(ra, [0., 1., 0.]), rotate(rb, [0., 1., 0.])));
+                match (x, y) {
+                    (Some(x), Some(y)) => match normalize(cross(x, y)) {
+                        Some(z) => normalize(cross(z, x)).map_or(rb, |y| from_basis(x, y, z)),
+                        None => rb,
+                    },
+                    _ => rb,
+                }
             };
             let translation = lerp(ta, tb);
-            let p = if parent < 0 || parent as usize >= n {
+            let a = anchor(j);
+            let p = if a < 0 || a as usize >= n {
                 root
             } else {
-                out[parent as usize]
+                out[a as usize]
             };
             let scaled: Vec3 = std::array::from_fn(|k| translation[k] * p.scale[k]);
             out[j] = World {
@@ -1228,6 +1265,76 @@ pub fn blend_poses(parents: &[i32], from: &[World], to: &[World], weight: f32) -
         }
     }
     out
+}
+
+/// FUN_1401c6150: the blend of a helper joint's axes. The axis pair that
+/// agrees most between the two rotations (largest dot product) is mixed
+/// first and the next one second; the third axis is the cross product of
+/// those two in the cyclic order (X × Y = Z, Y × Z = X, Z × X = Y), then the
+/// second is rebuilt from the third and the first the same way.
+fn blend_axes_aligned(a: Quat, b: Quat, weight: f32) -> Quat {
+    let unit = [[1., 0., 0.], [0., 1., 0.], [0., 0., 1.]];
+    let from: [Vec3; 3] = unit.map(|u| rotate(a, u));
+    let to: [Vec3; 3] = unit.map(|u| rotate(b, u));
+    let d = [
+        dot(from[0], to[0]),
+        dot(from[1], to[1]),
+        dot(from[2], to[2]),
+    ];
+    // The reference's comparisons: X first unless Y or Z agrees more, then Y
+    // over Z on ties.
+    let first = if !(d[0] < d[1] || d[0] < d[2]) {
+        0
+    } else if d[2] <= d[1] && d[0] <= d[1] {
+        1
+    } else {
+        2
+    };
+    let second = match first {
+        0 => {
+            if d[1] < d[2] {
+                2
+            } else {
+                1
+            }
+        }
+        1 => {
+            if d[2] <= d[0] {
+                0
+            } else {
+                2
+            }
+        }
+        _ => {
+            if d[1] <= d[0] {
+                0
+            } else {
+                1
+            }
+        }
+    };
+    let third = 3 - first - second;
+    let mix = |i: usize| -> Option<Vec3> {
+        normalize(std::array::from_fn(|k| {
+            from[i][k] + (to[i][k] - from[i][k]) * weight
+        }))
+    };
+    let (Some(p), Some(q)) = (mix(first), mix(second)) else {
+        return b;
+    };
+    let mut axes = [[0.; 3]; 3];
+    axes[first] = p;
+    axes[second] = q;
+    let cyclic = |axes: &[Vec3; 3], i: usize| cross(axes[(i + 1) % 3], axes[(i + 2) % 3]);
+    let Some(r) = normalize(cyclic(&axes, third)) else {
+        return b;
+    };
+    axes[third] = r;
+    let Some(q) = normalize(cyclic(&axes, second)) else {
+        return b;
+    };
+    axes[second] = q;
+    from_basis(axes[0], axes[1], axes[2])
 }
 
 /// Degree/radian factors used by the reference (0x1405b15b4, 0x1405b4a18).
@@ -1500,6 +1607,57 @@ mod tests {
             "{:?}",
             mid[1].rotation
         );
+    }
+
+    #[test]
+    fn a_helper_that_turns_over_does_not_carry_its_children_with_it() {
+        // Root, a helper under it that turns 172 degrees between the poses,
+        // and a joint under the helper whose own place stays put.
+        let parents = [-1, 0, 1];
+        let helpers = [false, true, false];
+        let root = World {
+            rotation: IDENTITY,
+            translation: [0., 60., 0.],
+            scale: [1.; 3],
+        };
+        let child = World {
+            rotation: axis_angle([1., 0., 0.], 0.3),
+            translation: [10., 90., 5.],
+            scale: [1.; 3],
+        };
+        let pose = |turn: f32| {
+            let helper = World {
+                rotation: axis_angle([0., 1., 0.], turn),
+                translation: [0., 70., 0.],
+                scale: [1.; 3],
+            };
+            [root, helper, child]
+        };
+        let (a, b) = (pose(0.), pose(172f32.to_radians()));
+        for w in [0.25, 0.5, 0.75] {
+            let mid = blend_poses_with_helpers(&parents, &helpers, &a, &b, w);
+            for k in 0..3 {
+                assert!((mid[2].translation[k] - child.translation[k]).abs() < 1e-3);
+            }
+            let q = mid[1].rotation;
+            let norm = q.iter().map(|c| c * c).sum::<f32>().sqrt();
+            assert!((norm - 1.).abs() < 1e-3, "{q:?}");
+        }
+        // Without the helper mark the child swings with the helper's turn.
+        let plain = blend_poses(&parents, &a, &b, 0.5);
+        assert!(length(sub(plain[2].translation, child.translation)) > 1.);
+    }
+
+    #[test]
+    fn the_aligned_axes_blend_keeps_the_axis_a_turn_is_about() {
+        // A 172 degree turn about Y keeps Y: halfway the Y axis is still Y.
+        let a = IDENTITY;
+        let b = axis_angle([0., 1., 0.], 172f32.to_radians());
+        let mid = blend_axes_aligned(a, b, 0.5);
+        let y = rotate(mid, [0., 1., 0.]);
+        assert!((y[1] - 1.).abs() < 1e-4, "{y:?}");
+        let x0 = blend_axes_aligned(a, b, 0.);
+        assert!(dot(rotate(x0, [1., 0., 0.]), [1., 0., 0.]) > 0.9999);
     }
 
     #[test]

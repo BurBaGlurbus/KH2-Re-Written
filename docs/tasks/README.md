@@ -169,4 +169,5 @@ Records through T128 retain historical commands and paths. See [the folder guide
 | [T191](T191-hit-effect-ring.md) | The eight most recent hit effects stay, the displaced one fades | PARTIAL. |
 | [T192](T192-first-person-flags-and-commands.md) | First person: FUN_1403ba300's flag bits and what first person blocks | PARTIAL. |
 | [T200](T200-sephiroth-fight.md) | The Sephiroth fight: meeting, fight and aftermath | PARTIAL. The three parts run in order from the install; stats, reaction commands, revenge gauge, boss gauge and death are not the original yet. |
+| [T201](T201-party-motion-controller.md) | Donald and Goofy: the motion controller, blends, stances and their effects | PARTIAL. |
 | [T141](T141-ik-and-animation-parity.md) | IK aim chains, pole vectors and joint-space motion blends | PROGRESS. Master Form matches the PS2 routine; 87% of installed motions within 0.1. |

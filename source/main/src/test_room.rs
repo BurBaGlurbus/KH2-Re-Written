@@ -88,6 +88,7 @@ mod journal_tour;
 mod level_growth;
 mod magic_room;
 mod magic_tour;
+mod party_anim_tour;
 mod party_blade;
 mod party_hit_tour;
 mod party_room;
@@ -1015,6 +1016,9 @@ struct Game {
     /// The party-hit tour (`--party-hit-tour`).
     party_hit_tour: bool,
     party_hit_state: party_hit_tour::State,
+    /// The party-animation tour (`--party-anim-tour`).
+    party_anim_tour: bool,
+    party_anim_state: party_anim_tour::State,
     /// The Type 3 guard spheres of the enemies' attacks this tick (centre,
     /// radius): what a party member's Type 1 shot clashes with.
     enemy_guards: Vec<(Vec3, f32)>,
@@ -6028,6 +6032,8 @@ fn simulate(
         )
     } else if game.enemy_tour {
         (Vec2::ZERO, false, false)
+    } else if game.party_anim_tour {
+        (party_anim_tour::stick(tick), false, false)
     } else if game.magic_tour {
         (
             Vec2::ZERO,
@@ -6716,6 +6722,9 @@ fn simulate(
     }
     if game.party_hit_tour {
         party_hit_tour::drive(&mut game, tick);
+    }
+    if game.party_anim_tour {
+        party_anim_tour::drive(&mut game, tick);
     }
     party_room::tick(&mut game, tick);
     // Drive: requests, the form change, the form gauge (after the player
@@ -9181,6 +9190,7 @@ fn camera_control(
     mut camera: Query<(&mut Transform, &mut Projection), CameraOnly>,
     talk: Option<Res<Talk>>,
     settings: Res<settings_room::SettingsRes>,
+    game: Res<Game>,
 ) {
     // Mouse-look turns the camera (the PC layer feeds mouse motion to the
     // right stick; its sensitivity is unresolved): 0.1 at Camera Speed 5.
@@ -9192,7 +9202,20 @@ fn camera_control(
     } else {
         rig.pending_look = 0.;
     }
-    let (eye, look_at, fov) = match talk.as_ref().and_then(|t| t.camera) {
+    // The party-animation tour frames Donald and Goofy from the follow
+    // camera's side, close enough to see their motions.
+    let party_view = (game.party_anim_tour && game.party.len() >= 2).then(|| {
+        let a = Vec3::from_array(game.party[0].follower.position);
+        let b = Vec3::from_array(game.party[1].follower.position);
+        let centre = (a + b) * 0.5 + Vec3::Y * 60.;
+        // Member positions are scene coordinates; the follow camera's are
+        // the game's.
+        let from = from_world(rig.camera.eye) - centre;
+        let side = Vec3::new(from.x, 0., from.z).normalize_or(Vec3::Z);
+        let eye = centre + side * (260. + a.distance(b) * 0.7) + Vec3::Y * 110.;
+        (eye, centre)
+    });
+    let (eye, look_at, fov) = match talk.as_ref().and_then(|t| t.camera).or(party_view) {
         // The talk camera (FUN_140175e50): 60° in the game's horizontal
         // 4:3 sense, converted like the follow camera's.
         Some((eye, target)) => (
@@ -11214,6 +11237,7 @@ fn run(mut args: Vec<PathBuf>) -> Result<AppExit, Box<dyn std::error::Error>> {
     let mut sephiroth_result: Option<PathBuf> = None;
     let mut magic_tour = false;
     let mut party_hit_tour = false;
+    let mut party_anim_tour = false;
     let mut magic_form = 0u8;
     let mut growth_tour = false;
     let mut prize_tour = false;
@@ -11302,6 +11326,18 @@ fn run(mut args: Vec<PathBuf>) -> Result<AppExit, Box<dyn std::error::Error>> {
             // The party-hit tour runs inside the magic tour's setup (an
             // invincible Sora, a frozen Shadow, no menus) with its own
             // schedule in place of the magic tour's.
+            // The party-animation tour: the same setup, Sora walking on a
+            // schedule (party_anim_tour.rs).
+            Some("--party-anim-tour") if autoplay.is_none() => {
+                magic_tour = true;
+                party_anim_tour = true;
+                autoplay = Some(
+                    options
+                        .next()
+                        .cloned()
+                        .ok_or("party animation tour capture directory absent")?,
+                );
+            }
             Some("--party-hit-tour") if autoplay.is_none() => {
                 magic_tour = true;
                 party_hit_tour = true;
@@ -11522,7 +11558,7 @@ fn run(mut args: Vec<PathBuf>) -> Result<AppExit, Box<dyn std::error::Error>> {
         None
     };
     // A form's change takes about 260 ticks before the first cast.
-    let magic_shift = if party_hit_tour {
+    let magic_shift = if party_hit_tour || party_anim_tour {
         // The magic tour's schedule never comes up.
         1 << 40
     } else if magic_form != 0 {
@@ -11533,6 +11569,8 @@ fn run(mut args: Vec<PathBuf>) -> Result<AppExit, Box<dyn std::error::Error>> {
     let captures = if party_hit_tour {
         // The tour asks for its captures as its cases happen.
         Vec::new()
+    } else if party_anim_tour {
+        party_anim_tour::captures()
     } else if journal_tour {
         journal_tour::CAPTURES.to_vec()
     } else if npc_tour {
@@ -11564,6 +11602,8 @@ fn run(mut args: Vec<PathBuf>) -> Result<AppExit, Box<dyn std::error::Error>> {
     };
     let autoplay_end = if party_hit_tour {
         party_hit_tour::END
+    } else if party_anim_tour {
+        party_anim_tour::END
     } else if journal_tour {
         journal_tour::END
     } else if npc_tour {
@@ -11703,6 +11743,7 @@ fn run(mut args: Vec<PathBuf>) -> Result<AppExit, Box<dyn std::error::Error>> {
                 blade: None,
                 shield: None,
                 bash_keys: Vec::new(),
+                fx_at: None,
                 record: combat::HitRecord::new(true),
                 ko_fx: false,
                 cast_motion: 0,
@@ -11747,10 +11788,12 @@ fn run(mut args: Vec<PathBuf>) -> Result<AppExit, Box<dyn std::error::Error>> {
         weapon_pax_changed: false,
         weapon_display: Vec::new(),
         fx_calls: Vec::new(),
-        party_spells: !party_hit_tour,
+        party_spells: !party_hit_tour && !party_anim_tour,
         party_battle: party_room::BattleMode::default(),
         party_hit_tour,
         party_hit_state: party_hit_tour::State::default(),
+        party_anim_tour,
+        party_anim_state: party_anim_tour::State::default(),
         enemy_guards: Vec::new(),
         party_volumes: Vec::new(),
         gallery_targets: Vec::new(),

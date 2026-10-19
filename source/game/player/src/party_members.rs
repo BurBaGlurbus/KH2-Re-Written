@@ -22,6 +22,7 @@
 
 use crate::actor_physics::{Knock, Sstm};
 use crate::party_hit;
+use crate::party_motion::{self, BLEND, Clips, Ctl, FOLLOW, Goal, Wish};
 use crate::{Body, Hit, Vec3, World};
 
 /// The falling motion (id 4) a member plays after an air attack.
@@ -34,12 +35,7 @@ const AIR_MAX: f32 = 385.;
 /// Walk and run speeds per tick (PRTY words 0 and 1: 2.0 and 8.0).
 pub const WALK_SPEED: f32 = 2.;
 pub const RUN_SPEED: f32 = 8.;
-/// Distances at which the gait steps up (from stand, from walk) and down
-/// (to walk, to stand) [personality header pairs (0,200) (160,240)
-/// (200,1000)].
-const UP: [f32; 2] = [200., 240.];
-const DOWN: [f32; 2] = [200., 160.];
-/// Turn rate per tick (prty +0xc = 0.262).
+/// Turn rate per tick (prty +0xc = 0.262, FUN_1403b4780).
 const TURN: f32 = 0.262;
 /// Slot yaw offset (the exe uses 0.349 × 2i − 0.349; widened here so the
 /// two bodies do not overlap, as the formation table is not decoded) and
@@ -250,6 +246,78 @@ pub struct Attack {
     pub heal: u8,
     /// An item use: the item id and the party slot it is for.
     pub item: Option<(u16, u8)>,
+    /// Ticks the motion's blend holds its first frame (FUN_1403c8a40: a
+    /// blend of 8 starts the clock at 2): the act's waits count them too.
+    pub hold: u32,
+}
+
+/// A motion the member's state asks the controller for: started
+/// (FUN_1403c86a0) or changed (FUN_1403c6dc0) with a blend, and the motion
+/// queued behind it (FUN_1403c8310).
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Request {
+    motion: u16,
+    blend: f32,
+    change: bool,
+    then: Option<(u16, f32)>,
+}
+
+impl Request {
+    const fn start(motion: u16, blend: f32, then: Option<(u16, f32)>) -> Self {
+        Request {
+            motion,
+            blend,
+            change: false,
+            then,
+        }
+    }
+}
+
+/// The blend and the motion queued behind a record's motion: the weapon
+/// attacks start at once with idle (fall in the air) behind them
+/// (FUN_1401b0420); Donald's spells `motion_start(m, 8)` then idle (p_ex020
+/// L2039, L2611, L5085, L5522); Tornado changes to 191 with fall behind
+/// (p_ex030 L1993), Turbo to 194 with idle (L2950); the Bash starts 192 at 8
+/// (L3453); the item motion starts at 8 with idle (FUN_1403d6fc0).
+fn request_of(a: &Attack, air: bool) -> Request {
+    let idle = Some((party_motion::IDLE, 0.));
+    match a.spell {
+        _ if a.item.is_some() => Request::start(a.motion, BLEND, idle),
+        Some(Spell::Fire | Spell::Blizzard | Spell::Thunder | Spell::Cure) => {
+            Request::start(a.motion, BLEND, idle)
+        }
+        Some(Spell::Tornado) => Request {
+            change: true,
+            ..Request::start(a.motion, 0., Some((FALL, 0.)))
+        },
+        Some(Spell::Turbo) => Request {
+            change: true,
+            ..Request::start(a.motion, 0., idle)
+        },
+        Some(Spell::Bash) => Request::start(a.motion, BLEND, None),
+        None if air => Request::start(a.motion, 0., Some((FALL, 0.))),
+        None => Request::start(a.motion, 0., idle),
+    }
+}
+
+/// The motion calls of the reactions (damage-02 section 7): a flinch
+/// starts at once with idle behind it (FUN_1403d43b0), an air flinch with
+/// the fall behind it (FUN_1403d3840), the blows and their land motions
+/// with nothing (FUN_1403d2fe0 case 4, FUN_140422700), the guard bounce
+/// with idle (FUN_1403d4650), the mode-1 land with idle (FUN_1403cb940) and
+/// the get-up blended over 8 with idle (FUN_1403c3c30).
+fn reaction_request(r: &party_hit::Reaction) -> Request {
+    let idle = Some((party_motion::IDLE, 0.));
+    match r.phase {
+        party_hit::Phase::Flinch | party_hit::Phase::Bounce => Request::start(r.motion, 0., idle),
+        party_hit::Phase::Air => Request::start(r.motion, 0., Some((FALL, 0.))),
+        party_hit::Phase::Blow => Request::start(r.motion, 0., None),
+        party_hit::Phase::Land if r.motion == party_hit::motion::LAND => {
+            Request::start(r.motion, 0., idle)
+        }
+        party_hit::Phase::Land => Request::start(r.motion, 0., None),
+        party_hit::Phase::GetUp => Request::start(r.motion, BLEND, idle),
+    }
 }
 
 /// The movement loop of Goofy's Tornado and Turbo (`p_ex030` L1967 and
@@ -313,6 +381,20 @@ pub struct Follower {
     pub down: Option<f32>,
     /// The DEAD motion has started (`FUN_1403c3660`).
     laid: bool,
+    /// The motion controller (obj+0x158) and the motion the state asked
+    /// for this tick.
+    pub ctl: Ctl,
+    request: Option<Request>,
+    /// The controller start that belongs to the running attack.
+    attack_serial: Option<u32>,
+    /// The follow state (obj+0xe14: 0 stand, 1 walk, 2 run), the smoothed
+    /// wish (FUN_1401b1b20) and the speed it snapped to (obj+0x1c).
+    state: u8,
+    wish: Wish,
+    pub speed: f32,
+    /// The battle stance (obj+0x120 bit 20): the battle variants of the
+    /// motions play.
+    pub battle_stance: bool,
 }
 
 fn wrap(a: f32) -> f32 {
@@ -366,6 +448,9 @@ pub struct Scene<'a, W: World> {
     pub scripted: Option<Scripted>,
     /// The member's own script is loaded, so the Bash can run.
     pub can_bash: bool,
+    /// The motion set as the controller reads it (None: the controller
+    /// does not run and the attack counts its own ticks).
+    pub clips: Option<&'a dyn Clips>,
 }
 
 impl Follower {
@@ -388,6 +473,13 @@ impl Follower {
             air: None,
             down: None,
             laid: false,
+            ctl: Ctl::default(),
+            request: Some(Request::start(party_motion::IDLE, 0., None)),
+            attack_serial: None,
+            state: 0,
+            wish: Wish::default(),
+            speed: 0.,
+            battle_stance: false,
         }
     }
 
@@ -599,14 +691,20 @@ impl Follower {
         if to[0].hypot(to[1]) > 1e-3 {
             self.yaw = to[0].atan2(to[1]);
         }
-        self.attack = Some(Attack {
+        let mut attack = Attack {
             record: r.id,
             motion: r.motion,
             tick: 0,
             spell: r.spell,
             heal,
             item: None,
-        });
+            hold: 0,
+        };
+        let request = request_of(&attack, r.air);
+        attack.hold = Ctl::hold(request.blend);
+        self.attack = Some(attack);
+        self.request = Some(request);
+        self.attack_serial = None;
         if r.air {
             // The jump reaches the target's height (1 + rise, at most 385)
             // and carries the member toward it at 8 a tick.
@@ -624,14 +722,20 @@ impl Follower {
 
     /// `FUN_1401b7d90`: the item-use motion; the member does not turn.
     pub fn begin_item(&mut self, r: &Record, item: (u16, u8)) {
-        self.attack = Some(Attack {
+        let mut attack = Attack {
             record: r.id,
             motion: r.motion,
             tick: 0,
             spell: None,
             heal: 0,
             item: Some(item),
-        });
+            hold: 0,
+        };
+        let request = request_of(&attack, false);
+        attack.hold = Ctl::hold(request.blend);
+        self.attack = Some(attack);
+        self.request = Some(request);
+        self.attack_serial = None;
         self.gait = Gait::Stand;
         self.tick = 0;
         self.special = Special::new();
@@ -824,6 +928,7 @@ impl Follower {
         self.reaction = Some(r);
         self.tick = 0;
         self.laid = false;
+        self.request = Some(reaction_request(&r));
     }
 
     /// HP reached 0 (`FUN_1403c33d0` through vt+0xb0): the dead bit and the
@@ -851,8 +956,19 @@ impl Follower {
     }
 
     /// One tick: finish or continue an attack, else choose one against the
-    /// target, else approach the target or follow the leader.
+    /// target, else approach the target or follow the leader; then the
+    /// motion controller.
     pub fn tick<W: World>(&mut self, records: &[Record], scene: &Scene<W>) {
+        // FUN_1403d68b0: the battle flag puts the member in its battle stance.
+        if scene.battle {
+            self.battle_stance = true;
+        }
+        self.step(records, scene);
+        self.animate(scene);
+    }
+
+    /// The member's state for one tick (the think and the movement).
+    fn step<W: World>(&mut self, records: &[Record], scene: &Scene<W>) {
         // The KO timer runs whatever the member is doing (FUN_1403c3660).
         if let Some(t) = self.down.as_mut() {
             *t -= scene.rates.countdown(scene.battle);
@@ -876,9 +992,14 @@ impl Follower {
                 length: scene.length,
                 actionable: scene.actionable,
             };
+            let before = r.motion;
             let (position, done) = r.step(self.position, &env);
             self.position = position;
             self.tick = r.tick;
+            // A blow or an air flinch reaching the floor: its land motion.
+            if r.motion != before && !done {
+                self.request = Some(reaction_request(&r));
+            }
             self.reaction = (!done).then_some(r);
             if done {
                 self.tick = 0;
@@ -895,8 +1016,7 @@ impl Follower {
                 self.air = None;
                 self.attack = None;
                 if (scene.length)(party_hit::motion::LAND).is_some() {
-                    self.reaction = Some(party_hit::landing(&scene.sstm));
-                    self.tick = 0;
+                    self.begin_reaction(party_hit::landing(&scene.sstm));
                 }
                 return;
             }
@@ -908,7 +1028,11 @@ impl Follower {
         }
         // An attack plays out its motion with root motion, then ends.
         if let Some(mut a) = self.attack {
-            a.tick += 1;
+            // With a controller the attack's tick is its clock (`animate`).
+            let driven = scene.clips.is_some();
+            if !driven {
+                a.tick += 1;
+            }
             if let Some(Spell::Bash) = a.spell {
                 // The act's script plays the motions and carries the member.
                 if let Some(s) = scene.scripted {
@@ -931,16 +1055,20 @@ impl Follower {
             } else if let Some(spell @ (Spell::Tornado | Spell::Turbo)) = a.spell {
                 // The script moves the member; the motion's root does not.
                 self.special_step(&a, spell, scene);
-            } else {
-                let (s, c) = self.yaw.sin_cos();
-                let m = (scene.root)(a.motion, a.tick);
-                let p = (scene.root)(a.motion, a.tick.saturating_sub(1));
-                let (dx, dz) = (m[0] - p[0], m[2] - p[2]);
-                let disp = [dx * c + dz * s, 0., -dx * s + dz * c];
-                let moved = scene.world.collide(self.position, disp, false, &scene.body);
-                self.position = moved.position;
+            } else if !driven {
+                self.root_motion(
+                    a.motion,
+                    a.tick.saturating_sub(1) as f32,
+                    a.tick as f32,
+                    scene,
+                );
             }
             self.tick = a.tick;
+            if driven {
+                // The controller ends it: the queued motion takes over.
+                self.attack = Some(a);
+                return;
+            }
             let end = (scene.length)(a.motion).unwrap_or(0);
             self.attack = (a.tick < end).then_some(a);
             if self.attack.is_none() {
@@ -974,10 +1102,21 @@ impl Follower {
             }
             return;
         }
-        // A running spell act holds the member where it stands.
+        // A running spell act holds the member where it stands; the think's
+        // wish is empty (FUN_1401b15f0 clears it each tick).
         if scene.busy {
             self.gait = Gait::Stand;
             self.tick += 1;
+            self.speed = self
+                .wish
+                .smooth(
+                    [self.yaw.sin(), 0., self.yaw.cos()],
+                    0.,
+                    WALK_SPEED,
+                    RUN_SPEED,
+                    false,
+                )
+                .1;
             return;
         }
         // The think loop's spell permit: MP share scaled (FUN_1401b53b0).
@@ -1006,44 +1145,160 @@ impl Follower {
             self.begin(&r, &t, heal);
             return;
         }
-        // Movement: toward the target in a fight, else behind the leader.
-        let goal = match scene.target {
-            Some(t) => t.position,
-            None => self.goal(scene.leader, scene.leader_yaw),
+        // Movement (FUN_1401b41a0): toward the target in a fight, else
+        // behind the leader. The follow state steps by the personality's
+        // distances; the wish is smoothed and snapped (FUN_1401b1b20) and
+        // carries the member along it at that speed (FUN_140422350) while
+        // the facing turns toward it (FUN_1403b4780).
+        let (goal, kind) = match scene.target {
+            Some(t) => (t.position, Goal::Target),
+            None => (
+                self.goal(scene.leader, scene.leader_yaw),
+                if scene.battle {
+                    Goal::Leader
+                } else {
+                    Goal::Field
+                },
+            ),
         };
         let d = [goal[0] - self.position[0], goal[2] - self.position[2]];
         let dist = d[0].hypot(d[1]);
-        let before = self.gait;
-        self.gait = match self.gait {
-            Gait::Stand if dist >= UP[0] => Gait::Walk,
-            Gait::Walk if dist >= UP[1] => Gait::Run,
-            Gait::Walk if dist <= DOWN[1] => Gait::Stand,
-            Gait::Run if dist <= DOWN[0] => Gait::Walk,
-            g => g,
+        self.state = FOLLOW.next(self.state, dist, kind);
+        let want = match self.state {
+            1 => WALK_SPEED,
+            2 => RUN_SPEED,
+            _ => 0.,
         };
-        // In a fight there is no standing at a distance: close in at a run.
-        if scene.target.is_some() && self.gait != Gait::Run && dist > 60. {
-            self.gait = Gait::Run;
-        }
+        let dir = if dist > 1e-3 {
+            [d[0] / dist, 0., d[1] / dist]
+        } else {
+            [self.yaw.sin(), 0., self.yaw.cos()]
+        };
+        let (wish, speed) = self.wish.smooth(dir, want, WALK_SPEED, RUN_SPEED, false);
+        self.speed = speed;
+        let before = self.gait;
+        self.gait = match party_motion::ground_motion(speed, WALK_SPEED, RUN_SPEED) {
+            party_motion::IDLE => Gait::Stand,
+            party_motion::WALK => Gait::Walk,
+            _ => Gait::Run,
+        };
         if self.gait != before {
             self.tick = 0;
         } else {
             self.tick += 1;
         }
-        let speed = match self.gait {
-            Gait::Stand => 0.,
-            Gait::Walk => WALK_SPEED,
-            Gait::Run => RUN_SPEED,
-        };
-        if speed > 0. && dist > 1e-3 {
-            let want = d[0].atan2(d[1]);
-            let delta = wrap(want - self.yaw);
+        let len = wish[0].hypot(wish[2]);
+        if speed > 0. && len > 1e-6 {
+            let (x, z) = (wish[0] / len, wish[2] / len);
+            let delta = wrap(x.atan2(z) - self.yaw);
             self.yaw = wrap(self.yaw + delta.clamp(-TURN, TURN));
-            let step = speed.min(dist);
-            let disp = [self.yaw.sin() * step, 0., self.yaw.cos() * step];
+            let disp = [x * speed, 0., z * speed];
             let moved = scene.world.collide(self.position, disp, false, &scene.body);
             self.position = moved.position;
         }
+    }
+
+    /// The root translation of `motion` between two clock values, turned
+    /// by the facing and moved through the map.
+    fn root_motion<W: World>(&mut self, motion: u16, from: f32, to: f32, scene: &Scene<W>) {
+        let (s, c) = self.yaw.sin_cos();
+        let m = (scene.root)(motion, to.max(0.) as u32);
+        let p = (scene.root)(motion, from.max(0.) as u32);
+        let (dx, dz) = (m[0] - p[0], m[2] - p[2]);
+        if dx == 0. && dz == 0. {
+            return;
+        }
+        let disp = [dx * c + dz * s, 0., -dx * s + dz * c];
+        let moved = scene.world.collide(self.position, disp, false, &scene.body);
+        self.position = moved.position;
+    }
+
+    /// The motion controller's tick (obj+0x158): the motion this tick's
+    /// state asked for, or the ground mode's (FUN_140422520: idle, walk or
+    /// run by the speed, blended over 8, while range 0 is open, or range 2
+    /// when moving), then one advance (FUN_1403c6740). The attack's tick and
+    /// root motion follow the clock, and its end is the controller's: the
+    /// motion queued behind it starts.
+    fn animate<W: World>(&mut self, scene: &Scene<W>) {
+        let Some(clips) = scene.clips else {
+            return;
+        };
+        let field = !self.battle_stance;
+        let on_ground = !self.airborne(scene.world);
+        if let Some(r) = self.request.take() {
+            if r.change {
+                self.ctl.change(r.motion, r.blend, field, clips);
+            } else {
+                self.ctl.start(r.motion, r.blend, field, clips);
+            }
+            if let Some((m, b)) = r.then {
+                self.ctl.queue(m, b);
+            }
+            if self.attack.is_some() {
+                self.attack_serial = Some(self.ctl.serial);
+            }
+        } else if let Some(a) = self.attack
+            && a.spell == Some(Spell::Bash)
+            && a.motion != self.ctl.motion
+        {
+            // The Bash's own act: `motion_start(193, 8)` after the throw,
+            // idle queued behind it (p_ex030 L3491, L3503).
+            let blend = if matches!(a.motion, 192 | 193) {
+                BLEND
+            } else {
+                0.
+            };
+            self.ctl.start(a.motion, blend, field, clips);
+            if a.motion == 193 {
+                self.ctl.queue(party_motion::IDLE, 0.);
+            }
+            self.attack_serial = Some(self.ctl.serial);
+        } else if self.laid {
+            // FUN_1403c3660: the DEAD motion, asked for every tick.
+            self.ctl.change(party_hit::motion::DEAD, 0., field, clips);
+        } else if self.attack.is_none()
+            && self.reaction.is_none()
+            && self.air.is_none()
+            && self.down.is_none()
+            && on_ground
+        {
+            let m = party_motion::ground_motion(self.speed, WALK_SPEED, RUN_SPEED);
+            if self.ctl.range(0, clips) || (self.ctl.range(2, clips) && m != party_motion::IDLE) {
+                self.ctl.change(m, BLEND, field, clips);
+            }
+        }
+        let step = self.ctl.advance(field, clips);
+        if step.battle_started {
+            self.battle_stance = true;
+        }
+        // FUN_1403ba350: a motion's end returns the member to its field
+        // stance once the battle flag is down and it stands on the ground.
+        if step.stance_check && !scene.battle && on_ground {
+            self.battle_stance = false;
+        }
+        let Some(mut a) = self.attack else {
+            return;
+        };
+        if a.spell == Some(Spell::Bash) {
+            return;
+        }
+        if self.attack_serial != Some(self.ctl.serial) {
+            // The motion queued behind the attack (or another) took over.
+            self.attack = None;
+            self.attack_serial = None;
+            self.tick = 0;
+            return;
+        }
+        if self.air.is_none() && !matches!(a.spell, Some(Spell::Tornado | Spell::Turbo)) {
+            for &(m, _, from, to) in &step.spans {
+                if m == a.motion {
+                    self.root_motion(m, from, to, scene);
+                }
+            }
+        }
+        a.tick = self.ctl.frame().max(0.) as u32;
+        self.tick = a.tick;
+        self.attack = Some(a);
     }
 }
 
@@ -1140,6 +1395,7 @@ mod tests {
             battle: true,
             scripted: None,
             can_bash: true,
+            clips: None,
         }
     }
 
@@ -1246,6 +1502,7 @@ mod tests {
             battle: true,
             scripted: None,
             can_bash: true,
+            clips: None,
         }
     }
 
@@ -1389,6 +1646,7 @@ mod tests {
             battle,
             scripted: None,
             can_bash: true,
+            clips: None,
         }
     }
     fn claw_hit() -> Hit {
@@ -1539,6 +1797,7 @@ mod tests {
             battle: true,
             scripted: None,
             can_bash: true,
+            clips: None,
         }
     }
 
@@ -1567,6 +1826,10 @@ mod tests {
             peak = peak.max(f.position[1]);
             if played.last() != Some(&f.motion()) {
                 played.push(f.motion());
+            }
+            // Stop when the land motion lets the AI act again.
+            if played.contains(&5) && f.reaction.is_none() {
+                break;
             }
         }
         // The jump clears the target's height, carries the member toward
@@ -1786,5 +2049,152 @@ mod tests {
 
     fn spell_length_with_bash(m: u16) -> Option<u32> {
         matches!(m, 151 | 152 | 191 | 192 | 193 | 194).then_some(60)
+    }
+
+    /// A motion set for the controller: idle (slots 0 battle, 2 field),
+    /// walk (4, 7), run (8, 11) and the weapon switch (24, 27) with range 0
+    /// open throughout, the attacks 151 and 152 and the spell motion 192.
+    struct Set;
+    impl Clips for Set {
+        fn clip(&self, motion: u16, field: bool) -> Option<party_motion::Clip> {
+            let (slot, length, loop_top) = match (motion, field) {
+                (0, false) => (0, 400, 0),
+                (0, true) => (2, 300, 0),
+                (1, false) => (4, 52, 0),
+                (1, true) => (7, 48, 0),
+                (2, false) => (8, 36, 0),
+                (2, true) => (11, 36, 0),
+                (6, false) => (24, 26, 26),
+                (6, true) => (27, 40, 40),
+                (151, _) => (604, 64, 64),
+                (152, _) => (608, 84, 84),
+                (192, _) => (768, 76, 76),
+                _ => return None,
+            };
+            Some(party_motion::Clip {
+                slot,
+                length,
+                loop_top,
+            })
+        }
+        fn range(&self, slot: usize, kind: u8, _: u32) -> bool {
+            kind == 0 && slot < 28
+        }
+    }
+
+    fn set_length(m: u16) -> Option<u32> {
+        Set.clip(m, false).map(|c| c.length + 1)
+    }
+
+    fn set_scene<'a>(target: Option<Target>, leader: Vec3, battle: bool) -> Scene<'a, Flat> {
+        Scene {
+            leader,
+            length: &set_length,
+            battle,
+            clips: Some(&Set),
+            ..scene(leader, target, &Flat)
+        }
+    }
+
+    #[test]
+    fn an_attack_runs_on_its_clock_and_ends_into_the_queued_idle() {
+        let t = Target {
+            position: [0., 0., 150.],
+            radius: 40.,
+        };
+        let mut f = Follower::spawn([0.; 3], 0., 0);
+        f.begin(&DONALD[0], &t, 0);
+        // Out of reach of a new decision: no target for the ticks after.
+        f.tick(&DONALD, &set_scene(None, [0.; 3], true));
+        let a = f.attack.expect("attacking");
+        // FUN_1401b0420: the motion starts unblended, the first step jumps
+        // from 0 to 2.
+        assert_eq!(
+            (a.motion, a.tick, a.hold, f.ctl.weight()),
+            (151, 2, 0, None)
+        );
+        assert_eq!(f.ctl.queued().collect::<Vec<_>>(), vec![0]);
+        let mut ticks = 1;
+        while f.attack.is_some() {
+            f.tick(&DONALD, &set_scene(None, [0.; 3], true));
+            ticks += 1;
+            assert!(ticks < 100);
+        }
+        // 62 more steps reach tick 64, where the queued idle starts at once.
+        assert_eq!(ticks, 63);
+        assert_eq!((f.ctl.motion, f.ctl.clip.unwrap().slot), (0, 0));
+    }
+
+    #[test]
+    fn a_spell_motion_holds_its_first_frame_through_its_blend() {
+        let t = Target {
+            position: [0., 0., 200.],
+            radius: 40.,
+        };
+        let mut f = Follower::spawn([0.; 3], 0., 0);
+        let fire = DONALD
+            .iter()
+            .find(|r| r.spell == Some(Spell::Fire))
+            .unwrap();
+        f.begin(fire, &t, 0);
+        assert_eq!(f.attack.unwrap().hold, 6);
+        let mut ticks = Vec::new();
+        for _ in 0..8 {
+            f.tick(&DONALD, &set_scene(None, [0.; 3], true));
+            ticks.push(f.attack.unwrap().tick);
+        }
+        // The blend counts 3..8 on the held frame 0, then the frames run.
+        assert_eq!(ticks, vec![0, 0, 0, 0, 0, 0, 2, 3]);
+    }
+
+    #[test]
+    fn the_battle_flag_draws_the_weapon_and_an_idle_loop_end_puts_it_away() {
+        let mut f = Follower::spawn([0.; 3], 0., 0);
+        // Out of battle the field idle plays.
+        f.tick(&DONALD, &set_scene(None, [0.; 3], false));
+        assert_eq!(f.ctl.clip.unwrap().slot, 2);
+        // The battle flag: the stance turns, idle in it is the switch
+        // motion first (FUN_1403c88c0), then the battle idle.
+        f.tick(&DONALD, &set_scene(None, [0.; 3], true));
+        assert!(f.battle_stance);
+        assert_eq!((f.ctl.motion, f.ctl.clip.unwrap().slot), (6, 24));
+        for _ in 0..30 {
+            f.tick(&DONALD, &set_scene(None, [0.; 3], true));
+        }
+        assert_eq!(f.ctl.clip.unwrap().slot, 0);
+        // The flag drops: the stance holds until the idle loop ends.
+        let mut ticks = 0;
+        while f.battle_stance {
+            f.tick(&DONALD, &set_scene(None, [0.; 3], false));
+            ticks += 1;
+            assert!(ticks < 500);
+        }
+        assert!(ticks > 300, "{ticks}");
+        f.tick(&DONALD, &set_scene(None, [0.; 3], false));
+        assert_eq!((f.ctl.motion, f.ctl.clip.unwrap().slot), (6, 27));
+    }
+
+    #[test]
+    fn a_follower_blends_into_a_walk_and_keeps_the_phase_into_the_run() {
+        let mut f = Follower::spawn([0.; 3], 0., 0);
+        // Settled behind a leader close by, then the leader is far away.
+        for _ in 0..20 {
+            f.tick(&DONALD, &set_scene(None, [0., 0., 150.], false));
+        }
+        let mut seen: Vec<(u16, f32, Option<f32>)> =
+            vec![(f.ctl.motion, f.ctl.frame(), f.ctl.weight())];
+        for _ in 0..120 {
+            f.tick(&DONALD, &set_scene(None, [0., 0., 900.], false));
+            if seen.last().is_none_or(|s| s.0 != f.ctl.motion) {
+                seen.push((f.ctl.motion, f.ctl.frame(), f.ctl.weight()));
+            }
+        }
+        let motions: Vec<u16> = seen.iter().map(|s| s.0).collect();
+        assert_eq!(&motions[..3], &[0, 1, 2]);
+        // Each change blends over 8 (shown at 3/8 the tick it starts).
+        assert_eq!(seen[1].2, Some(3. / 8.));
+        assert_eq!(seen[2].2, Some(3. / 8.));
+        // The run starts where the walk's phase put it, not at frame 0.
+        assert!(seen[2].1 > 0., "{seen:?}");
     }
 }
