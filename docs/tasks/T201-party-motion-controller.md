@@ -78,6 +78,41 @@ Nothing from the game is in Git; the room reads motions, models and effects from
    camera frames both members. The log records each controller change (`party_anim`), the
    motion elements (`party_motion_effect`) and pose jumps at switches (`party_pose_jump`).
 
+## The roster
+
+- `FUN_1401b06e0` gives each character id its personality class: 2 Donald (0), 3 Goofy (1),
+  5 Auron (2), 15 Pin (3), 6 Mulan (4), 7 Aladdin (5), 8 Jack Sparrow (6), 9 Beast (7),
+  10 Jack Skellington (8), 11 Simba (9), 12 Tron (10), 13 Riku (11) (Pride Lands Donald and
+  Goofy 0xc/0xd). Each class's command table (0x48-byte entries) is filled by a static
+  initializer at start-up (`FUN_14000ac90` … `FUN_14000d2c0`); emulating them gives the
+  tables: the weapon attacks, the two wait commands, the HP/MP items, and specials that are
+  all `FUN_1401cc650` starting a named act of the member's own script (Auron `yukizakura`;
+  Mulan `mushufire`, `flametongue`; Aladdin `slashrush`, `quickplay`; Sparrow `slash`,
+  `shadowsnipe`, `bonecrusher`; Beast `shout`, `rush`; Jack `slidingfire`,
+  `backstepblizzard`, `airthunder`; Simba `rush`, `quake`, `cure`; Tron `normal_attack1-4`,
+  `overflow`, `thunder`; Riku `cure`). Voice names come from the table at 0x14074beb0.
+- The records (0x80 bytes) give windows, the air jump's offset (+0x20, height = offset + rise
+  up to PRTY word 2) and costs; the headers give the follow distances (Beast's differ), the
+  wait timers and the idle hop.
+- The wait commands (`FUN_1401ccba0` hold facing the enemy, `FUN_1401ccdf0` follow) are
+  chosen only while no action is possible and end when one becomes possible or their timer
+  runs out. After an action the member may hop (`FUN_1401b1d40`, `FUN_1403cbec0`: chance
+  +0x64, a row of heading offset, height, speed, inertia and rise time; jump, fall five
+  ticks before the apex, land).
+- An act on the engine ends with its thread (`yukizakura` ends by queueing the fall);
+  the member's controller takes over the motions it left playing and queued, and a fall on
+  the floor lands (`FUN_1403cb940`).
+
+Built: `player::party_roster` (records and headers of every member), `Spell::Act`, the
+`Personality` of the follower (waits, hops), `KH2RW_PARTY=<model>,<model>` to pick the two
+members (Donald and Goofy by default), weapons without motions held on the hand, the act
+runner generalised to any act, HUD faces and voices by member. Goofy's Bash record now uses
+its own height window (-500/1000; PR 109 had it negated).
+
+Per member (tour `--party-anim-tour` with `KH2RW_PARTY`):
+- Auron (`P_HE000`, run `auron5`): field and battle locomotion, attacks (ATKP 193/194 with
+  sparks), `yukizakura` (ATKP 1272, 1576; its elements 1-7) completes and lands, hops, HUD face.
+
 ## Checks
 
 - `cargo fmt --all --check`, `cargo clippy --workspace --all-targets --locked -- -D warnings`:

@@ -17,18 +17,20 @@
 //! [`POSE_JUMP`] in the tick of a motion switch, the mark of a switch that
 //! does not blend, or more than three times that at any time).
 use super::*;
-use player::party_members::Spell;
 
 /// The run's end.
 pub const END: u64 = 3100;
-/// Acts ordered on the way (each starts once its member is free): Goofy's
-/// Tornado and Turbo, Donald's Fire, Thunder and Cure (on Sora).
-const ORDERS: [(u64, usize, Spell, u8); 5] = [
-    (1000, 1, Spell::Tornado, 0),
-    (1060, 0, Spell::Fire, 0),
-    (1180, 1, Spell::Turbo, 0),
-    (1240, 0, Spell::Thunder, 0),
-    (1600, 0, Spell::Cure, 0),
+/// Specials ordered on the way, by member and by their place among the
+/// member's specials (each starts once its member is free). With Donald and
+/// Goofy: Tornado, Fire, Turbo, Thunder, Blizzard, the Bash and Cure.
+const ORDERS: [(u64, usize, usize); 7] = [
+    (1000, 1, 0),
+    (1060, 0, 0),
+    (1180, 1, 2),
+    (1240, 0, 2),
+    (1400, 0, 1),
+    (1450, 1, 1),
+    (1600, 0, 3),
 ];
 /// The Shadow comes and goes.
 const ENEMY_ON: u64 = 720;
@@ -121,11 +123,11 @@ pub fn drive(game: &mut Game, tick: u64) {
         }
         game.event(serde_json::json!({"event":"party_anim_tour","tick":tick,"step":"enemy_off"}));
     }
-    for &(at, member, spell, heal) in &ORDERS {
+    for &(at, member, nth) in &ORDERS {
         if tick == at {
-            let ordered = party_room::order_cast(game, member, spell, heal);
+            let spell = party_room::order_special(game, member, nth);
             game.event(serde_json::json!({"event":"party_anim_tour","tick":tick,
-                "step":"order","member":member,"spell":format!("{spell:?}"),"ordered":ordered}));
+                "step":"order","member":member,"spell":spell.map(|s| format!("{s:?}"))}));
         }
     }
     let mut state = std::mem::take(&mut game.party_anim_state);

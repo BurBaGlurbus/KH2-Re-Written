@@ -64,6 +64,10 @@ pub trait Clips {
     /// Whether range trigger `kind` (0, 1 or 2: `obj+0x18c` bits 2-4) of
     /// the slot is open at `tick`.
     fn range(&self, slot: usize, kind: u8, tick: u32) -> bool;
+    /// The first frame trigger of `kind` in the slot (0: the take-off).
+    fn trigger(&self, _slot: usize, _kind: u8) -> Option<u32> {
+        None
+    }
 }
 
 /// What one advance did.

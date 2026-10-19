@@ -3047,11 +3047,11 @@ fn load(
                 )?),
                 None => None,
             };
-            // Donald's and Goofy's faces: the 'face' sequence of their own
-            // archives (obj/<model>.a.<lang>), after Sora's.
+            // The members' faces: the 'face' sequence of their own archives
+            // (obj/<model>.a.<lang>), after Sora's.
             let mut friend_faces = [None; 2];
             if let Ok(library) = data::path_lookup::Library::open(source) {
-                for (i, name) in ["P_EX020", "P_EX030"].into_iter().enumerate() {
+                for (i, name) in party_names().into_iter().enumerate() {
                     if let Some(found) = library.find(&format!("obj/{name}.a.us"))
                         && let Ok(sheet) =
                             hud::load(source, found.index, found.ordinal, found.name_hash, b"face")
@@ -3677,10 +3677,17 @@ fn load(
                 if let Ok(mut library) = data::path_lookup::Library::open(source) {
                     let lvup = bar_entry(&battle, b"lvup").unwrap_or(&[]);
                     let plrp = bar_entry(&battle, b"plrp").unwrap_or(&[]);
-                    for (name, character, records) in [
-                        ("P_EX020", 2, &player::party_members::DONALD[..]),
-                        ("P_EX030", 3, &player::party_members::GOOFY[..]),
-                    ] {
+                    for name in party_names() {
+                        // The personality of the object's character id
+                        // (FUN_1401b06e0).
+                        let Some(member) = objects
+                            .iter()
+                            .find(|o| o.model_name == name.as_bytes())
+                            .and_then(|o| player::party_roster::by_character(o.character as u8))
+                        else {
+                            eprintln!("party member {name}: no friend personality");
+                            continue;
+                        };
                         match party_room::load(
                             source,
                             &mut library,
@@ -3689,15 +3696,14 @@ fn load(
                             plrp,
                             &objects,
                             name,
-                            character,
-                            records,
+                            member,
                         ) {
                             Ok(mut k) => {
                                 eprintln!("party member {} loaded", k.name);
                                 // The member's battle voices: the same vtbl rows
                                 // and `voice/us/battle/<world>0_<name>` (the
-                                // exe's `%s%d_%s` with sora, donald, goofy).
-                                let who = if character == 2 { "donald" } else { "goofy" };
+                                // exe's `%s%d_%s`, names by character id).
+                                let who = member.voice;
                                 k.voices = library
                                     .read(&format!(
                                         "voice/us/battle/{voice_world}0_{who}.win32.scd"
@@ -5951,6 +5957,21 @@ fn read_pad(
     game.cycle_queued |= p & 0x30_0000_0000 != 0;
     targeting.queue_cycle(p);
 }
+/// The party's members by model name: `KH2RW_PARTY` (a comma list of
+/// objentry models, e.g. `P_HE000,P_EX020`), Donald and Goofy by default.
+fn party_names() -> Vec<&'static str> {
+    match std::env::var("KH2RW_PARTY") {
+        Ok(list) => list
+            .split(',')
+            .map(str::trim)
+            .filter(|n| !n.is_empty())
+            .take(2)
+            .map(|n| &*Box::leak(n.to_string().into_boxed_str()))
+            .collect(),
+        Err(_) => vec!["P_EX020", "P_EX030"],
+    }
+}
+
 /// Scripted input for unattended verification runs.
 fn autoplay_input(tick: u64) -> (Vec2, bool, bool) {
     let stick = match tick {
@@ -11729,7 +11750,11 @@ fn run(mut args: Vec<PathBuf>) -> Result<AppExit, Box<dyn std::error::Error>> {
                     loaded.spawn.to_array(),
                     loaded.yaw,
                     i as u8,
-                ),
+                )
+                .with_personality(player::party_members::Personality {
+                    jump_max: kind.jump_max,
+                    ..kind.member.personality
+                }),
                 started: 0,
                 stored: false,
                 cast: None,

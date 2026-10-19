@@ -85,6 +85,16 @@ impl<W: World> Env for Surroundings<'_, W> {
     fn check_step(&self, _: Vec3, _: Vec3, _: f32, _: f32, _: f32) -> Option<u8> {
         Some(0)
     }
+    /// Vertical segments only: the floor where it crosses the segment (as
+    /// the script brain's host answers it).
+    fn line_hit(&self, from: Vec3, to: Vec3) -> Option<Vec3> {
+        if from[0] != to[0] || from[2] != to[2] {
+            return None;
+        }
+        let top = from[1].max(to[1]);
+        let floor = self.world.floor(from[0], from[2], top)?;
+        (from[1].min(to[1]) <= floor && floor <= top).then_some([from[0], floor, from[2]])
+    }
     fn bone_point(
         &self,
         object: u32,
@@ -126,6 +136,14 @@ pub struct Frame {
     pub effects: Vec<u16>,
     /// The script spent MP (`trap_obj_use_mp`).
     pub spent_mp: bool,
+    /// Traps the engine does not run yet, by name.
+    pub unsupported: Vec<&'static str>,
+    /// The engine's count of motion starts and the blend left on the one
+    /// playing.
+    pub serial: u64,
+    pub blend: f32,
+    /// The motions the engine queued behind the playing one (motion, blend).
+    pub queue: Vec<(u16, f32)>,
     /// The act and its last motion are over.
     pub done: bool,
 }
@@ -146,12 +164,13 @@ pub struct Start {
 }
 
 impl Blade {
-    /// The act starts where Goofy stands, aimed at the enemy.
+    /// The act `act` starts where the member stands, aimed at the enemy.
     pub fn start<W: World>(
         payload: &[u8],
         clips: Arc<BladeClips>,
         room: &W,
         from: Start,
+        act: &str,
     ) -> Result<Self, String> {
         let Start {
             position,
@@ -192,8 +211,8 @@ impl Blade {
             hand: Mat4::IDENTITY,
         };
         let mut goofy = Object::spawn(&mut world, &env, GOOFY, payload, sys)
-            .map_err(|e| format!("p_ex030 script rejected: {e:?}"))?;
-        let actions = goofy.acts.start(b"blade");
+            .map_err(|e| format!("member script rejected: {e:?}"))?;
+        let actions = goofy.acts.start(act.as_bytes());
         goofy.apply_actions(Some((&mut world, &env)), actions);
         Ok(Blade {
             world,
@@ -244,6 +263,7 @@ impl Blade {
         self.world.tick_attacks(&env);
         let mut effects = Vec::new();
         let mut spent_mp = false;
+        let mut unsupported = Vec::new();
         for event in std::mem::take(&mut self.world.events) {
             match event {
                 Event::MotionEffect { id, .. } => effects.push(id),
@@ -253,6 +273,7 @@ impl Blade {
                     }
                 }
                 Event::Unsupported("obj_use_mp") => spent_mp = true,
+                Event::Unsupported(name) => unsupported.push(name),
                 _ => {}
             }
         }
@@ -274,7 +295,19 @@ impl Blade {
             attacks: script_attacks(&self.world),
             effects,
             spent_mp,
-            done: self.goofy.script.act_thread.is_none() && self.goofy.sys.motion.slot == 0,
+            unsupported,
+            serial: self.goofy.sys.motion.serial,
+            blend: self.goofy.sys.motion.blend,
+            queue: self
+                .goofy
+                .sys
+                .motion_queue
+                .iter()
+                .map(|&(slot, blend)| (slot as u16, blend))
+                .collect(),
+            // The act is over when its thread is; the motions it left
+            // playing and queued go on in the member's own controller.
+            done: self.goofy.script.act_thread.is_none(),
         }
     }
 

@@ -17,6 +17,7 @@ use data::path_lookup::Library;
 use player::party_hit;
 use player::party_members::{self, Follower, Target};
 use player::party_motion;
+use player::party_roster;
 use player::party_spell;
 use std::sync::Arc;
 
@@ -28,6 +29,9 @@ const MOTIONS: [u16; 5] = [0, 1, 2, 151, 152];
 /// DEAD motion and the get-up.
 /// Goofy's Bash: the throw, the return and the shield's spin.
 const BASH_MOTIONS: [u16; 3] = [192, 193, 201];
+/// The motions a member's script acts may play beyond the base ones: the
+/// jump, fall, land and the others below 10, and the specials' range.
+const ACT_MOTIONS: [std::ops::RangeInclusive<u16>; 2] = [3..=9, 190..=230];
 const REACTIONS: [u16; 15] = [10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 41, 54, 55, 43, 5];
 
 /// One motion, sampled per tick (60 Hz).
@@ -146,6 +150,10 @@ pub struct PartyKind {
     /// its hits come from them (FUN_1403d1b40 reads the attack owner's
     /// container, and the owner of a member's swing is its weapon).
     pub weapon_pax: Option<Arc<data::object_effect::Pax>>,
+    /// The personality (records, follow distances, voice name) and the
+    /// highest jump (PRTY word 2).
+    pub member: &'static party_roster::Member,
+    pub jump_max: f32,
 }
 
 impl PartyKind {
@@ -176,6 +184,17 @@ impl party_motion::Clips for KindClips<'_> {
             slot: d.slot,
             length: d.end().max(1),
             loop_top: d.loop_start,
+        })
+    }
+
+    fn trigger(&self, slot: usize, kind: u8) -> Option<u32> {
+        self.0.by_slot(slot).and_then(|d| {
+            d.events
+                .frames
+                .iter()
+                .filter(|f| f.kind == kind)
+                .map(|f| u32::from(f.frame))
+                .min()
         })
     }
 
@@ -382,6 +401,26 @@ fn build_motion(
         weapon_joints: Vec::new(),
     };
     let bones = model.skinning.bones.len();
+    // A weapon without motions hangs on the hand in its bind pose.
+    let bind = match (weapon, own) {
+        (Some(w), None) => w
+            .skinning
+            .bind_pose(data::model_pose::PoseProfile::Legacy)
+            .ok()
+            .map(|b| {
+                let local: Vec<Vec3> = b
+                    .position_bits
+                    .iter()
+                    .map(|p| Vec3::from_array(p.map(f32::from_bits)))
+                    .collect();
+                let bone = b
+                    .matrix_bits
+                    .get(2)
+                    .map(|m| Mat4::from_cols_array(&m.map(f32::from_bits)));
+                (local, bone)
+            }),
+        _ => None,
+    };
     if let Some(own) = own {
         data.hits = own
             .triggers
@@ -444,6 +483,14 @@ fn build_motion(
             .get(hand_bone)
             .map_or(Mat4::IDENTITY, |m| matrix(m, r));
         data.hand.push(hand);
+        if let Some((local, bone)) = &bind {
+            data.weapon
+                .push(local.iter().map(|p| hand.transform_point3(*p)).collect());
+            data.weapon_local.push(local.clone());
+            let blade = bone.map_or(hand, |b| hand * b);
+            data.blade.push(blade);
+            data.staff.push(blade);
+        }
         if let (Some(w), Some(own)) = (weapon, own) {
             let (wp, we) = w.skinning.sample_evaluated(&own.motion, key)?;
             if let Some(joints) = we.joints.get(..w.skinning.bones.len()) {
@@ -495,9 +542,10 @@ pub fn load(
     plrp: &[u8],
     objects: &[objentry::ObjectEntry],
     name: &'static str,
-    character: usize,
-    records: &'static [party_members::Record],
+    member: &'static party_roster::Member,
 ) -> Result<PartyKind, Box<dyn std::error::Error>> {
+    let character = member.character as usize;
+    let records = member.records;
     let found = library
         .find(&format!("obj/{name}.mdlx"))
         .ok_or_else(|| format!("obj/{name}.mdlx is not installed"))?;
@@ -528,12 +576,16 @@ pub fn load(
             wanted.push(r.motion);
         }
     }
-    // The Bash plays 192, 193 and the thrown shield's spin 201.
-    if records
+    // The Bash plays 192, 193 and the thrown shield's spin 201; the other
+    // acts play their own motions.
+    let acts = records
         .iter()
-        .any(|r| r.spell == Some(party_members::Spell::Bash))
-    {
-        for m in BASH_MOTIONS {
+        .any(|r| r.spell.is_some_and(|s| s.act().is_some()));
+    if acts {
+        for m in BASH_MOTIONS
+            .into_iter()
+            .chain(ACT_MOTIONS.into_iter().flatten())
+        {
             if !wanted.contains(&m) {
                 wanted.push(m);
             }
@@ -770,13 +822,16 @@ pub fn load(
     let prty = party_records::read_prty(bar_entry(pref, b"prty")?)?;
     let offset =
         actor_physics::prty_offset(&prty.offsets, prty_index).ok_or("PRTY record absent")?;
-    let ko_time = prty
+    let prty_words = prty
         .records
         .iter()
         .find(|r| r.offset == offset && !r.overlaps_table)
-        .and_then(|r| r.words.get(6))
-        .map(|w| f32::from_bits(*w))
+        .map(|r| r.words)
         .ok_or("PRTY record absent or overlaps table")?;
+    let word = |i: usize| prty_words.get(i).map(|w| f32::from_bits(*w));
+    let ko_time = word(6).ok_or("PRTY record too short")?;
+    // PRTY word 2 (obj+0x130): the highest an air attack's jump goes.
+    let jump_max = word(2).unwrap_or(party_members::AIR_MAX);
     let sstm_bytes = bar_entry(pref, b"sstm")?;
     let sstm_offset = u32::from_le_bytes(sstm_bytes.get(4..8).ok_or("SSTM pointer")?.try_into()?);
     let record = sstm_bytes
@@ -784,18 +839,17 @@ pub fn load(
         .ok_or("SSTM record")?;
     let sstm = actor_physics::Sstm::read(record).ok_or("SSTM record truncated")?;
     let rates = party_hit::Rates::read(record).ok_or("SSTM rates truncated")?;
-    // Goofy's own object script runs the Bash on the object-script engine.
-    let script = if records
-        .iter()
-        .any(|r| r.spell == Some(party_members::Spell::Bash))
-    {
+    // The member's own object script runs its acts (Goofy's Bash, the
+    // guests' specials) on the object-script engine.
+    let script = if acts {
         super::enemy_script::script_payload(source, name).ok()
     } else {
         None
     };
     let blade_clips = Arc::new(party_blade::BladeClips(
-        std::iter::once(0u16)
-            .chain(BASH_MOTIONS)
+        motions
+            .keys()
+            .copied()
             .filter_map(|slot| {
                 let d = motions.get(&slot)?;
                 Some((
@@ -846,6 +900,8 @@ pub fn load(
         helpers,
         weapon_helpers,
         weapon_pax,
+        member,
+        jump_max,
     })
 }
 
@@ -938,6 +994,23 @@ pub fn order_cast(game: &mut Game, member: usize, spell: party_members::Spell, h
     // meanwhile.
     m.forced = Some((record, heal));
     true
+}
+
+/// Orders the member's `nth` special (its records with a spell or act, in
+/// order); returns it when there is one.
+pub fn order_special(game: &mut Game, member: usize, nth: usize) -> Option<party_members::Spell> {
+    let m = game.party.get_mut(member)?;
+    let record = *m
+        .kind
+        .records
+        .iter()
+        .filter(|r| r.spell.is_some())
+        .nth(nth)?;
+    if m.stored {
+        return None;
+    }
+    m.forced = Some((record, 0));
+    record.spell
 }
 
 /// The hit spark of a member's spell volume: the element of the member's own
@@ -1812,10 +1885,14 @@ pub fn tick(game: &mut Game, tick: u64) {
         );
         // The Bash: the engine runs the `blade` act of Goofy's own script, and
         // the member follows what it says.
-        let bashing = m
+        // An act of the member's own script (Goofy's Bash, a guest's
+        // special): the engine runs it and the member follows what it says.
+        let acting = m
             .follower
             .attack
-            .is_some_and(|a| a.spell == Some(party_members::Spell::Bash));
+            .and_then(|a| a.spell)
+            .and_then(|s| s.act());
+        let bashing = acting.is_some();
         if !bashing {
             m.blade = None;
             m.shield = None;
@@ -1839,8 +1916,15 @@ pub fn tick(game: &mut Game, tick: u64) {
                         sstm: kind.sstm,
                         target: centre,
                     },
+                    acting.unwrap_or("blade"),
                 )
-                .map_err(|e| eprintln!("{}: the Bash could not start: {e}", kind.name))
+                .map_err(|e| {
+                    eprintln!(
+                        "{}: the act {} could not start: {e}",
+                        kind.name,
+                        acting.unwrap_or("blade")
+                    )
+                })
                 .ok();
             }
             // Volumes that struck last tick run their hit callbacks.
@@ -1878,6 +1962,13 @@ pub fn tick(game: &mut Game, tick: u64) {
                         },
                     });
                 }
+                if !f.unsupported.is_empty() {
+                    log_event(
+                        log,
+                        serde_json::json!({"event":"party_act_unsupported","tick":tick,
+                        "member":kind.name,"act":acting,"traps":f.unsupported}),
+                    );
+                }
                 if tick.is_multiple_of(30) || f.done {
                     log_event(
                         log,
@@ -1891,6 +1982,9 @@ pub fn tick(game: &mut Game, tick: u64) {
                 scripted = Some(party_members::Scripted {
                     motion: f.motion,
                     tick: f.tick,
+                    serial: f.serial,
+                    blend: f.blend,
+                    queue: [f.queue.first().copied(), f.queue.get(1).copied()],
                     position: f.position,
                     yaw: f.yaw,
                     done: f.done,
@@ -2053,7 +2147,7 @@ pub fn tick(game: &mut Game, tick: u64) {
             m.follower.begin(&record, &target.unwrap_or(ahead), heal);
             m.started = tick;
             // The Bash has no cast of its own: the engine runs the act.
-            m.armed = record.spell != Some(party_members::Spell::Bash);
+            m.armed = record.spell.is_none_or(|s| s.act().is_none());
         }
         let now = m.follower.attack;
         if !was
@@ -2062,7 +2156,7 @@ pub fn tick(game: &mut Game, tick: u64) {
         {
             m.started = tick;
             // The Bash has no cast: the engine runs its own act.
-            m.armed = a.spell.is_some_and(|s| s != party_members::Spell::Bash);
+            m.armed = a.spell.is_some_and(|s| s.act().is_none());
         }
         // The act manager starts the spell's act (FUN_1403caa90).
         if m.armed
@@ -2705,7 +2799,11 @@ fn pose_member(m: &MemberRt, shown: &mut ShownPose) -> Option<(Vec<Vec3>, Vec<Ve
                         .collect()
                 })
                 .unwrap_or_default(),
-            _ => Vec::new(),
+            // A weapon without joints (no motion set) rides the hand.
+            _ => weapon_source
+                .and_then(|(d, i)| d.weapon_local.get(i))
+                .map(|l| l.iter().map(|v| hand.transform_point3(*v)).collect())
+                .unwrap_or_default(),
         };
         let body_vertices = unbits(&pose.position_bits);
         shown.body = body;

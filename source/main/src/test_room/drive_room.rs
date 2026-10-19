@@ -818,7 +818,7 @@ pub(super) fn start_change(game: &mut Game, form: u8) {
         // FUN_140400b20: the members the form takes leave the field.
         let mut leaving = Vec::new();
         for (i, m) in game.party.iter_mut().enumerate() {
-            if !m.stored && forms::absorbs(form, character_of(m.kind.name)) {
+            if !m.stored && forms::absorbs(form, u16::from(m.kind.character)) {
                 m.stored = true;
                 m.follower.attack = None;
                 leaving.push((i, 0));
@@ -1158,7 +1158,7 @@ pub fn tick(game: &mut Game, abilities: Option<&[u16]>) {
     d.real_party = !game.party.is_empty();
     d.slots = [0, 1].map(|k| {
         game.party.get(k).map(|m| forms::Member {
-            character: character_of(m.kind.name),
+            character: u16::from(m.kind.character),
             usable: !m.stored,
         })
     });
@@ -1567,15 +1567,6 @@ pub fn shots(game: &mut Game) {
 
 /// Wisdom bullets' volume keys (below the spells' serial keys' range).
 const BULLET_KEYS: u64 = 1 << 60;
-
-/// A party member's character id (objentry +0x4c) by its model.
-fn character_of(name: &str) -> u16 {
-    match name {
-        "P_EX020" => 2,
-        "P_EX030" => 3,
-        _ => 0,
-    }
-}
 
 /// FUN_140400990: an absorbed member fades out over 15 frames and is
 /// then gone from view [the fade itself is not drawn: the member shows
