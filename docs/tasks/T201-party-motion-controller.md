@@ -154,6 +154,10 @@ Per member (tour `--party-anim-tour` with `KH2RW_PARTY`):
   (192, 193) and ends beside it; `shout` (191, ATKP 1166) ends with its motion. Earlier runs
   had the rush turn to Sora (the enemy search) and the shout hold idle for 300 ticks (the end
   bit lost under the queued idle).
+- Simba (`P_LK000`, run `roster-r7`): no hand bone; `rush` is up to eight pounces of 30 ticks
+  (192 restarted, held on its last frame, carried by the request each tick) and its body
+  window (ATKP 1180) strikes again at the ATKP interval while it stays open: 119 hits in four
+  rushes, not checked against the game; `quake` (ATKP 1179, elements 13-15) ends.
 
 ## Checks
 
