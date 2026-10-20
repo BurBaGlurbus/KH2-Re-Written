@@ -149,6 +149,11 @@ Per member (tour `--party-anim-tour` with `KH2RW_PARTY`):
   tick), stops for the slashes of 193 and ends (ATKP 1175); `slashrush` circles it (191, 194;
   ATKP 1174); five acts complete. Earlier runs had him run 3000 units off and through the
   floor: the movement request had stayed set after the dash.
+- Beast (`P_BB000`, runs `roster-r6`, `roster-r7`): no hand bone (SKLT -1), his weapon object
+  only spheres; claw 152 (ATKP 570, 575, 220); `rush` turns on the Shadow and pounces
+  (192, 193) and ends beside it; `shout` (191, ATKP 1166) ends with its motion. Earlier runs
+  had the rush turn to Sora (the enemy search) and the shout hold idle for 300 ticks (the end
+  bit lost under the queued idle).
 
 ## Checks
 
