@@ -140,6 +140,11 @@ world's set (`he0_auron`, ...) and accepts textures up to 8192 a side (Mulan's 1
 Per member (tour `--party-anim-tour` with `KH2RW_PARTY`):
 - Auron (`P_HE000`, run `auron5`): field and battle locomotion, attacks (ATKP 193/194 with
   sparks), `yukizakura` (ATKP 1272, 1576; its elements 1-7) completes and lands, hops, HUD face.
+- Mulan (`P_MU000`, run `roster-r7`): her texture sheet (192 × 7296) loads (the inspection
+  bound is now 8192 a side); sword attacks 151/152 (ATKP 369, 371); `flametongue` hops, then
+  dashes through the Shadow (ATKP 622, its fire elements) and ends; `mushufire` plays 191 and
+  ends (no hit on the Shadow in the run). Earlier runs had her dash toward Sora: the search in
+  her act had found her own sword as the nearest enemy.
 
 ## Checks
 

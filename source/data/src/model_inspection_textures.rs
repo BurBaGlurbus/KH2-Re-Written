@@ -250,8 +250,12 @@ pub fn read_textures(
                         "replacement texture header is incomplete or unknown",
                     ));
                 };
-                if !(1..=4096).contains(&width) || !(1..=4096).contains(&height) {
-                    return Err(invalid("replacement inspection dimensions outside bound"));
+                if !(1..=hd_image::MAX_SIDE).contains(&width)
+                    || !(1..=hd_image::MAX_SIDE).contains(&height)
+                {
+                    return Err(invalid(&format!(
+                        "replacement inspection dimensions outside bound ({width}x{height})"
+                    )));
                 }
                 reserve(total_rgba, width as usize * height as usize * 4)?;
                 let decoded = hd_image::decode_hd_image_with_profile(
