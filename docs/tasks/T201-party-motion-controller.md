@@ -145,6 +145,10 @@ Per member (tour `--party-anim-tour` with `KH2RW_PARTY`):
   dashes through the Shadow (ATKP 622, its fire elements) and ends; `mushufire` plays 191 and
   ends (no hit on the Shadow in the run). Earlier runs had her dash toward Sora: the search in
   her act had found her own sword as the nearest enemy.
+- Aladdin (`P_AL000`, run `roster-r7`): `quickplay` dashes at the Shadow (192, a request each
+  tick), stops for the slashes of 193 and ends (ATKP 1175); `slashrush` circles it (191, 194;
+  ATKP 1174); five acts complete. Earlier runs had him run 3000 units off and through the
+  floor: the movement request had stayed set after the dash.
 
 ## Checks
 
