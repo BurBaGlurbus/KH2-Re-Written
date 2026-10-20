@@ -164,6 +164,9 @@ Per member (tour `--party-anim-tour` with `KH2RW_PARTY`):
 - Jack Sparrow (`P_CA000`, run `roster-r7`): `shadowsnipe` fires its shots from range (192
   repeated, ATKP 1172 ×14), `slash` dashes through the Shadow and on (191, ATKP 1171),
   `bonecrusher` (193 ×3) plays and ends with no hit counted in the run (open); six acts done.
+- Jack Skellington (`P_NM000`, run `roster-r7`): no hand bone; `slidingfire` lands (ATKP
+  1178), `airthunder` and `backstepblizzard` (which ends in the air; the member falls and
+  lands) play and end with no hit counted (open); five acts done.
 
 ## Checks
 
