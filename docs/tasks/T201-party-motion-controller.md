@@ -158,6 +158,9 @@ Per member (tour `--party-anim-tour` with `KH2RW_PARTY`):
   (192 restarted, held on its last frame, carried by the request each tick) and its body
   window (ATKP 1180) strikes again at the ATKP interval while it stays open: 119 hits in four
   rushes, not checked against the game; `quake` (ATKP 1179, elements 13-15) ends.
+- Ping (`P_MU010`, runs `roster-r6`, `roster-r7`): Mulan's level rows (character 15 reads 6,
+  `FUN_1403e60c0`) and her sword `W_MU000` (his WENT set); attacks 151-153 land (ATKP 369,
+  385); no specials (his table has none). Before, he had no PLRP row and no weapon spheres.
 
 ## Checks
 
