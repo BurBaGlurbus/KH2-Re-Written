@@ -102,12 +102,40 @@ Nothing from the game is in Git; the room reads motions, models and effects from
 - An act on the engine ends with its thread (`yukizakura` ends by queueing the fall);
   the member's controller takes over the motions it left playing and queued, and a fall on
   the floor lands (`FUN_1403cb940`).
+- The member's think runs before its script each tick and copies its wish over the movement
+  request (`obj+0x10`/`+0x1c`, the end of `FUN_1401b53b0`); during an act the wish is empty
+  (`FUN_1401b15f0`), so a script's `obj_set_movement` lasts one tick (Aladdin's `quickplay`
+  dashes while it asks, and stands for the slashes of 193).
+- `trap_friend_get_action_param` (10:35, `FUN_140536d20` → `FUN_1401cc770`) returns the
+  member's own 0x80-byte record whose id matches: Tron's four swings read their motion from
+  it (151, 152, 181, 182; +4) and a jump value (+0x20); the command itself
+  (`FUN_1401cc650`) starts no motion.
+- `btlobj_target` (`FUN_1404319d0`) searches again (kind 2, Sora) only for an object of the
+  enemy class (`+0x6c8` bit 4); a member's invalid target stays invalid (Beast's and Mulan's
+  acts turned to Sora when the Shadow sank).
+- At a motion's end with a motion queued, `FUN_1403c6740` starts the queued one and then sets
+  the end bit (`+0x18c` bit 1): a script waiting on `motion_is_end` sees it (Beast's
+  `shout`).
+- The hand bone comes from SKLT by the object entry's byte +7 (`FUN_1403d7620`:
+  `FUN_1403b5c10`, `FUN_1403eaae0`), not the character id (no row 13 for Riku); Beast, Jack
+  and Simba have bone -1 and hold nothing. Their weapon objects carry only attack spheres.
+- The weapon object is a WENT set chosen by the object entry's neo-moveset; every member's
+  first entry is its own `W_` object except Ping's, which is Mulan's `W_MU000`.
 
 Built: `player::party_roster` (records and headers of every member), `Spell::Act`, the
 `Personality` of the follower (waits, hops), `KH2RW_PARTY=<model>,<model>` to pick the two
 members (Donald and Goofy by default), weapons without motions held on the hand, the act
 runner generalised to any act, HUD faces and voices by member. Goofy's Bash record now uses
 its own height window (-500/1000; PR 109 had it negated).
+
+Then, for the guests: the act runner clears the movement request each tick, answers the
+action-param trap from the member's records (`Record::raw_words`), marks the member as no
+enemy and is dropped when its act finishes (the next act, often begun the following tick,
+had reused the finished one and ended at once). The engine keeps the end bit after a queued
+start and searches again only for enemies. The loader finds the hand bone by the entry's
+skeleton byte, takes the weapon from the WENT set, accepts weapon files without a model,
+reads Ping's level rows as Mulan's (`FUN_1403e60c0`), plays a guest's voices from its home
+world's set (`he0_auron`, ...) and accepts textures up to 8192 a side (Mulan's 192 × 7296).
 
 Per member (tour `--party-anim-tour` with `KH2RW_PARTY`):
 - Auron (`P_HE000`, run `auron5`): field and battle locomotion, attacks (ATKP 193/194 with

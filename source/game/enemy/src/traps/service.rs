@@ -332,7 +332,32 @@ forward_object_traps! {
     xemnas_get_obj = "xemnas_get_obj", None;
     party_get_weapon = "party_get_weapon", Some(0);
     score_get = "score_get", None;
-    friend_get_action_param = "friend_get_action_param", Some(0);
+}
+
+/// 10:35 FUN_140536d20 -> FUN_1401cc770: the address of the friend's action
+/// record whose id is `args[1]` (0 when it has none). The host's record is
+/// copied into eight static cells taken together, so it is contiguous.
+fn friend_get_action_param(
+    ctx: &mut Ctx<'_>,
+    m: &mut Memory<'_>,
+    args: &mut Args,
+) -> Result<(), Fault> {
+    let object = ctx.sys_of_ai(m, args[0].value)?;
+    let id = args[1].as_int();
+    let Some(words) = ctx.env.action_param(object, id) else {
+        args[0] = Slot::address(0);
+        return Ok(());
+    };
+    let slot = (id as u16 & 0x0fff) * 8;
+    let base = ctx.world.static_cell(10, 35, slot);
+    for k in 1..8 {
+        ctx.world.static_cell(10, 35, slot + k);
+    }
+    for (k, w) in words.iter().enumerate() {
+        ctx.world.static_write(base + 4 * k as u32, *w);
+    }
+    args[0] = Slot::address(base);
+    Ok(())
 }
 
 /// 6:70 FUN_14053f210: start a looping sound effect on the object; the

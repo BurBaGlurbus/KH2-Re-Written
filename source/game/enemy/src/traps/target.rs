@@ -403,11 +403,15 @@ fn set_sheet(ctx: &mut Ctx<'_>, m: &mut Memory<'_>, args: &mut Args) -> Result<(
 }
 
 /// 2:23 FUN_1404319d0: the object's own target record, searched again for
-/// Sora when it has become invalid.
+/// Sora when it has become invalid and the object is of the enemy class
+/// (+0x6c8 bit 4; a party member keeps its invalid record).
 fn btlobj_target(ctx: &mut Ctx<'_>, m: &mut Memory<'_>, args: &mut Args) -> Result<(), Fault> {
     let id = ctx.sys_of_ai(m, args[0].value)?;
     let sys = &ctx.object(id)?.sys;
-    let (t, bit4) = (sys.target, true);
+    let (t, bit4) = (
+        sys.target,
+        sys.class_flags & crate::sysobj::class_flag::ENEMY != 0,
+    );
     let valid = target_point(ctx, t).is_some();
     if !valid && bit4 && t.kind != 3 {
         let found = search(ctx, 2, id)?;

@@ -35,8 +35,10 @@ pub struct Member {
     /// The character id (objentry +0x4c).
     pub character: u8,
     /// The name of its battle voices (`voice/us/battle/<world>0_<name>`,
-    /// the table at 0x14074beb0 indexed by character).
+    /// the table at 0x14074beb0 indexed by character) and the world whose
+    /// set holds them for a guest (it only joins there).
     pub voice: &'static str,
+    pub home: &'static str,
     pub records: &'static [Record],
     /// The header's movement (the room puts the PRTY jump height in).
     pub personality: Personality,
@@ -63,10 +65,15 @@ const fn rec(id: u8, motion: u16, window: [f32; 4], jump: f32) -> Record {
 }
 
 const fn act(id: u8, name: &'static str, window: [f32; 4], cost: u8) -> Record {
+    act_motion(id, 0, name, window, cost)
+}
+
+/// An act whose record names a motion its script reads (Tron's swings).
+const fn act_motion(id: u8, motion: u16, name: &'static str, window: [f32; 4], cost: u8) -> Record {
     Record {
         cost,
         spell: Some(Spell::Act(name)),
-        ..rec(id, 0, window, 0.)
+        ..rec(id, motion, window, 0.)
     }
 }
 
@@ -192,12 +199,13 @@ pub const SIMBA: [Record; 9] = [
     MP,
 ];
 
-/// Tron (personality 10 at 0x140720330): his four swings are acts too.
+/// Tron (personality 10 at 0x140720330): his four swings are acts too; each
+/// act's script starts the motion of its record (151, 152, 181, 182).
 pub const TRON: [Record; 8] = [
-    act(0x28, "normal_attack1", [0., 1000., -100., 100.], 0),
-    act(0x29, "normal_attack2", [0., 350., -100., 100.], 0),
-    act(0x78, "normal_attack3", [0., 1000., 100., 1000.], 0),
-    act(0x79, "normal_attack4", [0., 450., 100., 385.], 0),
+    act_motion(0x28, 151, "normal_attack1", [0., 1000., -100., 100.], 0),
+    act_motion(0x29, 152, "normal_attack2", [0., 350., -100., 100.], 0),
+    act_motion(0x78, 181, "normal_attack3", [0., 1000., 100., 1000.], 0),
+    act_motion(0x79, 182, "normal_attack4", [0., 450., 100., 385.], 0),
     act(0x6d, "overflow", [250., 1000., -1000., 1000.], 10),
     act(0x55, "thunder", [0., 500., -100., 300.], 10),
     HP,
@@ -224,6 +232,7 @@ const BEAST_FOLLOW: Follow = Follow {
 const fn member(
     character: u8,
     voice: &'static str,
+    home: &'static str,
     records: &'static [Record],
     hop_chance: f32,
     hops: &'static [[f32; 5]],
@@ -232,6 +241,7 @@ const fn member(
     Member {
         character,
         voice,
+        home,
         records,
         personality: Personality {
             follow: FOLLOW,
@@ -253,6 +263,7 @@ pub const MEMBERS: [Member; 12] = [
     Member {
         character: 2,
         voice: "donald",
+        home: "",
         records: &DONALD,
         personality: DONALD_PERSONALITY,
         search: 800.,
@@ -260,6 +271,7 @@ pub const MEMBERS: [Member; 12] = [
     member(
         3,
         "goofy",
+        "",
         &GOOFY,
         0.5,
         &[[180., 100., 18., 0.98, 18.], [0., 100., 10., 0.98, 18.]],
@@ -268,6 +280,7 @@ pub const MEMBERS: [Member; 12] = [
     member(
         5,
         "auron",
+        "he",
         &AURON,
         0.2,
         &[[180., 150., 15., 0.98, 24.], [0., 150., 15., 0.98, 24.]],
@@ -276,6 +289,7 @@ pub const MEMBERS: [Member; 12] = [
     member(
         6,
         "mulan",
+        "mu",
         &MULAN,
         0.4,
         &[
@@ -288,6 +302,7 @@ pub const MEMBERS: [Member; 12] = [
     member(
         7,
         "aladdin",
+        "al",
         &ALADDIN,
         0.6,
         &[
@@ -300,6 +315,7 @@ pub const MEMBERS: [Member; 12] = [
     member(
         8,
         "sparrow",
+        "ca",
         &SPARROW,
         0.6,
         &[[180., 60., 28., 0.82, 15.]],
@@ -309,6 +325,7 @@ pub const MEMBERS: [Member; 12] = [
         let mut beast = member(
             9,
             "beast",
+            "bb",
             &BEAST,
             0.2,
             &[[180., 50., 12., 0.98, 18.], [0., 50., 12., 0.98, 18.]],
@@ -317,18 +334,19 @@ pub const MEMBERS: [Member; 12] = [
         beast.personality.follow = BEAST_FOLLOW;
         beast
     },
-    member(10, "jack", &JACK, 0.4, BACK_80, WAITS_60_120),
+    member(10, "jack", "nm", &JACK, 0.4, BACK_80, WAITS_60_120),
     Member {
         search: 1000.,
-        ..member(11, "simba", &SIMBA, 0.2, BACK_80, WAITS_60_120)
+        ..member(11, "simba", "lk", &SIMBA, 0.2, BACK_80, WAITS_60_120)
     },
-    member(12, "tron", &TRON, 0.2, BACK_80, WAITS_60_120),
-    member(13, "riku", &RIKU, 0.2, BACK_80, WAITS_60_120),
+    member(12, "tron", "tr", &TRON, 0.2, BACK_80, WAITS_60_120),
+    member(13, "riku", "eh", &RIKU, 0.2, BACK_80, WAITS_60_120),
     Member {
         search: 250.,
         ..member(
             15,
             "pin",
+            "mu",
             &PIN,
             0.2,
             &[[0., 150., 12., 0.98, 30.]],
@@ -336,6 +354,16 @@ pub const MEMBERS: [Member; 12] = [
         )
     },
 ];
+
+/// The character whose level and status rows a character reads
+/// (`FUN_1403e60c0`: Roxas 0xe reads Sora's, Pin 0xf Mulan's).
+pub fn stats_character(character: u8) -> u8 {
+    match character {
+        0xe => 1,
+        0xf => 6,
+        c => c,
+    }
+}
 
 /// The member of a character id.
 pub fn by_character(character: u8) -> Option<&'static Member> {
@@ -345,6 +373,20 @@ pub fn by_character(character: u8) -> Option<&'static Member> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_act_record_reads_back_as_the_executable_keeps_it() {
+        // Tron's first swing: the script reads its motion (+4) and the jump
+        // offset (+0x20) through `trap_friend_get_action_param`.
+        let w = TRON[0].raw_words();
+        assert_eq!((w[0], w[1], w[2]), (0x28, 151, 0));
+        assert_eq!(f32::from_bits(w[5]), 1000.);
+        assert_eq!(f32::from_bits(w[6]), -100.);
+        assert_eq!(f32::from_bits(w[8]), 0.);
+        let cure = RIKU.iter().find(|r| r.id == 0x59).unwrap().raw_words();
+        assert_eq!((w.len(), cure[2]), (32, 99));
+        assert_eq!(f32::from_bits(cure[15]), 0.4);
+    }
 
     #[test]
     fn every_member_has_its_items_and_a_ground_attack_or_an_act() {

@@ -46,6 +46,12 @@ pub struct MotionData {
     pub root: Vec<Vec3>,
     /// Weapon range 10: (start, end, ATKP id, collision group).
     pub hits: Vec<(u32, u32, u16, u8)>,
+    /// The body motion's own range 10 (members without a weapon object:
+    /// Beast, Jack Skellington, Simba) and the centres of the body's
+    /// ATTACK shapes per tick (model space, root removed), in the order of
+    /// `PartyKind::body_attacks`.
+    pub body_hits: Vec<(u32, u32, u16, u8)>,
+    pub body_attack: Vec<Vec<Vec3>>,
     pub loop_start: u32,
     /// Frame trigger 9 (the spell release, `ctl+0x155` bit 0).
     pub release: Option<u32>,
@@ -150,6 +156,8 @@ pub struct PartyKind {
     /// its hits come from them (FUN_1403d1b40 reads the attack owner's
     /// container, and the owner of a member's swing is its weapon).
     pub weapon_pax: Option<Arc<data::object_effect::Pax>>,
+    /// The body's ATTACK shapes (collision type 6): group, radius.
+    pub body_attacks: Vec<(u8, f32)>,
     /// The personality (records, follow distances, voice name) and the
     /// highest jump (PRTY word 2).
     pub member: &'static party_roster::Member,
@@ -166,6 +174,55 @@ impl PartyKind {
             .or_else(|| self.motions.get(&motion))
     }
 
+    /// The attack windows open at tick `t` of a clip (FUN_14040d810 case
+    /// 10): the weapon motion's on the weapon's ATTACK shapes (bone 2), the
+    /// body motion's on the body's own. Each: a key index, the ATKP id and
+    /// the spheres in member space.
+    pub fn open_windows(&self, data: &MotionData, t: u32) -> Vec<OpenWindow> {
+        let mut out = Vec::new();
+        if let Some(blade) = data
+            .blade
+            .get((t as usize).min(data.blade.len().max(1) - 1))
+        {
+            for (w, &(start, end, atkp, group)) in data.hits.iter().enumerate() {
+                if t < start || t > end {
+                    continue;
+                }
+                let Some(list) = self.spheres.get(&group) else {
+                    continue;
+                };
+                out.push((
+                    w as u64,
+                    atkp,
+                    list.iter()
+                        .map(|&(offset, radius)| (blade.transform_point3(offset), radius))
+                        .collect(),
+                ));
+            }
+        }
+        if let Some(centres) = data
+            .body_attack
+            .get((t as usize).min(data.body_attack.len().max(1) - 1))
+        {
+            for (w, &(start, end, atkp, group)) in data.body_hits.iter().enumerate() {
+                if t < start || t > end {
+                    continue;
+                }
+                let spheres: Vec<(Vec3, f32)> = self
+                    .body_attacks
+                    .iter()
+                    .zip(centres)
+                    .filter(|((g, _), _)| *g == group)
+                    .map(|((_, r), c)| (*c, *r))
+                    .collect();
+                if !spheres.is_empty() {
+                    out.push((8 + w as u64, atkp, spheres));
+                }
+            }
+        }
+        out
+    }
+
     fn by_slot(&self, slot: usize) -> Option<&MotionData> {
         self.motions
             .values()
@@ -173,6 +230,9 @@ impl PartyKind {
             .find(|d| d.slot == slot)
     }
 }
+
+/// An open attack window: its key index, ATKP id and spheres (member space).
+pub type OpenWindow = (u64, u16, Vec<(Vec3, f32)>);
 
 /// The member's motion set as its controller reads it.
 pub struct KindClips<'a>(pub &'a PartyKind);
@@ -303,6 +363,7 @@ fn build_motion(
     weapon: Option<&model_inspection::InspectionModel>,
     hand_bone: usize,
     hit_shapes: &[(usize, Vec3, f32, bool)],
+    attack_shapes: &[(Option<usize>, Vec3)],
     selected: &motion::SelectedMotion,
     own: Option<&motion::SelectedMotion>,
 ) -> Result<MotionData, Box<dyn std::error::Error>> {
@@ -325,6 +386,25 @@ fn build_motion(
         blade: Vec::new(),
         root: Vec::new(),
         hits: Vec::new(),
+        body_hits: selected
+            .triggers
+            .iter()
+            .flat_map(|t| &t.records.ranges)
+            .filter(|r| r.trigger == 10 && r.parameters.len() >= 2)
+            .map(|r| {
+                (
+                    r.start_frame.max(0) as u32,
+                    if r.end_frame < 0 {
+                        end
+                    } else {
+                        r.end_frame as u32
+                    },
+                    r.parameters[0] as u16,
+                    r.parameters[1] as u8,
+                )
+            })
+            .collect(),
+        body_attack: Vec::new(),
         loop_start,
         release: selected
             .triggers
@@ -478,6 +558,18 @@ fn build_motion(
                 })
                 .collect(),
         );
+        data.body_attack.push(
+            attack_shapes
+                .iter()
+                .map(|&(bone, offset)| match bone {
+                    Some(bone) => pose
+                        .matrix_bits
+                        .get(bone)
+                        .map_or(offset, |m| matrix(m, r).transform_point3(offset)),
+                    None => offset,
+                })
+                .collect(),
+        );
         let hand = pose
             .matrix_bits
             .get(hand_bone)
@@ -608,17 +700,34 @@ pub fn load(
         },
         &wanted,
     )?;
-    // The staff or shield: W_EX020 for P_EX020.
-    let weapon_name = format!("W_{}", &name[2..]);
+    // The weapon object: the first of the WENT set the object entry's
+    // neo-moveset selects (the base weapon; Donald's and Goofy's sets go on
+    // with the staves and shields an item equips). Ping's is Mulan's W_MU000.
+    let weapon_name = objects
+        .iter()
+        .find(|o| o.model_name == name.as_bytes())
+        .and_then(|o| {
+            let went = bar_entry(system, b"went").ok()?;
+            let set = data::weapon_entry::set(went, usize::from(o.neo_moveset)).ok()?;
+            let id = *set.first()?;
+            let e = objects.iter().find(|e| e.object_id == id)?;
+            String::from_utf8(e.model_name.clone()).ok()
+        })
+        .unwrap_or_else(|| format!("W_{}", &name[2..]));
     let weapon_selection = selection(&weapon_name).ok();
     let mut weapon = None;
     let mut spheres: HashMap<u8, Vec<(Vec3, f32)>> = HashMap::new();
     let mut weapon_motions: HashMap<usize, motion::SelectedMotion> = HashMap::new();
     if let Some(w) = library.find(&format!("obj/{weapon_name}.mdlx")) {
         let archive = library.read_found(&w)?;
-        let mut models = model_inspection::read_model_at(source, w.index, w.ordinal, w.name_hash)?;
-        if !models.is_empty() {
-            weapon = Some(models.remove(0));
+        // Beast's, Jack's and Simba's weapon objects carry only their attack
+        // spheres: no model to show.
+        if bar_entry_typed(&archive, 4).is_ok() {
+            let mut models =
+                model_inspection::read_model_at(source, w.index, w.ordinal, w.name_hash)?;
+            if !models.is_empty() {
+                weapon = Some(models.remove(0));
+            }
         }
         if let Ok(entry) = bar_entry_typed(&archive, 23)
             && let Ok(shapes) = object_collision::read(entry)
@@ -683,13 +792,53 @@ pub fn load(
             })
             .collect();
     }
-    // The hand joint: the character's SKLT primary bone.
-    let sk = sklt::read(bar_entry(system, b"sklt")?)?;
-    let hand_bone = sk
+    // The body's ATTACK shapes (type 6): on a bone, or about the object
+    // (bone 0x4000) at its height.
+    let mut body_shapes: Vec<(u8, Option<usize>, Vec3, f32)> = Vec::new();
+    if let Some(found) = library.find(&format!("obj/{name}.mdlx"))
+        && let Ok(archive) = library.read_found(&found)
+        && let Ok(entry) = bar_entry_typed(&archive, 23)
+        && let Ok(shapes) = object_collision::read(entry)
+    {
+        body_shapes = shapes
+            .iter()
+            .filter(|c| c.kind == object_collision::ATTACK)
+            .map(|c| {
+                let p = Vec3::new(
+                    c.position[0] as f32,
+                    c.position[1] as f32,
+                    c.position[2] as f32,
+                );
+                if c.bone >= 0 && c.bone < 0x4000 {
+                    (c.group, Some(c.bone as usize), p, c.radius as f32)
+                } else {
+                    (
+                        c.group,
+                        None,
+                        p + Vec3::Y * c.position_height as f32,
+                        c.radius as f32,
+                    )
+                }
+            })
+            .collect();
+    }
+    let attack_shapes: Vec<(Option<usize>, Vec3)> =
+        body_shapes.iter().map(|s| (s.1, s.2)).collect();
+    let body_attacks: Vec<(u8, f32)> = body_shapes.iter().map(|s| (s.0, s.3)).collect();
+    // The hand joint: the SKLT primary bone, found by the object entry's
+    // byte +7 (FUN_1403d7620: FUN_1403b5c10, FUN_1403eaae0), which is not
+    // always the character id (SKLT has no row for Riku's 13).
+    let skeleton = objects
         .iter()
-        .find(|e| e.character_id as usize == character)
-        .and_then(|e| usize::try_from(e.primary_bone).ok())
-        .ok_or("SKLT entry for the party member absent")?;
+        .find(|o| o.model_name == name.as_bytes())
+        .map_or(character, |o| usize::from(o.weapon_joint));
+    let sk = sklt::read(bar_entry(system, b"sklt")?)?;
+    let entry = sk
+        .iter()
+        .find(|e| e.character_id as usize == skeleton)
+        .ok_or_else(|| format!("SKLT has no entry for skeleton {skeleton}"))?;
+    // Beast, Jack and Simba hold nothing (bone -1): no hand, the identity.
+    let hand_bone = usize::try_from(entry.primary_bone).unwrap_or(usize::MAX);
     let mut motions = HashMap::new();
     for (i, selected) in actor_motions.iter().enumerate() {
         let Some(selected) = selected else {
@@ -705,6 +854,7 @@ pub fn load(
             weapon.as_ref(),
             hand_bone,
             &hit_shapes,
+            &attack_shapes,
             selected,
             weapon_motions.get(&selected.slot),
         );
@@ -733,6 +883,7 @@ pub fn load(
             weapon.as_ref(),
             hand_bone,
             &hit_shapes,
+            &attack_shapes,
             selected,
             weapon_motions.get(&selected.slot),
         ) {
@@ -799,8 +950,11 @@ pub fn load(
             heal_lift = c.position_height as f32;
         }
     }
-    let row = data::battle_tables::player_level(lvup, character, 1)?;
-    let (hp, mp) = visual::hud::starting_stats_of(plrp, character as u8)?;
+    // Ping (0xf) and Roxas (0xe) read Mulan's and Sora's rows
+    // (FUN_1403e60c0).
+    let stats_character = party_roster::stats_character(character as u8);
+    let row = data::battle_tables::player_level(lvup, stats_character as usize, 1)?;
+    let (hp, mp) = visual::hud::starting_stats_of(plrp, stats_character)?;
     // The new-game plrp row's Defence (+8) joins the level row's.
     let plrp_def = (0..plrp
         .get(4..8)
@@ -808,7 +962,7 @@ pub fn load(
         .map(|i| 8 + i * 128)
         .find(|&at| {
             plrp.get(at..at + 3)
-                .is_some_and(|e| u16::from_le_bytes([e[0], e[1]]) == 0 && e[2] == character as u8)
+                .is_some_and(|e| u16::from_le_bytes([e[0], e[1]]) == 0 && e[2] == stats_character)
         })
         .and_then(|at| plrp.get(at + 8).copied())
         .unwrap_or(0) as i32;
@@ -902,6 +1056,7 @@ pub fn load(
         weapon_pax,
         member,
         jump_max,
+        body_attacks,
     })
 }
 
@@ -1415,7 +1570,7 @@ impl MemberRt {
     /// The ATKP ids of the weapon windows of the motion playing.
     pub fn window_atkps(&self) -> Vec<u16> {
         self.shown()
-            .map(|(d, _)| d.hits.iter().map(|h| h.2).collect())
+            .map(|(d, _)| d.hits.iter().chain(&d.body_hits).map(|h| h.2).collect())
             .unwrap_or_default()
     }
 }
@@ -1900,6 +2055,7 @@ pub fn tick(game: &mut Game, tick: u64) {
         }
         let mut scripted = None;
         let mut bash_attacks = Vec::new();
+        let mut finished = false;
         if bashing {
             if m.blade.is_none()
                 && let Some(payload) = kind.script.as_ref()
@@ -1915,6 +2071,7 @@ pub fn tick(game: &mut Game, tick: u64) {
                         stats: kind.target,
                         sstm: kind.sstm,
                         target: centre,
+                        records: kind.records,
                     },
                     acting.unwrap_or("blade"),
                 )
@@ -1969,10 +2126,10 @@ pub fn tick(game: &mut Game, tick: u64) {
                         "member":kind.name,"act":acting,"traps":f.unsupported}),
                     );
                 }
-                if tick.is_multiple_of(30) || f.done {
+                if tick.is_multiple_of(30) || f.done || tick == m.started + 1 {
                     log_event(
                         log,
-                        serde_json::json!({"event":"party_bash","tick":tick,"member":kind.name,
+                        serde_json::json!({"event":"party_bash","tick":tick,"member":kind.name,"act":acting,
                         "motion":f.motion,"motion_tick":f.tick,"position":f.position,
                         "shield":f.shield.map(|s| s.position),"attacks":f.attacks.len(),
                         "done":f.done}),
@@ -1990,6 +2147,12 @@ pub fn tick(game: &mut Game, tick: u64) {
                     done: f.done,
                 });
                 bash_attacks = f.attacks;
+                finished = f.done;
+            }
+            // A finished act's runner is dropped: the next act (often begun
+            // the following tick) starts a fresh one.
+            if finished {
+                m.blade = None;
             }
         }
         let length = |id: u16| kind.motions.get(&id).map(|d| d.end() + 1);
@@ -2451,33 +2614,18 @@ pub fn tick(game: &mut Game, tick: u64) {
         // The weapon's attack windows, offered to the gallery enemies.
         if let Some(a) = m.follower.attack
             && let Some(data) = kind.motions.get(&a.motion)
-            && !data.blade.is_empty()
         {
-            let f = (a.tick as usize).min(data.blade.len() - 1);
             let turn = Quat::from_rotation_y(m.follower.yaw);
             let at = Vec3::from_array(m.follower.position);
-            for (w, &(start, end, atkp, group)) in data.hits.iter().enumerate() {
-                let Some(list) = kind.spheres.get(&group) else {
-                    continue;
-                };
-                if a.tick < start || a.tick > end {
-                    continue;
-                }
+            for (w, atkp, list) in kind.open_windows(data, a.tick) {
                 party_volumes.push(OutVolume {
                     member: index,
-                    key: KEY_BASE | (index as u64) << 48 | m.started << 4 | w as u64,
+                    key: KEY_BASE | (index as u64) << 48 | m.started << 4 | w,
                     atkp,
                     sub: 0,
                     spheres: list
                         .iter()
-                        .map(|&(offset, radius)| {
-                            (
-                                at + turn * data.blade[f].transform_point3(offset),
-                                radius,
-                                radius,
-                                None,
-                            )
-                        })
+                        .map(|&(c, radius)| (at + turn * c, radius, radius, None))
                         .collect(),
                     moving: None,
                     stats: attacker(&kind),
@@ -2494,22 +2642,15 @@ pub fn tick(game: &mut Game, tick: u64) {
         let Some(data) = kind.motions.get(&a.motion) else {
             continue;
         };
-        if !rt.enabled || !rt.enemy.targetable() || data.blade.is_empty() {
+        if !rt.enabled || !rt.enemy.targetable() {
             continue;
         }
-        let f = (a.tick as usize).min(data.blade.len() - 1);
         let turn = Quat::from_rotation_y(m.follower.yaw);
         let at = Vec3::from_array(m.follower.position);
         let enemy_at = Vec3::from_array(rt.enemy.position);
         let bodies = enemy_bodies(rt);
-        for (w, &(start, end, atkp, group)) in data.hits.iter().enumerate() {
-            if a.tick < start || a.tick > end {
-                continue;
-            }
-            let Some(list) = kind.spheres.get(&group) else {
-                continue;
-            };
-            let key = KEY_BASE | (index as u64) << 48 | m.started << 4 | w as u64;
+        for (w, atkp, list) in kind.open_windows(data, a.tick) {
+            let key = KEY_BASE | (index as u64) << 48 | m.started << 4 | w;
             rt.instance_seen.insert(key, tick);
             let (aid, grp) = *rt.instance_ids.entry(key).or_insert_with(|| {
                 (
@@ -2521,8 +2662,8 @@ pub fn tick(game: &mut Game, tick: u64) {
                 continue;
             }
             let mut hit = None;
-            for &(offset, radius) in list {
-                let c = at + turn * data.blade[f].transform_point3(offset);
+            for &(local, radius) in &list {
+                let c = at + turn * local;
                 if let Some(&(b, r, high)) = bodies.iter().find(|(b, r, _)| {
                     combat::spheres_overlap(c.to_array(), radius, b.to_array(), *r)
                 }) {

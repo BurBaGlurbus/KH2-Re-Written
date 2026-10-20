@@ -3708,6 +3708,12 @@ fn load(
                                     .read(&format!(
                                         "voice/us/battle/{voice_world}0_{who}.win32.scd"
                                     ))
+                                    .or_else(|_| {
+                                        library.read(&format!(
+                                            "voice/us/battle/{}0_{who}.win32.scd",
+                                            member.home
+                                        ))
+                                    })
                                     .ok()
                                     .and_then(|bytes| banks.insert(bytes).ok())
                                     .and_then(|bank| {

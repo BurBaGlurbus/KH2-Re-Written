@@ -64,6 +64,8 @@ struct Surroundings<'a, W: World> {
     target: Option<Vec3>,
     /// Goofy's hand bone in model space this tick.
     hand: Mat4,
+    /// The member's action records (`trap_friend_get_action_param`).
+    records: &'static [player::party_members::Record],
 }
 
 impl<W: World> Env for Surroundings<'_, W> {
@@ -78,6 +80,15 @@ impl<W: World> Env for Surroundings<'_, W> {
     }
     fn target_position(&self, id: u32) -> Option<Vec3> {
         (id == ENEMY).then_some(self.target).flatten()
+    }
+    fn action_param(&self, object: u32, id: i32) -> Option<[u32; 32]> {
+        if object != GOOFY {
+            return None;
+        }
+        self.records
+            .iter()
+            .find(|r| i32::from(r.id) == id)
+            .map(|r| r.raw_words())
     }
     fn pick_target(&self, _kind: i32, _from: Vec3) -> Option<u32> {
         self.target.map(|_| ENEMY)
@@ -152,6 +163,7 @@ pub struct Blade {
     world: EnemyWorld,
     goofy: Object,
     clips: Arc<BladeClips>,
+    records: &'static [player::party_members::Record],
 }
 
 /// What the act starts from: Goofy's place and body, and the enemy's centre.
@@ -161,6 +173,7 @@ pub struct Start {
     pub stats: player::combat::TargetStats,
     pub sstm: player::actor_physics::Sstm,
     pub target: Option<Vec3>,
+    pub records: &'static [player::party_members::Record],
 }
 
 impl Blade {
@@ -178,10 +191,13 @@ impl Blade {
             stats,
             sstm,
             target,
+            records,
         } = from;
         let mut world = EnemyWorld::default();
         world.tolerate_missing = true;
         let mut sys = Sysobj::new(GOOFY, position, yaw, stats, sstm);
+        // A friend, not of the enemy class (+0x6c8 bit 4).
+        sys.class_flags &= !enemy::sysobj::class_flag::ENEMY;
         sys.weapons = vec![SHIELD];
         sys.target = Target {
             id: ENEMY,
@@ -189,6 +205,8 @@ impl Blade {
             ..Target::default()
         };
         let mut shield = Object::bare(SHIELD);
+        // The member's weapon is no enemy either: a search must not pick it.
+        shield.sys.class_flags &= !enemy::sysobj::class_flag::ENEMY;
         shield.sys.position = position;
         shield.sys.yaw = yaw;
         shield.sys.attached = Some(enemy::sysobj::Attach {
@@ -209,6 +227,7 @@ impl Blade {
             player: position,
             target,
             hand: Mat4::IDENTITY,
+            records,
         };
         let mut goofy = Object::spawn(&mut world, &env, GOOFY, payload, sys)
             .map_err(|e| format!("member script rejected: {e:?}"))?;
@@ -218,6 +237,7 @@ impl Blade {
             world,
             goofy,
             clips,
+            records,
         })
     }
 
@@ -234,16 +254,27 @@ impl Blade {
             player,
             target,
             hand,
+            records: self.records,
         };
+        // The enemy stands where the room's is; while that cannot be
+        // targeted (sinking, appearing) a search does not find it either.
         if let Some(e) = self
             .world
             .objects
             .get_mut(ENEMY as usize)
             .and_then(|o| o.as_mut())
-            && let Some(t) = target
         {
-            e.sys.position = t;
+            if let Some(t) = target {
+                e.sys.position = t;
+            }
+            e.sys.left = target.is_none();
         }
+        // The member's think runs first and copies its wish over the
+        // movement request (obj+0x10/+0x1c; the end of FUN_1401b53b0). While
+        // an act runs the wish is empty (FUN_1401b15f0), so a request the
+        // script made lasts only until the next tick.
+        self.goofy.sys.move_direction = [0.; 3];
+        self.goofy.sys.move_speed = 0.;
         self.goofy.tick(&mut self.world, &env);
         // The shield is an object of its own: it plays its motion and the
         // second movement request (+0xa58 / +0xa64) carries it.
@@ -327,6 +358,7 @@ impl Blade {
             player: self.goofy.sys.position,
             target,
             hand: Mat4::IDENTITY,
+            records: self.records,
         };
         self.goofy
             .run_hit_callback(&mut self.world, &env, callback, object_handle(ENEMY));

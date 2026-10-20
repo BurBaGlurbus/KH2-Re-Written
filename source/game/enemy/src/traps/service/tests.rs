@@ -194,3 +194,61 @@ fn enemy_each_walks_only_the_enemy_class() {
     assert_eq!(crate::world::object_from_handle(first.value), Some(1));
     assert_eq!(call(&mut world, &mut me, &mut f, each, &[first]).value, 0);
 }
+
+/// A host whose friend has one action record (id 0x28, motion 151).
+struct Records;
+
+impl crate::env::Env for Records {
+    fn floor(&self, _: f32, _: f32, _: f32) -> Option<f32> {
+        Some(0.)
+    }
+    fn clips(&self, _: u32) -> &dyn crate::env::Clips {
+        crate::env::Env::clips(&NullEnv, 0)
+    }
+    fn player_position(&self) -> crate::sysobj::Vec3 {
+        [0.; 3]
+    }
+    fn target_position(&self, _: u32) -> Option<crate::sysobj::Vec3> {
+        None
+    }
+    fn action_param(&self, object: u32, id: i32) -> Option<[u32; 32]> {
+        (object == 1 && id == 0x28).then(|| {
+            let mut w = [0; 32];
+            w[0] = 0x28;
+            w[1] = 151;
+            w[8] = 1.5f32.to_bits();
+            w
+        })
+    }
+}
+
+#[test]
+fn an_action_param_is_the_hosts_record_in_engine_memory() {
+    let mut world = world_with(&[0.]);
+    let mut me = Object::bare(0);
+    let mut f = frame();
+    let ai = ai_object(&mut f, 0, 1);
+    let trap = lookup(10, 35).unwrap();
+    let mut run = |id: i32| {
+        let mut slots = [Slot::default(); 16];
+        slots[0] = Slot::address(ai);
+        slots[1] = Slot::int(id);
+        let mut memory = Memory::new(&mut f.inst, &mut f.th);
+        let mut ctx = Ctx {
+            world: &mut world,
+            me: &mut me,
+            env: &Records,
+        };
+        trap(&mut ctx, &mut memory, &mut slots).unwrap();
+        slots[0].value
+    };
+    let record = run(0x28);
+    assert_ne!(record, 0);
+    // The same record comes back at the same place.
+    assert_eq!(run(0x28), record);
+    assert_eq!(run(0x29), 0);
+    assert_eq!(world.static_read(record), Some(0x28));
+    assert_eq!(world.static_read(record + 4), Some(151));
+    assert_eq!(world.static_read(record + 0x20), Some(1.5f32.to_bits()));
+    assert_eq!(world.static_read(record + 0x7c), Some(0));
+}

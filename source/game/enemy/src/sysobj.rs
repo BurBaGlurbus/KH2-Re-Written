@@ -762,12 +762,14 @@ impl Sysobj {
             }
             self.dispatch_frame_events(clips);
             // FUN_1403c6740: a clock that reached the end with a motion queued
-            // behind it (`trap_sysobj_motion_push`) starts that motion now.
+            // behind it (`trap_sysobj_motion_push`) starts that motion now, and
+            // the end bit is set after the start (`motion_is_end` sees it).
             if ended
                 && !self.motion_queue.is_empty()
                 && let (slot, blend) = self.motion_queue.remove(0)
                 && self.motion_start(slot, blend, clips)
             {
+                self.motion.flags.word |= motion::flag::ENDED;
                 self.dispatch_ranges(clips);
                 return;
             }

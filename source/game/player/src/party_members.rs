@@ -186,6 +186,27 @@ pub struct Record {
     pub urgent: Urgent,
 }
 
+impl Record {
+    /// The record as the executable keeps it (0x80 bytes, the words a script
+    /// reads through `trap_friend_get_action_param`): id, motion, cost, the
+    /// distance and height windows (+0x10..+0x1c), the jump offset (+0x20)
+    /// and the Cure's HP share (+0x3c). The flags word (+0xc) is not kept
+    /// here and reads 0.
+    pub fn raw_words(&self) -> [u32; 32] {
+        let mut w = [0; 32];
+        w[0] = u32::from(self.id);
+        w[1] = u32::from(self.motion);
+        w[2] = u32::from(self.cost);
+        w[4] = self.near.to_bits();
+        w[5] = self.far.to_bits();
+        w[6] = self.low.to_bits();
+        w[7] = self.high.to_bits();
+        w[8] = self.jump.to_bits();
+        w[15] = self.heal_below.to_bits();
+        w
+    }
+}
+
 const fn ground(id: u8, motion: u16, far: f32) -> Record {
     Record {
         id,
@@ -795,9 +816,15 @@ impl Follower {
         if to[0].hypot(to[1]) > 1e-3 {
             self.yaw = to[0].atan2(to[1]);
         }
+        // An act starts no motion of its own (FUN_1401cc650): its script
+        // reads the record's motion (`trap_friend_get_action_param`).
+        let motion = match r.spell {
+            Some(Spell::Act(_)) => party_motion::IDLE,
+            _ => r.motion,
+        };
         let mut attack = Attack {
             record: r.id,
-            motion: r.motion,
+            motion,
             tick: 0,
             spell: r.spell,
             heal,
@@ -1148,6 +1175,11 @@ impl Follower {
             if a.spell.is_some_and(|s| s.act().is_some()) {
                 // The act's script plays the motions and carries the member.
                 if let Some(s) = scene.scripted {
+                    // The engine's queue, as it stands now: an act often
+                    // queues its last motion's follower as it ends.
+                    if self.act_serial == Some(s.serial) && self.ctl.motion == s.motion {
+                        self.ctl.set_queue(s.queue.into_iter().flatten());
+                    }
                     self.position = s.position;
                     self.yaw = s.yaw;
                     a.motion = s.motion;

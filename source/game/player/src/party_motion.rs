@@ -263,6 +263,15 @@ impl Ctl {
         self.push(motion, blend, 0.);
     }
 
+    /// Replaces the queue (a host whose motions another controller plays
+    /// keeps the same queue as it).
+    pub fn set_queue(&mut self, queue: impl IntoIterator<Item = (u16, f32)>) {
+        self.queued = 0;
+        for (motion, blend) in queue {
+            self.push(motion, blend, 0.);
+        }
+    }
+
     /// The motions queued, in order.
     pub fn queued(&self) -> impl Iterator<Item = u16> + '_ {
         self.queue[..self.queued as usize].iter().map(|q| q.0)
