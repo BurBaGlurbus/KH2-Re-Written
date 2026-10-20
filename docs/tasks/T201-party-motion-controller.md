@@ -171,6 +171,10 @@ Per member (tour `--party-anim-tour` with `KH2RW_PARTY`):
   motion of their record (151, 152, 181, 182) and throw his disc (ATKP 627 ×27); `overflow`
   (191, ATKP 1527) ends; nine acts done. Before, every swing started motion 0 and waited
   forever for a frame trigger it never reached (the action-param trap returned nothing).
+- Riku (`P_EH000`, runs `roster-r4`, `roster-r7`): loads through his SKLT row (found by the
+  entry's skeleton byte; there is no row 13); ground swings 151/152 land (ATKP 1494-1497),
+  the ordered `cure` act runs and ends. His air swings 181/182 were not chosen (the Shadow
+  stays on the floor).
 
 ## Checks
 
