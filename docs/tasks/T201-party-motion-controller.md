@@ -167,6 +167,10 @@ Per member (tour `--party-anim-tour` with `KH2RW_PARTY`):
 - Jack Skellington (`P_NM000`, run `roster-r7`): no hand bone; `slidingfire` lands (ATKP
   1178), `airthunder` and `backstepblizzard` (which ends in the air; the member falls and
   lands) play and end with no hit counted (open); five acts done.
+- Tron (`P_TR000`, runs `roster-r4`, `roster-r7`): his four swings are acts that start the
+  motion of their record (151, 152, 181, 182) and throw his disc (ATKP 627 ×27); `overflow`
+  (191, ATKP 1527) ends; nine acts done. Before, every swing started motion 0 and waited
+  forever for a frame trigger it never reached (the action-param trap returned nothing).
 
 ## Checks
 
