@@ -161,6 +161,9 @@ Per member (tour `--party-anim-tour` with `KH2RW_PARTY`):
 - Ping (`P_MU010`, runs `roster-r6`, `roster-r7`): Mulan's level rows (character 15 reads 6,
   `FUN_1403e60c0`) and her sword `W_MU000` (his WENT set); attacks 151-153 land (ATKP 369,
   385); no specials (his table has none). Before, he had no PLRP row and no weapon spheres.
+- Jack Sparrow (`P_CA000`, run `roster-r7`): `shadowsnipe` fires its shots from range (192
+  repeated, ATKP 1172 ×14), `slash` dashes through the Shadow and on (191, ATKP 1171),
+  `bonecrusher` (193 ×3) plays and ends with no hit counted in the run (open); six acts done.
 
 ## Checks
 
