@@ -502,6 +502,9 @@ pub struct Follower {
     hop: Option<Hop>,
     /// The engine's motion start the controller follows during an act.
     act_serial: Option<u64>,
+    /// The act's last frame when it ended on a motion it had just started
+    /// (the Bash's 193): `animate` still starts it.
+    act_tail: Option<Scripted>,
 }
 
 fn wrap(a: f32) -> f32 {
@@ -593,6 +596,7 @@ impl Follower {
             last_action: false,
             hop: None,
             act_serial: None,
+            act_tail: None,
         }
     }
 
@@ -1188,6 +1192,9 @@ impl Follower {
                     self.attack = (!s.done).then_some(a);
                     if s.done {
                         self.tick = 0;
+                        if self.act_serial != Some(s.serial) {
+                            self.act_tail = Some(s);
+                        }
                     }
                 } else {
                     self.attack = Some(Attack { tick: 0, ..a });
@@ -1496,6 +1503,7 @@ impl Follower {
         };
         let field = !self.battle_stance;
         let on_ground = !self.airborne(scene.world);
+        let tail = self.act_tail.take();
         if let Some(r) = self.request.take() {
             if r.change {
                 self.ctl.change(r.motion, r.blend, field, clips);
@@ -1522,6 +1530,14 @@ impl Follower {
                 self.ctl.queue(m, b);
             }
             self.attack_serial = Some(self.ctl.serial);
+        } else if let Some(s) = tail {
+            // The act ended on the tick it started its last motion: that
+            // motion and its queue still play.
+            self.act_serial = Some(s.serial);
+            self.ctl.start(s.motion, s.blend, field, clips);
+            for (m, b) in s.queue.into_iter().flatten() {
+                self.ctl.queue(m, b);
+            }
         } else if self.attack.is_none()
             && self.reaction.is_none()
             && self.air.is_none()

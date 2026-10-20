@@ -233,7 +233,8 @@ fn a_motion_queued_behind_the_playing_one_starts_when_its_clock_ends() {
     assert_eq!(s.motion.slot, 193);
     assert_eq!(s.motion.tick, 0);
     assert!(s.motion_queue.is_empty());
-    assert!(!s.motion_ended());
+    // FUN_1403c6740 sets the end bit after starting the queued motion.
+    assert!(s.motion_ended());
 }
 
 /// Run a trap on object 0 (a bare object) whose AI struct is at work word 0
