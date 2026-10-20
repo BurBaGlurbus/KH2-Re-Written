@@ -195,6 +195,18 @@ Per member (tour `--party-anim-tour` with `KH2RW_PARTY`):
   blend shows at 3/8 the tick it starts) and the unblended starts the exe makes.
 - `--party-hit-tour` run `hit1` (regression of T186): every case completes as in its earlier
   runs; the timer revive lands on the same tick.
+- Roster tours `roster-r1` … `roster-r8` (`KH2RW_PARTY=<guest>,P_EX020`): the per-member lines
+  above. `roster-r7` and `roster-r8` re-ran Auron and Goofy with Donald after the act fixes:
+  Auron's `yukizakura` lands as in `auron5` (the burst of its seven elements one tick after
+  the act, a stale trigger scan in `auron5`, is gone); Goofy's Bash plays 192 and its catch
+  193 (after a fix: the act ends on the tick it starts 193) and its shield hits land.
+- `--party-hit-tour` run `hit2` after the guest work: cases 0-17 (casts, hits, both KOs, the
+  timer revive, Cure, the shield, reflect) match `hit1` tick for tick; the items, Bash, air
+  and fight cases all complete, 40-180 ticks earlier; in the air case Donald first makes his
+  idle hop (new since `hit1`), then the same air attack to the same height; all 32 cases.
+- After the guest work: `cargo fmt`, `cargo clippy` PASS; `cargo test --workspace`: only the
+  two `traps::weapon` tests fail (as on the base); one engine test that expected the end bit
+  cleared after a queued start was changed to the executable's order (`FUN_1403c6740`).
 - Not compared against a capture of the installed game: no frame or timing here is measured
   against KH2FM running.
 
@@ -202,19 +214,25 @@ Per member (tour `--party-anim-tour` with `KH2RW_PARTY`):
 
 - The IK chains' own blend (`FUN_1401c57b0`) is not reproduced; their joints use the axis mix.
 - The formation table `DAT_14071d760` is filled at run time; the slot offsets stay the
-  room's values. The AI's wait commands (entries 0 and 1) and the idle hop are not built.
+  room's values.
 - `FUN_14040d7f0` (blend forced off) and the controller's `+0x168` bit 0 (blend allowed) were
   not traced; blends are taken as allowed.
 - Frame triggers 2 (footsteps, `FUN_1403b4fc0`), 8 (weapon sounds) and the members' own
   sound banks are not played: sound, not this task.
 - The Bash's projectile path (T186) keeps Goofy throwing for long stretches.
+- The guests' hits are counted on the tour's Shadow only; several acts land no counted hit in
+  the runs (Mushu Fire, Bonecrusher, Air Thunder, Backstep Blizzard) and Simba's rush strikes
+  119 times: neither is compared with the game. A record's flags word (+0xc) is not kept, so
+  the action-param trap returns it as 0. The weapon is the first entry of the WENT set for
+  every member: equipment is not modelled.
 
 ## Verdict
 
 PARTIAL. The controller, blends, stances, clip timing and the members' effects follow the
-executable; nothing is compared against the running game yet.
+executable for Donald, Goofy and every guest (Auron, Mulan, Ping, Aladdin, Jack Sparrow,
+Beast, Jack Skellington, Simba, Tron, Riku); nothing is compared against the running game yet.
 
 ## Next
 
-The remaining party members (the world party rows of `memt` and their personalities), each
-the same way; then the IK-chain blend and a capture comparison.
+The open hits above (the acts with no counted hit), the IK-chain blend and a capture
+comparison against the installed game.
