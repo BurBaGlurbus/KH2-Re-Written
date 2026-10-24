@@ -988,6 +988,7 @@ mod tests {
                     quads: &mut quads,
                     model_draws: &mut Vec::new(),
                     triangles: &mut Vec::new(),
+                    refractions: &mut Vec::new(),
                     screen: crate::DEFAULT_SCREEN_SCALE,
                     heads: Vec::new(),
                     births: Vec::new(),
