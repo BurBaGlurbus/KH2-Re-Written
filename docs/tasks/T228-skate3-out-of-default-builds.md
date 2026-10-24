@@ -1,9 +1,10 @@
-# T228 — Plain builds leave out the Skate 3 crates; the scripts leave one executable
+# T228 — Plain builds leave out the Skate 3 crates; one executable; the image viewer row works
 
 Owner Claude, 2026-10-24, requested by burba in the project chat ("building for skate 3 should
 include things that need skate 3 so longer compile time, but without it should in theory be
 faster please fix this", then "get rid of all the other exes that show up when compiling the
-only exe that should be there after compilation is the kh2rw launcher"). Gate: none (build tooling; no gameplay gate is advanced).
+only exe that should be there after compilation is the kh2rw launcher", then "fix it" about the
+image viewer row). Gate: none (build tooling; no gameplay gate is advanced).
 Prerequisites: T101, T103, T205. Build identity: branch `build/skate3-optional-deps` cut from
 `origin/main` 33ce82e; package 0.1.2, Rust 1.99.0 Windows MSVC, 8 logical CPUs. Source: not read;
 no gameplay session was run apart from the smoke run.
@@ -81,6 +82,39 @@ Part 2 results:
 - The viewers were not clicked in the launcher window; the call above is the one
   `start_viewer` makes.
 
+## Part 3: the launcher's viewer rows
+
+- The launcher listed an image viewer only for a selection with `inspect_images`, a field no
+  selection reader has; the image viewer requires `inspect_hd_images`. It also listed only
+  hand-made `<who>-selection-<n>.json` files, so the selections it makes itself
+  (`auto-<who>-selection.json`) never became rows: a new data folder had no viewers at all.
+- Now `install::viewers` takes `inspect_hd_images` for the image viewer and lists both name
+  forms; a hand-made selection wins over a made one with the same label.
+- `TEST_CONFIGS` gains `title-selection`: the title screen's `menu/us/title.2ld` with
+  `inspect_hd_images`, made as `auto-title-selection.json` and listed as "Image viewer: Title
+  screen". On this install it holds 12 HD images (checked with a throwaway reader before the
+  change; the same check found 1 for `zz0command.2dd`, 3 for `fontimage.bar`, 6 for Sora's
+  model).
+- When a folder is bound (`checked`), the launcher makes the configs and viewer selections if
+  this build's are missing (`install::make_configs`) and refreshes the viewer list, so the rows
+  are there before any test has run.
+- Tests: `viewers_come_from_model_and_image_selections` (both name forms, the old field ignored,
+  the hand-made one wins) and `made_selections_are_viewers_the_viewers_accept` (every made
+  selection is a row, and the title selection has the fields `read_selected_images` requires).
+
+Part 3 results:
+
+- fmt, clippy (no warnings), `cargo test --locked` (992 passed, 1 ignored), smoke, and clippy and
+  test with `--workspace --features main/skate3` (no warnings; 1014 passed, 1 ignored): PASS.
+  `build-release.bat`: exit 0, `target/release` holds only `KH2RW Launcher.exe`.
+- The release launcher, started without arguments on the `%LOCALAPPDATA%` data folder, made
+  `auto-title-selection.json` (with the four model selections) within a second of binding the
+  saved folder. Its window was not clicked (screen control was declined).
+- The image viewer run with that selection as `start_viewer` runs it, plus `--tour`, a private
+  capture folder and `--frames 6000`: fresh full scan, 12 images admitted, 72 of 72 captures,
+  exit 0 (`run3/`, `viewer/title-*.jsonl`, `viewer/title-captures/`). The first capture shows the
+  title atlas (cursor hand, panels, swirl) over the checker background. Captures stay private.
+
 ## Measurements (seconds, clean unless stated)
 
 | Build | Before | After |
@@ -125,15 +159,14 @@ shared, so single numbers carry noise of that order.
   and not changed here.
 - `--workspace` still includes the Skate 3 crates (Cargo's rule); the docs no longer use it for the
   default checks.
-- The launcher lists an image viewer for a selection with `inspect_images`, but the image viewer
-  requires `inspect_hd_images`; found, not changed here.
 - GitHub Actions does not run for this repository; the CI file was updated but not exercised.
 
 ## Verdict and next task
 
 PASS for the build change: builds that do not ask for `skate3` no longer compile the Skate 3
 crates or a second Bevy stack, and `skate3` builds still include them; each build script leaves
-only `KH2RW Launcher.exe`, with the viewers inside it. No gameplay gate is affected.
+only `KH2RW Launcher.exe`, with the viewers inside it; the launcher makes and lists a working
+image viewer (the title screen). No gameplay gate is affected.
 
 Next: none required; if the default launcher build should be faster still, profile `main` and the
 Bevy feature list with `-Timings`.

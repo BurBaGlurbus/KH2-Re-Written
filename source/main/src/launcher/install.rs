@@ -660,7 +660,9 @@ pub struct Viewer {
     pub selection: PathBuf,
 }
 
-/// Viewers for the model and image selections in `dir`, sorted by label.
+/// Viewers for the model and image selections in `dir`, sorted by label:
+/// the made `auto-<who>-selection.json` files and a developer's own
+/// `<who>-selection-<n>.json`, which wins over a made one of the same name.
 pub fn viewers(dir: &Path) -> Vec<Viewer> {
     let mut list: Vec<Viewer> = fs::read_dir(dir)
         .into_iter()
@@ -669,13 +671,20 @@ pub fn viewers(dir: &Path) -> Vec<Viewer> {
         .map(|e| e.path())
         .filter_map(|path| {
             let name = path.file_name()?.to_str()?.to_owned();
-            let (who, _) = name.strip_suffix(".json")?.split_once("-selection-")?;
+            let stem = name.strip_suffix(".json")?;
+            let who = match stem
+                .strip_prefix("auto-")
+                .and_then(|s| s.strip_suffix("-selection"))
+            {
+                Some(who) => who,
+                None => stem.split_once("-selection-")?.0,
+            };
             let v: serde_json::Value =
                 serde_json::from_slice(&read_limited(&path, CONFIG_LIMIT).ok()?).ok()?;
             let flag = |k: &str| v.get(k).and_then(serde_json::Value::as_bool) == Some(true);
             let (kind, program) = if flag("inspect_model_geometry") {
                 ("Model viewer", "model_inspector")
-            } else if flag("inspect_images") {
+            } else if flag("inspect_hd_images") {
                 ("Image viewer", "image_inspector")
             } else {
                 return None;
@@ -684,6 +693,7 @@ pub fn viewers(dir: &Path) -> Vec<Viewer> {
             let what = match who {
                 "actor" => "Sora".to_owned(),
                 "weapon" => "Kingdom Key".to_owned(),
+                "title" => "Title screen".to_owned(),
                 other => {
                     let mut c = other.chars();
                     c.next()
@@ -698,8 +708,20 @@ pub fn viewers(dir: &Path) -> Vec<Viewer> {
             })
         })
         .collect();
-    list.sort_by(|a, b| a.label.cmp(&b.label));
+    let made = |v: &Viewer| {
+        v.selection
+            .file_name()
+            .is_some_and(|n| n.to_string_lossy().starts_with("auto-"))
+    };
+    list.sort_by(|a, b| a.label.cmp(&b.label).then(made(a).cmp(&made(b))));
+    list.dedup_by(|a, b| a.label == b.label);
     list
+}
+
+/// Makes the configs and viewer selections for `b` from the install, unless
+/// this build's are already in `dir`.
+pub fn make_configs(dir: &Path, b: &Bound) -> Result<(), String> {
+    made_config(dir, b, "title-selection").map(|_| ())
 }
 
 /// A new private log path for a viewer: outside any checkout, under
@@ -1081,25 +1103,75 @@ mod tests {
         );
         write(
             "tex-selection-01.json",
+            serde_json::json!({"inspect_hd_images": true}),
+        );
+        // Not a selection field the image viewer reads.
+        write(
+            "old-selection-01.json",
             serde_json::json!({"inspect_images": true}),
         );
         write("other-selection-01.json", serde_json::json!({}));
+        // A made selection; the developer's own Sora selection wins.
+        write(
+            "auto-actor-selection.json",
+            serde_json::json!({"inspect_model_geometry": true}),
+        );
+        write(
+            "auto-title-selection.json",
+            serde_json::json!({"inspect_hd_images": true}),
+        );
         write(
             "launch.json",
             serde_json::json!({"inspect_model_geometry": true}),
         );
-        let labels: Vec<_> = viewers(&f.0)
-            .into_iter()
-            .map(|v| (v.label, v.program))
-            .collect();
+        let list = viewers(&f.0);
+        let labels: Vec<_> = list.iter().map(|v| (v.label.as_str(), v.program)).collect();
         assert_eq!(
             labels,
             vec![
-                ("Image viewer: Tex".to_owned(), "image_inspector"),
-                ("Model viewer: Shadow".to_owned(), "model_inspector"),
-                ("Model viewer: Sora".to_owned(), "model_inspector"),
+                ("Image viewer: Tex", "image_inspector"),
+                ("Image viewer: Title screen", "image_inspector"),
+                ("Model viewer: Shadow", "model_inspector"),
+                ("Model viewer: Sora", "model_inspector"),
             ]
         );
+        assert!(list[3].selection.ends_with("actor-selection-01.json"));
+    }
+
+    #[test]
+    fn made_selections_are_viewers_the_viewers_accept() {
+        let f = Fixture::new();
+        let find = |name: &str| {
+            Some((
+                "Image/dt/kh2_first.hed".to_owned(),
+                name.len(),
+                data::path_lookup::md5(name.as_bytes()),
+            ))
+        };
+        write_made_configs(&f.0, "synthetic-identity", &find).unwrap();
+        let list = viewers(&f.0);
+        let labels: Vec<_> = list.iter().map(|v| (v.label.as_str(), v.program)).collect();
+        assert_eq!(
+            labels,
+            vec![
+                ("Image viewer: Title screen", "image_inspector"),
+                ("Model viewer: Axel", "model_inspector"),
+                ("Model viewer: Kingdom Key", "model_inspector"),
+                ("Model viewer: Shadow", "model_inspector"),
+                ("Model viewer: Sora", "model_inspector"),
+            ]
+        );
+        // The fields the image viewer's selection reader requires
+        // (`data::inspection::read_selected_images`).
+        let title: serde_json::Value =
+            serde_json::from_slice(&fs::read(&list[0].selection).unwrap()).unwrap();
+        assert_eq!(title["schema_version"], 1);
+        assert_eq!(title["inspect_hd_images"], true);
+        assert_eq!(title["source_content_identity"], "synthetic-identity");
+        let item = &title["selections"][0];
+        assert!(item["index"].as_str().unwrap().ends_with(".hed"));
+        let hash: Vec<u8> = serde_json::from_value(item["name_hash"].clone()).unwrap();
+        assert_eq!(hash, data::path_lookup::md5(b"menu/us/title.2ld"));
     }
 
     #[test]

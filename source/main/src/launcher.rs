@@ -767,6 +767,12 @@ fn checked(l: &mut Launcher, result: Result<Bound, String>, folder: &Path) {
     if let Err(e) = install::save_settings(&l.dir, &l.settings) {
         eprintln!("Launcher settings not saved: {e}");
     }
+    // The viewers' selections are made from the install with the tests'
+    // configs, so a new data folder lists them too.
+    if let Err(e) = install::make_configs(&l.dir, &b) {
+        eprintln!("Viewer selections not made: {e}");
+    }
+    l.viewers = install::viewers(&l.dir);
     l.go(Screen::Tests(b));
 }
 
