@@ -17,6 +17,27 @@ members = [
     "source/extras/skateboard/engine/skate-disc",
     "source/extras/skateboard/engine/skate-sim",
 ]
+# Plain `cargo build`, `cargo test` and `cargo clippy` leave out the optional
+# Skate 3 crates. Their dependencies turn on extra features in crates Bevy
+# shares (profiling, downcast-rs, approx, ...), so building them beside the
+# launcher compiles a second Bevy stack. `--features main/skate3` (or
+# `--workspace`) brings them back.
+default-members = [
+    "source/main",
+    "source/visual",
+    "source/game/player",
+    "source/game/enemy",
+    "source/game/area",
+    "source/game/collision",
+    "source/game/event",
+    "source/game/save",
+    "source/game/world_map",
+    "source/visual/effect",
+    "source/audio",
+    "source/data",
+    "validation",
+    "source/extras/skateboard/source",
+]
 resolver = "3"
 
 [workspace.package]

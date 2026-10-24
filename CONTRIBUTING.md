@@ -68,13 +68,25 @@ Run these before each commit. Each must pass.
 
 ```powershell
 cargo fmt --all --check
-cargo clippy --workspace --all-targets --locked -- -D warnings
-cargo test --workspace --locked
-cargo build --workspace --locked
+cargo clippy --all-targets --locked -- -D warnings
+cargo test --locked
+cargo build --locked
 cargo run -p main --locked -- --frames 180
 ```
 
-The last command is the smoke run. Report a check you did not run as NOT RUN, not as passing.
+The last command is the smoke run. These commands build the workspace's default
+members, which leave out the optional Skate 3 crates
+(`source/extras/skateboard/engine`). Those crates turn on extra features in
+crates Bevy shares, so building them beside the launcher would compile Bevy a
+second time. When a change touches the `skate3` feature or the skateboard
+crates, also run:
+
+```powershell
+cargo clippy --workspace --features main/skate3 --all-targets --locked -- -D warnings
+cargo test --workspace --features main/skate3 --locked
+```
+
+They use the same dependency builds as `build-debug-skate3.bat`. Report a check you did not run as NOT RUN, not as passing.
 
 ## Finding and naming files
 

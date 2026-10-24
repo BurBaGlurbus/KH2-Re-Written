@@ -97,8 +97,8 @@ LLVM linker reduce build-output overhead; see
 [local build options and cleanup](CONTRIBUTING.md#local-builds-and-disk-use).
 
 ```powershell
-cargo build --workspace --locked
-cargo test --workspace --locked
+cargo build --locked
+cargo test --locked
 cargo run -p main --locked -- --frames 180
 ```
 
