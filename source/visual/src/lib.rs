@@ -2,6 +2,7 @@
 pub mod area_fog;
 pub mod controller;
 pub mod dialogue;
+pub mod effect_draw;
 pub mod effects;
 pub mod enemy_gauge;
 pub mod fade;

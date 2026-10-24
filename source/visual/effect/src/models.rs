@@ -134,7 +134,14 @@ pub(crate) fn draw(p: &Program, cursor: usize, part: &mut Part, ctx: &mut Ctx) {
         DRAW_MDL3 => {
             let u0 = use_val(ctx, p, 0);
             let b = (byte(ctx, cursor + 0xc) != 0).then(|| read_matrix(part, use_val(ctx, p, 2)));
+            // Key byte +0xd: a depth-only draw (FUN_1404c8660 → descriptor
+            // +0x80, FUN_1404dc760).
+            let depth_only = byte(ctx, cursor + 0xd) != 0;
+            let n = ctx.model_draws.len();
             push_draw(ctx, part, word(ctx, cursor + 4), u0, b, [0, 0], None);
+            if let Some(d) = ctx.model_draws.get_mut(n) {
+                d.depth_only = depth_only;
+            }
         }
         // FUN_1404c88c0: DrawMdl3 with its flags at +0xa..+0xe and the
         // draw-mode word +8 in place of the model's.
@@ -205,6 +212,7 @@ pub(crate) fn push_draw(
         rgba: std::array::from_fn(|i| part.u8(u0 + 8 + i)),
         scroll,
         mode,
+        depth_only: false,
     });
 }
 

@@ -1199,3 +1199,29 @@ fn a_full_particle_heap_makes_no_parts() {
     assert_eq!(open.heap_used() % 16, 0);
     assert_eq!(full.live_parts(), 0);
 }
+
+#[test]
+fn sprite_texture_coordinates_are_fractions_of_the_tex0_page() {
+    // One axis-aligned sprite in a 128 × 64 page (TW 7, TH 6): S, T, W, H
+    // are 12-bit fractions of the page (4096 = 1.0).
+    let mut b = vec![0u8; 0x60];
+    let put16 =
+        |b: &mut Vec<u8>, at: usize, v: i16| b[at..at + 2].copy_from_slice(&v.to_le_bytes());
+    put16(&mut b, 0x10, 0x20);
+    put16(&mut b, 0x22, 1);
+    b[0x24..0x28].copy_from_slice(&0x30i32.to_le_bytes());
+    let tex0: u64 = (7 << 26) | (6 << 30);
+    b[0x30..0x38].copy_from_slice(&tex0.to_le_bytes());
+    for (k, v) in [0i16, 0, 16, 16, 2048, 1024, 1024, 2048]
+        .into_iter()
+        .enumerate()
+    {
+        put16(&mut b, 0x40 + 2 * k, v);
+    }
+    b[0x50..0x58].copy_from_slice(&[0x80, 0x80, 0x80, 0x80, 0x48, 0, 0, 0]);
+    let q = crate::programs::sprite_quads(&b, 0, 0, &math::IDENTITY, [0x80; 4]);
+    assert_eq!(q.len(), 1);
+    assert_eq!(q[0].uv[0], [64., 16.]);
+    assert_eq!(q[0].uv[2], [96., 48.]);
+    assert_eq!(q[0].blend, 0x48);
+}

@@ -506,14 +506,7 @@ fn blend(attributes: u32) -> AlphaMode {
 
 /// An object's own effects: the PAX (BAR type 18) of its `obj/<name>.a.us`.
 fn read_object_pax(library: &mut Library, name: &str) -> Option<object_effect::Pax> {
-    let bytes = library.read(&format!("obj/{name}.a.us")).ok()?;
-    let table = bar::read_bar(&bytes).ok()?;
-    let e = table
-        .entries
-        .iter()
-        .find(|e| e.entry_type == 18 && e.size > 0)?;
-    let pax = bytes.get(e.offset as usize..e.offset as usize + e.size as usize)?;
-    object_effect::read_pax(pax).ok()
+    object_effect::read_file_pax(library, &format!("obj/{name}.a.us"))
 }
 
 /// An object's collision shapes (its BAR type-23 entry).
@@ -3380,10 +3373,7 @@ fn run(args: Vec<PathBuf>) -> Result<AppExit> {
             banks.insert(bytes)?;
         }
     }
-    let texcommon = library
-        .read("effect/texcommon.dpd")
-        .ok()
-        .and_then(|b| object_effect::read_dpd(&b).ok());
+    let texcommon = object_effect::read_dpd_file(&mut library, "effect/texcommon.dpd").ok();
     // The banks the widget motions' sound triggers name.
     let mut trigger_banks: Vec<u32> = wm
         .archives

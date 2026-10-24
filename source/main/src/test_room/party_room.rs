@@ -576,21 +576,8 @@ pub fn load(
         }
     }
     // The member's own effects and collision heights.
-    let pax = library
-        .read(&format!("obj/{name}.a.us"))
-        .ok()
-        .and_then(|bytes| {
-            let table = data::bar::read_bar(&bytes).ok()?;
-            let e = table
-                .entries
-                .iter()
-                .find(|e| e.entry_type == 18 && e.size > 0)?;
-            data::object_effect::read_pax(
-                bytes.get(e.offset as usize..e.offset as usize + e.size as usize)?,
-            )
-            .ok()
-        })
-        .map(Arc::new);
+    let pax =
+        data::object_effect::read_file_pax(library, &format!("obj/{name}.a.us")).map(Arc::new);
     let (mut body_lift, mut heal_lift) = (85f32, 105f32);
     if let Some(found) = library.find(&format!("obj/{name}.mdlx"))
         && let Ok(archive) = library.read_found(&found)

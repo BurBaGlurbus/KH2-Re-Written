@@ -11,44 +11,18 @@
 use super::ActorRuntime;
 use super::load::{EffectFiles, FrameTrigger};
 use ::effect::{Instance, ModelDraw, Quad, Rng, math::Mat};
-use bevy::{
-    asset::RenderAssetUsages,
-    image::{ImageAddressMode, ImageFilterMode, ImageSampler, ImageSamplerDescriptor},
-    prelude::*,
-    render::render_resource::{Extent3d, TextureDimension, TextureFormat},
-};
+use bevy::prelude::*;
 use data::{
     event_script::Command,
     object_effect::{self, Dpd, OmdHeader, OmdMesh, Pax},
 };
 use event::{Timeline, event_camera};
 use std::{collections::HashMap, sync::Arc};
+use visual::effect_draw::{Blend, TexKey, model_alpha, page_image};
 
-/// Selects a texture image: which DPD's buffers (own textures shadow the
-/// common ones by TBP) and the TEX0 fields the mesh names.
-#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
-struct TexKey {
-    dpd: usize,
-    tbp: u16,
-    cbp: u16,
-    tw: u8,
-    th: u8,
-}
-
-impl TexKey {
-    fn new(dpd: &Arc<Dpd>, tex0: u64) -> Self {
-        TexKey {
-            dpd: Arc::as_ptr(dpd) as usize,
-            tbp: (tex0 & 0x3fff) as u16,
-            cbp: ((tex0 >> 37) & 0x3fff) as u16,
-            tw: ((tex0 >> 26) & 0xf) as u8,
-            th: ((tex0 >> 30) & 0xf) as u8,
-        }
-    }
-    fn size(&self) -> [u32; 2] {
-        [1 << self.tw.min(10), 1 << self.th.min(10)]
-    }
-}
+/// An instance's draws of one kind with its DPD, PDATA texture mask and
+/// layer rank.
+type Drawn<T> = (Arc<Dpd>, [u8; 16], i8, Vec<T>);
 
 type ParsedModel = (OmdHeader, Vec<OmdMesh>);
 
@@ -62,7 +36,7 @@ struct Batch {
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 struct BatchKey {
     texture: Option<TexKey>,
-    additive: bool,
+    blend: Blend,
     repeat: bool,
     /// Draw layer rank (pppRyjMngFlag): negative behind, positive in front.
     layer: i8,
@@ -485,8 +459,8 @@ impl Fx {
                 r.instance.world = world;
             }
         }
-        let mut quads: Vec<(Arc<Dpd>, i8, Vec<Quad>)> = Vec::new();
-        let mut draws: Vec<(Arc<Dpd>, i8, Vec<ModelDraw>)> = Vec::new();
+        let mut quads: Vec<Drawn<Quad>> = Vec::new();
+        let mut draws: Vec<Drawn<ModelDraw>> = Vec::new();
         let mut finished = Vec::new();
         let ids: Vec<i16> = self.running.keys().copied().collect();
         let mut step_one = |r: &mut Running, id: i16, rng: &mut Rng| -> bool {
@@ -505,11 +479,12 @@ impl Fx {
             let complete = r.instance.unsupported.is_empty();
             let d = std::mem::take(&mut r.instance.model_draws);
             let layer = layer_rank(r.instance.layer());
+            let mask = r.instance.use_texture();
             if complete && !q.is_empty() {
-                quads.push((r.dpd.clone(), layer, q));
+                quads.push((r.dpd.clone(), mask, layer, q));
             }
             if complete && !d.is_empty() {
-                draws.push((r.dpd.clone(), layer, d));
+                draws.push((r.dpd.clone(), mask, layer, d));
             }
             r.instance.finished()
         };
@@ -532,15 +507,21 @@ impl Fx {
         }
         self.spawned_effects = alive;
         let scene = |p: [f32; 3]| to_scene.transform_point3(Vec3::from_array(p)).to_array();
-        for (dpd, layer, list) in quads {
+        for (dpd, mask, layer, list) in quads {
             for q in list {
-                let key = TexKey::new(&dpd, q.tex0);
+                let Some(key) = TexKey::pick(&dpd, &mask, self.common.as_ref(), q.tex0) else {
+                    continue;
+                };
                 let size = key.size();
+                let blend = Blend::of(q.blend);
+                if blend.alpha_mode().is_none() {
+                    continue;
+                }
                 let batch = self
                     .batches
                     .entry(BatchKey {
                         texture: Some(key),
-                        additive: q.blend == 0x48,
+                        blend,
                         repeat: true,
                         layer,
                     })
@@ -563,9 +544,9 @@ impl Fx {
                 }
             }
         }
-        for (dpd, layer, list) in draws {
+        for (dpd, mask, layer, list) in draws {
             for d in list {
-                self.model(&dpd, &d, layer, &scene);
+                self.model(&dpd, &mask, &d, layer, &scene);
             }
         }
     }
@@ -573,10 +554,15 @@ impl Fx {
     fn model(
         &mut self,
         dpd: &Arc<Dpd>,
+        mask: &[u8; 16],
         d: &ModelDraw,
         layer: i8,
         scene: &impl Fn([f32; 3]) -> [f32; 3],
     ) {
+        // A depth-only draw writes no colour.
+        if d.depth_only {
+            return;
+        }
         let cached = self
             .models
             .entry((Arc::as_ptr(dpd) as usize, d.model))
@@ -597,17 +583,23 @@ impl Fx {
             let p = ::effect::math::apply(&d.a, [v[0] as f32, v[1] as f32, v[2] as f32, 1.]);
             Some(scene([p[0], p[1], p[2]]))
         };
-        let additive = header.alpha == 0x48;
+        let blend = Blend::of(model_alpha(header.alpha, d.mode));
+        if blend.alpha_mode().is_none() {
+            return;
+        }
         let repeat = header.flags & 4 != 0;
         let part = d.rgba.map(|c| c as f32 / 128.);
         for mesh in meshes {
-            let texture = mesh.textured.then(|| TexKey::new(dpd, mesh.tex0));
+            let texture = mesh
+                .textured
+                .then(|| TexKey::pick(dpd, mask, self.common.as_ref(), mesh.tex0))
+                .flatten();
             let shift = texture.map_or(4, |t| t.tw as u32 + 4).min(31);
             let batch = self
                 .batches
                 .entry(BatchKey {
                     texture,
-                    additive,
+                    blend,
                     repeat,
                     layer,
                 })
@@ -645,76 +637,16 @@ impl Fx {
         if let Some(h) = self.images.get(&key) {
             return h.clone();
         }
-        let [w, h] = key.size();
-        let mut pixels = vec![0u8; (w * h * 4) as usize];
-        // The DPD whose pointer the key holds is a running instance's.
-        let own = self
+        // The DPD whose pointer the key holds is a running instance's, a
+        // loaded file's or the common one.
+        let image = self
             .running
             .values()
             .map(|r| &r.dpd)
             .chain(self.paxes.values().flat_map(|p| p.dpds.iter()))
+            .chain(self.common.as_ref())
             .find(|d| Arc::as_ptr(d) as usize == key.dpd)
-            .cloned();
-        let mut sources: Vec<&object_effect::DpdTexture> = Vec::new();
-        if let Some(d) = &own {
-            sources.extend(d.textures.iter().filter(|t| t.dbp == key.tbp));
-        }
-        if sources.is_empty()
-            && let Some(c) = &self.common
-        {
-            sources.extend(c.textures.iter().filter(|t| t.dbp == key.tbp));
-        }
-        // The CLUT is the mesh's own CBP: the buffer's images are all
-        // read through it, wherever their data was uploaded from.
-        let palette = own
-            .iter()
-            .map(|d| d.as_ref())
-            .chain(self.common.as_deref())
-            .flat_map(|d| d.textures.iter())
-            .find(|t| t.cbp == key.cbp)
-            .map(|t| t.palette.clone());
-        for t in sources {
-            let rgba =
-                object_effect::decode_psmt8(&t.indices, palette.as_deref().unwrap_or(&t.palette));
-            for row in 0..t.height {
-                let y = t.y as u32 + row;
-                if y >= h {
-                    break;
-                }
-                for col in 0..t.width {
-                    let x = t.x as u32 + col;
-                    if x >= w {
-                        break;
-                    }
-                    let s = ((row * t.width + col) * 4) as usize;
-                    let d = ((y * w + x) * 4) as usize;
-                    pixels[d..d + 4].copy_from_slice(&rgba[s..s + 4]);
-                }
-            }
-        }
-        let mut image = Image::new(
-            Extent3d {
-                width: w,
-                height: h,
-                depth_or_array_layers: 1,
-            },
-            TextureDimension::D2,
-            pixels,
-            TextureFormat::Rgba8UnormSrgb,
-            RenderAssetUsages::MAIN_WORLD | RenderAssetUsages::RENDER_WORLD,
-        );
-        let mode = if repeat {
-            ImageAddressMode::Repeat
-        } else {
-            ImageAddressMode::ClampToEdge
-        };
-        image.sampler = ImageSampler::Descriptor(ImageSamplerDescriptor {
-            address_mode_u: mode,
-            address_mode_v: mode,
-            mag_filter: ImageFilterMode::Linear,
-            min_filter: ImageFilterMode::Linear,
-            ..default()
-        });
+            .map_or_else(Image::default, |d| page_image(d, key, repeat));
         let handle = images.add(image);
         self.images.insert(key, handle.clone());
         handle
@@ -751,11 +683,7 @@ pub fn present(
                     unlit: true,
                     cull_mode: None,
                     depth_bias: key.layer as f32 * 500.,
-                    alpha_mode: if key.additive {
-                        AlphaMode::Add
-                    } else {
-                        AlphaMode::Blend
-                    },
+                    alpha_mode: key.blend.alpha_mode().unwrap_or(AlphaMode::Blend),
                     ..default()
                 });
                 fx.materials.insert(*key, m.clone());

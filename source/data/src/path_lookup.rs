@@ -147,6 +147,31 @@ impl Library {
         }
         Ok(original_payload::read_original_limited(&mut checked.reader, entry, limit)?.bytes)
     }
+
+    /// The remastered assets stored after `name`'s original bytes (the PC
+    /// textures that replace its PS2 images), in their declared order.
+    pub fn read_replacements(
+        &mut self,
+        name: &str,
+    ) -> Result<Vec<crate::replacement_payload::ReplacementSample>> {
+        let found = self
+            .find(name)
+            .ok_or_else(|| format!("{name} is not in the installed packages"))?;
+        let (_, checked) = self
+            .indexes
+            .iter_mut()
+            .find(|(i, _)| *i == found.index)
+            .ok_or("index not open")?;
+        let entry = checked
+            .inventory
+            .entries
+            .get(found.ordinal)
+            .ok_or("entry outside index")?;
+        Ok(crate::replacement_payload::read_all_replacements(
+            &mut checked.reader,
+            entry,
+        )?)
+    }
 }
 
 #[cfg(test)]

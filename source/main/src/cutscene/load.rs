@@ -252,15 +252,15 @@ pub fn load(source: &ProbeSource, id: &EventId) -> Result<Loaded> {
 
     let mut pax_files = Vec::new();
     for (id, name) in effect_files {
-        let bytes = library.read(&format!("event/effect/{name}.pax"))?;
-        pax_files.push((id, object_effect::read_pax(&bytes)?));
+        let pax = object_effect::read_pax_file(&mut library, &format!("event/effect/{name}.pax"))?;
+        pax_files.push((id, pax));
     }
     let paxes = EffectFiles {
         paxes: pax_files,
         triggers,
     };
-    let texcommon = match library.read("effect/texcommon.dpd") {
-        Ok(bytes) => Some(object_effect::read_dpd(&bytes)?),
+    let texcommon = match object_effect::read_dpd_file(&mut library, "effect/texcommon.dpd") {
+        Ok(dpd) => Some(dpd),
         Err(e) => {
             eprintln!("effect/texcommon.dpd unavailable: {e}");
             None

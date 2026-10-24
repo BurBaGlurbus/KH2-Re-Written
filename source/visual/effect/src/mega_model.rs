@@ -687,6 +687,7 @@ pub(crate) fn draw(p: &Program, cursor: usize, part: &mut Part, ctx: &mut Ctx) {
             rgba: [c(0), c(1), c(2), alpha.clamp(0, 0x7f) as u8],
             scroll: [cvtt(s.scroll[0] * 65536.), cvtt(s.scroll[1] * 65536.)],
             mode: None,
+            depth_only: false,
         });
     }
 }
