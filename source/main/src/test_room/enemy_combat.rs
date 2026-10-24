@@ -99,6 +99,14 @@ pub struct WorldShape {
     pub high: bool,
 }
 
+/// A battle actor's bones of this tick in model space, and the root
+/// translation its position already carries.
+#[derive(Clone, Debug, Default)]
+pub struct ActorBones {
+    pub matrices: std::sync::Arc<Vec<Mat4>>,
+    pub removed_root: Vec3,
+}
+
 pub struct ShapePose {
     /// REACTION shapes (kind 5, or 14 for a clashed attack's command) with
     /// their kind and argument (the command id for kind 5).
@@ -464,7 +472,10 @@ impl EnemyCombat {
     }
 
     /// Evaluate only the active pose. Root policy must match the mesh renderer;
-    /// no full animation set's matrix/vertex frames are retained here.
+    /// no full animation set's matrix/vertex frames are retained here. Returns
+    /// the pose's shapes and the model-space bone matrices they came from,
+    /// with the root translation taken out of them (the object's position
+    /// already carries it).
     pub fn sample_shapes(
         &self,
         kind: &Kind,
@@ -473,7 +484,7 @@ impl EnemyCombat {
         position: Vec3,
         yaw: f32,
         apply_root: bool,
-    ) -> Result<ShapePose> {
+    ) -> Result<(ShapePose, ActorBones)> {
         if !position.is_finite() || !yaw.is_finite() || !frame.is_finite() {
             return Err("combat pose inputs must be finite".into());
         }
@@ -492,7 +503,14 @@ impl EnemyCombat {
         } else {
             Vec3::from_array(evaluated.root_translation)
         };
-        self.transform_shapes(&matrices, root, position, yaw)
+        let pose = self.transform_shapes(&matrices, root, position, yaw)?;
+        Ok((
+            pose,
+            ActorBones {
+                matrices: std::sync::Arc::new(matrices),
+                removed_root: root,
+            },
+        ))
     }
 
     pub fn transform_shapes(

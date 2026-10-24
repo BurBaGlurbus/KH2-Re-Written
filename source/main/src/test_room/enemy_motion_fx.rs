@@ -15,6 +15,7 @@ pub fn scan(game: &mut Game, actor: &enemy_gallery::GalleryActor) {
     let serial = battle.serial;
     game.actor_poses
         .insert(actor.id, (actor.position, actor.yaw));
+    game.actor_bones.insert(actor.id, battle.bones.clone());
     let from = match game.actor_scan.get(&actor.id) {
         Some(&(s, f)) if s == serial && f <= frame => Some(f),
         _ => None,
