@@ -106,6 +106,7 @@ pub(crate) fn has_update(kind: u32) -> bool {
 pub(crate) fn has_draw(kind: u32) -> bool {
     crate::extra::draws(kind)
         || crate::lens::draws(kind)
+        || crate::refraction::handles(kind)
         || matches!(
             kind,
             DRAW_SHAPE_X
@@ -194,6 +195,7 @@ pub(crate) fn create(p: &Program, part: &mut Part, ctx: &mut Ctx) {
         crate::tail2::TAIL_X | crate::tail2::TAIL_2X => crate::tail2::create(p, part, ctx),
         crate::shipoly::KIND => crate::shipoly::create(p, part),
         crate::thunder::KIND => crate::thunder::create(p, part, ctx),
+        k if crate::refraction::handles(k) => crate::refraction::create(p, part, ctx),
         models::VT_MIME
         | models::DRAW_MDL_TS3
         | models::VERTEX_AP
@@ -288,6 +290,7 @@ pub(crate) fn restart(p: &Program, part: &mut Part, ctx: &mut Ctx) {
         crate::tail::KIND => crate::tail::restart(p, part, ctx),
         crate::thunder::KIND => crate::thunder::restart(p, part, ctx),
         k if crate::lens::handles(k) => crate::lens::restart(p, part, ctx),
+        k if crate::refraction::handles(k) => crate::refraction::create(p, part, ctx),
         models::VT_MIME
         | models::DRAW_MDL_TS3
         | models::VERTEX_AP_LC
@@ -465,6 +468,7 @@ pub(crate) fn draw(p: &Program, cursor: usize, part: &mut Part, ctx: &mut Ctx) {
         crate::thunder::KIND => crate::thunder::draw(p, cursor, part, ctx),
         k if crate::extra::draws(k) => crate::extra::draw(p, cursor, part, ctx),
         k if crate::lens::draws(k) => crate::lens::draw(p, cursor, part, ctx),
+        k if crate::refraction::handles(k) => crate::refraction::draw(p, cursor, part, ctx),
         models::VT_MIME
         | models::DRAW_MDL3
         | models::DRAW_MDL_TS3
