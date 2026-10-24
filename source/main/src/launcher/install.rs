@@ -655,7 +655,7 @@ fn write_field_config(
 #[derive(Debug, Clone, PartialEq)]
 pub struct Viewer {
     pub label: String,
-    /// The sibling executable it runs.
+    /// The launcher program name it runs (`model_inspector`, `image_inspector`).
     pub program: &'static str,
     pub selection: PathBuf,
 }

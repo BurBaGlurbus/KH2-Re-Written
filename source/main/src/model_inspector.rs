@@ -134,12 +134,12 @@ fn frame(model: &InspectionModel) -> ([f64; 3], f64) {
         .max(f64::MIN_POSITIVE);
     (center, radius)
 }
-fn run() -> Result<AppExit, Box<dyn std::error::Error>> {
-    let mut args = std::env::args_os().skip(1);
-    let root = PathBuf::from(args.next().ok_or("selected install root required")?);
-    let manifest = PathBuf::from(args.next().ok_or("source manifest required")?);
-    let selection = PathBuf::from(args.next().ok_or("explicit model selection required")?);
-    let output = PathBuf::from(args.next().ok_or("new private JSONL log required")?);
+fn run(args: Vec<PathBuf>) -> Result<AppExit, Box<dyn std::error::Error>> {
+    let mut args = args.into_iter();
+    let root = args.next().ok_or("selected install root required")?;
+    let manifest = args.next().ok_or("source manifest required")?;
+    let selection = args.next().ok_or("explicit model selection required")?;
+    let output = args.next().ok_or("new private JSONL log required")?;
     let mut tour = false;
     let mut direct_draw = false;
     let mut capture_dir = None;
@@ -149,9 +149,7 @@ fn run() -> Result<AppExit, Box<dyn std::error::Error>> {
             Some("--tour") => tour = true,
             Some("--direct-draw") => direct_draw = true,
             Some("--capture-dir") => {
-                capture_dir = Some(PathBuf::from(
-                    args.next().ok_or("capture directory required")?,
-                ))
+                capture_dir = Some(args.next().ok_or("capture directory required")?)
             }
             Some("--frames") => {
                 let value = args
@@ -608,8 +606,8 @@ fn finish(
         });
     }
 }
-fn main() -> std::process::ExitCode {
-    match run() {
+pub fn main(args: Vec<PathBuf>) -> std::process::ExitCode {
+    match run(args) {
         Ok(AppExit::Success) => std::process::ExitCode::SUCCESS,
         Ok(_) => std::process::ExitCode::FAILURE,
         Err(error) => {

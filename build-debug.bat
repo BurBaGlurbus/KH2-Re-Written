@@ -1,5 +1,5 @@
 @echo off
-rem Builds the development-profile launcher and its two viewers.
+rem Builds the development-profile launcher.
 setlocal
 set "PATH=%USERPROFILE%\.cargo\bin;%PATH%"
 pushd "%~dp0" || exit /b 1

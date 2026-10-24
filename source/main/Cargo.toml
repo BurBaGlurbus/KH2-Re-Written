@@ -34,14 +34,10 @@ bevy = { version = "=0.19.1", default-features = false, features = ["std", "asyn
 name = "KH2RW"
 path = "src/main.rs"
 
-# These tools have no unit tests; the launcher and model viewer keep theirs.
+# These tools have no unit tests; the launcher (with the viewers inside it)
+# keeps its own.
 [[bin]]
 name = "smoke"
-test = false
-bench = false
-
-[[bin]]
-name = "image_inspector"
 test = false
 bench = false
 

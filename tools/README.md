@@ -94,7 +94,7 @@ actions. It previews their animations without executing the combat callbacks.
 | File | Purpose | Cited by |
 |---|---|---|
 | `Compare-CandidateNames.ps1` | Candidate-only name metadata, following pinned OpenKH name generation | T006 |
-| `Build-Launcher.ps1` | Builds the KH2FM launcher and two viewers; `-Debug` and `-LauncherOnly` support quick edits | T126 |
+| `Build-Launcher.ps1` | Builds `KH2RW Launcher.exe` (viewers inside) and removes other top-level executables; `-Debug`, `-Skate3`, `-Timings` | T126 |
 | `New-TaskIndex.ps1` | Regenerates `docs/tasks/README.md` from the task records | none (documentation tool) |
 
 ## Fixtures

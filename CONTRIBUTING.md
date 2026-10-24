@@ -11,17 +11,20 @@ This repository rewrites Kingdom Hearts II Final Mix for Windows, reading the ow
 ## Local builds and disk use
 
 Use `build-release.bat` (or `powershell -NoProfile -File tools/Build-Launcher.ps1`)
-for an optimized KH2FM launcher with its model/image viewers. The batch scripts
+for an optimized KH2FM launcher. The batch scripts
 are `build-release`, `build-release-skate3`, `build-debug` and
 `build-debug-skate3`; the `-skate3` ones enable the optional `skate3` feature,
-as does `-Skate3` on the PowerShell helper. This selects three binaries instead
+as does `-Skate3` on the PowerShell helper. This builds one binary instead
 of every research probe. The `build-debug` scripts use the
-faster development profile; add `-LauncherOnly` when only the launcher changed
-and the viewers are already available. The helper prints the launcher path;
+faster development profile. The helper prints the launcher path;
 add `-Timings` to write a Cargo report under `target/cargo-timings/`.
 Cargo cannot give a binary a name with a space, so the helper renames Cargo's
-`KH2RW.exe` to `KH2RW Launcher.exe`; only the launcher is left. The game runs
-inside it: the launcher restarts itself with a program name (`title`, `room`, ...).
+`KH2RW.exe` to `KH2RW Launcher.exe`. The game and the model/image viewers run
+inside it: the launcher restarts itself with a program name (`title`, `room`,
+`model_inspector`, `image_inspector`, ...). The helper then removes every other
+`.exe` (with its `.pdb`/`.d`) that earlier Cargo builds left in
+`target/release/` or `target/debug/`, so only `KH2RW Launcher.exe` remains;
+`cargo build` or `cargo run` writes a probe again from its cache when asked.
 
 Development and test builds keep workspace file/line backtraces but omit full
 type/variable symbols and dependency symbols. Incremental compilation stays on
@@ -57,8 +60,8 @@ gameplay data, source manifests and saves belong outside the checkout.
 
 A complete `cargo clean --locked` also removes release outputs, all dependency
 caches and timing reports. For a minimal runnable checkout, first copy the
-launcher and its two viewers outside the checkout and verify the copies, close
-running programs, clean, then restore those three executables to `target/release/`.
+launcher outside the checkout and verify the copy, close running programs, clean,
+then restore `KH2RW Launcher.exe` to `target/release/`.
 This frees the most space but the next compilation must rebuild dependencies.
 Keep `.local` settings and private data separate from compiler cleanup.
 

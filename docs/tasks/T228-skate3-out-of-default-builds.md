@@ -1,14 +1,16 @@
-# T228 — Plain builds leave out the Skate 3 crates
+# T228 — Plain builds leave out the Skate 3 crates; the scripts leave one executable
 
 Owner Claude, 2026-10-24, requested by burba in the project chat ("building for skate 3 should
 include things that need skate 3 so longer compile time, but without it should in theory be
-faster please fix this"). Gate: none (build tooling; no gameplay gate is advanced).
+faster please fix this", then "get rid of all the other exes that show up when compiling the
+only exe that should be there after compilation is the kh2rw launcher"). Gate: none (build tooling; no gameplay gate is advanced).
 Prerequisites: T101, T103, T205. Build identity: branch `build/skate3-optional-deps` cut from
 `origin/main` 33ce82e; package 0.1.2, Rust 1.99.0 Windows MSVC, 8 logical CPUs. Source: not read;
 no gameplay session was run apart from the smoke run.
 
 Evidence (never in Git; local timing logs and Cargo JSON output): `%USERPROFILE%/kh2t/b/`
-(before), `%USERPROFILE%/kh2t/a/` (after), `%USERPROFILE%/kh2t/checks/`, `%USERPROFILE%/kh2t/scripts2/`. Each clean measurement
+(before), `%USERPROFILE%/kh2t/a/` (after), `%USERPROFILE%/kh2t/checks/`, `%USERPROFILE%/kh2t/scripts2/`, `%USERPROFILE%/kh2t/run2/` and `%USERPROFILE%/kh2t/viewer/`
+(part 2). Each clean measurement
 used its own empty `CARGO_TARGET_DIR`; runs were one at a time.
 
 ## What was wrong
@@ -33,9 +35,51 @@ used its own empty `CARGO_TARGET_DIR`; runs were one at a time.
    `-p main --features skate3`.
 2. AGENTS.md, CONTRIBUTING.md, README.md, the PR template and `ci.yml`: the checks drop
    `--workspace`; Skate 3 changes add clippy and test with `--workspace --features main/skate3`.
-3. The build scripts and `tools/Build-Launcher.ps1` are unchanged: they already select
-   `-p main` and add `--features skate3` only for the `-skate3` scripts; the output is still
-   renamed to `KH2RW Launcher.exe`.
+3. The build scripts already select `-p main` and add `--features skate3` only for the
+   `-skate3` scripts; the output is still renamed to `KH2RW Launcher.exe`.
+
+## Part 2: only `KH2RW Launcher.exe` after a build
+
+- The model and image viewers were separate binaries (`src/bin/model_inspector.rs`,
+  `src/bin/image_inspector.rs`) that the launcher started as sibling `.exe` files. They are now
+  modules of the `KH2RW` binary, run like the tests: the launcher restarts itself as
+  `"KH2RW Launcher.exe" model_inspector|image_inspector <install> <manifest> <selection> <log>`
+  (their `--tour`, `--capture-dir`, `--frames` and `--direct-draw` options are unchanged). The
+  model viewer's unit test now runs with the launcher's tests.
+- `tools/Build-Launcher.ps1` builds only `--bin KH2RW` (`-LauncherOnly` is gone) and then removes
+  every other top-level `.exe` (with its `.pdb`/`.d`) in the profile folder it built:
+  `smoke.exe`, the probes and `validation.exe` that plain `cargo build` runs leave there. Cargo
+  writes such an executable again from its cache on the next `cargo build`/`cargo run` that asks
+  for it (checked: a deleted `smoke.exe` came back on `cargo build -p main --bin smoke` in 2.6 s
+  with nothing recompiled). A file that cannot be removed (for example a running program) only
+  warns.
+- `tools/Invoke-NativeMemoryReader.ps1` ran `target/debug/validation.exe` directly; it now builds
+  it first, because the debug scripts remove it.
+- README, CONTRIBUTING, ARCHITECTURE, the folder guide, `source/main/README.md`,
+  `tools/README.md`, the two research notes and the `.bat` comments describe the single
+  executable.
+
+Part 2 results:
+
+- fmt, clippy (no warnings), `cargo test --locked` (991 passed, 1 ignored), smoke (exit 0),
+  clippy and test with `--workspace --features main/skate3` (no warnings; 1013 passed, 1
+  ignored): PASS.
+- Scripts, in turn in the worktree (`run2/*.ls` list every top-level `.exe` after each):
+  before them `target/release` and `target/debug` each held `KH2RW Launcher.exe`,
+  `model_inspector.exe` and `image_inspector.exe`. After `build-release.bat`:
+  `target/release` holds only `KH2RW Launcher.exe` (66,954,752 bytes); after
+  `build-release-skate3.bat` only `KH2RW Launcher.exe` (74,690,048). A plain `cargo build` then
+  put 31 executables in `target/debug`; after `build-debug.bat` only `KH2RW Launcher.exe`
+  (113,546,752) remained, and after `build-debug-skate3.bat` only `KH2RW Launcher.exe`
+  (124,364,800). All exit 0.
+- Viewers through the release launcher with the launcher's own argument order (program name,
+  install, bound manifest, selection, new log; plus `--frames 180`): the model viewer on the
+  Sora selection did a fresh full source scan, opened its window, ran 180 frames and exited 0
+  (`complete: true`). The image viewer was reached and rejected that selection with its own
+  schema check (exit 1, `missing field inspect_hd_images`); no image selection exists on this
+  machine, so no image was shown. `"KH2RW Launcher.exe" nope` prints the usage with both names.
+- The viewers were not clicked in the launcher window; the call above is the one
+  `start_viewer` makes.
 
 ## Measurements (seconds, clean unless stated)
 
@@ -81,13 +125,15 @@ shared, so single numbers carry noise of that order.
   and not changed here.
 - `--workspace` still includes the Skate 3 crates (Cargo's rule); the docs no longer use it for the
   default checks.
+- The launcher lists an image viewer for a selection with `inspect_images`, but the image viewer
+  requires `inspect_hd_images`; found, not changed here.
 - GitHub Actions does not run for this repository; the CI file was updated but not exercised.
 
 ## Verdict and next task
 
 PASS for the build change: builds that do not ask for `skate3` no longer compile the Skate 3
-crates or a second Bevy stack, and `skate3` builds still include them. No gameplay gate is
-affected.
+crates or a second Bevy stack, and `skate3` builds still include them; each build script leaves
+only `KH2RW Launcher.exe`, with the viewers inside it. No gameplay gate is affected.
 
 Next: none required; if the default launcher build should be faster still, profile `main` and the
 Bevy feature list with `-Timings`.

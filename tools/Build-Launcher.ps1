@@ -1,9 +1,11 @@
 # Build the launcher and give the Windows executable its product filename.
-# Build just the launcher and its two sibling viewers; probes are opt-in.
-# Cargo cannot name a binary with a space, so the `KH2RW` artifact is renamed
-# to `KH2RW Launcher.exe`; no separate `KH2RW.exe` is left beside it. The game
-# runs inside the launcher executable (it restarts itself with a program name).
-param([switch]$Debug, [switch]$LauncherOnly, [switch]$Skate3, [switch]$Timings)
+# Only the launcher is built; probes are opt-in. Cargo cannot name a binary
+# with a space, so the `KH2RW` artifact is renamed to `KH2RW Launcher.exe`. The
+# game and the model/image viewers run inside the launcher executable (it
+# restarts itself with a program name). Other executables that earlier Cargo
+# builds left in the output folder are removed; `cargo build`/`cargo run`
+# writes them again from its cache when asked for them.
+param([switch]$Debug, [switch]$Skate3, [switch]$Timings)
 
 $ErrorActionPreference = 'Stop'
 $env:PATH = (Join-Path $env:USERPROFILE '.cargo/bin') + [IO.Path]::PathSeparator + $env:PATH
@@ -11,9 +13,6 @@ $launcherProfile = if ($Debug) { 'dev' } else { 'release' }
 Push-Location (Split-Path $PSScriptRoot -Parent)
 try {
     $launcherTargets = @('--bin', 'KH2RW')
-    if (-not $LauncherOnly) {
-        $launcherTargets += @('--bin', 'model_inspector', '--bin', 'image_inspector')
-    }
     if ($Skate3) {
         $launcherTargets += @('--features', 'skate3')
     }
@@ -26,8 +25,22 @@ try {
         Where-Object { $_.reason -eq 'compiler-artifact' -and $_.target.name -eq 'KH2RW' -and $_.executable } |
         Select-Object -Last 1
     if (-not $launcherArtifact) { throw 'Cargo did not report a launcher executable.' }
-    $launcherOutputPath = Join-Path (Split-Path $launcherArtifact.executable -Parent) 'KH2RW Launcher.exe'
+    $outputDirectory = Split-Path $launcherArtifact.executable -Parent
+    $launcherOutputPath = Join-Path $outputDirectory 'KH2RW Launcher.exe'
     Move-Item -LiteralPath $launcherArtifact.executable -Destination $launcherOutputPath -Force
+    Get-ChildItem -LiteralPath $outputDirectory -Filter '*.exe' -File |
+        Where-Object { $_.Name -ne 'KH2RW Launcher.exe' } |
+        ForEach-Object {
+            try {
+                foreach ($companion in '.pdb', '.d') {
+                    $path = Join-Path $outputDirectory ($_.BaseName + $companion)
+                    if (Test-Path -LiteralPath $path) { Remove-Item -LiteralPath $path -Force }
+                }
+                Remove-Item -LiteralPath $_.FullName -Force
+            } catch {
+                Write-Warning "Could not remove $($_.TargetObject): $($_.Exception.Message)"
+            }
+        }
     Write-Output $launcherOutputPath
 } finally {
     Pop-Location

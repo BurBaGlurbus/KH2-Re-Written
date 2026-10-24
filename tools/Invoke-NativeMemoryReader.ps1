@@ -108,6 +108,9 @@ function Get-BoundCurrentParent {
 }
 $proc=Get-BoundCurrentParent
 $scanner=Join-Path (Split-Path $PSScriptRoot -Parent) 'target/debug/validation.exe'
+# The launcher build scripts remove other executables from target/debug.
+& cargo build -p validation --bin validation --locked --manifest-path (Join-Path (Split-Path $PSScriptRoot -Parent) 'Cargo.toml')
+if ($LASTEXITCODE) {throw 'validation build failed'}
 & $scanner $source ($out+'/source-session.json') *> ($out+'/source-session.log')
 if ($LASTEXITCODE) {throw 'Fresh full selected-source scan failed'}
 $fresh=Read-PrivatePrerequisite ($out+'/source-session.json')

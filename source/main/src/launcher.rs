@@ -406,21 +406,15 @@ fn start_test(index: usize, dir: &Path, b: &Bound) -> Result<Running, String> {
     spawn(test.name.into(), exe, args)
 }
 
-/// A viewer is a sibling executable: folder, manifest, selection, new log.
+/// A viewer runs inside the launcher executable like a test: its program
+/// name, then folder, manifest, selection and a new log.
 fn start_viewer(v: &install::Viewer, b: &Bound) -> Result<Running, String> {
-    let exe = std::env::current_exe()
-        .map_err(|e| e.to_string())?
-        .with_file_name(format!("{}.exe", v.program));
-    if !exe.is_file() {
-        return Err(format!(
-            "{}.exe is not next to KH2RW Launcher.exe. Build it with build-release.bat.",
-            v.program
-        ));
-    }
+    let exe = std::env::current_exe().map_err(|e| e.to_string())?;
     let log = install::viewer_log(v.program)?;
-    let args = [&b.folder, &b.manifest, &v.selection, &log]
-        .map(|p| p.to_string_lossy().into_owned())
-        .to_vec();
+    let mut args = vec![v.program.to_owned()];
+    args.extend(
+        [&b.folder, &b.manifest, &v.selection, &log].map(|p| p.to_string_lossy().into_owned()),
+    );
     spawn(v.label.clone(), exe, args)
 }
 
@@ -431,7 +425,7 @@ fn spawn(name: String, exe: PathBuf, args: Vec<String>) -> Result<Running, Strin
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-    // Console programs (the viewers) get no console window.
+    // A child run gets no console window.
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;

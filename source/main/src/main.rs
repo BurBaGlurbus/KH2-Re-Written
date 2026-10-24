@@ -3,7 +3,9 @@
 //! a test. `kh2fm title|room|talk|play|tt|eh [arguments]` runs one directly
 //! with the program's own arguments (none = its launch file; `play` is the
 //! room with both the Shadow and Axel, `tt` Twilight Town, `eh` The World
-//! That Never Was).
+//! That Never Was). The model and image viewers run inside it too:
+//! `model_inspector` / `image_inspector` with install, manifest, selection
+//! and log paths (and their own options).
 //!
 //! A Windows-subsystem program, so no console window opens behind the
 //! launcher; output still reaches a pipe or redirect (the launcher reads
@@ -11,8 +13,10 @@
 #![cfg_attr(windows, windows_subsystem = "windows")]
 mod area;
 mod cutscene;
+mod image_inspector;
 mod keyblade_board;
 mod launcher;
+mod model_inspector;
 mod npcs;
 mod save_files;
 mod sephiroth;
@@ -53,13 +57,15 @@ fn run(program: &str, args: Vec<PathBuf>) -> ExitCode {
         "event" => cutscene::main(args, false),
         "sephiroth" => sephiroth::main(args, false),
         "wm" => world_map::main(args, false),
+        "model_inspector" => model_inspector::main(args),
+        "image_inspector" => image_inspector::main(args),
         "--version" => {
             println!("KH2RW {}", env!("CARGO_PKG_VERSION"));
             ExitCode::SUCCESS
         }
         _ => {
             eprintln!(
-                "usage: kh2fm [title|room|talk|play|tt|eh|event|sephiroth|wm|--version] [program arguments]"
+                "usage: kh2fm [title|room|talk|play|tt|eh|event|sephiroth|wm|model_inspector|image_inspector|--version] [program arguments]"
             );
             ExitCode::FAILURE
         }

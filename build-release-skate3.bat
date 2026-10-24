@@ -1,5 +1,5 @@
 @echo off
-rem Builds the optimized launcher with the skate3 feature and its two viewers.
+rem Builds the optimized launcher with the skate3 feature.
 setlocal
 set "PATH=%USERPROFILE%\.cargo\bin;%PATH%"
 pushd "%~dp0" || exit /b 1
