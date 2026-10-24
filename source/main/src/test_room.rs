@@ -1200,6 +1200,8 @@ struct Game {
     /// Battle actors' scene position and yaw this tick, and the motion
     /// serial and frame their triggers were last scanned at.
     actor_poses: HashMap<u64, (Vec3, f32)>,
+    /// The battle actors' bones of this tick (effects bound to them).
+    actor_bones: HashMap<u64, enemy_combat::ActorBones>,
     actor_scan: HashMap<u64, (u64, f32)>,
     /// Weapon trail: whether its effect is alive (the exe's handle at
     /// `obj+0xc00`, FUN_1403effa0), and the calibrated bone length.
@@ -13217,6 +13219,7 @@ fn run(mut args: Vec<PathBuf>) -> Result<AppExit, Box<dyn std::error::Error>> {
         effect_queue: Vec::new(),
         fx_queue: Vec::new(),
         actor_poses: HashMap::new(),
+        actor_bones: HashMap::new(),
         actor_scan: HashMap::new(),
         trail_live: false,
         trail_length: None,

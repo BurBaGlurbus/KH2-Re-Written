@@ -133,8 +133,9 @@ struct Frames {
     members: Vec<MemberFrame>,
     /// The summon that is out (its drawn root and heading).
     summon: Option<MemberFrame>,
-    /// Battle actors by gallery id (their root and heading).
+    /// Battle actors by gallery id (their root and heading) and their bones.
     actors: HashMap<u64, MemberFrame>,
+    actor_bones: HashMap<u64, super::enemy_combat::ActorBones>,
 }
 
 /// A party member's frame of this tick: origin, facing, the staff's top as
@@ -210,9 +211,8 @@ impl Frames {
             body_lift: 85.,
             heal_lift: 105.,
         });
-        // [I] A battle actor's bones are not sampled either: as
-        // `drive_fx`'s actor anchor, its root and heading, with Sora's
-        // heights for the body-centre codes.
+        // A battle actor: its root and heading, and its bones of this tick
+        // (`actor_bones`); [I] Sora's heights for the body-centre codes.
         let actors = game
             .actor_poses
             .iter()
@@ -239,6 +239,7 @@ impl Frames {
             members,
             summon,
             actors,
+            actor_bones: game.actor_bones.clone(),
         }
     }
 
@@ -258,6 +259,18 @@ impl Frames {
             (m.body_lift, m.heal_lift)
         });
         let own = matches!(anchor, Anchor::Caster | Anchor::Party(0));
+        // A battle actor's own bone (FUN_1403b50f0): its model-space matrix
+        // with the root its position already carries taken out, read with
+        // the y and z columns negated as Sora's are.
+        if let Anchor::Actor(id) = anchor
+            && let Ok(b) = usize::try_from(bone)
+            && let Some(m) = self.actor_bones.get(&id).and_then(|a| {
+                let m = a.matrices.get(b)?;
+                Some(Mat4::from_translation(-a.removed_root) * *m)
+            })
+        {
+            return root * m * Mat4::from_diagonal(Vec4::new(1., -1., -1., 1.));
+        }
         match bone {
             0x4000 => root,
             0x4001 => root * Mat4::from_translation(Vec3::new(0., body_lift, 0.)),
@@ -855,6 +868,7 @@ mod tests {
             }],
             summon: None,
             actors: HashMap::new(),
+            actor_bones: HashMap::new(),
         }
     }
 
@@ -959,6 +973,30 @@ mod tests {
             &f,
         );
         close(pos(&m), [300., 85., -50.]);
+        // Its bone 3, less the root translation its position already has.
+        f.actor_bones.insert(
+            7,
+            super::super::enemy_combat::ActorBones {
+                matrices: Arc::new(vec![
+                    Mat4::IDENTITY,
+                    Mat4::IDENTITY,
+                    Mat4::IDENTITY,
+                    Mat4::from_translation(Vec3::new(10., 120., 30.)),
+                ]),
+                removed_root: Vec3::new(0., 20., 0.),
+            },
+        );
+        let m = element_world(
+            1,
+            Some(Anchor::Actor(7)),
+            3,
+            ([0.; 3], [0.; 3], [1.; 3]),
+            None,
+            None,
+            None,
+            &f,
+        );
+        close(pos(&m), [310., 100., -20.]);
         // An actor the room does not know takes Sora's root.
         let m = element_world(
             1,

@@ -558,6 +558,8 @@ pub struct BattleActor {
     pub error: Option<String>,
     /// A script brain's effect containers (see [`ScriptFx`]).
     script_fx: Option<ScriptFx>,
+    /// The bones of this tick's pose, for effects bound to them.
+    pub bones: super::enemy_combat::ActorBones,
 }
 
 /// A script brain's effects on the tracked effect path (`spell_fx`), as the
@@ -919,7 +921,7 @@ impl BattleActor {
             .get(&brain.motion())
             .ok_or("initial source motion absent")?;
         let frame = c.key(0);
-        let pose = assets.sample_shapes(kind, &c.motion, frame, position, yaw, false)?;
+        let (pose, bones) = assets.sample_shapes(kind, &c.motion, frame, position, yaw, false)?;
         let script_fx = matches!(brain, Brain::Script(_))
             .then(|| ScriptFx::open(source))
             .flatten();
@@ -937,6 +939,7 @@ impl BattleActor {
             paused: false,
             error: None,
             script_fx,
+            bones,
         })
     }
     pub fn tick(
@@ -998,7 +1001,7 @@ impl BattleActor {
         } else {
             self.brain.elapsed()
         });
-        self.pose = self.assets.sample_shapes(
+        (self.pose, self.bones) = self.assets.sample_shapes(
             kind,
             &self.motion,
             key,
