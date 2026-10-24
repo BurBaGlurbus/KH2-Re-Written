@@ -459,10 +459,13 @@ pub fn tick(mut game: ResMut<Game>, rig: Res<CameraRig>, mut fx: ResMut<SpellFx>
                     sounds.push(id);
                     r.sound = None;
                 }
+                let w = r.instance.world;
+                let at = point_from_effect([w[3][0], w[3][1], w[3][2]]);
                 log.push(
                     serde_json::json!({"event":"spell_effect","tick":tick,"key":key,
                     "element":element.id,"effect":element.effect_number,"bone":element.bone,
-                    "flags":element.flags,"bound":bound.is_some(),"dpd":dpx.dpd,"pdata":dpx.pdata}),
+                    "flags":element.flags,"bound":bound.is_some(),"dpd":dpx.dpd,"pdata":dpx.pdata,
+                    "position":at}),
                 );
                 if !fx.dpds.iter().any(|x| Arc::ptr_eq(x, &dpd)) {
                     fx.dpds.push(dpd);
