@@ -300,6 +300,12 @@ pub trait Env {
     fn bone_matrix(&self, _object: u32, _bone: u32) -> Option<[f32; 16]> {
         None
     }
+    /// The friend's action record whose id is `id` (FUN_1401cc770: the
+    /// personality's 0x80-byte records at header +0xa4, matched on their
+    /// first word), as 32 words; `None` when it has none.
+    fn action_param(&self, _object: u32, _id: i32) -> Option<[u32; 32]> {
+        None
+    }
     /// How full mission gauge `index` is, 0 to 1 (FUN_1403fb690).
     fn mission_gauge_ratio(&self, _index: i32) -> f32 {
         0.0

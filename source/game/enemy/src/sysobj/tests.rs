@@ -423,3 +423,25 @@ fn a_leaving_object_is_removed_when_its_alpha_reaches_zero() {
     s.end_tick(&Flat);
     assert!(!s.gone);
 }
+
+#[test]
+fn a_queued_motion_starts_at_the_end_with_the_end_bit_still_set() {
+    // FUN_1403c6740 sets +0x18c bit 1 after starting the queued motion, so
+    // a script waiting on `motion_is_end` sees the first motion end.
+    let mut s = Sysobj::bare();
+    s.motion_start(191, 0., &Thirty);
+    s.motion_queue.push((0, 0.));
+    let mut seen = None;
+    for tick in 0..40 {
+        s.begin_tick(&Flat);
+        if s.motion_ended() {
+            seen = Some((tick, s.motion.slot));
+            break;
+        }
+    }
+    let (_, slot) = seen.expect("the end is seen");
+    assert_eq!(slot, 0);
+    // The next step clears it again.
+    s.begin_tick(&Flat);
+    assert!(!s.motion_ended());
+}

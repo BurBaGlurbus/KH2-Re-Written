@@ -64,6 +64,8 @@ struct Surroundings<'a, W: World> {
     target: Option<Vec3>,
     /// Goofy's hand bone in model space this tick.
     hand: Mat4,
+    /// The member's action records (`trap_friend_get_action_param`).
+    records: &'static [player::party_members::Record],
 }
 
 impl<W: World> Env for Surroundings<'_, W> {
@@ -79,11 +81,30 @@ impl<W: World> Env for Surroundings<'_, W> {
     fn target_position(&self, id: u32) -> Option<Vec3> {
         (id == ENEMY).then_some(self.target).flatten()
     }
+    fn action_param(&self, object: u32, id: i32) -> Option<[u32; 32]> {
+        if object != GOOFY {
+            return None;
+        }
+        self.records
+            .iter()
+            .find(|r| i32::from(r.id) == id)
+            .map(|r| r.raw_words())
+    }
     fn pick_target(&self, _kind: i32, _from: Vec3) -> Option<u32> {
         self.target.map(|_| ENEMY)
     }
     fn check_step(&self, _: Vec3, _: Vec3, _: f32, _: f32, _: f32) -> Option<u8> {
         Some(0)
+    }
+    /// Vertical segments only: the floor where it crosses the segment (as
+    /// the script brain's host answers it).
+    fn line_hit(&self, from: Vec3, to: Vec3) -> Option<Vec3> {
+        if from[0] != to[0] || from[2] != to[2] {
+            return None;
+        }
+        let top = from[1].max(to[1]);
+        let floor = self.world.floor(from[0], from[2], top)?;
+        (from[1].min(to[1]) <= floor && floor <= top).then_some([from[0], floor, from[2]])
     }
     fn bone_point(
         &self,
@@ -126,6 +147,14 @@ pub struct Frame {
     pub effects: Vec<u16>,
     /// The script spent MP (`trap_obj_use_mp`).
     pub spent_mp: bool,
+    /// Traps the engine does not run yet, by name.
+    pub unsupported: Vec<&'static str>,
+    /// The engine's count of motion starts and the blend left on the one
+    /// playing.
+    pub serial: u64,
+    pub blend: f32,
+    /// The motions the engine queued behind the playing one (motion, blend).
+    pub queue: Vec<(u16, f32)>,
     /// The act and its last motion are over.
     pub done: bool,
 }
@@ -134,6 +163,7 @@ pub struct Blade {
     world: EnemyWorld,
     goofy: Object,
     clips: Arc<BladeClips>,
+    records: &'static [player::party_members::Record],
 }
 
 /// What the act starts from: Goofy's place and body, and the enemy's centre.
@@ -143,15 +173,17 @@ pub struct Start {
     pub stats: player::combat::TargetStats,
     pub sstm: player::actor_physics::Sstm,
     pub target: Option<Vec3>,
+    pub records: &'static [player::party_members::Record],
 }
 
 impl Blade {
-    /// The act starts where Goofy stands, aimed at the enemy.
+    /// The act `act` starts where the member stands, aimed at the enemy.
     pub fn start<W: World>(
         payload: &[u8],
         clips: Arc<BladeClips>,
         room: &W,
         from: Start,
+        act: &str,
     ) -> Result<Self, String> {
         let Start {
             position,
@@ -159,10 +191,13 @@ impl Blade {
             stats,
             sstm,
             target,
+            records,
         } = from;
         let mut world = EnemyWorld::default();
         world.tolerate_missing = true;
         let mut sys = Sysobj::new(GOOFY, position, yaw, stats, sstm);
+        // A friend, not of the enemy class (+0x6c8 bit 4).
+        sys.class_flags &= !enemy::sysobj::class_flag::ENEMY;
         sys.weapons = vec![SHIELD];
         sys.target = Target {
             id: ENEMY,
@@ -170,6 +205,8 @@ impl Blade {
             ..Target::default()
         };
         let mut shield = Object::bare(SHIELD);
+        // The member's weapon is no enemy either: a search must not pick it.
+        shield.sys.class_flags &= !enemy::sysobj::class_flag::ENEMY;
         shield.sys.position = position;
         shield.sys.yaw = yaw;
         shield.sys.attached = Some(enemy::sysobj::Attach {
@@ -190,15 +227,17 @@ impl Blade {
             player: position,
             target,
             hand: Mat4::IDENTITY,
+            records,
         };
         let mut goofy = Object::spawn(&mut world, &env, GOOFY, payload, sys)
-            .map_err(|e| format!("p_ex030 script rejected: {e:?}"))?;
-        let actions = goofy.acts.start(b"blade");
+            .map_err(|e| format!("member script rejected: {e:?}"))?;
+        let actions = goofy.acts.start(act.as_bytes());
         goofy.apply_actions(Some((&mut world, &env)), actions);
         Ok(Blade {
             world,
             goofy,
             clips,
+            records,
         })
     }
 
@@ -215,16 +254,27 @@ impl Blade {
             player,
             target,
             hand,
+            records: self.records,
         };
+        // The enemy stands where the room's is; while that cannot be
+        // targeted (sinking, appearing) a search does not find it either.
         if let Some(e) = self
             .world
             .objects
             .get_mut(ENEMY as usize)
             .and_then(|o| o.as_mut())
-            && let Some(t) = target
         {
-            e.sys.position = t;
+            if let Some(t) = target {
+                e.sys.position = t;
+            }
+            e.sys.left = target.is_none();
         }
+        // The member's think runs first and copies its wish over the
+        // movement request (obj+0x10/+0x1c; the end of FUN_1401b53b0). While
+        // an act runs the wish is empty (FUN_1401b15f0), so a request the
+        // script made lasts only until the next tick.
+        self.goofy.sys.move_direction = [0.; 3];
+        self.goofy.sys.move_speed = 0.;
         self.goofy.tick(&mut self.world, &env);
         // The shield is an object of its own: it plays its motion and the
         // second movement request (+0xa58 / +0xa64) carries it.
@@ -244,6 +294,7 @@ impl Blade {
         self.world.tick_attacks(&env);
         let mut effects = Vec::new();
         let mut spent_mp = false;
+        let mut unsupported = Vec::new();
         for event in std::mem::take(&mut self.world.events) {
             match event {
                 Event::MotionEffect { id, .. } => effects.push(id),
@@ -253,6 +304,7 @@ impl Blade {
                     }
                 }
                 Event::Unsupported("obj_use_mp") => spent_mp = true,
+                Event::Unsupported(name) => unsupported.push(name),
                 _ => {}
             }
         }
@@ -274,7 +326,19 @@ impl Blade {
             attacks: script_attacks(&self.world),
             effects,
             spent_mp,
-            done: self.goofy.script.act_thread.is_none() && self.goofy.sys.motion.slot == 0,
+            unsupported,
+            serial: self.goofy.sys.motion.serial,
+            blend: self.goofy.sys.motion.blend,
+            queue: self
+                .goofy
+                .sys
+                .motion_queue
+                .iter()
+                .map(|&(slot, blend)| (slot as u16, blend))
+                .collect(),
+            // The act is over when its thread is; the motions it left
+            // playing and queued go on in the member's own controller.
+            done: self.goofy.script.act_thread.is_none(),
         }
     }
 
@@ -294,6 +358,7 @@ impl Blade {
             player: self.goofy.sys.position,
             target,
             hand: Mat4::IDENTITY,
+            records: self.records,
         };
         self.goofy
             .run_hit_callback(&mut self.world, &env, callback, object_handle(ENEMY));

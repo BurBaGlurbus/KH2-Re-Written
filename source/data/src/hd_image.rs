@@ -69,11 +69,14 @@ fn invalid(message: &str) -> io::Error {
 fn unsupported(message: &str) -> io::Error {
     io::Error::new(io::ErrorKind::Unsupported, message)
 }
+/// The longest side an HD image may have: the renderer's 2D texture limit
+/// (wgpu's default). Some installed textures are tall strips (Mulan's
+/// 192 x 7296); the total size stays bounded by the RGBA limits.
+pub const MAX_SIDE: u32 = 8192;
+
 fn dimensions(width: u32, height: u32) -> io::Result<()> {
-    if width == 0 || height == 0 || width > 4096 || height > 4096 {
-        return Err(invalid(
-            "HD image dimensions exceed 4096-pixel inspection bounds",
-        ));
+    if width == 0 || height == 0 || width > MAX_SIDE || height > MAX_SIDE {
+        return Err(invalid("HD image dimensions exceed the inspection bounds"));
     }
     Ok(())
 }
@@ -311,8 +314,8 @@ fn decode_single_hd_image(
         });
     }
     let mut limits = Limits::default();
-    limits.max_image_width = Some(4096);
-    limits.max_image_height = Some(4096);
+    limits.max_image_width = Some(MAX_SIDE);
+    limits.max_image_height = Some(MAX_SIDE);
     limits.max_alloc = Some(MAX_RGBA);
     let mut reader = ImageReader::with_format(Cursor::new(&bytes[..encoded_length]), codec);
     reader.limits(limits);
@@ -850,7 +853,7 @@ mod tests {
             );
         }
         let mut oversized = source.clone();
-        oversized[16..20].copy_from_slice(&4097u32.to_be_bytes());
+        oversized[16..20].copy_from_slice(&(MAX_SIDE + 1).to_be_bytes());
         let crc = crc32fast::hash(&oversized[12..29]);
         oversized[29..33].copy_from_slice(&crc.to_be_bytes());
         assert!(decode(&oversized).is_err());

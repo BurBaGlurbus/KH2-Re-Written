@@ -528,6 +528,49 @@ pub fn read_slots(
     Ok(result)
 }
 
+/// Like [`read_slots`], reading the set once; an absent or dummy slot gives
+/// `None` (any count). A weapon plays the slot its owner plays
+/// (FUN_1403c8cd0 hands the slot down to the child controllers).
+pub fn read_slots_optional(
+    source: &crate::probe_source::ProbeSource,
+    index: &str,
+    ordinal: usize,
+    name_hash: [u8; 16],
+    slots: &[usize],
+) -> Result<Vec<Option<SelectedMotion>>, Box<dyn std::error::Error>> {
+    if slots.len() > 1024 {
+        return Err("motion slot count invalid".into());
+    }
+    source.verify_full_source()?;
+    let mut checked = source.open_index(index)?;
+    let entry = checked
+        .inventory
+        .entries
+        .get(ordinal)
+        .filter(|e| e.name_hash == name_hash)
+        .ok_or("motion source entry mismatch")?;
+    let original = crate::original_payload::read_original(&mut checked.reader, entry)?;
+    let table = crate::bar::read_bar(&original.bytes)?;
+    let mut result = Vec::new();
+    for &slot in slots {
+        let Some(entry) = table
+            .entries
+            .get(slot)
+            .filter(|e| e.offset > 0 && e.size > 0)
+        else {
+            result.push(None);
+            continue;
+        };
+        let anb = original
+            .bytes
+            .get(entry.offset as usize..entry.offset as usize + entry.size as usize)
+            .ok_or("motion slot exceeds set")?;
+        result.push(Some(read_anb(anb, slot)?));
+    }
+    checked.verify_unchanged()?;
+    Ok(result)
+}
+
 /// Public slot chooser from pinned OpenKH MotionSet.GetMotionSetIndex: four
 /// variant slots per motion ID, probed in a mode-dependent order.
 pub fn motion_set_index(

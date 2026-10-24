@@ -1218,6 +1218,10 @@ pub fn tick(
         game.party[i].limit = Some(Scripted {
             motion,
             tick: s.motion.tick,
+            serial: s.motion.serial,
+            blend: s.motion.blend,
+            // The scene's queue is not followed by the member.
+            queue: [None; 2],
             position: s.position,
             yaw: s.yaw,
             done: false,

@@ -94,6 +94,7 @@ mod limit_form_tour;
 mod limit_tour;
 mod magic_room;
 mod magic_tour;
+mod party_anim_tour;
 mod party_blade;
 mod party_camp_tour;
 mod party_hit_tour;
@@ -1114,6 +1115,9 @@ struct Game {
     /// The party-hit tour (`--party-hit-tour`).
     party_hit_tour: bool,
     party_hit_state: party_hit_tour::State,
+    /// The party-animation tour (`--party-anim-tour`).
+    party_anim_tour: bool,
+    party_anim_state: party_anim_tour::State,
     /// The Type 3 guard spheres of the enemies' attacks this tick (centre,
     /// radius): what a party member's Type 1 shot clashes with.
     enemy_guards: Vec<(Vec3, f32)>,
@@ -3307,11 +3311,11 @@ fn load(
                 )?),
                 None => None,
             };
-            // Donald's and Goofy's faces: the 'face' sequence of their own
-            // archives (obj/<model>.a.<lang>), after Sora's.
+            // The members' faces: the 'face' sequence of their own archives
+            // (obj/<model>.a.<lang>), after Sora's.
             let mut friend_faces = [None; 2];
             if let Ok(library) = data::path_lookup::Library::open(source) {
-                for (i, name) in ["P_EX020", "P_EX030"].into_iter().enumerate() {
+                for (i, name) in party_names().into_iter().enumerate() {
                     if let Some(found) = library.find(&format!("obj/{name}.a.us"))
                         && let Ok(sheet) =
                             hud::load(source, found.index, found.ordinal, found.name_hash, b"face")
@@ -4018,10 +4022,17 @@ fn load(
                 if let Ok(mut library) = data::path_lookup::Library::open(source) {
                     let lvup = bar_entry(&battle, b"lvup").unwrap_or(&[]);
                     let plrp = bar_entry(&battle, b"plrp").unwrap_or(&[]);
-                    for (name, character, records) in [
-                        ("P_EX020", 2, &player::party_members::DONALD[..]),
-                        ("P_EX030", 3, &player::party_members::GOOFY[..]),
-                    ] {
+                    for name in party_names() {
+                        // The personality of the object's character id
+                        // (FUN_1401b06e0).
+                        let Some(member) = objects
+                            .iter()
+                            .find(|o| o.model_name == name.as_bytes())
+                            .and_then(|o| player::party_roster::by_character(o.character as u8))
+                        else {
+                            eprintln!("party member {name}: no friend personality");
+                            continue;
+                        };
                         match party_room::load(
                             source,
                             &mut library,
@@ -4030,22 +4041,27 @@ fn load(
                             plrp,
                             &objects,
                             name,
-                            character,
-                            records,
+                            member,
                             member_limit_motions
-                                .remove(&(character as u8))
+                                .remove(&member.character)
                                 .unwrap_or_default(),
                         ) {
                             Ok(mut k) => {
                                 eprintln!("party member {} loaded", k.name);
                                 // The member's battle voices: the same vtbl rows
                                 // and `voice/us/battle/<world>0_<name>` (the
-                                // exe's `%s%d_%s` with sora, donald, goofy).
-                                let who = if character == 2 { "donald" } else { "goofy" };
+                                // exe's `%s%d_%s`, names by character id).
+                                let who = member.voice;
                                 k.voices = library
                                     .read(&format!(
                                         "voice/us/battle/{voice_world}0_{who}.win32.scd"
                                     ))
+                                    .or_else(|_| {
+                                        library.read(&format!(
+                                            "voice/us/battle/{}0_{who}.win32.scd",
+                                            member.home
+                                        ))
+                                    })
                                     .ok()
                                     .and_then(|bytes| banks.insert(bytes).ok())
                                     .and_then(|bank| {
@@ -6370,6 +6386,21 @@ fn read_pad(
     game.cycle_queued |= p & 0x30_0000_0000 != 0;
     targeting.queue_cycle(p);
 }
+/// The party's members by model name: `KH2RW_PARTY` (a comma list of
+/// objentry models, e.g. `P_HE000,P_EX020`), Donald and Goofy by default.
+fn party_names() -> Vec<&'static str> {
+    match std::env::var("KH2RW_PARTY") {
+        Ok(list) => list
+            .split(',')
+            .map(str::trim)
+            .filter(|n| !n.is_empty())
+            .take(2)
+            .map(|n| &*Box::leak(n.to_string().into_boxed_str()))
+            .collect(),
+        Err(_) => vec!["P_EX020", "P_EX030"],
+    }
+}
+
 /// Scripted input for unattended verification runs.
 fn autoplay_input(tick: u64) -> (Vec2, bool, bool) {
     let stick = match tick {
@@ -6486,6 +6517,8 @@ fn simulate(
         )
     } else if game.enemy_tour {
         (Vec2::ZERO, false, false)
+    } else if game.party_anim_tour {
+        (party_anim_tour::stick(tick), false, false)
     } else if game.magic_tour {
         (
             Vec2::ZERO,
@@ -7494,6 +7527,9 @@ fn simulate(
     }
     if game.party_hit_tour {
         party_hit_tour::drive(&mut game, tick);
+    }
+    if game.party_anim_tour {
+        party_anim_tour::drive(&mut game, tick);
     }
     party_room::tick(&mut game, tick);
     // Drive: requests, the form change, the form gauge (after the player
@@ -10141,7 +10177,20 @@ fn camera_control(
     } else {
         rig.pending_look = 0.;
     }
-    let (eye, look_at, fov) = match talk.as_ref().and_then(|t| t.camera) {
+    // The party-animation tour frames Donald and Goofy from the follow
+    // camera's side, close enough to see their motions.
+    let party_view = (game.party_anim_tour && game.party.len() >= 2).then(|| {
+        let a = Vec3::from_array(game.party[0].follower.position);
+        let b = Vec3::from_array(game.party[1].follower.position);
+        let centre = (a + b) * 0.5 + Vec3::Y * 60.;
+        // Member positions are scene coordinates; the follow camera's are
+        // the game's.
+        let from = from_world(rig.camera.eye) - centre;
+        let side = Vec3::new(from.x, 0., from.z).normalize_or(Vec3::Z);
+        let eye = centre + side * (260. + a.distance(b) * 0.7) + Vec3::Y * 110.;
+        (eye, centre)
+    });
+    let (eye, look_at, fov) = match talk.as_ref().and_then(|t| t.camera).or(party_view) {
         // The talk camera (FUN_140175e50): 60° in the game's horizontal
         // 4:3 sense, converted like the follow camera's.
         Some((eye, target)) => (
@@ -12494,6 +12543,7 @@ fn run(mut args: Vec<PathBuf>) -> Result<AppExit, Box<dyn std::error::Error>> {
     let mut sephiroth_tour = false;
     let mut magic_tour = false;
     let mut party_hit_tour = false;
+    let mut party_anim_tour = false;
     let mut magic_form = 0u8;
     let mut growth_tour = false;
     let mut prize_tour = false;
@@ -12610,6 +12660,18 @@ fn run(mut args: Vec<PathBuf>) -> Result<AppExit, Box<dyn std::error::Error>> {
             // The party-hit tour runs inside the magic tour's setup (an
             // invincible Sora, a frozen Shadow, no menus) with its own
             // schedule in place of the magic tour's.
+            // The party-animation tour: the same setup, Sora walking on a
+            // schedule (party_anim_tour.rs).
+            Some("--party-anim-tour") if autoplay.is_none() => {
+                magic_tour = true;
+                party_anim_tour = true;
+                autoplay = Some(
+                    options
+                        .next()
+                        .cloned()
+                        .ok_or("party animation tour capture directory absent")?,
+                );
+            }
             Some("--party-hit-tour") if autoplay.is_none() => {
                 magic_tour = true;
                 party_hit_tour = true;
@@ -12931,6 +12993,7 @@ fn run(mut args: Vec<PathBuf>) -> Result<AppExit, Box<dyn std::error::Error>> {
         || summon_tour
         || limit_form_tour
         || party_items_tour
+        || party_anim_tour
     {
         // The magic tour's schedule never comes up.
         1 << 40
@@ -12952,6 +13015,8 @@ fn run(mut args: Vec<PathBuf>) -> Result<AppExit, Box<dyn std::error::Error>> {
         party_items_tour::captures()
     } else if limit_tour {
         limit_tour::captures()
+    } else if party_anim_tour {
+        party_anim_tour::captures()
     } else if journal_tour {
         journal_tour::CAPTURES.to_vec()
     } else if npc_tour {
@@ -12997,6 +13062,8 @@ fn run(mut args: Vec<PathBuf>) -> Result<AppExit, Box<dyn std::error::Error>> {
         party_items_tour::end()
     } else if limit_tour {
         limit_tour::end()
+    } else if party_anim_tour {
+        party_anim_tour::END
     } else if journal_tour {
         journal_tour::END
     } else if npc_tour {
@@ -13130,7 +13197,11 @@ fn run(mut args: Vec<PathBuf>) -> Result<AppExit, Box<dyn std::error::Error>> {
                     loaded.spawn.to_array(),
                     loaded.yaw,
                     i as u8,
-                ),
+                )
+                .with_personality(player::party_members::Personality {
+                    jump_max: kind.jump_max,
+                    ..kind.member.personality
+                }),
                 started: 0,
                 stored: false,
                 cast: None,
@@ -13149,6 +13220,7 @@ fn run(mut args: Vec<PathBuf>) -> Result<AppExit, Box<dyn std::error::Error>> {
                 shield: None,
                 bash_keys: Vec::new(),
                 limit: None,
+                fx_at: None,
                 record: combat::HitRecord::new(true),
                 ko_fx: false,
                 cast_motion: 0,
@@ -13195,7 +13267,7 @@ fn run(mut args: Vec<PathBuf>) -> Result<AppExit, Box<dyn std::error::Error>> {
         weapon_pax_changed: false,
         weapon_display: Vec::new(),
         fx_calls: Vec::new(),
-        party_spells: !party_hit_tour,
+        party_spells: !party_hit_tour && !party_anim_tour,
         party_battle: party_room::BattleMode::default(),
         second_deck: loaded.second_deck.take(),
         summons: loaded.summons.take(),
@@ -13225,6 +13297,8 @@ fn run(mut args: Vec<PathBuf>) -> Result<AppExit, Box<dyn std::error::Error>> {
         open_queued: false,
         party_hit_tour,
         party_hit_state: party_hit_tour::State::default(),
+        party_anim_tour,
+        party_anim_state: party_anim_tour::State::default(),
         enemy_guards: Vec::new(),
         party_volumes: Vec::new(),
         gallery_targets: Vec::new(),

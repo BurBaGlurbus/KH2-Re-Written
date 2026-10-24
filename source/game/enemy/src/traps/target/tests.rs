@@ -160,3 +160,28 @@ fn only_an_enemy_class_object_falls_back_to_sora_for_an_empty_record() {
     assert_eq!(id(&world, 1), PLAYER_TARGET);
     assert_eq!(id(&world, 2), 0);
 }
+
+#[test]
+fn an_invalid_target_is_searched_again_only_by_an_enemy() {
+    for (flags, expected) in [(class_flag::ENEMY, PLAYER_TARGET), (0, OBJECT_TARGET | 2)] {
+        let mut world = world_with(&[0., 10.]);
+        world.objects[2].as_mut().unwrap().sys.gone = true;
+        let o = world.objects[1].as_mut().unwrap();
+        o.sys.class_flags = flags;
+        o.sys.target = Target {
+            id: OBJECT_TARGET | 2,
+            ..Target::default()
+        };
+        let mut me = Object::bare(0);
+        let mut f = frame();
+        let ai = ai_object(&mut f, 0, 1);
+        call(
+            &mut world,
+            &mut me,
+            &mut f,
+            btlobj_target,
+            &[Slot::address(ai)],
+        );
+        assert_eq!(world.objects[1].as_ref().unwrap().sys.target.id, expected);
+    }
+}

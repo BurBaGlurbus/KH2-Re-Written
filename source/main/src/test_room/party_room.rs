@@ -12,9 +12,12 @@
 //! revives it. Air attacks, items, Limits and Goofy's Bash follow the specs
 //! under `party-01`.
 use super::*;
+use data::motion_eval::World as Joint;
 use data::path_lookup::Library;
 use player::party_hit;
 use player::party_members::{self, Follower, Target};
+use player::party_motion;
+use player::party_roster;
 use player::party_spell;
 use std::sync::Arc;
 
@@ -26,6 +29,9 @@ const MOTIONS: [u16; 5] = [0, 1, 2, 151, 152];
 /// DEAD motion and the get-up.
 /// Goofy's Bash: the throw, the return and the shield's spin.
 const BASH_MOTIONS: [u16; 3] = [192, 193, 201];
+/// The motions a member's script acts may play beyond the base ones: the
+/// jump, fall, land and the others below 10, and the specials' range.
+const ACT_MOTIONS: [std::ops::RangeInclusive<u16>; 2] = [3..=9, 190..=230];
 const REACTIONS: [u16; 15] = [10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 41, 54, 55, 43, 5];
 
 /// One motion, sampled per tick (60 Hz).
@@ -40,6 +46,12 @@ pub struct MotionData {
     pub root: Vec<Vec3>,
     /// Weapon range 10: (start, end, ATKP id, collision group).
     pub hits: Vec<(u32, u32, u16, u8)>,
+    /// The body motion's own range 10 (members without a weapon object:
+    /// Beast, Jack Skellington, Simba) and the centres of the body's
+    /// ATTACK shapes per tick (model space, root removed), in the order of
+    /// `PartyKind::body_attacks`.
+    pub body_hits: Vec<(u32, u32, u16, u8)>,
+    pub body_attack: Vec<Vec<Vec3>>,
     pub loop_start: u32,
     /// Frame trigger 9 (the spell release, `ctl+0x155` bit 0).
     pub release: Option<u32>,
@@ -65,6 +77,14 @@ pub struct MotionData {
     /// in its own space, per tick (a thrown shield flies with the latter).
     pub hand: Vec<Mat4>,
     pub weapon_local: Vec<Vec<Vec3>>,
+    /// The motion set slot the clip was read from (FUN_1403c7c50's pick for
+    /// the stance; the weapon plays the same slot).
+    pub slot: usize,
+    /// Every bone's evaluated transform per tick (the body's with the root
+    /// removed) and the weapon's own: a blending switch mixes them joint by
+    /// joint (FUN_1401c3970).
+    pub joints: Vec<Vec<Joint>>,
+    pub weapon_joints: Vec<Vec<Joint>>,
 }
 
 impl MotionData {
@@ -129,6 +149,132 @@ pub struct PartyKind {
     pub new_game: party_members::Save,
     /// SSTM +0x164: the Item Boost each equipped Item Boost adds.
     pub item_boost_rate: u16,
+    /// The field-stance variants that differ from the battle ones (idle,
+    /// walk, run and the weapon switch: slots 4m + 3 or 2 against 4m + 0).
+    pub field: HashMap<u16, MotionData>,
+    /// Each bone's parent (body, weapon) and the hand joint the weapon
+    /// hangs from.
+    pub parents: Vec<i32>,
+    pub weapon_parents: Vec<i32>,
+    pub hand_bone: usize,
+    /// The helper joints (bone record +0xc bit 0) the blend steps over.
+    pub helpers: Vec<bool>,
+    pub weapon_helpers: Vec<bool>,
+    /// The weapon object's own effects (`obj/W_<rest>.a.us`): the sparks of
+    /// its hits come from them (FUN_1403d1b40 reads the attack owner's
+    /// container, and the owner of a member's swing is its weapon).
+    pub weapon_pax: Option<Arc<data::object_effect::Pax>>,
+    /// The body's ATTACK shapes (collision type 6): group, radius.
+    pub body_attacks: Vec<(u8, f32)>,
+    /// The personality (records, follow distances, voice name) and the
+    /// highest jump (PRTY word 2).
+    pub member: &'static party_roster::Member,
+    pub jump_max: f32,
+}
+
+impl PartyKind {
+    /// The clip of `motion` in the stance: the field variant when the set
+    /// has one, else the battle one.
+    pub fn data(&self, motion: u16, field: bool) -> Option<&MotionData> {
+        field
+            .then(|| self.field.get(&motion))
+            .flatten()
+            .or_else(|| self.motions.get(&motion))
+    }
+
+    /// The attack windows open at tick `t` of a clip (FUN_14040d810 case
+    /// 10): the weapon motion's on the weapon's ATTACK shapes (bone 2), the
+    /// body motion's on the body's own. Each: a key index, the ATKP id and
+    /// the spheres in member space.
+    pub fn open_windows(&self, data: &MotionData, t: u32) -> Vec<OpenWindow> {
+        let mut out = Vec::new();
+        if let Some(blade) = data
+            .blade
+            .get((t as usize).min(data.blade.len().max(1) - 1))
+        {
+            for (w, &(start, end, atkp, group)) in data.hits.iter().enumerate() {
+                if t < start || t > end {
+                    continue;
+                }
+                let Some(list) = self.spheres.get(&group) else {
+                    continue;
+                };
+                out.push((
+                    w as u64,
+                    atkp,
+                    list.iter()
+                        .map(|&(offset, radius)| (blade.transform_point3(offset), radius))
+                        .collect(),
+                ));
+            }
+        }
+        if let Some(centres) = data
+            .body_attack
+            .get((t as usize).min(data.body_attack.len().max(1) - 1))
+        {
+            for (w, &(start, end, atkp, group)) in data.body_hits.iter().enumerate() {
+                if t < start || t > end {
+                    continue;
+                }
+                let spheres: Vec<(Vec3, f32)> = self
+                    .body_attacks
+                    .iter()
+                    .zip(centres)
+                    .filter(|((g, _), _)| *g == group)
+                    .map(|((_, r), c)| (*c, *r))
+                    .collect();
+                if !spheres.is_empty() {
+                    out.push((8 + w as u64, atkp, spheres));
+                }
+            }
+        }
+        out
+    }
+
+    fn by_slot(&self, slot: usize) -> Option<&MotionData> {
+        self.motions
+            .values()
+            .chain(self.field.values())
+            .find(|d| d.slot == slot)
+    }
+}
+
+/// An open attack window: its key index, ATKP id and spheres (member space).
+pub type OpenWindow = (u64, u16, Vec<(Vec3, f32)>);
+
+/// The member's motion set as its controller reads it.
+pub struct KindClips<'a>(pub &'a PartyKind);
+
+impl party_motion::Clips for KindClips<'_> {
+    fn clip(&self, motion: u16, field: bool) -> Option<party_motion::Clip> {
+        let d = self.0.data(motion, field)?;
+        Some(party_motion::Clip {
+            slot: d.slot,
+            length: d.end().max(1),
+            loop_top: d.loop_start,
+        })
+    }
+
+    fn trigger(&self, slot: usize, kind: u8) -> Option<u32> {
+        self.0.by_slot(slot).and_then(|d| {
+            d.events
+                .frames
+                .iter()
+                .filter(|f| f.kind == kind)
+                .map(|f| u32::from(f.frame))
+                .min()
+        })
+    }
+
+    fn range(&self, slot: usize, kind: u8, tick: u32) -> bool {
+        self.0.by_slot(slot).is_some_and(|d| {
+            d.events.ranges.iter().any(|r| {
+                r.kind == kind
+                    && u32::from(r.start) <= tick
+                    && (r.end == u16::MAX || tick < u32::from(r.end))
+            })
+        })
+    }
 }
 
 /// A member in the room.
@@ -184,6 +330,9 @@ pub struct MemberRt {
     /// the member last (obj+0xf88), by candidate key.
     pub targeting: player::party_style::Targeting,
     pub attacker: Option<u64>,
+    /// The controller start and frame the motion's frame triggers were last
+    /// scanned at (the elements they start).
+    pub fx_at: Option<(u32, f32)>,
 }
 
 /// `FUN_1403d60c0`'s gauge event of a hit: a dead member or a blow-class
@@ -232,6 +381,7 @@ fn build_motion(
     weapon: Option<&model_inspection::InspectionModel>,
     hand_bone: usize,
     hit_shapes: &[(usize, Vec3, f32, bool)],
+    attack_shapes: &[(Option<usize>, Vec3)],
     selected: &motion::SelectedMotion,
     own: Option<&motion::SelectedMotion>,
 ) -> Result<MotionData, Box<dyn std::error::Error>> {
@@ -254,6 +404,25 @@ fn build_motion(
         blade: Vec::new(),
         root: Vec::new(),
         hits: Vec::new(),
+        body_hits: selected
+            .triggers
+            .iter()
+            .flat_map(|t| &t.records.ranges)
+            .filter(|r| r.trigger == 10 && r.parameters.len() >= 2)
+            .map(|r| {
+                (
+                    r.start_frame.max(0) as u32,
+                    if r.end_frame < 0 {
+                        end
+                    } else {
+                        r.end_frame as u32
+                    },
+                    r.parameters[0] as u16,
+                    r.parameters[1] as u8,
+                )
+            })
+            .collect(),
+        body_attack: Vec::new(),
         loop_start,
         release: selected
             .triggers
@@ -325,6 +494,30 @@ fn build_motion(
         },
         hand: Vec::new(),
         weapon_local: Vec::new(),
+        slot: selected.slot,
+        joints: Vec::new(),
+        weapon_joints: Vec::new(),
+    };
+    let bones = model.skinning.bones.len();
+    // A weapon without motions hangs on the hand in its bind pose.
+    let bind = match (weapon, own) {
+        (Some(w), None) => w
+            .skinning
+            .bind_pose(data::model_pose::PoseProfile::Legacy)
+            .ok()
+            .map(|b| {
+                let local: Vec<Vec3> = b
+                    .position_bits
+                    .iter()
+                    .map(|p| Vec3::from_array(p.map(f32::from_bits)))
+                    .collect();
+                let bone = b
+                    .matrix_bits
+                    .get(2)
+                    .map(|m| Mat4::from_cols_array(&m.map(f32::from_bits)));
+                (local, bone)
+            }),
+        _ => None,
     };
     if let Some(own) = own {
         data.hits = own
@@ -347,10 +540,26 @@ fn build_motion(
             .collect();
     }
     for offset in 0..=end {
-        let key = frame_start + offset as f32 / scale;
+        // The keys run at 60 a second, twice the declared frame rate (the
+        // reader's `frame_window`): one key per tick, as Sora's clips.
+        let key = (start + offset) as f32;
         let (pose, evaluated) = model.skinning.sample_evaluated(&selected.motion, key)?;
         let r = Vec3::from_array(evaluated.root_translation);
         data.root.push(r);
+        // Raw-matrix motions have no joints to blend.
+        if let Some(own) = evaluated.joints.get(..bones) {
+            data.joints.push(
+                own.iter()
+                    .map(|w| {
+                        let mut w = *w;
+                        for (t, r) in w.translation.iter_mut().zip(r.to_array()) {
+                            *t -= r;
+                        }
+                        w
+                    })
+                    .collect(),
+            );
+        }
         data.frames.push(
             pose.position_bits
                 .iter()
@@ -367,13 +576,36 @@ fn build_motion(
                 })
                 .collect(),
         );
+        data.body_attack.push(
+            attack_shapes
+                .iter()
+                .map(|&(bone, offset)| match bone {
+                    Some(bone) => pose
+                        .matrix_bits
+                        .get(bone)
+                        .map_or(offset, |m| matrix(m, r).transform_point3(offset)),
+                    None => offset,
+                })
+                .collect(),
+        );
         let hand = pose
             .matrix_bits
             .get(hand_bone)
             .map_or(Mat4::IDENTITY, |m| matrix(m, r));
         data.hand.push(hand);
+        if let Some((local, bone)) = &bind {
+            data.weapon
+                .push(local.iter().map(|p| hand.transform_point3(*p)).collect());
+            data.weapon_local.push(local.clone());
+            let blade = bone.map_or(hand, |b| hand * b);
+            data.blade.push(blade);
+            data.staff.push(blade);
+        }
         if let (Some(w), Some(own)) = (weapon, own) {
-            let (wp, _) = w.skinning.sample_evaluated(&own.motion, key)?;
+            let (wp, we) = w.skinning.sample_evaluated(&own.motion, key)?;
+            if let Some(joints) = we.joints.get(..w.skinning.bones.len()) {
+                data.weapon_joints.push(joints.to_vec());
+            }
             data.weapon_local.push(
                 wp.position_bits
                     .iter()
@@ -420,10 +652,11 @@ pub fn load(
     plrp: &[u8],
     objects: &[objentry::ObjectEntry],
     name: &'static str,
-    character: usize,
-    records: &'static [party_members::Record],
+    member: &'static party_roster::Member,
     limit_motions: Vec<(u16, motion::SelectedMotion, Option<motion::SelectedMotion>)>,
 ) -> Result<PartyKind, Box<dyn std::error::Error>> {
+    let character = member.character as usize;
+    let records = member.records;
     let found = library
         .find(&format!("obj/{name}.mdlx"))
         .ok_or_else(|| format!("obj/{name}.mdlx is not installed"))?;
@@ -454,30 +687,66 @@ pub fn load(
             wanted.push(r.motion);
         }
     }
-    // The Bash plays 192, 193 and the thrown shield's spin 201.
-    if records
+    // The Bash plays 192, 193 and the thrown shield's spin 201; the other
+    // acts play their own motions.
+    let acts = records
         .iter()
-        .any(|r| r.spell == Some(party_members::Spell::Bash))
-    {
-        for m in BASH_MOTIONS {
+        .any(|r| r.spell.is_some_and(|s| s.act().is_some()));
+    if acts {
+        for m in BASH_MOTIONS
+            .into_iter()
+            .chain(ACT_MOTIONS.into_iter().flatten())
+        {
             if !wanted.contains(&m) {
                 wanted.push(m);
             }
         }
     }
     wanted.extend(REACTIONS);
+    // The weapon draw / put-away a stance switch plays (FUN_1403c88c0).
+    if !wanted.contains(&party_motion::STANCE_SWITCH) {
+        wanted.push(party_motion::STANCE_SWITCH);
+    }
+    // The battle stance's slots (variant order 0, 1, 3, 2) and the field
+    // stance's (3, 2, 1, 0): FUN_1403c7c50 with DAT_1405c5d38, for a
+    // player-type object holding its weapon.
     let actor_motions = motion::read_motion_ids_optional(source, &selection(name)?, &wanted)?;
-    // The staff or shield: W_EX020 for P_EX020.
-    let weapon_name = format!("W_{}", &name[2..]);
+    let field_motions = motion::read_motion_ids_optional(
+        source,
+        &motion::MotionSetSelection {
+            battle: false,
+            ..selection(name)?
+        },
+        &wanted,
+    )?;
+    // The weapon object: the first of the WENT set the object entry's
+    // neo-moveset selects (the base weapon; Donald's and Goofy's sets go on
+    // with the staves and shields an item equips). Ping's is Mulan's W_MU000.
+    let weapon_name = objects
+        .iter()
+        .find(|o| o.model_name == name.as_bytes())
+        .and_then(|o| {
+            let went = bar_entry(system, b"went").ok()?;
+            let set = data::weapon_entry::set(went, usize::from(o.neo_moveset)).ok()?;
+            let id = *set.first()?;
+            let e = objects.iter().find(|e| e.object_id == id)?;
+            String::from_utf8(e.model_name.clone()).ok()
+        })
+        .unwrap_or_else(|| format!("W_{}", &name[2..]));
     let weapon_selection = selection(&weapon_name).ok();
     let mut weapon = None;
     let mut spheres: HashMap<u8, Vec<(Vec3, f32)>> = HashMap::new();
-    let mut weapon_motions = Vec::new();
+    let mut weapon_motions: HashMap<usize, motion::SelectedMotion> = HashMap::new();
     if let Some(w) = library.find(&format!("obj/{weapon_name}.mdlx")) {
         let archive = library.read_found(&w)?;
-        let mut models = model_inspection::read_model_at(source, w.index, w.ordinal, w.name_hash)?;
-        if !models.is_empty() {
-            weapon = Some(models.remove(0));
+        // Beast's, Jack's and Simba's weapon objects carry only their attack
+        // spheres: no model to show.
+        if bar_entry_typed(&archive, 4).is_ok() {
+            let mut models =
+                model_inspection::read_model_at(source, w.index, w.ordinal, w.name_hash)?;
+            if !models.is_empty() {
+                weapon = Some(models.remove(0));
+            }
         }
         if let Ok(entry) = bar_entry_typed(&archive, 23)
             && let Ok(shapes) = object_collision::read(entry)
@@ -496,8 +765,26 @@ pub fn load(
                 ));
             }
         }
+        // The weapon plays its owner's slot (FUN_1403c8cd0).
         if let Some(sel) = &weapon_selection {
-            weapon_motions = motion::read_motion_ids_optional(source, sel, &wanted)?;
+            let slots: Vec<usize> = actor_motions
+                .iter()
+                .chain(&field_motions)
+                .flatten()
+                .map(|m| m.slot)
+                .collect();
+            weapon_motions = slots
+                .iter()
+                .copied()
+                .zip(motion::read_slots_optional(
+                    source,
+                    &sel.index,
+                    sel.ordinal,
+                    sel.name_hash,
+                    &slots,
+                )?)
+                .filter_map(|(slot, m)| Some((slot, m?)))
+                .collect();
         }
     }
     // The model's HIT spheres (type 2, group 0), where enemy attacks land.
@@ -524,13 +811,53 @@ pub fn load(
             })
             .collect();
     }
-    // The hand joint: the character's SKLT primary bone.
-    let sk = sklt::read(bar_entry(system, b"sklt")?)?;
-    let hand_bone = sk
+    // The body's ATTACK shapes (type 6): on a bone, or about the object
+    // (bone 0x4000) at its height.
+    let mut body_shapes: Vec<(u8, Option<usize>, Vec3, f32)> = Vec::new();
+    if let Some(found) = library.find(&format!("obj/{name}.mdlx"))
+        && let Ok(archive) = library.read_found(&found)
+        && let Ok(entry) = bar_entry_typed(&archive, 23)
+        && let Ok(shapes) = object_collision::read(entry)
+    {
+        body_shapes = shapes
+            .iter()
+            .filter(|c| c.kind == object_collision::ATTACK)
+            .map(|c| {
+                let p = Vec3::new(
+                    c.position[0] as f32,
+                    c.position[1] as f32,
+                    c.position[2] as f32,
+                );
+                if c.bone >= 0 && c.bone < 0x4000 {
+                    (c.group, Some(c.bone as usize), p, c.radius as f32)
+                } else {
+                    (
+                        c.group,
+                        None,
+                        p + Vec3::Y * c.position_height as f32,
+                        c.radius as f32,
+                    )
+                }
+            })
+            .collect();
+    }
+    let attack_shapes: Vec<(Option<usize>, Vec3)> =
+        body_shapes.iter().map(|s| (s.1, s.2)).collect();
+    let body_attacks: Vec<(u8, f32)> = body_shapes.iter().map(|s| (s.0, s.3)).collect();
+    // The hand joint: the SKLT primary bone, found by the object entry's
+    // byte +7 (FUN_1403d7620: FUN_1403b5c10, FUN_1403eaae0), which is not
+    // always the character id (SKLT has no row for Riku's 13).
+    let skeleton = objects
         .iter()
-        .find(|e| e.character_id as usize == character)
-        .and_then(|e| usize::try_from(e.primary_bone).ok())
-        .ok_or("SKLT entry for the party member absent")?;
+        .find(|o| o.model_name == name.as_bytes())
+        .map_or(character, |o| usize::from(o.weapon_joint));
+    let sk = sklt::read(bar_entry(system, b"sklt")?)?;
+    let entry = sk
+        .iter()
+        .find(|e| e.character_id as usize == skeleton)
+        .ok_or_else(|| format!("SKLT has no entry for skeleton {skeleton}"))?;
+    // Beast, Jack and Simba hold nothing (bone -1): no hand, the identity.
+    let hand_bone = usize::try_from(entry.primary_bone).unwrap_or(usize::MAX);
     let mut motions = HashMap::new();
     for (i, selected) in actor_motions.iter().enumerate() {
         let Some(selected) = selected else {
@@ -546,8 +873,9 @@ pub fn load(
             weapon.as_ref(),
             hand_bone,
             &hit_shapes,
+            &attack_shapes,
             selected,
-            weapon_motions.get(i).and_then(|m| m.as_ref()),
+            weapon_motions.get(&selected.slot),
         );
         match built {
             Ok(data) => {
@@ -566,6 +894,7 @@ pub fn load(
             weapon.as_ref(),
             hand_bone,
             &hit_shapes,
+            &attack_shapes,
             body,
             own.as_ref(),
         ) {
@@ -575,6 +904,57 @@ pub fn load(
             Err(e) => eprintln!("{name}: limit motion {id:#x} left out: {e}"),
         }
     }
+    // The field variants that differ from the battle ones.
+    let mut field = HashMap::new();
+    for (i, selected) in field_motions.iter().enumerate() {
+        let Some(selected) = selected else { continue };
+        if motions
+            .get(&wanted[i])
+            .is_some_and(|d: &MotionData| d.slot == selected.slot)
+        {
+            continue;
+        }
+        match build_motion(
+            &model,
+            weapon.as_ref(),
+            hand_bone,
+            &hit_shapes,
+            &attack_shapes,
+            selected,
+            weapon_motions.get(&selected.slot),
+        ) {
+            Ok(data) => {
+                field.insert(wanted[i], data);
+            }
+            Err(e) => eprintln!("{name}: field motion {} left out: {e}", wanted[i]),
+        }
+    }
+    let parents: Vec<i32> = model
+        .skinning
+        .bones
+        .iter()
+        .map(|b| b.header_i32[1])
+        .collect();
+    let weapon_parents: Vec<i32> = weapon
+        .as_ref()
+        .map(|w| w.skinning.bones.iter().map(|b| b.header_i32[1]).collect())
+        .unwrap_or_default();
+    let helpers: Vec<bool> = model
+        .skinning
+        .bones
+        .iter()
+        .map(|b| b.header_i32[3] & 1 != 0)
+        .collect();
+    let weapon_helpers: Vec<bool> = weapon
+        .as_ref()
+        .map(|w| {
+            w.skinning
+                .bones
+                .iter()
+                .map(|b| b.header_i32[3] & 1 != 0)
+                .collect()
+        })
+        .unwrap_or_default();
     // The member's own effects and collision heights.
     let pax = library
         .read(&format!("obj/{name}.a.us"))
@@ -591,6 +971,8 @@ pub fn load(
             .ok()
         })
         .map(Arc::new);
+    let weapon_pax =
+        drive_room::file_pax(library, &format!("obj/{weapon_name}.a.us")).map(Arc::new);
     let (mut body_lift, mut heal_lift) = (85f32, 105f32);
     if let Some(found) = library.find(&format!("obj/{name}.mdlx"))
         && let Ok(archive) = library.read_found(&found)
@@ -604,8 +986,11 @@ pub fn load(
             heal_lift = c.position_height as f32;
         }
     }
-    let row = data::battle_tables::player_level(lvup, character, 1)?;
-    let (hp, mp) = visual::hud::starting_stats_of(plrp, character as u8)?;
+    // Ping (0xf) and Roxas (0xe) read Mulan's and Sora's rows
+    // (FUN_1403e60c0).
+    let stats_character = party_roster::stats_character(character as u8);
+    let row = data::battle_tables::player_level(lvup, stats_character as usize, 1)?;
+    let (hp, mp) = visual::hud::starting_stats_of(plrp, stats_character)?;
     // The new-game plrp row's Defence (+8) joins the level row's.
     let plrp_def = (0..plrp
         .get(4..8)
@@ -613,7 +998,7 @@ pub fn load(
         .map(|i| 8 + i * 128)
         .find(|&at| {
             plrp.get(at..at + 3)
-                .is_some_and(|e| u16::from_le_bytes([e[0], e[1]]) == 0 && e[2] == character as u8)
+                .is_some_and(|e| u16::from_le_bytes([e[0], e[1]]) == 0 && e[2] == stats_character)
         })
         .and_then(|at| plrp.get(at + 8).copied())
         .unwrap_or(0) as i32;
@@ -627,13 +1012,16 @@ pub fn load(
     let prty = party_records::read_prty(bar_entry(pref, b"prty")?)?;
     let offset =
         actor_physics::prty_offset(&prty.offsets, prty_index).ok_or("PRTY record absent")?;
-    let ko_time = prty
+    let prty_words = prty
         .records
         .iter()
         .find(|r| r.offset == offset && !r.overlaps_table)
-        .and_then(|r| r.words.get(6))
-        .map(|w| f32::from_bits(*w))
+        .map(|r| r.words)
         .ok_or("PRTY record absent or overlaps table")?;
+    let word = |i: usize| prty_words.get(i).map(|w| f32::from_bits(*w));
+    let ko_time = word(6).ok_or("PRTY record too short")?;
+    // PRTY word 2 (obj+0x130): the highest an air attack's jump goes.
+    let jump_max = word(2).unwrap_or(party_members::AIR_MAX);
     let sstm_bytes = bar_entry(pref, b"sstm")?;
     let sstm_offset = u32::from_le_bytes(sstm_bytes.get(4..8).ok_or("SSTM pointer")?.try_into()?);
     let record = sstm_bytes
@@ -644,18 +1032,17 @@ pub fn load(
     let item_boost_rate = player::abilities::Rates::read(record)
         .ok_or("SSTM rates truncated")?
         .w164;
-    // Goofy's own object script runs the Bash on the object-script engine.
-    let script = if records
-        .iter()
-        .any(|r| r.spell == Some(party_members::Spell::Bash))
-    {
+    // The member's own object script runs its acts (Goofy's Bash, the
+    // guests' specials) on the object-script engine.
+    let script = if acts {
         super::enemy_script::script_payload(source, name).ok()
     } else {
         None
     };
     let blade_clips = Arc::new(party_blade::BladeClips(
-        std::iter::once(0u16)
-            .chain(BASH_MOTIONS)
+        motions
+            .keys()
+            .copied()
             .filter_map(|slot| {
                 let d = motions.get(&slot)?;
                 Some((
@@ -719,6 +1106,16 @@ pub fn load(
         weight: entry.weight(),
         new_game,
         item_boost_rate,
+        field,
+        parents,
+        weapon_parents,
+        hand_bone,
+        helpers,
+        weapon_helpers,
+        weapon_pax,
+        member,
+        jump_max,
+        body_attacks,
     })
 }
 
@@ -811,6 +1208,23 @@ pub fn order_cast(game: &mut Game, member: usize, spell: party_members::Spell, h
     // meanwhile.
     m.forced = Some((record, heal));
     true
+}
+
+/// Orders the member's `nth` special (its records with a spell or act, in
+/// order); returns it when there is one.
+pub fn order_special(game: &mut Game, member: usize, nth: usize) -> Option<party_members::Spell> {
+    let m = game.party.get_mut(member)?;
+    let record = *m
+        .kind
+        .records
+        .iter()
+        .filter(|r| r.spell.is_some())
+        .nth(nth)?;
+    if m.stored {
+        return None;
+    }
+    m.forced = Some((record, 0));
+    record.spell
 }
 
 /// The hit spark of a member's spell volume: the element of the member's own
@@ -1071,28 +1485,71 @@ impl MemberRt {
         }
     }
 
+    /// The clip the controller shows and its frame (the member's state's
+    /// before the controller has started one).
+    pub fn shown(&self) -> Option<(&MotionData, usize)> {
+        let ctl = &self.follower.ctl;
+        match ctl.clip {
+            Some(_) => {
+                let d = self.kind.data(ctl.motion, ctl.field)?;
+                Some((d, d.frame_of(ctl.frame().max(0.) as u32)))
+            }
+            None => {
+                let d = self.kind.motions.get(&self.follower.motion())?;
+                Some((d, d.frame_of(self.follower.tick)))
+            }
+        }
+    }
+
+    /// The element ids of the frame triggers 1 the controller's clock passed
+    /// since the last scan: all those up to the frame after a new start, the
+    /// ones past the last frame otherwise (and from the loop's return frame
+    /// after a wrap).
+    fn motion_elements(&mut self) -> Vec<u16> {
+        let ctl = self.follower.ctl;
+        let Some((data, _)) = self.shown() else {
+            return Vec::new();
+        };
+        let now = ctl.frame();
+        let passed = |at: f32| match self.fx_at {
+            Some((serial, last)) if serial == ctl.serial => {
+                if now >= last {
+                    at > last && at <= now
+                } else {
+                    at > last || (at >= data.loop_start as f32 && at <= now)
+                }
+            }
+            _ => at <= now,
+        };
+        let ids = data
+            .events
+            .frames
+            .iter()
+            .filter(|f| f.kind == 1 && passed(f.frame as i16 as f32))
+            .filter_map(|f| f.params.first().copied())
+            .collect();
+        self.fx_at = Some((ctl.serial, now));
+        ids
+    }
+
     /// Frame trigger 14 of the motion playing: the voices whose tick the
     /// motion has reached since the last scan.
     fn motion_voices(&mut self, sound_queue: &mut Vec<(u32, &'static str)>) {
-        let motion = self.follower.motion();
-        let tick = self.follower.tick;
+        let Some((data, frame)) = self.shown() else {
+            return;
+        };
+        let (slot, tick) = (data.slot as u16, frame as u32);
         let from = match self.voice_at {
-            (m, t) if m == motion && t <= tick => Some(t),
+            (m, t) if m == slot && t <= tick => Some(t),
             _ => None,
         };
-        self.voice_at = (motion, tick);
-        let due: Vec<i16> = self
-            .kind
-            .motions
-            .get(&motion)
-            .map(|d| {
-                d.voices
-                    .iter()
-                    .filter(|&&(at, _)| from.is_none_or(|f| at > f) && at <= tick)
-                    .map(|&(_, n)| n)
-                    .collect()
-            })
-            .unwrap_or_default();
+        let due: Vec<i16> = data
+            .voices
+            .iter()
+            .filter(|&&(at, _)| from.is_none_or(|f| at > f) && at <= tick)
+            .map(|&(_, n)| n)
+            .collect();
+        self.voice_at = (slot, tick);
         for n in due {
             self.say(n, sound_queue);
         }
@@ -1106,14 +1563,13 @@ impl MemberRt {
     /// whether a hit on it flinches high.
     fn bodies(&self) -> Vec<(Vec3, f32, bool)> {
         let kind = &self.kind;
-        let Some(data) = kind
-            .motions
-            .get(&self.follower.motion())
-            .or_else(|| kind.motions.get(&0))
+        let Some((data, frame)) = self
+            .shown()
+            .or_else(|| kind.motions.get(&0).map(|d| (d, 0)))
         else {
             return Vec::new();
         };
-        let Some(centres) = data.hit.get(data.frame_of(self.follower.tick)) else {
+        let Some(centres) = data.hit.get(frame) else {
             return Vec::new();
         };
         let at = Vec3::from_array(self.follower.position);
@@ -1132,13 +1588,12 @@ impl MemberRt {
         row: &dyn Fn(u16) -> Option<data::battle_tables::Attack>,
     ) -> Vec<(Vec3, f32, u16)> {
         let kind = &self.kind;
-        let Some(data) = kind.motions.get(&self.follower.motion()) else {
+        let Some((data, f)) = self.shown() else {
             return Vec::new();
         };
         if data.blade.is_empty() {
             return Vec::new();
         }
-        let f = data.frame_of(self.follower.tick);
         let at = Vec3::from_array(self.follower.position);
         let turn = Quat::from_rotation_y(self.follower.yaw);
         let mut out = Vec::new();
@@ -1164,10 +1619,8 @@ impl MemberRt {
 impl MemberRt {
     /// The ATKP ids of the weapon windows of the motion playing.
     pub fn window_atkps(&self) -> Vec<u16> {
-        self.kind
-            .motions
-            .get(&self.follower.motion())
-            .map(|d| d.hits.iter().map(|h| h.2).collect())
+        self.shown()
+            .map(|(d, _)| d.hits.iter().chain(&d.body_hits).map(|h| h.2).collect())
             .unwrap_or_default()
     }
 }
@@ -1547,6 +2000,7 @@ pub fn tick(game: &mut Game, tick: u64) {
         party_spells,
         party_battle,
         party_hit_tour,
+        party_anim_tour,
         drive,
         enemy_guards,
         party_volumes,
@@ -1635,7 +2089,10 @@ pub fn tick(game: &mut Game, tick: u64) {
     };
     // The tour orders its casts; the AI casts on its own elsewhere.
     let spells = (*party_spells || std::env::var_os("KH2RW_PARTY_COMBAT").is_some())
-        && (!*magic_tour || *party_hit_tour || super::magic_tour::free_party(tick, *magic_shift));
+        && (!*magic_tour
+            || *party_hit_tour
+            || *party_anim_tour
+            || super::magic_tour::free_party(tick, *magic_shift));
     // Heals the acts land this tick: party slot, ATKP id, healer index.
     let mut heals: Vec<(usize, u16, usize)> = Vec::new();
     for (index, m) in party.iter_mut().enumerate() {
@@ -1677,10 +2134,14 @@ pub fn tick(game: &mut Game, tick: u64) {
         let centre = chosen.map(|e| e.centre.to_array());
         // The Bash: the engine runs the `blade` act of Goofy's own script, and
         // the member follows what it says.
-        let bashing = m
+        // An act of the member's own script (Goofy's Bash, a guest's
+        // special): the engine runs it and the member follows what it says.
+        let acting = m
             .follower
             .attack
-            .is_some_and(|a| a.spell == Some(party_members::Spell::Bash));
+            .and_then(|a| a.spell)
+            .and_then(|s| s.act());
+        let bashing = acting.is_some();
         if !bashing {
             m.blade = None;
             m.shield = None;
@@ -1688,6 +2149,7 @@ pub fn tick(game: &mut Game, tick: u64) {
         }
         let mut scripted = None;
         let mut bash_attacks = Vec::new();
+        let mut finished = false;
         if bashing {
             if m.blade.is_none()
                 && let Some(payload) = kind.script.as_ref()
@@ -1703,9 +2165,17 @@ pub fn tick(game: &mut Game, tick: u64) {
                         stats: kind.target,
                         sstm: kind.sstm,
                         target: centre,
+                        records: kind.records,
                     },
+                    acting.unwrap_or("blade"),
                 )
-                .map_err(|e| eprintln!("{}: the Bash could not start: {e}", kind.name))
+                .map_err(|e| {
+                    eprintln!(
+                        "{}: the act {} could not start: {e}",
+                        kind.name,
+                        acting.unwrap_or("blade")
+                    )
+                })
                 .ok();
             }
             // Volumes that struck last tick run their hit callbacks.
@@ -1743,10 +2213,17 @@ pub fn tick(game: &mut Game, tick: u64) {
                         },
                     });
                 }
-                if tick.is_multiple_of(30) || f.done {
+                if !f.unsupported.is_empty() {
                     log_event(
                         log,
-                        serde_json::json!({"event":"party_bash","tick":tick,"member":kind.name,
+                        serde_json::json!({"event":"party_act_unsupported","tick":tick,
+                        "member":kind.name,"act":acting,"traps":f.unsupported}),
+                    );
+                }
+                if tick.is_multiple_of(30) || f.done || tick == m.started + 1 {
+                    log_event(
+                        log,
+                        serde_json::json!({"event":"party_bash","tick":tick,"member":kind.name,"act":acting,
                         "motion":f.motion,"motion_tick":f.tick,"position":f.position,
                         "shield":f.shield.map(|s| s.position),"attacks":f.attacks.len(),
                         "done":f.done}),
@@ -1756,11 +2233,20 @@ pub fn tick(game: &mut Game, tick: u64) {
                 scripted = Some(party_members::Scripted {
                     motion: f.motion,
                     tick: f.tick,
+                    serial: f.serial,
+                    blend: f.blend,
+                    queue: [f.queue.first().copied(), f.queue.get(1).copied()],
                     position: f.position,
                     yaw: f.yaw,
                     done: f.done,
                 });
                 bash_attacks = f.attacks;
+                finished = f.done;
+            }
+            // A finished act's runner is dropped: the next act (often begun
+            // the following tick) starts a fresh one.
+            if finished {
+                m.blade = None;
             }
         }
         let length = |id: u16| kind.motions.get(&id).map(|d| d.end() + 1);
@@ -1795,6 +2281,7 @@ pub fn tick(game: &mut Game, tick: u64) {
             battle,
             scripted,
             can_bash: kind.script.is_some(),
+            clips: Some(&KindClips(&kind)),
         };
         let was = m.follower.attack.is_some();
         match m.limit {
@@ -1820,6 +2307,31 @@ pub fn tick(game: &mut Game, tick: u64) {
             m.follower.position = moved.position;
         }
         m.motion_voices(sound_queue);
+        // Frame trigger 1 of the motion playing (FUN_14040dd70 case 1): an
+        // element of the member's own container, bound to it. The Bash's
+        // act runs on the engine, which starts its own.
+        if !bashing {
+            for id in m.motion_elements() {
+                fx_calls.push(spell_fx::Call {
+                    pax: kind.pax.clone(),
+                    fx: player::magic::Fx::Start {
+                        key: FX_BASE
+                            | (index as u64) << 40
+                            | 2 << 36
+                            | (tick << 4)
+                            | id as u64 & 15,
+                        id,
+                        bound: Some(player::magic::Anchor::Party(index + 1)),
+                        at: None,
+                    },
+                });
+                log_event(
+                    log,
+                    serde_json::json!({"event":"party_motion_effect","tick":tick,
+                    "member":kind.name,"motion":m.follower.ctl.motion,"id":id}),
+                );
+            }
+        }
         // FUN_1403f6790 at the item-use trigger: the item leaves the member's
         // own slots (FUN_1403c49c0 with its character) and its heal is
         // queued; a hit before the trigger uses nothing.
@@ -1920,7 +2432,7 @@ pub fn tick(game: &mut Game, tick: u64) {
             m.follower.begin(&record, &target.unwrap_or(ahead), heal);
             m.started = tick;
             // The Bash has no cast of its own: the engine runs the act.
-            m.armed = record.spell != Some(party_members::Spell::Bash);
+            m.armed = record.spell.is_none_or(|s| s.act().is_none());
         }
         let now = m.follower.attack;
         if !was
@@ -1929,7 +2441,7 @@ pub fn tick(game: &mut Game, tick: u64) {
         {
             m.started = tick;
             // The Bash has no cast: the engine runs its own act.
-            m.armed = a.spell.is_some_and(|s| s != party_members::Spell::Bash);
+            m.armed = a.spell.is_some_and(|s| s.act().is_none());
         }
         // The act manager starts the spell's act (FUN_1403caa90).
         if m.armed
@@ -1938,11 +2450,14 @@ pub fn tick(game: &mut Game, tick: u64) {
         {
             m.armed = false;
             m.casts += 1;
+            // The motion's blend holds its first frame: the act's wait for the
+            // release counts those ticks too.
             let release = kind
                 .motions
                 .get(&a.motion)
                 .and_then(|d| d.release)
-                .unwrap_or(26);
+                .unwrap_or(26)
+                + a.hold;
             let key = FX_BASE | (index as u64) << 40 | m.casts << 8;
             m.cast = Some(
                 party_spell::Cast::new(spell, index + 1, a.heal as usize, key, release)
@@ -2222,39 +2737,24 @@ pub fn tick(game: &mut Game, tick: u64) {
         // The weapon's attack windows, offered to the gallery enemies.
         if let Some(a) = m.follower.attack
             && let Some(data) = kind.motions.get(&a.motion)
-            && !data.blade.is_empty()
         {
-            let f = (a.tick as usize).min(data.blade.len() - 1);
             let turn = Quat::from_rotation_y(m.follower.yaw);
             let at = Vec3::from_array(m.follower.position);
-            for (w, &(start, end, atkp, group)) in data.hits.iter().enumerate() {
-                let Some(list) = kind.spheres.get(&group) else {
-                    continue;
-                };
-                if a.tick < start || a.tick > end {
-                    continue;
-                }
+            for (w, atkp, list) in kind.open_windows(data, a.tick) {
                 party_volumes.push(OutVolume {
                     member: index,
-                    key: KEY_BASE | (index as u64) << 48 | m.started << 4 | w as u64,
+                    key: KEY_BASE | (index as u64) << 48 | m.started << 4 | w,
                     atkp,
                     sub: 0,
                     spheres: list
                         .iter()
-                        .map(|&(offset, radius)| {
-                            (
-                                at + turn * data.blade[f].transform_point3(offset),
-                                radius,
-                                radius,
-                                None,
-                            )
-                        })
+                        .map(|&(c, radius)| (at + turn * c, radius, radius, None))
                         .collect(),
                     moving: None,
                     stats: attacker(&kind),
                     origin: at,
                     spell: false,
-                    pax: None,
+                    pax: kind.weapon_pax.clone(),
                 });
             }
         }
@@ -2265,22 +2765,15 @@ pub fn tick(game: &mut Game, tick: u64) {
         let Some(data) = kind.motions.get(&a.motion) else {
             continue;
         };
-        if !rt.enabled || !rt.enemy.targetable() || data.blade.is_empty() {
+        if !rt.enabled || !rt.enemy.targetable() {
             continue;
         }
-        let f = (a.tick as usize).min(data.blade.len() - 1);
         let turn = Quat::from_rotation_y(m.follower.yaw);
         let at = Vec3::from_array(m.follower.position);
         let enemy_at = Vec3::from_array(rt.enemy.position);
         let bodies = enemy_bodies(rt);
-        for (w, &(start, end, atkp, group)) in data.hits.iter().enumerate() {
-            if a.tick < start || a.tick > end {
-                continue;
-            }
-            let Some(list) = kind.spheres.get(&group) else {
-                continue;
-            };
-            let key = KEY_BASE | (index as u64) << 48 | m.started << 4 | w as u64;
+        for (w, atkp, list) in kind.open_windows(data, a.tick) {
+            let key = KEY_BASE | (index as u64) << 48 | m.started << 4 | w;
             rt.instance_seen.insert(key, tick);
             let (aid, grp) = *rt.instance_ids.entry(key).or_insert_with(|| {
                 (
@@ -2292,16 +2785,16 @@ pub fn tick(game: &mut Game, tick: u64) {
                 continue;
             }
             let mut hit = None;
-            for &(offset, radius) in list {
-                let c = at + turn * data.blade[f].transform_point3(offset);
-                if let Some(&(_, _, high)) = bodies.iter().find(|(b, r, _)| {
+            for &(local, radius) in &list {
+                let c = at + turn * local;
+                if let Some(&(b, r, high)) = bodies.iter().find(|(b, r, _)| {
                     combat::spheres_overlap(c.to_array(), radius, b.to_array(), *r)
                 }) {
-                    hit = Some(high);
+                    hit = Some((high, c, b, r));
                     break;
                 }
             }
-            let Some(high) = hit else {
+            let Some((high, centre, body, body_radius)) = hit else {
                 continue;
             };
             let rows = rt.steps[&(atkp, 0)].clone();
@@ -2331,10 +2824,39 @@ pub fn tick(game: &mut Game, tick: u64) {
                 {
                     sound_queue.push((id as u32, "party_hit"));
                 }
+                // The victim's own hit sound (FUN_140410d60).
+                effect_queue.push(EffectRequest::VictimSound {
+                    object: 0,
+                    reaction: rows[row].reaction,
+                    key: 0,
+                });
+                // The spark at the contact point on the Shadow's hit sphere
+                // (FUN_1403d1b40), from the weapon's own container.
+                let effect = rows[row].hit_effect;
+                if effect != 0
+                    && let Some(pax) = &kind.weapon_pax
+                {
+                    let v = centre - body;
+                    let y = v.y.clamp(-body_radius, body_radius);
+                    let across = Vec3::new(v.x, 0., v.z).normalize_or_zero()
+                        * body_radius
+                        * (1. - (y / body_radius).powi(2)).max(0.).sqrt();
+                    let contact = body + across + Vec3::Y * y;
+                    if let Some(calls) = spell_spark(
+                        pax,
+                        effect,
+                        contact.to_array(),
+                        dir.to_array(),
+                        1 << 62 | tick << 8 | (index as u64) << 4 | 9,
+                    ) {
+                        fx_calls.extend(calls);
+                    }
+                }
                 log_event(
                     log,
                     serde_json::json!({"event":"party_hit","tick":tick,
-                    "member":kind.name,"atkp":atkp,"damage":damage,"enemy_hp":rt.enemy.hp}),
+                    "member":kind.name,"atkp":atkp,"damage":damage,"enemy_hp":rt.enemy.hp,
+                    "spark":effect}),
                 );
             }
         }
@@ -2451,9 +2973,123 @@ pub fn tick(game: &mut Game, tick: u64) {
     }
 }
 
+/// What the room last showed of a member: the controller start it belongs
+/// to, and the joints, which the next blending switch turns from.
+#[derive(Default)]
+pub struct ShownPose {
+    serial: Option<u32>,
+    body: Vec<Joint>,
+    weapon: Vec<Joint>,
+    from_body: Vec<Joint>,
+    from_weapon: Vec<Joint>,
+    /// The vertices, the tick and the controller start last shown (the
+    /// tour's pose-jump log).
+    last: Vec<Vec3>,
+    last_tick: u64,
+    last_serial: Option<u32>,
+}
+
+fn unbits(bits: &[[u32; 3]]) -> Vec<Vec3> {
+    bits.iter()
+        .map(|p| Vec3::from_array(p.map(f32::from_bits)))
+        .collect()
+}
+
+/// The member's vertices this frame (body, and weapon in the member's
+/// space): the controller's clip at its frame, or, while a switch blends
+/// (FUN_1401c3a30 with FUN_1401c3970), the joints the switch left behind
+/// turned toward the new clip's start frame, body and weapon alike.
+fn pose_member(m: &MemberRt, shown: &mut ShownPose) -> Option<(Vec<Vec3>, Vec<Vec3>)> {
+    let kind = &m.kind;
+    let ctl = &m.follower.ctl;
+    let (data, f) = m.shown()?;
+    if shown.serial != Some(ctl.serial) {
+        shown.serial = Some(ctl.serial);
+        if ctl.weight().is_some() {
+            shown.from_body = std::mem::take(&mut shown.body);
+            shown.from_weapon = std::mem::take(&mut shown.weapon);
+        } else {
+            shown.from_body.clear();
+            shown.from_weapon.clear();
+        }
+    }
+    // A motion without its own weapon pose keeps the idle one.
+    let weapon_source = if data.weapon.is_empty() {
+        kind.motions.get(&0).map(|d| (d, 0))
+    } else {
+        Some((data, f))
+    };
+    let body_target = data.joints.get(f).cloned().unwrap_or_default();
+    let weapon_target = weapon_source
+        .and_then(|(d, i)| d.weapon_joints.get(i).cloned())
+        .unwrap_or_default();
+    if let Some(w) = ctl.weight()
+        && !body_target.is_empty()
+        && shown.from_body.len() == body_target.len()
+    {
+        let body = data::motion_eval::blend_poses_with_helpers(
+            &kind.parents,
+            &kind.helpers,
+            &shown.from_body,
+            &body_target,
+            w,
+        );
+        let pose = kind.model.skinning.pose_from_worlds(&body).ok()?;
+        let hand = pose
+            .matrix_bits
+            .get(kind.hand_bone)
+            .map_or(Mat4::IDENTITY, |b| {
+                Mat4::from_cols_array(&b.map(f32::from_bits))
+            });
+        let weapon = if !weapon_target.is_empty() && shown.from_weapon.len() == weapon_target.len()
+        {
+            data::motion_eval::blend_poses_with_helpers(
+                &kind.weapon_parents,
+                &kind.weapon_helpers,
+                &shown.from_weapon,
+                &weapon_target,
+                w,
+            )
+        } else {
+            weapon_target
+        };
+        let weapon_vertices = match (&kind.weapon, weapon.is_empty()) {
+            (Some(model), false) => model
+                .skinning
+                .pose_from_worlds(&weapon)
+                .ok()
+                .map(|p| {
+                    unbits(&p.position_bits)
+                        .into_iter()
+                        .map(|v| hand.transform_point3(v))
+                        .collect()
+                })
+                .unwrap_or_default(),
+            // A weapon without joints (no motion set) rides the hand.
+            _ => weapon_source
+                .and_then(|(d, i)| d.weapon_local.get(i))
+                .map(|l| l.iter().map(|v| hand.transform_point3(*v)).collect())
+                .unwrap_or_default(),
+        };
+        let body_vertices = unbits(&pose.position_bits);
+        shown.body = body;
+        shown.weapon = weapon;
+        return Some((body_vertices, weapon_vertices));
+    }
+    shown.body = body_target;
+    shown.weapon = weapon_target;
+    Some((
+        data.frames.get(f)?.clone(),
+        weapon_source
+            .and_then(|(d, i)| d.weapon.get(i).cloned())
+            .unwrap_or_default(),
+    ))
+}
+
 /// Places and poses the members.
 pub fn present(
-    game: Res<Game>,
+    mut game: ResMut<Game>,
+    mut shown: Local<Vec<ShownPose>>,
     mut roots: Query<(&PartyRoot, &mut Transform)>,
     parts: Query<(&PartyPart, &Mesh3d)>,
     mut meshes: ResMut<Assets<Mesh>>,
@@ -2464,14 +3100,55 @@ pub fn present(
             t.rotation = Quat::from_rotation_y(m.follower.yaw);
         }
     }
+    while shown.len() < game.party.len() {
+        shown.push(ShownPose::default());
+    }
+    let posed: Vec<Option<(Vec<Vec3>, Vec<Vec3>)>> = game
+        .party
+        .iter()
+        .zip(shown.iter_mut())
+        .map(|(m, s)| pose_member(m, s))
+        .collect();
+    // The animation tour logs a shown pose that jumps in one tick.
+    if game.party_anim_tour {
+        let tick = game.tick;
+        let mut jumps = Vec::new();
+        for (i, (p, s)) in posed.iter().zip(shown.iter_mut()).enumerate() {
+            let Some((body, _)) = p else { continue };
+            let ticks = tick.saturating_sub(s.last_tick);
+            if ticks > 0 && s.last.len() == body.len() {
+                let jump = body
+                    .iter()
+                    .zip(&s.last)
+                    .map(|(a, b)| a.distance(*b))
+                    .fold(0f32, f32::max)
+                    / ticks as f32;
+                let switched = s.last_serial != s.serial;
+                let limit = super::party_anim_tour::POSE_JUMP;
+                if (jump > limit && switched || jump > 3. * limit)
+                    && let Some(m) = game.party.get(i)
+                {
+                    let c = &m.follower.ctl;
+                    jumps.push(serde_json::json!({"event":"party_pose_jump","tick":tick,
+                        "member":m.kind.name,"jump":jump,"ticks":ticks,"motion":c.motion,
+                        "slot":c.clip.map(|c| c.slot),"frame":c.frame(),"weight":c.weight(),
+                        "switched":switched}));
+                }
+            }
+            if ticks > 0 {
+                s.last = body.clone();
+                s.last_tick = tick;
+                s.last_serial = s.serial;
+            }
+        }
+        for j in jumps {
+            game.event(j);
+        }
+    }
     for (part, handle) in &parts {
         let Some(m) = game.party.get(part.member) else {
             continue;
         };
-        let Some(data) = m.kind.motions.get(&m.follower.motion()) else {
-            continue;
-        };
-        let f = data.frame_of(m.follower.tick);
         // A thrown shield flies as an object of its own: its vertices in its
         // own space, placed in the world by the script and brought back into
         // the member's space for the mesh.
@@ -2497,27 +3174,30 @@ pub fn present(
             }
             continue;
         }
-        let (frame, model) = if part.weapon {
-            // A motion without its own weapon pose keeps the idle one.
-            let (source, at) = if data.weapon.is_empty() {
-                (m.kind.motions.get(&0), 0)
-            } else {
-                (Some(data), f)
-            };
-            let (Some(source), Some(weapon)) = (source, &m.kind.weapon) else {
-                continue;
-            };
-            let Some(frame) = source.weapon.get(at) else {
-                continue;
-            };
-            (frame, weapon)
-        } else {
-            (&data.frames[f], &m.kind.model)
+        let Some(Some((body, weapon))) = posed.get(part.member) else {
+            continue;
         };
+        let (frame, model) = if part.weapon {
+            let Some(model) = &m.kind.weapon else {
+                continue;
+            };
+            (weapon, model)
+        } else {
+            (body, &m.kind.model)
+        };
+        if frame.is_empty() {
+            continue;
+        }
         let positions: Vec<[f32; 3]> = model.parts[part.ordinal]
             .indices
             .iter()
-            .map(|&i| frame[i as usize].to_array())
+            .map(|&i| {
+                frame
+                    .get(i as usize)
+                    .copied()
+                    .unwrap_or(Vec3::ZERO)
+                    .to_array()
+            })
             .collect();
         if let Some(mut mesh) = meshes.get_mut(&handle.0) {
             mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, positions);
