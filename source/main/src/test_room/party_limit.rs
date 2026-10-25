@@ -97,6 +97,16 @@ pub fn events_of(m: &motion::SelectedMotion) -> MotionEvents {
 /// The party limits of the `limt` table this room can run: Sora with
 /// Donald and Goofy, any world, not a summon's [test-room choice: the
 /// Timeless River and world guests' files are left out].
+/// A limit's sheet to decode: the limit, which sheet (gauge, counter,
+/// menu), the archives to try with the sheet's name, and the path to report
+/// a failure for (None: the summon's, tried silently).
+struct SheetJob {
+    limit: usize,
+    slot: u8,
+    candidates: Vec<(data::path_lookup::Found, [u8; 4])>,
+    report: Option<String>,
+}
+
 pub fn load(
     source: &data::probe_source::ProbeSource,
     library: &mut Library,
@@ -108,6 +118,7 @@ pub fn load(
     };
     let mut out = LimitSource::default();
     let mut names: Vec<String> = Vec::new();
+    let mut sheets: Vec<SheetJob> = Vec::new();
     // The summons' models by character (the `sumn` rows' objects), whose
     // own archive may hold a limit deck's `comd` sheet (FUN_1403db140).
     let summon_models: HashMap<u8, String> = match (
@@ -175,44 +186,86 @@ pub fn load(
             .as_ref()
             .and_then(|b| data::object_effect::read_pax(b).ok())
             .map(std::sync::Arc::new);
-        let sheet = |name: &[u8; 4]| {
-            let found = library.find(&path)?;
-            visual::hud::load(source, found.index, found.ordinal, found.name_hash, name)
-                .map_err(|e| eprintln!("{path} {}: {e}", String::from_utf8_lossy(name)))
-                .ok()
-        };
-        let (gauge_sheet, counter_sheet) = (sheet(b"gage"), sheet(b"comb"));
+        // The sheets are decoded below, all at once on several threads.
+        let at = out.limits.len();
+        let own = library.find(&path);
+        for (slot, name) in [(0, b"gage"), (1, b"comb")] {
+            sheets.push(SheetJob {
+                limit: at,
+                slot,
+                candidates: own.iter().map(|f| (f.clone(), *name)).collect(),
+                report: Some(path.clone()),
+            });
+        }
         // Trinity Limit's `comd` (FUN_1403d96d0, mode 3), or the summon's
         // own (Chicken Little's FUN_1401cb6c0 -> FUN_1403db140, mode 5).
-        let menu_sheet = if summon {
-            summon_models.get(&row.members[1]).and_then(|model| {
+        if summon {
+            if let Some(model) = summon_models.get(&row.members[1]) {
                 // The object's archive (+0x928): its language one, else its
                 // model's.
-                [
+                let candidates = [
                     format!("obj/{model}.a.{language}"),
                     format!("obj/{model}.mdlx"),
                 ]
                 .iter()
-                .find_map(|path| {
-                    let found = library.find(path)?;
-                    visual::hud::load(source, found.index, found.ordinal, found.name_hash, b"comd")
-                        .ok()
-                })
-            })
-        } else {
-            (row.command == 0x1e4).then(|| sheet(b"comd")).flatten()
-        };
+                .filter_map(|path| library.find(path))
+                .map(|f| (f, *b"comd"))
+                .collect();
+                sheets.push(SheetJob {
+                    limit: at,
+                    slot: 2,
+                    candidates,
+                    report: None,
+                });
+            }
+        } else if row.command == 0x1e4 {
+            sheets.push(SheetJob {
+                limit: at,
+                slot: 2,
+                candidates: own.iter().map(|f| (f.clone(), *b"comd")).collect(),
+                report: Some(path.clone()),
+            });
+        }
         out.limits.push(LoadedLimit {
             row,
             file,
             index,
             events,
             pax,
-            gauge_sheet,
-            counter_sheet,
-            menu_sheet,
+            gauge_sheet: None,
+            counter_sheet: None,
+            menu_sheet: None,
             own: false,
         });
+    }
+    // Each sheet is the first candidate that decodes (a reported one says
+    // why it did not).
+    let decoded = visual::par::map_indexed(sheets.len(), |j| {
+        let job = &sheets[j];
+        let mut sheet = None;
+        for (found, name) in &job.candidates {
+            match visual::hud::load(source, found.index, found.ordinal, found.name_hash, name) {
+                Ok(s) => {
+                    sheet = Some(s);
+                    break;
+                }
+                Err(e) => {
+                    if let Some(path) = &job.report {
+                        eprintln!("{path} {}: {e}", String::from_utf8_lossy(name));
+                    }
+                }
+            }
+        }
+        Ok::<_, ()>(sheet)
+    })
+    .unwrap_or_default();
+    for (job, sheet) in sheets.iter().zip(decoded) {
+        let limit = &mut out.limits[job.limit];
+        match job.slot {
+            0 => limit.gauge_sheet = sheet,
+            1 => limit.counter_sheet = sheet,
+            _ => limit.menu_sheet = sheet,
+        }
     }
     // Limit Form's limits: the form's `limitform` program, its effects.
     let program = library
