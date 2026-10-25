@@ -411,7 +411,11 @@ impl AreaSource {
         });
         timer.mark("area: room and map objects");
         let collision = map_collision(&map, state.setup.bg_mask)?;
-        let pax = map_pax(&map).map(Arc::new);
+        let replacements = self
+            .library
+            .read_replacements(&format!("map/{name}.map"))
+            .unwrap_or_default();
+        let pax = map_pax(&map, &replacements).map(Arc::new);
         timer.mark("area: collision and map effects");
         let save_points = self.save_points(&spawns);
         let player = Area::player_spawn(&spawns)
@@ -789,15 +793,25 @@ impl script::Game for Flags<'_> {
 
 /// The map BAR's first type-6 COCT as the body collision world
 /// (FUN_1401613c0 +0x68 → FUN_1401722f0 with the area's group mask).
-/// The map's effect container: the first type-18 entry of the map BAR.
-fn map_pax(map: &[u8]) -> Option<data::object_effect::Pax> {
+/// The map's effect container: the first type-18 entry of the map BAR, with
+/// the remaster pages of its textures among the map's replacements.
+fn map_pax(
+    map: &[u8],
+    replacements: &[data::replacement_payload::ReplacementSample],
+) -> Option<data::object_effect::Pax> {
     let table = data::bar::read_bar(map).ok()?;
     let e = table
         .entries
         .iter()
         .find(|e| e.entry_type == 18 && e.size > 0)?;
     let bytes = map.get(e.offset as usize..e.offset as usize + e.size as usize)?;
-    data::object_effect::read_pax(bytes).ok()
+    let mut pax = data::object_effect::read_pax(bytes).ok()?;
+    let at = e.offset as usize;
+    pax.attach_hd(
+        at,
+        &data::object_effect::hd_pages_within(replacements, at, bytes.len()),
+    );
+    Some(pax)
 }
 
 fn map_collision(map: &[u8], mask: u64) -> Result<collision::World> {

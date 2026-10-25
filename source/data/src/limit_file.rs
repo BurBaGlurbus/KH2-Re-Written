@@ -31,6 +31,9 @@ pub struct LimitFile {
     pub motions: Vec<(u16, Vec<u8>)>,
     /// The effect container (PAX), when present.
     pub pax: Option<Vec<u8>>,
+    /// Where the PAX starts in the file (its remaster pages are keyed to
+    /// file offsets).
+    pub pax_offset: usize,
     /// Camera events by entry name (type 22).
     pub cameras: Vec<([u8; 4], Vec<u8>)>,
     /// Image and sequence pairs by entry name (the gauge and combo sheets).
@@ -82,7 +85,10 @@ fn read_parts(bytes: &[u8]) -> io::Result<LimitFile> {
     for e in table.entries.iter().filter(|e| e.offset > 0 && e.size > 0) {
         match e.entry_type {
             BDX if file.program.is_empty() => file.program = slice(bytes, e)?,
-            PAX if file.pax.is_none() => file.pax = Some(slice(bytes, e)?),
+            PAX if file.pax.is_none() => {
+                file.pax = Some(slice(bytes, e)?);
+                file.pax_offset = e.offset as usize;
+            }
             MOTION_SET if file.motions.is_empty() => {
                 let set = slice(bytes, e)?;
                 let nested = bar::read_bar(&set)?;

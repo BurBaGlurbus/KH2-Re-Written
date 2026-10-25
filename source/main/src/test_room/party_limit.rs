@@ -181,10 +181,20 @@ pub fn load(
             }
         }
         names.push(name);
+        // With the remaster pages of its textures, as the PC draws them.
         let pax = file
             .pax
             .as_ref()
-            .and_then(|b| data::object_effect::read_pax(b).ok())
+            .and_then(|b| {
+                let mut pax = data::object_effect::read_pax(b).ok()?;
+                if let Ok(r) = library.read_replacements(&path) {
+                    pax.attach_hd(
+                        file.pax_offset,
+                        &data::object_effect::hd_pages_within(&r, file.pax_offset, b.len()),
+                    );
+                }
+                Some(pax)
+            })
             .map(std::sync::Arc::new);
         // The sheets are decoded below, all at once on several threads.
         let at = out.limits.len();
@@ -302,6 +312,7 @@ pub fn load(
                         program: program.clone(),
                         motions: Vec::new(),
                         pax: None,
+                        pax_offset: 0,
                         cameras: Vec::new(),
                         sheets: Vec::new(),
                     },
