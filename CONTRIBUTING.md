@@ -10,13 +10,11 @@ This repository rewrites Kingdom Hearts II Final Mix for Windows, reading the ow
 
 ## Local builds and disk use
 
-Use `build-release.bat` (or `powershell -NoProfile -File tools/Build-Launcher.ps1`)
-for an optimized KH2FM launcher. The batch scripts
-are `build-release`, `build-release-skate3`, `build-debug` and
-`build-debug-skate3`; the `-skate3` ones enable the optional `skate3` feature,
-as does `-Skate3` on the PowerShell helper. This builds one binary instead
-of every research probe. The `build-debug` scripts use the
-faster development profile. The helper prints the launcher path;
+Use `build.bat` for the optimized launcher with the optional `skate3` feature;
+it runs `powershell -NoProfile -File tools/Build-Launcher.ps1 -Skate3`. Without
+`-Skate3` the helper builds the plain KH2FM launcher, and `-Debug` uses the
+faster development profile. This builds one binary instead
+of every research probe. The helper prints the launcher path;
 add `-Timings` to write a Cargo report under `target/cargo-timings/`.
 Cargo cannot give a binary a name with a space, so the helper renames Cargo's
 `KH2RW.exe` to `KH2RW Launcher.exe`. The game and the model/image viewers run
@@ -89,7 +87,7 @@ cargo clippy --workspace --features main/skate3 --all-targets --locked -- -D war
 cargo test --workspace --features main/skate3 --locked
 ```
 
-They use the same dependency builds as `build-debug-skate3.bat`. Report a check you did not run as NOT RUN, not as passing.
+They use the same dependency builds as `tools/Build-Launcher.ps1 -Debug -Skate3`. Report a check you did not run as NOT RUN, not as passing.
 
 ## Finding and naming files
 

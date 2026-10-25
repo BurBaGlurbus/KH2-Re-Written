@@ -50,7 +50,7 @@ the development room; `source/main/src/area.rs` and `cutscene/` connect state to
 `source/main/src/bin/` holds the smoke window and research probes; the model and image
 viewers (`model_inspector.rs`, `image_inspector.rs`) run inside the launcher. The default
 `cargo run -p main` program is the source-free smoke window; the player launcher
-is selected with `--bin KH2RW` or built with `build-release.bat`, which names it
+is selected with `--bin KH2RW` or built with `build.bat`, which names it
 `KH2RW Launcher.exe`. The launcher starts every test by running its own executable
 again with a program name, so there is no separate game or viewer executable.
 
@@ -62,7 +62,7 @@ application. `source/visual/src/overlay.rs` and `overlay.wgsl` compose the 2D di
 The optional Skate 3 code retains its upstream package names and GPL notices in
 `source/extras/skateboard/engine/`. It is existing extension code, not a roadmap for
 rewriting another collection game. The `skate3` feature remains opt-in for Cargo;
-the `build-*-skate3.bat` scripts enable it.
+`build.bat` enables it.
 
 ## Current limitations
 

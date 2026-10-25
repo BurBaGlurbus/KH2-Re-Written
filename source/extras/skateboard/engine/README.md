@@ -10,7 +10,7 @@ These two crates are **GPL-3.0-only** (see `LICENSE`), unlike the rest of this r
 They are built only with the `skate3` feature:
 
 ```
-build-release-skate3.bat
+build.bat
 ```
 
 (or `cargo build --release -p main --bin KH2RW --features skate3`). A launcher built with it is a GPL-3.0 combined work. Without it, J says skateboarding is not installed. No Skate 3 data is in the repository; riding needs the user's own Skate 3 Xbox 360 ISO, set in the launcher. See `docs/tasks/T101-skate3-board.md` and `docs/tasks/T103-skate3-riding.md`.
