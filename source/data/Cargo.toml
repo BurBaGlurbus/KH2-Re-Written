@@ -33,6 +33,11 @@ test = false
 bench = false
 
 [[bin]]
+name = "bar_roundtrip"
+test = false
+bench = false
+
+[[bin]]
 name = "archive_probe"
 test = false
 bench = false

@@ -103,6 +103,25 @@ impl Library {
             .collect()
     }
 
+    /// Every record of every index, in package order.
+    pub fn all(&self) -> Vec<Found> {
+        self.indexes
+            .iter()
+            .flat_map(|(index, checked)| {
+                checked
+                    .inventory
+                    .entries
+                    .iter()
+                    .enumerate()
+                    .map(|(ordinal, e)| Found {
+                        index,
+                        ordinal,
+                        name_hash: e.name_hash,
+                    })
+            })
+            .collect()
+    }
+
     /// The copy of `name` the program reads: the last package holding it
     /// (later packages carry the patched copies; repeated names checked so
     /// far are byte-identical) [inference].
