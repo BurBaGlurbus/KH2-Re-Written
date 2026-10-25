@@ -101,6 +101,7 @@ mod party_hit_tour;
 mod party_items_tour;
 mod party_limit;
 mod party_room;
+mod perf_overlay;
 mod prize_room;
 mod reaction_command;
 mod second_deck;
@@ -1197,6 +1198,8 @@ struct Game {
     action_started: u64,
     exit_code: Option<u8>,
     show_collision: bool,
+    /// The debug menu's performance overlay (`perf_overlay`).
+    perf_overlay: bool,
     rendered_frames: u64,
     autoplay_failed: bool,
     /// Sound requests raised this tick: (id, cause).
@@ -12553,12 +12556,13 @@ fn run(mut args: Vec<PathBuf>) -> Result<AppExit, Box<dyn std::error::Error>> {
     }
     let started = Instant::now();
     if args.len() < 3 {
-        return Err("usage: room <Steam-root> <manifest> <test-room-config> [--log new.jsonl] [--frames N] [--autoplay <new-capture-dir> | --ability-tour <new-capture-dir> | --gear-tour <new-capture-dir> | --enemy-tour <new-capture-dir>] [--enemy-audit <new-private-report.json>] [--gamepad] [--show-collision] [--basic-fk] [--uncapped | --frame-cap N]".into());
+        return Err("usage: room <Steam-root> <manifest> <test-room-config> [--log new.jsonl] [--frames N] [--autoplay <new-capture-dir> | --ability-tour <new-capture-dir> | --gear-tour <new-capture-dir> | --enemy-tour <new-capture-dir>] [--enemy-audit <new-private-report.json>] [--gamepad] [--show-collision] [--basic-fk] [--uncapped | --frame-cap N] [--perf-overlay]".into());
     }
     let mut log_path = None;
     let mut limit = None;
     let mut autoplay = None;
     let mut show_collision = false;
+    let mut perf_overlay = false;
     let mut basic_fk = false;
     let mut ability_tour = false;
     let mut gear_tour = false;
@@ -12615,6 +12619,7 @@ fn run(mut args: Vec<PathBuf>) -> Result<AppExit, Box<dyn std::error::Error>> {
             // Pads are always read now; the flag is accepted for old launch files.
             Some("--gamepad") => {}
             Some("--show-collision") => show_collision = true,
+            Some("--perf-overlay") => perf_overlay = true,
             Some("--basic-fk") => basic_fk = true,
             Some("--enemy-audit") if enemy_audit.is_none() => {
                 enemy_audit = Some(options.next().cloned().ok_or("enemy audit output absent")?);
@@ -13369,6 +13374,7 @@ fn run(mut args: Vec<PathBuf>) -> Result<AppExit, Box<dyn std::error::Error>> {
         action_started: 0,
         exit_code: None,
         show_collision,
+        perf_overlay,
         rendered_frames: 0,
         autoplay_failed: false,
         sound_queue: Vec::new(),
@@ -13837,6 +13843,7 @@ fn run(mut args: Vec<PathBuf>) -> Result<AppExit, Box<dyn std::error::Error>> {
         })
         .init_resource::<crate::skate::Skate>()
         .init_resource::<debug_menu::DebugMenu>()
+        .init_resource::<perf_overlay::PerfOverlay>()
         .init_resource::<enemy_battle_tour::Checks>()
         .init_resource::<sephiroth::Fight>()
         .add_plugins(SkatePlugins)
@@ -13923,7 +13930,14 @@ fn run(mut args: Vec<PathBuf>) -> Result<AppExit, Box<dyn std::error::Error>> {
                 afterimage.run_if(resource_exists::<Afterimage>),
                 compose_2d,
                 menu_model_present,
-                (camp_present, game_over::present, game_over::snap).chain(),
+                (
+                    camp_present,
+                    game_over::present,
+                    game_over::snap,
+                    perf_overlay::sample,
+                    perf_overlay::present,
+                )
+                    .chain(),
                 finish,
                 frame_stats,
             )

@@ -393,6 +393,7 @@ enum Action {
     ToggleSkeleton,
     ToggleHideModel,
     ToggleCollisionOverlay,
+    TogglePerfOverlay,
     RemoveActor,
     ClearActors,
     Warp(u8, u8),
@@ -464,6 +465,7 @@ impl Action {
             Self::ToggleSkeleton => "Draw a line from each bone to its parent.",
             Self::ToggleHideModel => "Hide the model and keep the skeleton.",
             Self::ToggleCollisionOverlay => "Show the room's collision. F1 does the same.",
+            Self::TogglePerfOverlay => "FPS, frame times, GPU and entities at the top left.",
             Self::RemoveActor => "Remove this enemy from the room.",
             Self::ClearActors => "Remove every summoned enemy.",
             Self::Warp(..) => "Warp to this room.",
@@ -1115,6 +1117,11 @@ fn rows(
                             .iter()
                             .any(|s| s & 0x7fff == enemy_target::SCAN_ITEM),
                     )
+                },
+                section("Display"),
+                Row {
+                    value: on_off(game.perf_overlay),
+                    ..row("Performance overlay", Action::TogglePerfOverlay, true)
                 },
                 section("Items and forms"),
                 row(
@@ -1820,6 +1827,10 @@ fn act(
         }
         Action::ToggleCollisionOverlay => {
             game.show_collision = !game.show_collision;
+            None
+        }
+        Action::TogglePerfOverlay => {
+            game.perf_overlay = !game.perf_overlay;
             None
         }
         Action::RemoveActor => {
