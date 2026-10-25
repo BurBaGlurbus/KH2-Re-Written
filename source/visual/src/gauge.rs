@@ -1104,6 +1104,35 @@ impl Canvas {
         true
     }
 
+    /// The rectangles (`[x, y, width, height]` in pixels) the last `render`
+    /// redrew: each tile row's runs of redrawn tiles, with their RGBA rows.
+    pub fn redrawn(&self) -> Vec<([u32; 4], Vec<u8>)> {
+        let mut out = Vec::new();
+        for (ty, row) in self.redraw.chunks(self.tiles_x).enumerate() {
+            let mut tx = 0;
+            while tx < row.len() {
+                if !row[tx] {
+                    tx += 1;
+                    continue;
+                }
+                let start = tx;
+                while tx < row.len() && row[tx] {
+                    tx += 1;
+                }
+                let [x0, y0, _, y1] = self.tile_rect(ty * self.tiles_x + start);
+                let x1 = (tx * TILE).min(self.width);
+                let mut rgba = Vec::with_capacity((x1 - x0) * (y1 - y0) * 4);
+                for y in y0..y1 {
+                    rgba.extend_from_slice(
+                        &self.rgba[(y * self.width + x0) * 4..(y * self.width + x1) * 4],
+                    );
+                }
+                out.push(([x0, y0, x1 - x0, y1 - y0].map(|v| v as u32), rgba));
+            }
+        }
+        out
+    }
+
     /// Copies the tiles the last `render` redrew into `out` (a copy of
     /// `rgba` from before it); the rest of `out` already matches.
     pub fn copy_redrawn(&self, out: &mut [u8]) {
@@ -1795,6 +1824,14 @@ mod tests {
                     // (A nudge may move a quad that draws nothing.)
                     assert!(tiled.render(&draws, slice) || nudge);
                     tiled.copy_redrawn(&mut mirror);
+                    // The redrawn rectangles carry the same bytes.
+                    for ([x, y, w, h], rgba) in tiled.redrawn() {
+                        let (x, y, w, h) = (x as usize, y as usize, w as usize, h as usize);
+                        for r in 0..h {
+                            let at = ((y + r) * tiled.width + x) * 4;
+                            assert!(rgba[r * w * 4..(r + 1) * w * 4] == tiled.rgba[at..at + w * 4]);
+                        }
+                    }
                     many.render(&draws, slice);
                     assert!(tiled.rgba == before.rgba, "scale {scale} frame {frame}");
                     assert!(mirror == tiled.rgba, "copied tiles, frame {frame}");

@@ -9060,7 +9060,7 @@ fn hud_present(
     skate: Res<crate::skate::Skate>,
     debug: Res<debug_menu::DebugMenu>,
     gallery: Res<enemy_gallery::EnemyGallery>,
-    mut images: ResMut<Assets<Image>>,
+    mut writes: ResMut<visual::texel_upload::TexelWrites>,
 ) {
     let Some(mut hud) = hud else { return };
     if !std::mem::take(&mut hud.updated) {
@@ -9259,15 +9259,19 @@ fn hud_present(
         });
         draws.extend(debug_menu::draws(&debug.view, white, *sheet, widths));
     }
-    // An unchanged HUD keeps its texture; the tiles that changed are copied
-    // into it.
-    if canvas.render(&draws, &textures)
-        && let Some(mut target) = images.get_mut(image.id())
-    {
-        match target.data.as_mut() {
-            Some(data) if data.len() == canvas.rgba.len() => canvas.copy_redrawn(data),
-            _ => target.data = Some(canvas.rgba.clone()),
-        }
+    // An unchanged HUD keeps its texture; the tiles that changed are
+    // written into it on the GPU (the image asset keeps its first pixels).
+    if canvas.render(&draws, &textures) {
+        let id = image.id();
+        writes
+            .0
+            .extend(canvas.redrawn().into_iter().map(|(rect, rgba)| {
+                visual::texel_upload::TexelWrite {
+                    image: id,
+                    rect,
+                    rgba,
+                }
+            }));
     }
 }
 
@@ -13831,6 +13835,7 @@ fn run(mut args: Vec<PathBuf>) -> Result<AppExit, Box<dyn std::error::Error>> {
         }))
         .add_plugins(FogPlugin)
         .add_plugins(visual::frame_limit::FrameLimitPlugin)
+        .add_plugins(visual::texel_upload::TexelUploadPlugin)
         .add_plugins(visual::smoothing::SmoothingPlugin)
         .add_plugins(visual::effect_draw::EffectPlugin)
         .add_plugins(Ui2dPlugin {
