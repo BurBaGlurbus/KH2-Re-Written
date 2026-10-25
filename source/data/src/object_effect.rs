@@ -581,6 +581,8 @@ pub struct OmdTriangle {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OmdMesh {
+    /// The block's type byte (0 untextured triangles .. 7 textured quads).
+    pub kind: u8,
     /// The mesh's PS2 TEX0; meaningful only when `textured`.
     pub tex0: u64,
     pub textured: bool,
@@ -658,6 +660,7 @@ pub fn omd_meshes(b: &[u8], hdr: usize) -> io::Result<Vec<OmdMesh>> {
             }
         }
         meshes.push(OmdMesh {
+            kind,
             tex0,
             textured,
             triangles,
