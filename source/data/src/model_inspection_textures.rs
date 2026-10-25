@@ -309,6 +309,18 @@ pub struct TextureBinding {
     pub environment_ordinal: usize,
 }
 impl InspectionTextures {
+    /// The environment's HD replacement when exactly one replacement matches
+    /// it (as `ExactHdBase` binds), else its original image: the PC draws
+    /// the remastered texture where the install has one.
+    pub fn bind_hd_or_original(&self, environment: usize) -> io::Result<TextureBinding> {
+        if let Ok(binding) = self.bind(environment, TextureMode::ExactHdBase)
+            && binding.status == BindingStatus::ExactHdBase
+        {
+            return Ok(binding);
+        }
+        self.bind(environment, TextureMode::OriginalIndexed)
+    }
+
     pub fn bind(&self, environment: usize, mode: TextureMode) -> io::Result<TextureBinding> {
         let mut binding = TextureBinding {
             status: BindingStatus::PartColors,
@@ -404,6 +416,29 @@ mod tests {
             play: Vec::new(),
         }
     }
+    #[test]
+    fn hd_or_original_takes_the_exact_replacement_else_the_original() {
+        let mut t = textures();
+        let fallback = t.bind_hd_or_original(0).unwrap();
+        assert_eq!(fallback.status, BindingStatus::OriginalIndexed);
+        assert_eq!(fallback.image_index, Some(0));
+        t.images.push(TextureImage {
+            identity: ImageIdentity::Replacement {
+                replacement_ordinal: 7,
+            },
+            pixel_decode_profile: "authored".into(),
+            mip_layout: None,
+            levels: vec![TextureLevel::new(2, 2, vec![0; 16])],
+        });
+        t.links.ordered_targets[0].matching_replacement_ordinals = vec![7];
+        let hd = t.bind_hd_or_original(0).unwrap();
+        assert_eq!(hd.status, BindingStatus::ExactHdBase);
+        assert_eq!(hd.image_index, Some(1));
+        // Two candidates: ambiguous, so the original.
+        t.links.ordered_targets[0].matching_replacement_ordinals = vec![7, 8];
+        assert_eq!(t.bind_hd_or_original(0).unwrap().image_index, Some(0));
+    }
+
     #[test]
     fn unresolved_hd_never_falls_back_to_original_or_an_ordinal() {
         let mut t = textures();

@@ -635,6 +635,29 @@ pub fn rgba_image(
     images.add(image)
 }
 
+/// `rgba_image` for a texture that never changes after upload: the pixels
+/// live only on the GPU (no copy kept in the main world).
+pub fn static_rgba_image(
+    width: u32,
+    height: u32,
+    pixels: Vec<u8>,
+    images: &mut Assets<Image>,
+) -> Handle<Image> {
+    let mut image = Image::new(
+        Extent3d {
+            width,
+            height,
+            depth_or_array_layers: 1,
+        },
+        TextureDimension::D2,
+        pixels,
+        TextureFormat::Rgba8UnormSrgb,
+        RenderAssetUsages::RENDER_WORLD,
+    );
+    image.sampler = ImageSampler::nearest();
+    images.add(image)
+}
+
 pub fn mesh(positions: Vec<[f32; 3]>, uvs: Vec<[f32; 2]>, colors: Vec<[f32; 4]>) -> Mesh {
     Mesh::new(
         PrimitiveTopology::TriangleList,

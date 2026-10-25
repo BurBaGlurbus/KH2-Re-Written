@@ -25,9 +25,8 @@ use bevy::{
     },
 };
 use data::{
-    bar, model_inspection, model_inspection_textures::TextureMode, motion, object_collision,
-    object_effect, objentry, original_payload, party_records, probe_source::ProbeSource, ptya,
-    sklt, sprite_sequence,
+    bar, model_inspection, motion, object_collision, object_effect, objentry, original_payload,
+    party_records, probe_source::ProbeSource, ptya, sklt, sprite_sequence,
 };
 use player::shadow::{self, ScriptRandom, Shadow};
 use player::{
@@ -4493,6 +4492,41 @@ struct Startup {
 }
 
 /// Spawns one textured mesh per model part under `parent`, in part order.
+/// Model textures uploaded once per (texture set, image) and shared by every
+/// part and every spawn of the model. `Weak` keeps a dropped set's address
+/// from being taken for a new set's.
+type ModelTextureCache = Vec<(
+    std::sync::Weak<data::model_inspection_textures::InspectionTextures>,
+    usize,
+    Handle<Image>,
+)>;
+static MODEL_TEXTURES: std::sync::Mutex<ModelTextureCache> = std::sync::Mutex::new(Vec::new());
+
+/// The GPU texture of `set`'s image `image` (uploaded on first use).
+fn model_texture(
+    set: &Arc<data::model_inspection_textures::InspectionTextures>,
+    image: usize,
+    images: &mut Assets<Image>,
+) -> Handle<Image> {
+    let mut cache = MODEL_TEXTURES.lock().expect("model texture cache");
+    cache.retain(|(set, ..)| set.strong_count() > 0);
+    if let Some((.., handle)) = cache
+        .iter()
+        .find(|(s, i, _)| *i == image && s.upgrade().is_some_and(|s| Arc::ptr_eq(&s, set)))
+    {
+        return handle.clone();
+    }
+    let level = &set.images[image].levels[0];
+    let handle = visual::room::static_rgba_image(
+        level.width,
+        level.height,
+        level.pixels_rgba.clone(),
+        images,
+    );
+    cache.push((Arc::downgrade(set), image, handle.clone()));
+    handle
+}
+
 pub(crate) fn spawn_model(
     commands: &mut Commands,
     model: &model_inspection::InspectionModel,
@@ -4523,16 +4557,10 @@ pub(crate) fn spawn_model(
                 .map(|uv| uv.map(f32::from_bits))
                 .collect();
             let binding = set
-                .bind(route.environment_ordinal, TextureMode::OriginalIndexed)
+                .bind_hd_or_original(route.environment_ordinal)
                 .expect("admitted model binding");
             if let Some(image) = binding.image_index {
-                let level = &set.images[image].levels[0];
-                texture = Some(rgba_image(
-                    level.width,
-                    level.height,
-                    level.pixels_rgba.clone(),
-                    images,
-                ));
+                texture = Some(model_texture(set, image, images));
             }
         }
         let entity = commands

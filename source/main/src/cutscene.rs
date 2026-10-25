@@ -231,8 +231,18 @@ fn setup(
                     .iter()
                     .map(|uv| uv.map(f32::from_bits))
                     .collect();
-                if let Ok(binding) =
+                // An environment with texture animation (eyes, mouth)
+                // keeps its original: the patches are painted in its pixels.
+                let animated = set
+                    .play
+                    .iter()
+                    .any(|p| p.patch.environment == route.environment_ordinal);
+                let binding = if animated {
                     set.bind(route.environment_ordinal, TextureMode::OriginalIndexed)
+                } else {
+                    set.bind_hd_or_original(route.environment_ordinal)
+                };
+                if let Ok(binding) = binding
                     && let Some(image) = binding.image_index
                 {
                     let level = &set.images[image].levels[0];
