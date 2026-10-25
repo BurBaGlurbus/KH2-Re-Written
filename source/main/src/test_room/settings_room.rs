@@ -319,6 +319,7 @@ impl SettingsRes {
             ms.menu.reload(&ms.sheet.sequence);
             ms.layout = None;
             ms.language = to.clone();
+            h.canvas.forget();
             h.updated = true;
         }
         self.loaded = to;

@@ -9270,12 +9270,13 @@ fn hud_present(
         });
         draws.extend(debug_menu::draws(&debug.view, white, *sheet, widths));
     }
-    // An unchanged HUD keeps its texture; a changed one is copied into it.
+    // An unchanged HUD keeps its texture; the tiles that changed are copied
+    // into it.
     if canvas.render(&draws, &textures)
         && let Some(mut target) = images.get_mut(image.id())
     {
         match target.data.as_mut() {
-            Some(data) if data.len() == canvas.rgba.len() => data.copy_from_slice(&canvas.rgba),
+            Some(data) if data.len() == canvas.rgba.len() => canvas.copy_redrawn(data),
             _ => target.data = Some(canvas.rgba.clone()),
         }
     }
