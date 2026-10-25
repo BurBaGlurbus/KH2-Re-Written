@@ -8114,11 +8114,7 @@ fn present_effects(
             uvs = vec![[0.; 2]; 3];
             colors = vec![[0.; 4]; 3];
         }
-        if let Some(mut mesh) = meshes.get_mut(&handle.0) {
-            mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, positions);
-            mesh.insert_attribute(Mesh::ATTRIBUTE_UV_0, uvs);
-            mesh.insert_attribute(Mesh::ATTRIBUTE_COLOR, colors);
-        }
+        visual::room::set_triangles(&mut meshes, &handle.0, positions, uvs, colors);
     }
 }
 

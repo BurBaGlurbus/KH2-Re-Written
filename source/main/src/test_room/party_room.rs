@@ -3149,17 +3149,11 @@ pub fn present(
             let turn = Quat::from_rotation_y(s.yaw);
             let member = Vec3::from_array(m.follower.position);
             let back = Quat::from_rotation_y(-m.follower.yaw);
-            let positions: Vec<[f32; 3]> = weapon.parts[part.ordinal]
-                .indices
-                .iter()
-                .map(|&i| {
-                    let world = Vec3::from_array(s.position) + turn * local[i as usize];
-                    (back * (world - member)).to_array()
-                })
-                .collect();
-            if let Some(mut mesh) = meshes.get_mut(&handle.0) {
-                mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, positions);
-            }
+            let positions = weapon.parts[part.ordinal].indices.iter().map(|&i| {
+                let world = Vec3::from_array(s.position) + turn * local[i as usize];
+                (back * (world - member)).to_array()
+            });
+            visual::room::set_positions(&mut meshes, &handle.0, positions);
             continue;
         }
         let Some(Some((body, weapon))) = posed.get(part.member) else {
@@ -3176,20 +3170,15 @@ pub fn present(
         if frame.is_empty() {
             continue;
         }
-        let positions: Vec<[f32; 3]> = model.parts[part.ordinal]
-            .indices
-            .iter()
-            .map(|&i| {
-                frame
-                    .get(i as usize)
-                    .copied()
-                    .unwrap_or(Vec3::ZERO)
-                    .to_array()
-            })
-            .collect();
-        if let Some(mut mesh) = meshes.get_mut(&handle.0) {
-            mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, positions);
-        }
+        let positions = model.parts[part.ordinal].indices.iter().map(|&i| {
+            frame
+                .get(i as usize)
+                .copied()
+                .unwrap_or(Vec3::ZERO)
+                .to_array()
+        });
+        // Unchanged parts (no new tick, no blend) are not uploaded again.
+        visual::room::set_positions(&mut meshes, &handle.0, positions);
     }
 }
 

@@ -82,6 +82,10 @@ def summary(rows):
             "p99": percentile(allocs, 99),
             "max": allocs[-1],
         },
+        "assets_per_frame": {
+            k: round(sum(int(r.get(k) or 0) for r in rows) / len(rows), 2)
+            for k in ("meshes_added", "meshes_modified", "images_added", "images_modified")
+        },
         "allocated_kib_per_frame": {
             "avg": round(sum(alloc_bytes) / len(alloc_bytes) / 1024.0, 1),
             "p99": round(percentile(alloc_bytes, 99) / 1024.0, 1),
