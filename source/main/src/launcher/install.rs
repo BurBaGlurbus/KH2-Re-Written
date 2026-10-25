@@ -1220,7 +1220,7 @@ mod tests {
     /// installed game (`KH2_TEST_FOLDER` = the Steam game folder): scans
     /// it, makes the configs, then runs each program of the built
     /// launcher (short unattended runs; the event player only loads):
-    /// `KH2RW Launcher.exe` from `build-debug.bat`, else Cargo's `KH2RW`
+    /// `KH2RW Launcher.exe` from `tools/Build-Launcher.ps1 -Debug`, else Cargo's `KH2RW`
     /// from `cargo build -p main`. Build first; run with `-- --ignored`.
     #[test]
     #[ignore = "needs the installed game: set KH2_TEST_FOLDER"]

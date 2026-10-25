@@ -89,10 +89,8 @@ yet. Full roster combat and installed-game comparisons remain unfinished.
 
 ## Build and check
 
-`build-release.bat` builds the optimized launcher (`KH2RW Launcher.exe`, with the model and image viewers inside it);
-`build-debug.bat` makes the faster development build. The `-skate3` variants
-(`build-release-skate3.bat`, `build-debug-skate3.bat`) enable the `skate3`
-feature. Only `KH2RW Launcher.exe` is left in `target\release` or `target\debug`. Compact development symbols and Rust's bundled
+`build.bat` builds the optimized launcher (`KH2RW Launcher.exe`, with the model and image viewers inside it)
+with the `skate3` feature. Only `KH2RW Launcher.exe` is left in `target\release`. Compact development symbols and Rust's bundled
 LLVM linker reduce build-output overhead; see
 [local build options and cleanup](CONTRIBUTING.md#local-builds-and-disk-use).
 
