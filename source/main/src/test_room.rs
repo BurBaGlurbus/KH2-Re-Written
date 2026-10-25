@@ -4618,6 +4618,23 @@ fn frame_stats(
     }
 }
 
+/// The Keyblade's own pose at the end of this tick, which the next tick's
+/// effects anchor at its top (`spell_fx::Frames`). It was kept by `present`,
+/// so at frame rates under 60 a tick could read a pose two or more ticks
+/// old; kept here, every tick reads its predecessor's, as at 60 FPS.
+fn keep_weapon_pose(mut game: ResMut<Game>) {
+    let Some(&clip) = game.poses.get(&(game.player.action, game.player.armed)) else {
+        return;
+    };
+    let frame = game.player.motion_frame(&game.clips) as usize;
+    let weapon_frames = &game.clip_poses[clip].weapon_frames;
+    if let Some(pose) = weapon_frames.get(frame.min(weapon_frames.len().saturating_sub(1)))
+        && *pose != game.weapon_display
+    {
+        game.weapon_display = pose.clone();
+    }
+}
+
 /// Loads the area an exit asked for and swaps the room, the collision, the
 /// camera collision and Sora's placement (FUN_140152a90 → FUN_140152be0 →
 /// FUN_140152680; the iris presentation is not drawn yet).
@@ -5616,7 +5633,11 @@ fn setup(
     // them to the screen without a mirror (model +X on screen right,
     // camp-03 §1.4), as the rotation from_world does.
     let world = commands
-        .spawn((Transform::default(), Visibility::default()))
+        .spawn((
+            Transform::default(),
+            Visibility::default(),
+            visual::smoothing::SmoothRoot,
+        ))
         .id();
     if let Some(arena) = startup.arena_mesh.take() {
         let (w, h, rgba) = arena.texture;
@@ -6023,6 +6044,7 @@ fn setup(
     compose.scene_sheet = frame.add_image(compose.scene.clone(), size, true);
     commands.spawn((
         Camera3d::default(),
+        visual::smoothing::Smoothed,
         Camera {
             order: -2,
             ..default()
@@ -6182,6 +6204,7 @@ struct Afterimage {
 /// history lacks the HUD the exe's prevFrameTex holds [I].
 fn afterimage(
     mut after: ResMut<Afterimage>,
+    clock: Res<visual::smoothing::TickClock>,
     game: Res<Game>,
     game_over: Option<Res<game_over::GameOverRes>>,
     mut cameras: Query<&mut Camera>,
@@ -6210,7 +6233,13 @@ fn afterimage(
         after.blur.set_zoom(zoom, &mut meshes);
     }
     let step = overlay.map(|o| o.1);
-    let advance = step.is_none() || step != after.step;
+    // The pictures step once per tick (an overlay's once per event frame),
+    // not once per drawn frame, so the trail fades at the same speed at
+    // any frame rate.
+    let advance = match step {
+        None => clock.ticks_this_frame() > 0,
+        Some(_) => step != after.step,
+    };
     after.step = step;
     let weight = alpha.map(|a| if after.on { a } else { 0. });
     after.on = alpha.is_some();
@@ -10614,8 +10643,11 @@ fn skate_present(
     board_models.shown = Some(wanted);
 }
 
+// Bevy systems take each resource as a parameter.
+#[allow(clippy::too_many_arguments)]
 fn present(
     fixed: Res<Time<Fixed>>,
+    virt: Res<Time<Virtual>>,
     mut game: ResMut<Game>,
     mut roots: Query<&mut Transform, (With<SoraRoot>, Without<WeaponRoot>)>,
     mut hands: Query<(&mut Transform, &mut Visibility), WeaponOnly>,
@@ -10671,7 +10703,13 @@ fn present(
     // blend; the weight is that clock over the duration.
     let mut shown_joints = target_joints.clone().unwrap_or_default();
     if let Some((from, from_hand, start)) = &game.blend_from {
-        let elapsed = (game.tick - start) as f32 + fixed.overstep_fraction();
+        // A held clock (an unattended capture) shows the tick itself.
+        let overstep = if virt.is_paused() {
+            0.
+        } else {
+            fixed.overstep_fraction()
+        };
+        let elapsed = (game.tick - start) as f32 + overstep;
         let blend = game.player.blend;
         let weight = if blend > 2. {
             ((elapsed + 3.) / blend).clamp(0., 1.)
@@ -10776,7 +10814,6 @@ fn present(
                 visual::room::update_positions(&mut mesh, positions);
             }
         }
-        game.weapon_display = pose;
     }
     if let Ok(mut root) = roots.single_mut() {
         root.translation = Vec3::from_array(game.player.position);
@@ -13802,6 +13839,7 @@ fn run(mut args: Vec<PathBuf>) -> Result<AppExit, Box<dyn std::error::Error>> {
         }))
         .add_plugins(FogPlugin)
         .add_plugins(visual::frame_limit::FrameLimitPlugin)
+        .add_plugins(visual::smoothing::SmoothingPlugin)
         .add_plugins(visual::effect_draw::EffectPlugin)
         .add_plugins(Ui2dPlugin {
             order: 0,
@@ -13851,6 +13889,7 @@ fn run(mut args: Vec<PathBuf>) -> Result<AppExit, Box<dyn std::error::Error>> {
                 )
                     .chain()
                     .run_if(field_running),
+                keep_weapon_pose,
             )
                 .chain(),
         )

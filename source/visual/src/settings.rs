@@ -51,6 +51,8 @@ pub struct Settings {
     pub anti_aliasing: bool,
     /// 1..=10, 5 unchanged.
     pub brightness: u8,
+    /// Draw movement between the 60 Hz ticks (`smoothing`).
+    pub motion_smoothing: bool,
     /// 0..=10.
     pub master_volume: u8,
     pub music_volume: u8,
@@ -75,6 +77,7 @@ impl Default for Settings {
             render_scale: 2,
             anti_aliasing: false,
             brightness: 5,
+            motion_smoothing: true,
             master_volume: 10,
             music_volume: 10,
             effects_volume: 10,
@@ -190,6 +193,11 @@ impl Settings {
                     numbers(1..=10, self.brightness),
                     "Make the 3D scene darker or brighter.",
                 ),
+                row(
+                    "Motion Smoothing",
+                    on_off(self.motion_smoothing),
+                    "Draw movement between game ticks above 60 FPS.",
+                ),
             ],
             2 => vec![
                 row(
@@ -281,6 +289,7 @@ impl Settings {
             (1, 3) => self.render_scale = bump(self.render_scale, 0, RENDER_SCALES.len() as u8 - 1),
             (1, 4) => self.anti_aliasing = !self.anti_aliasing,
             (1, 5) => self.brightness = bump(self.brightness, 1, 10),
+            (1, 6) => self.motion_smoothing = !self.motion_smoothing,
             (2, 0) => self.master_volume = bump(self.master_volume, 0, 10),
             (2, 1) => self.music_volume = bump(self.music_volume, 0, 10),
             (2, 2) => self.effects_volume = bump(self.effects_volume, 0, 10),
@@ -399,6 +408,7 @@ mod tests {
         assert_eq!(g[2].choices[g[2].selected], "200 FPS");
         assert_eq!(g[3].choices[g[3].selected], "100%");
         assert_eq!(g[5].choices[g[5].selected], "5");
+        assert_eq!(g[6].choices[g[6].selected], "On");
         let a = s.rows(2, &langs());
         assert_eq!(a[0].choices[a[0].selected], "10");
         let o = s.rows(3, &langs());

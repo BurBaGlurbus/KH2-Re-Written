@@ -1897,6 +1897,7 @@ pub fn tick(
     mut key_events: MessageReader<KeyboardInput>,
     time: Res<Time>,
     real: Res<Time<Real>>,
+    clock: Res<visual::smoothing::TickClock>,
     pads: Query<(&Gamepad, Option<&Name>)>,
     mut menu: ResMut<DebugMenu>,
     mut game: ResMut<Game>,
@@ -2109,7 +2110,8 @@ pub fn tick(
         enemy_gallery::advance(&mut gallery, time.delta_secs() * TICKS_PER_SECOND);
     }
     if let Some((_, frames)) = menu.notice.as_mut() {
-        *frames = frames.saturating_sub(1);
+        // Counted in ticks, so the notice lasts as long at any frame rate.
+        *frames = frames.saturating_sub(clock.ticks_this_frame() as u32);
         if *frames == 0 {
             menu.notice = None;
         }

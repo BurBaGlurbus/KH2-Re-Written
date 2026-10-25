@@ -403,9 +403,11 @@ pub fn toggle(
     pads: Query<&Gamepad>,
     debug: Option<Res<crate::test_room::DebugMenu>>,
     mut skate: ResMut<Skate>,
+    clock: Res<visual::smoothing::TickClock>,
 ) {
+    // Counted in ticks, so the notice lasts as long at any frame rate.
     if let Some((_, frames)) = &mut skate.notice {
-        *frames = frames.saturating_sub(1);
+        *frames = frames.saturating_sub(clock.ticks_this_frame() as u32);
         if *frames == 0 {
             skate.notice = None;
         }

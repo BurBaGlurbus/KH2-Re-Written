@@ -5,6 +5,7 @@ use super::*;
 use bevy::window::{MonitorSelection, PresentMode, VideoModeSelection, WindowMode};
 use visual::frame_limit::FrameLimit;
 use visual::settings::{LANGUAGES, Settings};
+use visual::smoothing::Smoothing;
 
 /// The KH2 package indexes a language's files may sit in.
 const INDEXES: [&str; 6] = [
@@ -351,6 +352,7 @@ pub(super) fn apply_settings(
     mut settings: ResMut<SettingsRes>,
     mut windows: Query<&mut Window>,
     mut limit: ResMut<FrameLimit>,
+    mut smoothing: ResMut<Smoothing>,
     mut cameras: Query<(&Camera, &mut Msaa), With<Camera3d>>,
     audio: Res<Audio>,
 ) {
@@ -379,6 +381,7 @@ pub(super) fn apply_settings(
         }
     }
     limit.fps = frame_limit(&s, focused, settings.path.is_none());
+    smoothing.on = s.motion_smoothing;
     // The scene camera (order -2); the menu model and snapshot stay plain.
     for (camera, mut msaa) in &mut cameras {
         let want = if s.anti_aliasing {

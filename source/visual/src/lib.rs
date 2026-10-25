@@ -25,6 +25,7 @@ pub mod pause_menu;
 pub mod room;
 pub mod scenery;
 pub mod settings;
+pub mod smoothing;
 pub mod sound;
 pub mod sprite_player;
 pub mod title;
