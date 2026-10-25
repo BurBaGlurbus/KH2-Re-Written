@@ -69,13 +69,17 @@ codegen-units = 1
 
 # Keep file/line backtraces for our code without emitting full type/variable
 # information for every Bevy instantiation. Tests inherit this profile.
+# Our own crates stay at opt-level 0: at 1, a one-file test rebuild took
+# 264 s instead of 18 s on the owner's PC.
 [profile.dev]
 debug = "line-tables-only"
 
 # Registry/git dependencies are rebuilt less often and do not need local
-# debugger symbols. Keep incremental compilation for workspace edits.
+# debugger symbols; optimized, Bevy runs at a usable speed in development
+# builds. Keep incremental compilation for workspace edits.
 [profile.dev.package."*"]
 debug = 0
+opt-level = 3
 
 # Opt in when inspecting workspace locals/types in a debugger. This has its
 # own output directory so ordinary development retains the compact cache.
