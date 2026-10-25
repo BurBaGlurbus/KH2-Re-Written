@@ -353,15 +353,26 @@ pub fn load_entry_kind(source: &ProbeSource, entry: &Entry) -> Result<Kind> {
     let source_layout = serde_json::json!({
         "original_bytes":archive.len(),
         "entries":source_bar.entries.iter().map(|e| serde_json::json!({"type":e.entry_type,"name":e.name_bytes,"size":e.size})).collect::<Vec<_>>(),
-        "texture_profile":"original-only; HD replacement payloads not requested"
+        "texture_profile":"HD replacements where they read and match, else original"
     });
-    let mut models = model_inspection::read_original_model_at(
-        source,
-        found.index,
-        found.ordinal,
-        found.name_hash,
-        material_issue.is_none(),
-    )?;
+    // With its HD replacements (bound where exactly one matches a texture);
+    // a model whose replacements do not read or fit the inspection budget
+    // loads original-only, as every enemy did before.
+    let original = || {
+        model_inspection::read_original_model_at(
+            source,
+            found.index,
+            found.ordinal,
+            found.name_hash,
+            material_issue.is_none(),
+        )
+    };
+    let mut models = if material_issue.is_none() {
+        model_inspection::read_model_at(source, found.index, found.ordinal, found.name_hash)
+            .or_else(|_| original())?
+    } else {
+        original()?
+    };
     if models.is_empty() {
         return Err("enemy model has no supported mesh".into());
     }
