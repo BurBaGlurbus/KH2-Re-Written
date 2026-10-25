@@ -691,6 +691,31 @@ impl ClipPoses {
     }
 }
 
+/// `KH2_LOAD_TIMES=1`: each load stage's time on stderr (load-time work).
+struct LoadTimer {
+    last: Instant,
+    on: bool,
+}
+
+impl LoadTimer {
+    fn new() -> Self {
+        Self {
+            last: Instant::now(),
+            on: std::env::var_os("KH2_LOAD_TIMES").is_some(),
+        }
+    }
+
+    fn mark(&mut self, stage: &str) {
+        if self.on {
+            eprintln!(
+                "load: {stage} {:.0} ms",
+                self.last.elapsed().as_secs_f64() * 1e3
+            );
+        }
+        self.last = Instant::now();
+    }
+}
+
 /// Frame trigger 8 (FUN_14040dd70): id = p0·1000 + p1; with more than
 /// three parameters and p3 set, only when p0 is the equipped weapon's bank.
 fn sound_triggers(selected: &motion::SelectedMotion, weapon_bank: i16) -> Vec<(u32, u32)> {
@@ -3151,6 +3176,7 @@ fn load(
     config_path: &Path,
     basic_fk: bool,
 ) -> Result<Loaded, Box<dyn std::error::Error>> {
+    let mut timer = LoadTimer::new();
     let config: Config = serde_json::from_slice(&read_limited(config_path)?)?;
     if config.schema_version != 1 || config.source_content_identity != source.content_identity() {
         return Err("test room configuration identity/schema invalid".into());
@@ -3159,6 +3185,7 @@ fn load(
     // The session check (executable and indexes rehashed, every package
     // byte read verified by chunk) admits this session.
     source.verify_session()?;
+    timer.mark("source check");
     let mut actors =
         model_inspection::read_selected_models(source, &base.join(&config.actor_selection))?;
     if actors.len() != 1 {
@@ -3171,6 +3198,7 @@ fn load(
         return Err("test room requires exactly one weapon model".into());
     }
     let weapon = weapons.remove(0);
+    timer.mark("models");
     let objects = objentry::read(&read_archive(source, &config.objentry)?)?;
     // Sora's object (entry 0x236) weight, which vacuums scale with.
     let sora_weight = objects
@@ -3248,6 +3276,7 @@ fn load(
         .get(sstm_offset as usize..)
         .and_then(actor_physics::Sstm::read)
         .ok_or("SSTM record truncated")?;
+    timer.mark("objects and room start");
     let battle = read_archive(source, &config.battle)?;
     let ability_source = {
         let rates = sstm_bytes
@@ -3292,6 +3321,7 @@ fn load(
         .unwrap_or_default();
 
     // PTYA attack entries chosen by ID for the grounded and aerial combos.
+    timer.mark("battle and abilities");
     let hud = match &config.hud {
         Some(l) => {
             let mut sheets = vec![hud::load(
@@ -3393,6 +3423,7 @@ fn load(
         }
         None => None,
     };
+    timer.mark("HUD");
     let ptya_bytes = bar_entry(&battle, b"ptya")?;
     // The six spells' tables and cast motions (magc, pref/magi, cmd).
     let mut magic_src = magic_room::load(&battle, pref, &system, 70.)
@@ -3429,6 +3460,7 @@ fn load(
     };
     // Sora's object effects (obj/P_EX100.a.us), 00effect's and the
     // resident common effect textures.
+    timer.mark("magic");
     let (base_pax, texcommon, prize_pax) = match data::path_lookup::Library::open(source) {
         Ok(mut library) => (
             drive_room::object_pax(&mut library, &config.player_object_name),
@@ -3444,10 +3476,12 @@ fn load(
         .and_then(|l| visual::effects::load_pax(source, &l.index, l.ordinal, l.name_hash).ok());
     // The party limits' files: Sora's motions join his kit, the friends'
     // their motion tables.
+    timer.mark("effects");
     let mut limit_source = match (&config.enemy, data::path_lookup::Library::open(source)) {
         (Some(_), Ok(mut library)) => party_limit::load(source, &mut library, &battle, "us"),
         _ => party_limit::LimitSource::default(),
     };
+    timer.mark("limits");
     let kit = character_kit::load_kit(
         source,
         character_kit::KitInputs {
@@ -3485,6 +3519,7 @@ fn load(
             },
         },
     )?;
+    timer.mark("Sora's kit");
     // Donald's and Goofy's limit motions, for their motion tables.
     let mut member_limit_motions: HashMap<u8, Vec<_>> =
         [2u8, 3].map(|c| (c, limit_source.motions(c))).into();
@@ -3608,6 +3643,7 @@ fn load(
     };
     // The enemy's character id (objentry +0x4c) by its model's name hash:
     // Wisdom and Final Form EXP count defeated Heartless / Nobodies.
+    timer.mark("forms and party");
     let enemy_character = config.enemy.as_ref().map_or(0, |e| {
         objects
             .iter()
@@ -3722,6 +3758,7 @@ fn load(
         "missing":["scale channels","up-vector/path/camera constraint types","limiter damping","root rotation","weapon constraint motion","hit detection","enemies","measured installed timing"],
         "inferred_rules":["direction constraints aim local +X","two-joint IK bends the middle joint about local Z","expression list/condition semantics","Hermite tangents scaled by key span","field/battle mode switch with 6 s disarm timeout"],
         "gameplay_verified":false});
+    timer.mark("room join and collision");
     let mut banks = Banks::default();
     for b in &config.sounds {
         let l = &b.locator;
@@ -3739,6 +3776,7 @@ fn load(
         .area
         .as_ref()
         .map_or("tt".to_owned(), |a| a.world.clone());
+    timer.mark("sound banks");
     let voices = data::path_lookup::Library::open(source)
         .ok()
         .and_then(|mut library| {
@@ -3776,10 +3814,12 @@ fn load(
         }
         Some((a.world, info))
     });
+    timer.mark("voices and footsteps");
     let npc = match &config.npc {
         Some(n) => Some(load_npc(source, base, &config, n)?),
         None => None,
     };
+    timer.mark("NPC");
     let effects = match &config.effects {
         Some(e) => {
             use visual::effects::{load_atlas, load_pax};
@@ -3833,6 +3873,7 @@ fn load(
         }
         None => None,
     };
+    timer.mark("effect sources");
     let camp = match (&config.camp, &config.menu) {
         (Some(l), Some(m)) => Some(load_camp_source(source, l, m, &battle, &system)?),
         _ => None,
@@ -3841,6 +3882,7 @@ fn load(
         (Some(j), Some(m), Some(_)) => Some(load_journal(source, j, &m.messages, &system)?),
         _ => None,
     };
+    timer.mark("camp and journal");
     let music = match &config.music {
         Some(m) => Some([
             sound::load_bank(
@@ -4049,6 +4091,7 @@ fn load(
             ))
         })
         .unwrap_or_default();
+    timer.mark("music and the rest");
     Ok(Loaded {
         atkp: bar_entry(&battle, b"atkp")?.to_vec(),
         wall_blade,
@@ -12987,7 +13030,9 @@ fn run(mut args: Vec<PathBuf>) -> Result<AppExit, Box<dyn std::error::Error>> {
     };
     eprintln!("Validating the selected KH2FM source, then decoding the test room...");
     let mut loaded = load(&source, &args[2], basic_fk)?;
+    let mut timer = LoadTimer::new();
     let catalog = enemy_catalog::Catalog::load(&source)?;
+    timer.mark("enemy catalog");
     eprintln!(
         "Enemy catalog: {} entries, {} unclassified candidates, {} classification issues",
         catalog.entries.len(),
@@ -13001,6 +13046,7 @@ fn run(mut args: Vec<PathBuf>) -> Result<AppExit, Box<dyn std::error::Error>> {
     let mut gallery = enemy_gallery::EnemyGallery::new(source.clone(), catalog, basic_fk);
     gallery.target_params = Some(enemy_battle::target_params(&source)?);
     gallery.lock_range = Some(enemy_battle::lock_range(&source)?);
+    timer.mark("enemy gallery");
     eprintln!(
         "Decoded in {:.0} ms.",
         started.elapsed().as_secs_f64() * 1e3

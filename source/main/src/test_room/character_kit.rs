@@ -161,6 +161,42 @@ fn read_with_fallback(
         .collect()
 }
 
+/// `Skinning::sample_evaluated` without skinning the vertices: the clips
+/// that keep their joints are skinned when shown, so loading needs only the
+/// joints' matrices (the same matrices, in the same layout). Raw-matrix
+/// motions keep their vertices and go through `sample_evaluated`.
+fn evaluate_matrices(
+    skinning: &data::model_pose::Skinning,
+    motion: &data::motion::InterpolatedMotion,
+    frame: f32,
+) -> std::io::Result<(data::model_pose::ModelPose, data::motion_eval::Evaluated)> {
+    if motion.raw.is_some() {
+        return skinning.sample_evaluated(motion, frame);
+    }
+    let evaluated = data::motion_eval::evaluate(&skinning.bones, motion, frame)?;
+    let matrix_bits = evaluated.joints[..skinning.bones.len()]
+        .iter()
+        .map(|w| {
+            let m = w.matrix();
+            std::array::from_fn(|i| m[i / 4][i % 4].to_bits())
+        })
+        .collect();
+    Ok((
+        data::model_pose::ModelPose {
+            profile: data::model_pose::PoseProfile::Legacy,
+            arithmetic_profile: "motion_eval_ik_constraints_v1",
+            matrix_bits,
+            position_bits: Vec::new(),
+            runtime_verified: false,
+        },
+        evaluated,
+    ))
+}
+
+/// A clip's frames and its evaluation statistics (constraints, IK chains,
+/// expressions, unsupported constraints).
+type BuiltClip = std::io::Result<(ClipPoses, [usize; 4])>;
+
 pub(super) fn load_kit(
     source: &ProbeSource,
     k: KitInputs,
@@ -450,8 +486,195 @@ pub(super) fn load_kit(
             .collect(),
         weapon_joint,
     });
-    let mut clip_poses = Vec::new();
-    let mut eval_totals = [0usize; 4];
+    // One clip's frames: the evaluated joints (skinned when shown), the
+    // matrices the simulation reads, the weapon's own vertices, and the
+    // evaluation statistics.
+    let build = |selected: &motion::SelectedMotion, end: u32, key_start: u32| -> BuiltClip {
+        let mut stats = [0usize; 4];
+        let mut frames = Vec::with_capacity(end as usize);
+        let mut joints = Vec::new();
+        let mut hand = Vec::with_capacity(end as usize);
+        let mut hand2 = Vec::new();
+        let mut root = Vec::with_capacity(end as usize);
+        let mut weapon_frames = Vec::new();
+        let mut weapon2_frames = Vec::new();
+        let mut blade = Vec::new();
+        let mut blade2 = Vec::new();
+        let mut body_frames = Vec::new();
+        // Attack volumes: the weapon motion's range triggers 10.
+        let own_hits = |m: &motion::SelectedMotion| -> Vec<(u32, u32, u16, u8)> {
+            m.triggers
+                .iter()
+                .flat_map(|t| &t.records.ranges)
+                .filter(|r| r.trigger == 10 && r.parameters.len() >= 2)
+                .map(|r| {
+                    (
+                        r.start_frame.max(0) as u32,
+                        if r.end_frame < 0 {
+                            end
+                        } else {
+                            r.end_frame as u32
+                        },
+                        r.parameters[0] as u16,
+                        r.parameters[1] as u8,
+                    )
+                })
+                .collect()
+        };
+        let hits = weapon_motions[0]
+            .get(&selected.slot)
+            .map(own_hits)
+            .unwrap_or_default();
+        let hits2 = weapon_motions[1]
+            .get(&selected.slot)
+            .map(own_hits)
+            .unwrap_or_default();
+        // The weapon motion's range trigger 12 marks the swing trail
+        // (each slot's own motion).
+        let trail_windows = |k: usize| -> Vec<(u32, u32)> {
+            weapon_motions[k]
+                .get(&selected.slot)
+                .map(|m| {
+                    m.triggers
+                        .iter()
+                        .flat_map(|t| &t.records.ranges)
+                        .filter(|r| r.trigger == 12)
+                        .map(|r| {
+                            (
+                                r.start_frame.max(0) as u32,
+                                if r.end_frame < 0 {
+                                    end
+                                } else {
+                                    r.end_frame as u32
+                                },
+                            )
+                        })
+                        .collect()
+                })
+                .unwrap_or_default()
+        };
+        let trails = trail_windows(0);
+        let trails2 = trail_windows(1);
+        for offset in 0..=end {
+            let frame = key_start + offset;
+            for (k, (frames_k, blade_k)) in [
+                (&mut weapon_frames, &mut blade),
+                (&mut weapon2_frames, &mut blade2),
+            ]
+            .into_iter()
+            .enumerate()
+            {
+                if let Some(own) = weapon_motions[k].get(&selected.slot) {
+                    let model = if k == 1 {
+                        weapon2.as_ref().unwrap_or(&weapon)
+                    } else {
+                        &weapon
+                    };
+                    let (pose, _) = model.skinning.sample_evaluated(&own.motion, frame as f32)?;
+                    frames_k.push(
+                        pose.position_bits
+                            .iter()
+                            .map(|p| Vec3::from_array(p.map(f32::from_bits)))
+                            .collect(),
+                    );
+                    if let Some(m) = pose.matrix_bits.get(2) {
+                        blade_k.push(Mat4::from_cols_array(&m.map(f32::from_bits)));
+                    }
+                }
+            }
+            let pose = if basic_fk {
+                root.push(Vec3::ZERO);
+                actor.skinning.sample_fk(&selected.motion, frame)?
+            } else {
+                let (mut pose, evaluated) =
+                    evaluate_matrices(&actor.skinning, &selected.motion, frame as f32)?;
+                // Root motion moves the player; the rendered pose
+                // stays at the player origin.
+                let r = evaluated.root_translation;
+                root.push(Vec3::from_array(r));
+                // Raw-matrix motions have no joints to blend; the
+                // others keep their joints (root included) and are
+                // skinned when shown (`ClipPoses::frame`).
+                if let Some(own) = evaluated.joints.get(..skin.parents.len()) {
+                    joints.push(own.to_vec());
+                }
+                for p in &mut pose.position_bits {
+                    *p = std::array::from_fn(|i| (f32::from_bits(p[i]) - r[i]).to_bits());
+                }
+                for m in &mut pose.matrix_bits {
+                    for i in 0..3 {
+                        m[12 + i] = (f32::from_bits(m[12 + i]) - r[i]).to_bits();
+                    }
+                }
+                let s = evaluated.stats;
+                stats[0] += s.constraints_applied;
+                stats[1] += s.ik_chains_solved;
+                stats[2] += s.expressions_applied;
+                stats[3] += s.unsupported_constraints;
+                pose
+            };
+            body_frames.push(
+                body.iter()
+                    .map(|&(b, ..)| b)
+                    .chain(effect_bones.iter().copied())
+                    .chain(attack_bones.iter().copied())
+                    .chain(
+                        target_shape
+                            .filter(|s| s.bone >= 0 && s.bone != 0x4000)
+                            .map(|s| s.bone as usize),
+                    )
+                    .filter_map(|b| {
+                        let m = pose.matrix_bits.get(b)?;
+                        Some((b, Mat4::from_cols_array(&m.map(f32::from_bits))))
+                    })
+                    .collect(),
+            );
+            // Row-vector matrices: the row-major words are Bevy's
+            // column-major layout of the same transform.
+            hand.push(Mat4::from_cols_array(
+                &pose.matrix_bits[weapon_joint].map(f32::from_bits),
+            ));
+            if let Some(j) = second_joint {
+                hand2.push(Mat4::from_cols_array(
+                    &pose.matrix_bits[j].map(f32::from_bits),
+                ));
+            }
+            if joints.is_empty() {
+                frames.push(
+                    pose.position_bits
+                        .iter()
+                        .map(|p| Vec3::from_array(p.map(f32::from_bits)))
+                        .collect(),
+                );
+            }
+        }
+        Ok((
+            ClipPoses {
+                frames,
+                joints,
+                skin: Some(skin.clone()),
+                weapon: hand,
+                weapon2: hand2,
+                weapon_frames,
+                weapon2_frames,
+                root,
+                blade,
+                blade2,
+                hits,
+                hits2,
+                trails,
+                trails2,
+                actor_hits: own_hits(selected),
+                body: body_frames,
+                sounds: weapon_motions[0]
+                    .get(&selected.slot)
+                    .map(|own| sound_triggers(own, WEAPON_BANK))
+                    .unwrap_or_default(),
+            },
+            stats,
+        ))
+    };
+    let mut jobs: Vec<(&motion::SelectedMotion, u32, u32)> = Vec::new();
     let mut clip_list: Vec<(Clip, usize)> = Vec::new();
     let mut by_slot: HashMap<usize, usize> = HashMap::new();
     let mut slots = Vec::new();
@@ -475,198 +698,59 @@ pub(super) fn load_kit(
         let index = match by_slot.get(&selected.slot) {
             Some(&i) => i,
             None => {
-                let mut frames = Vec::with_capacity(clip.end as usize);
-                let mut joints = Vec::new();
-                let mut hand = Vec::with_capacity(clip.end as usize);
-                let mut hand2 = Vec::new();
-                let mut root = Vec::with_capacity(clip.end as usize);
-                let mut weapon_frames = Vec::new();
-                let mut weapon2_frames = Vec::new();
-                let mut blade = Vec::new();
-                let mut blade2 = Vec::new();
-                let mut body_frames = Vec::new();
-                // Attack volumes: the weapon motion's range triggers 10.
-                let own_hits = |m: &motion::SelectedMotion| -> Vec<(u32, u32, u16, u8)> {
-                    m.triggers
-                        .iter()
-                        .flat_map(|t| &t.records.ranges)
-                        .filter(|r| r.trigger == 10 && r.parameters.len() >= 2)
-                        .map(|r| {
-                            (
-                                r.start_frame.max(0) as u32,
-                                if r.end_frame < 0 {
-                                    clip.end
-                                } else {
-                                    r.end_frame as u32
-                                },
-                                r.parameters[0] as u16,
-                                r.parameters[1] as u8,
-                            )
-                        })
-                        .collect()
-                };
-                let hits = weapon_motions[0]
-                    .get(&selected.slot)
-                    .map(own_hits)
-                    .unwrap_or_default();
-                let hits2 = weapon_motions[1]
-                    .get(&selected.slot)
-                    .map(own_hits)
-                    .unwrap_or_default();
-                // The weapon motion's range trigger 12 marks the swing trail
-                // (each slot's own motion).
-                let trail_windows = |k: usize| -> Vec<(u32, u32)> {
-                    weapon_motions[k]
-                        .get(&selected.slot)
-                        .map(|m| {
-                            m.triggers
-                                .iter()
-                                .flat_map(|t| &t.records.ranges)
-                                .filter(|r| r.trigger == 12)
-                                .map(|r| {
-                                    (
-                                        r.start_frame.max(0) as u32,
-                                        if r.end_frame < 0 {
-                                            clip.end
-                                        } else {
-                                            r.end_frame as u32
-                                        },
-                                    )
-                                })
-                                .collect()
-                        })
-                        .unwrap_or_default()
-                };
-                let trails = trail_windows(0);
-                let trails2 = trail_windows(1);
-                for offset in 0..=clip.end {
-                    let frame = key_start + offset;
-                    for (k, (frames_k, blade_k)) in [
-                        (&mut weapon_frames, &mut blade),
-                        (&mut weapon2_frames, &mut blade2),
-                    ]
-                    .into_iter()
-                    .enumerate()
-                    {
-                        if let Some(own) = weapon_motions[k].get(&selected.slot) {
-                            let model = if k == 1 {
-                                weapon2.as_ref().unwrap_or(&weapon)
-                            } else {
-                                &weapon
-                            };
-                            let (pose, _) =
-                                model.skinning.sample_evaluated(&own.motion, frame as f32)?;
-                            frames_k.push(
-                                pose.position_bits
-                                    .iter()
-                                    .map(|p| Vec3::from_array(p.map(f32::from_bits)))
-                                    .collect(),
-                            );
-                            if let Some(m) = pose.matrix_bits.get(2) {
-                                blade_k.push(Mat4::from_cols_array(&m.map(f32::from_bits)));
-                            }
-                        }
-                    }
-                    let pose = if basic_fk {
-                        root.push(Vec3::ZERO);
-                        actor.skinning.sample_fk(&selected.motion, frame)?
-                    } else {
-                        let (mut pose, evaluated) = actor
-                            .skinning
-                            .sample_evaluated(&selected.motion, frame as f32)?;
-                        // Root motion moves the player; the rendered pose
-                        // stays at the player origin.
-                        let r = evaluated.root_translation;
-                        root.push(Vec3::from_array(r));
-                        // Raw-matrix motions have no joints to blend; the
-                        // others keep their joints (root included) and are
-                        // skinned when shown (`ClipPoses::frame`).
-                        if let Some(own) = evaluated.joints.get(..skin.parents.len()) {
-                            joints.push(own.to_vec());
-                        }
-                        for p in &mut pose.position_bits {
-                            *p = std::array::from_fn(|i| (f32::from_bits(p[i]) - r[i]).to_bits());
-                        }
-                        for m in &mut pose.matrix_bits {
-                            for i in 0..3 {
-                                m[12 + i] = (f32::from_bits(m[12 + i]) - r[i]).to_bits();
-                            }
-                        }
-                        let s = evaluated.stats;
-                        eval_totals[0] += s.constraints_applied;
-                        eval_totals[1] += s.ik_chains_solved;
-                        eval_totals[2] += s.expressions_applied;
-                        eval_totals[3] += s.unsupported_constraints;
-                        pose
-                    };
-                    body_frames.push(
-                        body.iter()
-                            .map(|&(b, ..)| b)
-                            .chain(effect_bones.iter().copied())
-                            .chain(attack_bones.iter().copied())
-                            .chain(
-                                target_shape
-                                    .filter(|s| s.bone >= 0 && s.bone != 0x4000)
-                                    .map(|s| s.bone as usize),
-                            )
-                            .filter_map(|b| {
-                                let m = pose.matrix_bits.get(b)?;
-                                Some((b, Mat4::from_cols_array(&m.map(f32::from_bits))))
-                            })
-                            .collect(),
-                    );
-                    // Row-vector matrices: the row-major words are Bevy's
-                    // column-major layout of the same transform.
-                    hand.push(Mat4::from_cols_array(
-                        &pose.matrix_bits[weapon_joint].map(f32::from_bits),
-                    ));
-                    if let Some(j) = second_joint {
-                        hand2.push(Mat4::from_cols_array(
-                            &pose.matrix_bits[j].map(f32::from_bits),
-                        ));
-                    }
-                    if joints.is_empty() {
-                        frames.push(
-                            pose.position_bits
-                                .iter()
-                                .map(|p| Vec3::from_array(p.map(f32::from_bits)))
-                                .collect(),
-                        );
-                    }
-                }
-                clip_poses.push(ClipPoses {
-                    frames,
-                    joints,
-                    skin: Some(skin.clone()),
-                    weapon: hand,
-                    weapon2: hand2,
-                    weapon_frames,
-                    weapon2_frames,
-                    root,
-                    blade,
-                    blade2,
-                    hits,
-                    hits2,
-                    trails,
-                    trails2,
-                    actor_hits: own_hits(selected),
-                    body: body_frames,
-                    sounds: weapon_motions[0]
-                        .get(&selected.slot)
-                        .map(|own| sound_triggers(own, WEAPON_BANK))
-                        .unwrap_or_default(),
-                });
-                by_slot.insert(selected.slot, clip_poses.len() - 1);
-                clip_poses.len() - 1
+                // Evaluated below, every new clip on its own thread.
+                jobs.push((selected, clip.end, key_start));
+                by_slot.insert(selected.slot, jobs.len() - 1);
+                jobs.len() - 1
             }
         };
         slots.push(serde_json::json!({"motion_id":ids[clip_list.len()],"slot":selected.slot,"sha256":selected.sha256,
             "end_ticks":clip.end,"loop_start":clip.loop_start,"combo_windows":clip.combo_windows,
             "blend_to_idle":clip.blend_to_idle,"no_gravity":clip.no_gravity,"command_lockout":clip.command_lockout,"no_first_person":clip.no_first_person,"actionable":clip.actionable,
-            "inertia":clip.inertia,"turn_to_target":clip.turn_to_target,"face_target":clip.face_target,"takeoff":clip.takeoff,
-            "root_start":clip_poses[index].root.first().map(|r| r.to_array()),
-            "root_end":clip_poses[index].root.last().map(|r| r.to_array())}));
+            "inertia":clip.inertia,"turn_to_target":clip.turn_to_target,"face_target":clip.face_target,"takeoff":clip.takeoff}));
         clip_list.push((clip, index));
+    }
+    // The clips are independent: evaluate them on several threads (each
+    // takes every n-th), then keep them in their first-use order.
+    let threads = std::thread::available_parallelism()
+        .map_or(1, |n| n.get())
+        .clamp(1, 8);
+    let mut built: Vec<Option<BuiltClip>> = (0..jobs.len()).map(|_| None).collect();
+    std::thread::scope(|scope| {
+        let workers: Vec<_> = (0..threads)
+            .map(|t| {
+                let (jobs, build) = (&jobs, &build);
+                scope.spawn(move || {
+                    jobs.iter()
+                        .enumerate()
+                        .skip(t)
+                        .step_by(threads)
+                        .map(|(i, &(selected, end, key_start))| {
+                            (i, build(selected, end, key_start))
+                        })
+                        .collect::<Vec<_>>()
+                })
+            })
+            .collect();
+        for worker in workers {
+            for (i, result) in worker.join().expect("clip worker") {
+                built[i] = Some(result);
+            }
+        }
+    });
+    let mut clip_poses = Vec::with_capacity(jobs.len());
+    let mut eval_totals = [0usize; 4];
+    for result in built {
+        let (poses, stats) = result.expect("every clip built")?;
+        for (total, s) in eval_totals.iter_mut().zip(stats) {
+            *total += s;
+        }
+        clip_poses.push(poses);
+    }
+    for (slot, (_, index)) in slots.iter_mut().zip(&clip_list) {
+        let root = &clip_poses[*index].root;
+        slot["root_start"] = serde_json::json!(root.first().map(|r| r.to_array()));
+        slot["root_end"] = serde_json::json!(root.last().map(|r| r.to_array()));
     }
     let step = |entry: &ptya::PtyaEntry, (clip, index): &(Clip, usize)| AttackStep {
         clip: clip.clone(),
