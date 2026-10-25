@@ -75,18 +75,18 @@ fn build_anim(model: &InspectionModel, m: &InterpolatedMotion) -> Result<BobAnim
         .map_or(0, |&t| t as usize)
         .clamp(1, 4096);
     let scale = 60. / fps;
-    let mut frames = Vec::with_capacity(ticks);
-    for tick in 0..ticks {
+    // The ticks are independent: evaluated on several threads, in order.
+    let frames = crate::par::map_indexed(ticks, |tick| {
         let (pose, _) = model
             .skinning
             .sample_evaluated(m, frame_start + tick as f32 / scale)?;
-        frames.push(
+        Ok::<_, std::io::Error>(
             pose.position_bits
                 .iter()
                 .map(|p| Vec3::from_array(p.map(f32::from_bits)))
                 .collect(),
-        );
-    }
+        )
+    })?;
     Ok(BobAnim { frames })
 }
 

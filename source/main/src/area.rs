@@ -330,11 +330,13 @@ impl AreaSource {
             .get(world as usize)
             .ok_or("world index outside the world table")?;
         let name = format!("{code}{area:02}");
+        let mut timer = crate::load_timer::LoadTimer::new();
         let map = self.library.read(&format!("map/{name}.map"))?;
         let ard_bytes = self
             .library
             .read(&format!("ard/{}/{name}.ard", self.language))?;
         let ard_bar = bar::read_bar(&ard_bytes)?;
+        timer.mark("area: map and ard read");
         let entry = |kind: u16, name: u32| -> Option<&[u8]> {
             ard_bar
                 .entries
@@ -392,10 +394,13 @@ impl AreaSource {
             }
         }
         let (state, spawns, location) = chosen.ok_or("area scripts did not run")?;
+        timer.mark("area: area scripts");
         let programs = location.programs;
         let (npcs, deferred, scripts, lines) =
             self.townspeople(code, area, &state, &spawns, &types);
+        timer.mark("area: townspeople");
         let music = self.music_change(world, area, state.setup.bgm);
+        timer.mark("area: music");
         let room = load_room_archive(&map, None)?;
         let bobs = visual::scenery::load(&map).unwrap_or_else(|e| {
             eprintln!("{name}: map objects not loaded: {e}");
@@ -404,8 +409,10 @@ impl AreaSource {
                 placements: Vec::new(),
             }
         });
+        timer.mark("area: room and map objects");
         let collision = map_collision(&map, state.setup.bg_mask)?;
         let pax = map_pax(&map).map(Arc::new);
+        timer.mark("area: collision and map effects");
         let save_points = self.save_points(&spawns);
         let player = Area::player_spawn(&spawns)
             .map(|s| {

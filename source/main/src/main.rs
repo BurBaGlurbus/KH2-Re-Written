@@ -16,6 +16,7 @@ mod cutscene;
 mod image_inspector;
 mod keyblade_board;
 mod launcher;
+mod load_timer;
 mod model_inspector;
 mod npcs;
 #[cfg(feature = "perf-diag")]

@@ -115,26 +115,29 @@ pub(crate) fn build_anim(
     let start = (frame_start * scale).round() as u32;
     let end = (frame_end * scale).round() as u32 - start;
     let loop_start = ((frame_return * scale).round() as u32).saturating_sub(start);
-    let (mut frames, mut bones) = (Vec::new(), Vec::new());
-    for offset in 0..=end {
-        let (pose, evaluated) = model
-            .skinning
-            // One 60 Hz tick advances 30/60 key-time units at 30 fps
-            // (R10A: 30 key units over 60 ticks, npc-01 motion table).
-            .sample_evaluated(&selected.motion, frame_start + offset as f32 / scale)?;
-        let r = Vec3::from_array(evaluated.root_translation);
-        frames.push(
-            pose.position_bits
+    // The frames are independent: evaluated on several threads, in order.
+    let (frames, bones): (Vec<Vec<Vec3>>, Vec<Option<Mat4>>) =
+        visual::par::map_indexed(end as usize + 1, |offset| {
+            let (pose, evaluated) = model
+                .skinning
+                // One 60 Hz tick advances 30/60 key-time units at 30 fps
+                // (R10A: 30 key units over 60 ticks, npc-01 motion table).
+                .sample_evaluated(&selected.motion, frame_start + offset as f32 / scale)?;
+            let r = Vec3::from_array(evaluated.root_translation);
+            let frame = pose
+                .position_bits
                 .iter()
                 .map(|p| Vec3::from_array(p.map(f32::from_bits)) - r)
-                .collect(),
-        );
-        bones.push(bone.and_then(|b| pose.matrix_bits.get(b)).map(|m| {
-            let mut m = Mat4::from_cols_array(&m.map(f32::from_bits));
-            m.w_axis -= r.extend(0.);
-            m
-        }));
-    }
+                .collect();
+            let bone = bone.and_then(|b| pose.matrix_bits.get(b)).map(|m| {
+                let mut m = Mat4::from_cols_array(&m.map(f32::from_bits));
+                m.w_axis -= r.extend(0.);
+                m
+            });
+            Ok::<_, std::io::Error>((frame, bone))
+        })?
+        .into_iter()
+        .unzip();
     // Root motion per tick: the motion root record's translation (+0x20,
     // the displacement of one pass) over the motion's length in ticks
     // (header word 1) [npc-01 §3.7].
@@ -186,11 +189,19 @@ impl NpcKind {
                 }
             ))
             .ok_or_else(|| format!("{set_name} motion set is not installed"))?;
-        let slot = |s: usize| -> Option<Arc<motion::SelectedMotion>> {
-            motion::read_slots(source, set.index, set.ordinal, set.name_hash, &[s])
-                .ok()
-                .and_then(|mut v| (!v.is_empty()).then(|| Arc::new(v.remove(0))))
-        };
+        // Every slot the kind may play, read from the set once.
+        let wanted: Vec<usize> = [SLOT_IDLE, SLOT_WALK, SLOT_TURN]
+            .into_iter()
+            .chain(std::iter::once(50).chain(283..=292))
+            .collect();
+        let read: HashMap<usize, Arc<motion::SelectedMotion>> =
+            motion::read_slots_each(source, set.index, set.ordinal, set.name_hash, &wanted)
+                .unwrap_or_default()
+                .into_iter()
+                .zip(&wanted)
+                .filter_map(|(m, &s)| Some((s, Arc::new(m?))))
+                .collect();
+        let slot = |s: usize| -> Option<Arc<motion::SelectedMotion>> { read.get(&s).cloned() };
         let idle = slot(SLOT_IDLE).ok_or("NPC set has no idle motion")?;
         // The talk camera's TARGET shape (FUN_1403be230 fallback) comes
         // from the model archive's object collision (BAR type 23).

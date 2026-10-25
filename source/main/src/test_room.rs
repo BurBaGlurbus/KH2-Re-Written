@@ -8,6 +8,7 @@
 //! public lead exists, explicit choices elsewhere. It is not a measured
 //! reproduction of the installed game's movement or combat rules.
 use crate::area::{self, AreaSource, LoadedArea, MapWorld};
+use crate::load_timer::LoadTimer;
 use bevy::{
     app::AppExit,
     asset::RenderAssetUsages,
@@ -688,31 +689,6 @@ impl ClipPoses {
                     .collect()
             })
             .unwrap_or_default()
-    }
-}
-
-/// `KH2_LOAD_TIMES=1`: each load stage's time on stderr (load-time work).
-struct LoadTimer {
-    last: Instant,
-    on: bool,
-}
-
-impl LoadTimer {
-    fn new() -> Self {
-        Self {
-            last: Instant::now(),
-            on: std::env::var_os("KH2_LOAD_TIMES").is_some(),
-        }
-    }
-
-    fn mark(&mut self, stage: &str) {
-        if self.on {
-            eprintln!(
-                "load: {stage} {:.0} ms",
-                self.last.elapsed().as_secs_f64() * 1e3
-            );
-        }
-        self.last = Instant::now();
     }
 }
 
