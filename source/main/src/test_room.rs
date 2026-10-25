@@ -600,10 +600,14 @@ struct Skin {
 
 /// Precomputed skinned positions for every frame of one clip.
 struct ClipPoses {
+    /// Vertex positions per frame (root motion removed), kept only for
+    /// motions without evaluated joints (raw matrices, basic FK); the others
+    /// are skinned from `joints` when shown (`frame`), which keeps a few
+    /// hundred megabytes of vertices out of memory.
     frames: Vec<Vec<Vec3>>,
-    /// The evaluated joints of each frame with the root motion removed
-    /// (empty for basic FK), blended joint by joint when a motion switch
-    /// cross-fades.
+    /// The evaluated joints of each frame, root motion included (empty for
+    /// basic FK and raw matrices); `rootless_joints` gives them as blended
+    /// joint by joint when a motion switch cross-fades.
     joints: Vec<Vec<data::motion_eval::World>>,
     skin: Option<Arc<Skin>>,
     /// Model-space matrix of the objentry weapon joint for each frame.
@@ -635,6 +639,56 @@ struct ClipPoses {
     body: Vec<HashMap<usize, Mat4>>,
     /// Weapon motion frame trigger 8 ("play SE"): (clip tick, sound id).
     sounds: Vec<(u32, u32)>,
+}
+
+impl ClipPoses {
+    /// The clip's frame count.
+    fn len(&self) -> usize {
+        self.root.len()
+    }
+
+    /// Frame `f`'s joints with the root motion removed (clamped to the
+    /// clip; None without evaluated joints).
+    fn rootless_joints(&self, f: usize) -> Option<Vec<data::motion_eval::World>> {
+        let f = f.min(self.joints.len().checked_sub(1)?);
+        let r = self.root[f.min(self.root.len() - 1)].to_array();
+        Some(
+            self.joints[f]
+                .iter()
+                .map(|w| {
+                    let mut w = *w;
+                    for (t, r) in w.translation.iter_mut().zip(r) {
+                        *t -= r;
+                    }
+                    w
+                })
+                .collect(),
+        )
+    }
+
+    /// Frame `f`'s vertex positions with the root motion removed (clamped
+    /// to the clip): the kept ones, or the evaluated joints skinned the way
+    /// the frames were once precomputed (the same matrices, then the root
+    /// taken off each position).
+    fn frame(&self, f: usize) -> Vec<Vec3> {
+        if !self.frames.is_empty() {
+            return self.frames[f.min(self.frames.len() - 1)].clone();
+        }
+        let f = f.min(self.joints.len().saturating_sub(1));
+        let (Some(skin), Some(joints)) = (&self.skin, self.joints.get(f)) else {
+            return Vec::new();
+        };
+        let r = self.root[f.min(self.root.len() - 1)].to_array();
+        skin.skinning
+            .pose_from_worlds(joints)
+            .map(|pose| {
+                pose.position_bits
+                    .iter()
+                    .map(|p| Vec3::from_array(std::array::from_fn(|i| f32::from_bits(p[i]) - r[i])))
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
 }
 
 /// Frame trigger 8 (FUN_14040dd70): id = p0·1000 + p1; with more than
@@ -5706,7 +5760,7 @@ fn setup(
     commands.insert_resource(SceneRoot(world));
     let mut actor = startup.actor.take().expect("actor retained for setup");
     let weapon = startup.weapon.take().expect("weapon retained for setup");
-    let pose = game.clip_poses[game.poses[&(Action::Idle, false)]].frames[0].clone();
+    let pose = game.clip_poses[game.poses[&(Action::Idle, false)]].frame(0);
     let root = commands
         .spawn((
             SoraRoot,
@@ -5737,7 +5791,7 @@ fn setup(
     let walk = game.poses[&(Action::Walk, false)];
     let walk_pose: Vec<Vec3> = {
         let c = &game.clip_poses[walk];
-        c.frames[0].iter().map(|p| *p + c.root[0]).collect()
+        c.frame(0).iter().map(|p| *p + c.root[0]).collect()
     };
     let menu_root = commands
         .spawn((
@@ -6152,12 +6206,13 @@ fn menu_model_present(
         return;
     }
     let c = &game.clip_poses[model.clip];
-    let f = (t as usize).min(c.frames.len() - 1);
+    let f = (t as usize).min(c.len() - 1);
     let root = c.root[f.min(c.root.len() - 1)];
+    let pose = c.frame(f);
     for (part, handle) in &parts {
         let positions = model.indices[part.0]
             .iter()
-            .map(|&i| (c.frames[f][i as usize] + root).to_array());
+            .map(|&i| (pose[i as usize] + root).to_array());
         visual::room::set_positions(&mut meshes, &handle.0, positions);
     }
 }
@@ -10640,6 +10695,9 @@ fn skate_present(
     board_models.shown = Some(wanted);
 }
 
+/// Sora's skinned target pose and its (kit, clip, frame).
+type ShownTarget = Option<((usize, usize, usize), Vec<Vec3>)>;
+
 // Bevy systems take each resource as a parameter.
 #[allow(clippy::too_many_arguments)]
 fn present(
@@ -10651,6 +10709,7 @@ fn present(
     parts: Query<(&SoraPart, &Mesh3d)>,
     weapon_parts: Query<(&WeaponPart, &Mesh3d)>,
     mut meshes: ResMut<Assets<Mesh>>,
+    mut shown_target: Local<ShownTarget>,
 ) {
     let action = game.player.action;
     let started = game.action_started;
@@ -10665,14 +10724,14 @@ fn present(
     let frame = game.player.motion_frame(&game.clips) as usize;
     let clip = game.poses[&(action, game.player.armed)];
     let skin = game.clip_poses[clip].skin.clone();
-    let target_joints: Option<Vec<data::motion_eval::World>> = {
-        let joints = &game.clip_poses[clip].joints;
-        joints
-            .get(frame.min(joints.len().saturating_sub(1)))
-            .cloned()
-    };
-    let target = &game.clip_poses[clip].frames;
-    let target = &target[frame.min(target.len() - 1)];
+    let target_joints = game.clip_poses[clip].rootless_joints(frame);
+    // The skinned target is kept while the kit, clip and frame stay (the
+    // pose changes once per tick; frames between ticks reuse it).
+    let key = (game.clip_poses.as_ptr() as usize, clip, frame);
+    if shown_target.as_ref().is_none_or(|(k, _)| *k != key) {
+        *shown_target = Some((key, game.clip_poses[clip].frame(frame)));
+    }
+    let target = &shown_target.as_ref().expect("target pose kept").1;
     // Unattended runs log how far each switch of action moves the shown
     // pose when it is not blended (the first frame of the new motion
     // against the pose left behind).

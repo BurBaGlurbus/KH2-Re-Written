@@ -578,19 +578,11 @@ pub(super) fn load_kit(
                         // stays at the player origin.
                         let r = evaluated.root_translation;
                         root.push(Vec3::from_array(r));
-                        // Raw-matrix motions have no joints to blend.
+                        // Raw-matrix motions have no joints to blend; the
+                        // others keep their joints (root included) and are
+                        // skinned when shown (`ClipPoses::frame`).
                         if let Some(own) = evaluated.joints.get(..skin.parents.len()) {
-                            joints.push(
-                                own.iter()
-                                    .map(|w| {
-                                        let mut w = *w;
-                                        for (t, r) in w.translation.iter_mut().zip(r) {
-                                            *t -= r;
-                                        }
-                                        w
-                                    })
-                                    .collect(),
-                            );
+                            joints.push(own.to_vec());
                         }
                         for p in &mut pose.position_bits {
                             *p = std::array::from_fn(|i| (f32::from_bits(p[i]) - r[i]).to_bits());
@@ -633,12 +625,14 @@ pub(super) fn load_kit(
                             &pose.matrix_bits[j].map(f32::from_bits),
                         ));
                     }
-                    frames.push(
-                        pose.position_bits
-                            .iter()
-                            .map(|p| Vec3::from_array(p.map(f32::from_bits)))
-                            .collect(),
-                    );
+                    if joints.is_empty() {
+                        frames.push(
+                            pose.position_bits
+                                .iter()
+                                .map(|p| Vec3::from_array(p.map(f32::from_bits)))
+                                .collect(),
+                        );
+                    }
                 }
                 clip_poses.push(ClipPoses {
                     frames,

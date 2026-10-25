@@ -1442,7 +1442,7 @@ pub fn present(
         return;
     };
     let count = d.weapons.get(&form).copied().unwrap_or(1);
-    let pose = g.clip_poses[g.poses[&(Action::Idle, false)]].frames[0].clone();
+    let pose = g.clip_poses[g.poses[&(Action::Idle, false)]].frame(0);
     let mut part_indices = Vec::new();
     for (ordinal, entity) in spawn_model(
         &mut commands,
