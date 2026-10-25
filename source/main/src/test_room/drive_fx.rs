@@ -14,9 +14,7 @@
 use super::*;
 use ::effect::{Instance, ModelDraw, Quad, Rng, math::Mat};
 use data::object_effect::{Dpd, OmdHeader, OmdMesh, Pax};
-use visual::effect_draw::{
-    Blend, EffectMaterial, TexKey, model_alpha, page_image, report_missing, transparent_image,
-};
+use visual::effect_draw::{Blend, EffectMaterial, PageCache, TexKey, model_alpha, report_missing};
 
 /// A start request: the PAX, the element id, and whether it binds to Sora.
 pub struct FxRequest {
@@ -152,7 +150,7 @@ pub struct DriveFx {
     models: HashMap<(usize, i16), Option<ParsedModel>>,
     batches: HashMap<BatchKey, Batch>,
     dirty: bool,
-    images: HashMap<TexKey, Handle<Image>>,
+    images: PageCache,
     materials: HashMap<BatchKey, Handle<EffectMaterial>>,
     missing: Vec<(usize, u16)>,
     spawned: Vec<Entity>,
@@ -776,24 +774,13 @@ fn model(
 }
 
 fn image(fx: &mut DriveFx, key: TexKey, repeat: bool, images: &mut Assets<Image>) -> Handle<Image> {
-    if let Some(h) = fx.images.get(&key) {
-        return h.clone();
-    }
-    let image = fx
-        .dpds
-        .iter()
-        .chain(fx.common.as_ref())
-        .find(|d| Arc::as_ptr(d) as usize == key.dpd)
-        .map_or_else(
-            || {
-                error!("effect texture missing: no DPD for {key:?}; drawn transparent");
-                transparent_image()
-            },
-            |d| page_image(d, key, repeat),
-        );
-    let handle = images.add(image);
-    fx.images.insert(key, handle.clone());
-    handle
+    let (dpds, common) = (&fx.dpds, fx.common.as_ref());
+    fx.images.image(key, repeat, images, || {
+        dpds.iter()
+            .chain(common)
+            .find(|d| Arc::as_ptr(d) as usize == key.dpd)
+            .map(|d| &**d)
+    })
 }
 
 /// Rebuilds the effect meshes from this tick's batches.

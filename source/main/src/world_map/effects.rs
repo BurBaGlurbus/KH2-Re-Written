@@ -10,9 +10,7 @@ use ::effect::{Instance, ModelDraw, Quad, Rng, math::Mat};
 use bevy::prelude::*;
 use data::object_effect::{self, Dpd, OmdHeader, OmdMesh, Pax};
 use std::{collections::HashMap, sync::Arc};
-use visual::effect_draw::{
-    Blend, EffectMaterial, TexKey, model_alpha, page_image, report_missing, transparent_image,
-};
+use visual::effect_draw::{Blend, EffectMaterial, PageCache, TexKey, model_alpha, report_missing};
 
 /// The particle heap's size (FUN_1402bdb50's allocation, 0x80000 bytes at
 /// start-up; the area start may pass another, which is not traced).
@@ -121,7 +119,7 @@ pub struct Effects {
     models: HashMap<(usize, i16), Option<ParsedModel>>,
     batches: HashMap<BatchKey, Batch>,
     dirty: bool,
-    images: HashMap<TexKey, Handle<Image>>,
+    images: PageCache,
     materials: HashMap<BatchKey, Handle<EffectMaterial>>,
     missing: Vec<(usize, u16)>,
     spawned: Vec<Entity>,
@@ -480,24 +478,13 @@ impl Effects {
     }
 
     fn image(&mut self, key: TexKey, repeat: bool, images: &mut Assets<Image>) -> Handle<Image> {
-        if let Some(h) = self.images.get(&key) {
-            return h.clone();
-        }
-        let image = self
+        let dpd = self
             .dpds
             .iter()
             .chain(self.common.as_ref())
             .find(|d| Arc::as_ptr(d) as usize == key.dpd)
-            .map_or_else(
-                || {
-                    error!("effect texture missing: no DPD for {key:?}; drawn transparent");
-                    transparent_image()
-                },
-                |d| page_image(d, key, repeat),
-            );
-        let handle = images.add(image);
-        self.images.insert(key, handle.clone());
-        handle
+            .cloned();
+        self.images.image(key, repeat, images, || dpd.as_deref())
     }
 }
 

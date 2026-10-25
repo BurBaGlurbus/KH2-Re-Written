@@ -37,7 +37,7 @@ use bevy::{
     shader::{Shader, ShaderRef},
 };
 use data::object_effect::{Dpd, DpdTexture};
-use std::sync::Arc;
+use std::{collections::HashMap, sync::Arc};
 
 /// The texture a draw binds: texture `index` of the DPD at address `dpd`,
 /// sampled over the TEX0 page of 2^tw × 2^th texels.
@@ -127,6 +127,41 @@ pub fn page_image(dpd: &Dpd, key: TexKey, repeat: bool) -> Image {
         ..default()
     });
     image
+}
+
+/// The pages effect draws bind, one image per texture and address mode.
+/// The PC sets CLAMP or REPEAT per draw (a model header's flag 4, sprites
+/// always repeat), so one page can be clamped for one draw and wrapped for
+/// the next: Thunder's flash planes clamp texcommon's starburst page that
+/// its domes wrap over UVs 1..2. One image per page would keep the first
+/// draw's mode, and a wrapping draw clamped to the page's edge is a flat
+/// sheet of the edge texel (white for the starburst).
+#[derive(Default)]
+pub struct PageCache(HashMap<(TexKey, bool), Handle<Image>>);
+
+impl PageCache {
+    /// The image of `key` with its address mode, made from the DPD `find`
+    /// returns (a clear page when it has none).
+    pub fn image<'a>(
+        &mut self,
+        key: TexKey,
+        repeat: bool,
+        images: &mut Assets<Image>,
+        find: impl FnOnce() -> Option<&'a Dpd>,
+    ) -> Handle<Image> {
+        self.0
+            .entry((key, repeat))
+            .or_insert_with(|| {
+                images.add(find().map_or_else(
+                    || {
+                        error!("effect texture missing: no DPD for {key:?}; drawn transparent");
+                        transparent_image()
+                    },
+                    |d| page_image(d, key, repeat),
+                ))
+            })
+            .clone()
+    }
 }
 
 /// A 1×1 clear page, for a draw whose page is missing (not the white
@@ -408,7 +443,6 @@ pub fn model_alpha(header: u8, mode: Option<u16>) -> u8 {
 mod tests {
     use super::*;
     use data::object_effect::Dpd;
-    use std::collections::HashMap;
 
     fn dpd(buffers: &[u16]) -> Arc<Dpd> {
         let texture = |dbp: u16| DpdTexture {
@@ -454,6 +488,28 @@ mod tests {
         let k = TexKey::pick(&own, &mask, Some(&common), tex0(0x2a00)).unwrap();
         assert_eq!((k.dpd, k.index), (Arc::as_ptr(&common) as usize, 1));
         assert!(TexKey::pick(&own, &mask, None, tex0(0x2c00)).is_none());
+    }
+
+    #[test]
+    fn a_page_wrapped_after_it_was_clamped_gets_its_own_sampler() {
+        let own = dpd(&[0x3000]);
+        let key = TexKey::pick(&own, &[1; 16], None, 0x3000 | 7 << 26 | 7 << 30).unwrap();
+        let mut images = Assets::<Image>::default();
+        let mut pages = PageCache::default();
+        let clamped = pages.image(key, false, &mut images, || Some(&*own));
+        let wrapped = pages.image(key, true, &mut images, || Some(&*own));
+        assert_ne!(clamped, wrapped);
+        assert_eq!(pages.image(key, false, &mut images, || None), clamped);
+        let mode = |h: &Handle<Image>| match &images.get(h).unwrap().sampler {
+            ImageSampler::Descriptor(d) => (d.address_mode_u, d.address_mode_v),
+            other => panic!("{other:?}"),
+        };
+        let clamp = ImageAddressMode::ClampToEdge;
+        let repeat = ImageAddressMode::Repeat;
+        assert_eq!(
+            (mode(&clamped), mode(&wrapped)),
+            ((clamp, clamp), (repeat, repeat))
+        );
     }
 
     #[test]

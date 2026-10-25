@@ -18,9 +18,7 @@ use data::{
 };
 use event::{Timeline, event_camera};
 use std::{collections::HashMap, sync::Arc};
-use visual::effect_draw::{
-    Blend, EffectMaterial, TexKey, model_alpha, page_image, report_missing, transparent_image,
-};
+use visual::effect_draw::{Blend, EffectMaterial, PageCache, TexKey, model_alpha, report_missing};
 
 /// An instance's draws of one kind with its DPD, PDATA texture mask and
 /// layer rank.
@@ -174,7 +172,7 @@ pub struct Fx {
     models: HashMap<(usize, i16), Option<ParsedModel>>,
     batches: HashMap<BatchKey, Batch>,
     dirty: bool,
-    images: HashMap<TexKey, Handle<Image>>,
+    images: PageCache,
     materials: HashMap<BatchKey, Handle<EffectMaterial>>,
     missing: Vec<(usize, u16)>,
     spawned: Vec<Entity>,
@@ -237,7 +235,7 @@ impl Fx {
             models: HashMap::new(),
             batches: HashMap::new(),
             dirty: false,
-            images: HashMap::new(),
+            images: PageCache::default(),
             missing: Vec::new(),
             materials: HashMap::new(),
             spawned: Vec::new(),
@@ -628,28 +626,17 @@ impl Fx {
     }
 
     fn image(&mut self, key: TexKey, repeat: bool, images: &mut Assets<Image>) -> Handle<Image> {
-        if let Some(h) = self.images.get(&key) {
-            return h.clone();
-        }
         // The DPD whose pointer the key holds is a running instance's, a
         // loaded file's or the common one.
-        let image = self
+        let dpd = self
             .running
             .values()
             .map(|r| &r.dpd)
             .chain(self.paxes.values().flat_map(|p| p.dpds.iter()))
             .chain(self.common.as_ref())
             .find(|d| Arc::as_ptr(d) as usize == key.dpd)
-            .map_or_else(
-                || {
-                    error!("effect texture missing: no DPD for {key:?}; drawn transparent");
-                    transparent_image()
-                },
-                |d| page_image(d, key, repeat),
-            );
-        let handle = images.add(image);
-        self.images.insert(key, handle.clone());
-        handle
+            .cloned();
+        self.images.image(key, repeat, images, || dpd.as_deref())
     }
 }
 
