@@ -10,7 +10,9 @@ use ::effect::{Instance, ModelDraw, Quad, Rng, math::Mat};
 use bevy::prelude::*;
 use data::object_effect::{self, Dpd, OmdHeader, OmdMesh, Pax};
 use std::{collections::HashMap, sync::Arc};
-use visual::effect_draw::{Blend, TexKey, model_alpha, page_image};
+use visual::effect_draw::{
+    Blend, EffectMaterial, TexKey, model_alpha, page_image, report_missing, transparent_image,
+};
 
 /// The particle heap's size (FUN_1402bdb50's allocation, 0x80000 bytes at
 /// start-up; the area start may pass another, which is not traced).
@@ -120,7 +122,8 @@ pub struct Effects {
     batches: HashMap<BatchKey, Batch>,
     dirty: bool,
     images: HashMap<TexKey, Handle<Image>>,
-    materials: HashMap<BatchKey, Handle<StandardMaterial>>,
+    materials: HashMap<BatchKey, Handle<EffectMaterial>>,
+    missing: Vec<(usize, u16)>,
     spawned: Vec<Entity>,
     dpds: Vec<Arc<Dpd>>,
     reported: Vec<u32>,
@@ -328,24 +331,16 @@ impl Effects {
                     .to_array(),
             )
         };
-        let grade = |c: [f32; 4]| {
-            [
-                c[0].clamp(0., 1.99).powf(2.2),
-                c[1].clamp(0., 1.99).powf(2.2),
-                c[2].clamp(0., 1.99).powf(2.2),
-                c[3].clamp(0., 1.),
-            ]
-        };
+        let grade = |c: [f32; 4]| c.map(|v| v.clamp(0., 1.99));
         for (dpd, mask, layer, list) in quads {
             for q in list {
                 let Some(key) = TexKey::pick(&dpd, &mask, self.common.as_ref(), q.tex0) else {
+                    let at = Arc::as_ptr(&dpd) as usize;
+                    report_missing(&mut self.missing, at, q.tex0, "world map sprite");
                     continue;
                 };
                 let size = key.size();
                 let blend = Blend::of(q.blend);
-                if blend.alpha_mode().is_none() {
-                    continue;
-                }
                 let batch = self
                     .batches
                     .entry(BatchKey {
@@ -370,9 +365,6 @@ impl Effects {
         for (layer, list) in triangles {
             for t in list {
                 let blend = Blend::of(t.blend);
-                if blend.alpha_mode().is_none() {
-                    continue;
-                }
                 let batch = self
                     .batches
                     .entry(BatchKey {
@@ -432,18 +424,21 @@ impl Effects {
             Some(to_scene([p[0], p[1], p[2]]))
         };
         let blend = Blend::of(model_alpha(header.alpha, d.mode));
-        if blend.alpha_mode().is_none() {
-            return;
-        }
         let repeat = header.flags & 4 != 0;
         let part = d.rgba.map(|c| c as f32 / 128.);
         let common = self.common.clone();
         let mut out: Vec<(BatchKey, Batch)> = Vec::new();
         for mesh in meshes {
-            let texture = mesh
-                .textured
-                .then(|| TexKey::pick(dpd, mask, common.as_ref(), mesh.tex0))
-                .flatten();
+            let texture = if mesh.textured {
+                let Some(t) = TexKey::pick(dpd, mask, common.as_ref(), mesh.tex0) else {
+                    let at = Arc::as_ptr(dpd) as usize;
+                    report_missing(&mut self.missing, at, mesh.tex0, "world map model");
+                    continue;
+                };
+                Some(t)
+            } else {
+                None
+            };
             let shift = texture.map_or(4, |t| t.tw as u32 + 4).min(31);
             let mut batch = Batch::default();
             for t in &mesh.triangles {
@@ -463,12 +458,7 @@ impl Effects {
                     let o: [f32; 4] = std::array::from_fn(|i| {
                         ((c[i] as f32 / 255.) * part[i]).min(1.) * (255. / 128.)
                     });
-                    batch.colors.push([
-                        o[0].powf(2.2),
-                        o[1].powf(2.2),
-                        o[2].powf(2.2),
-                        o[3].min(1.),
-                    ]);
+                    batch.colors.push(o);
                 }
             }
             out.push((
@@ -498,7 +488,13 @@ impl Effects {
             .iter()
             .chain(self.common.as_ref())
             .find(|d| Arc::as_ptr(d) as usize == key.dpd)
-            .map_or_else(Image::default, |d| page_image(d, key, repeat));
+            .map_or_else(
+                || {
+                    error!("effect texture missing: no DPD for {key:?}; drawn transparent");
+                    transparent_image()
+                },
+                |d| page_image(d, key, repeat),
+            );
         let handle = images.add(image);
         self.images.insert(key, handle.clone());
         handle
@@ -511,7 +507,7 @@ pub fn present(
     fx: &mut Effects,
     parent: Option<Entity>,
     meshes: &mut Assets<Mesh>,
-    materials: &mut Assets<StandardMaterial>,
+    materials: &mut Assets<EffectMaterial>,
     images: &mut Assets<Image>,
 ) {
     if !fx.dirty {
@@ -530,15 +526,12 @@ pub fn present(
             Some(m) => m.clone(),
             None => {
                 let texture = key.texture.map(|t| fx.image(t, key.repeat, images));
-                let m = materials.add(StandardMaterial {
-                    base_color: Color::WHITE,
-                    base_color_texture: texture,
-                    unlit: true,
-                    cull_mode: None,
-                    depth_bias: key.layer as f32 * 500.,
-                    alpha_mode: key.blend.alpha_mode().unwrap_or(AlphaMode::Blend),
-                    ..default()
-                });
+                let m = materials.add(EffectMaterial::new(
+                    key.blend,
+                    texture,
+                    key.layer as f32 * 500.,
+                    true,
+                ));
                 fx.materials.insert(*key, m.clone());
                 m
             }

@@ -12,11 +12,29 @@
 //! its texture by buffer pointer alone (FUN_14012c0f0): the CLUT pointer is
 //! not part of the match. The resident `effect/texcommon.dpd` textures are
 //! registered the same way, all of them (FUN_1402c2640).
+//!
+//! The PC draws an effect with pixel shader 026: texture × vertex colour
+//! (the PS2 bytes, 0x80 = 1.0), the GS alpha test, and a D3D blend into a
+//! non-sRGB back buffer, so every blend runs on the stored (gamma) values.
+//! [`EffectMaterial`] does the same on a camera that composites in sRGB
+//! space ([`scene_compositing`]); in linear light the faint edges of
+//! additive sprites brighten and overlapping puffs flatten into sheets.
 use bevy::{
-    asset::RenderAssetUsages,
+    asset::{AssetPath, RenderAssetUsages, embedded_asset, embedded_path},
+    camera::CompositingSpace,
     image::{ImageAddressMode, ImageFilterMode, ImageSampler, ImageSamplerDescriptor},
+    mesh::MeshVertexBufferLayoutRef,
+    pbr::{Material, MaterialPipeline, MaterialPipelineKey, MaterialPlugin, MeshPipelineKey},
     prelude::*,
-    render::render_resource::{Extent3d, TextureDimension, TextureFormat},
+    render::{
+        render_resource::{
+            AsBindGroup, BlendComponent, BlendFactor, BlendOperation, BlendState, Extent3d,
+            RenderPipelineDescriptor, SpecializedMeshPipelineError, TextureDimension,
+            TextureFormat,
+        },
+        view::ColorGrading,
+    },
+    shader::{Shader, ShaderRef},
 };
 use data::object_effect::{Dpd, DpdTexture};
 use std::sync::Arc;
@@ -92,7 +110,8 @@ pub fn page_image(dpd: &Dpd, key: TexKey, repeat: bool) -> Image {
         },
         TextureDimension::D2,
         pixels,
-        TextureFormat::Rgba8UnormSrgb,
+        // The stored values, as the PC samples them (no sRGB decode).
+        TextureFormat::Rgba8Unorm,
         RenderAssetUsages::MAIN_WORLD | RenderAssetUsages::RENDER_WORLD,
     );
     let mode = if repeat {
@@ -108,6 +127,18 @@ pub fn page_image(dpd: &Dpd, key: TexKey, repeat: bool) -> Image {
         ..default()
     });
     image
+}
+
+/// A 1×1 clear page, for a draw whose page is missing (not the white
+/// default image).
+pub fn transparent_image() -> Image {
+    Image::new(
+        Extent3d::default(),
+        TextureDimension::D2,
+        vec![0; 4],
+        TextureFormat::Rgba8Unorm,
+        RenderAssetUsages::MAIN_WORLD | RenderAssetUsages::RENDER_WORLD,
+    )
 }
 
 /// A PS2 texture placed at its buffer position in a `size` page.
@@ -157,18 +188,210 @@ impl Blend {
         }
     }
 
-    /// The material's alpha mode; `None` for a subtractive draw, which a
-    /// standard material cannot express (it is left out).
-    pub fn alpha_mode(self) -> Option<AlphaMode> {
+    /// The Bevy pipeline that carries the blend: straight alpha, the
+    /// premultiplied pipeline for add (alpha 0) and replace (alpha 1), and
+    /// the multiply pipeline, whose blend [`EffectMaterial`] turns into a
+    /// reverse subtract.
+    fn alpha_mode(self) -> AlphaMode {
         match self {
-            Blend::Alpha => Some(AlphaMode::Blend),
-            Blend::Add => Some(AlphaMode::Add),
-            // Cs·As over the frame buffer where the texture shows [I: the
-            // GS alpha test of these draws is not traced; an alpha blend
-            // gives the same colour wherever the texture is opaque].
-            Blend::Replace => Some(AlphaMode::Blend),
-            Blend::Subtract => None,
+            Blend::Alpha => AlphaMode::Blend,
+            Blend::Add => AlphaMode::Add,
+            Blend::Replace => AlphaMode::Premultiplied,
+            Blend::Subtract => AlphaMode::Multiply,
         }
+    }
+
+    /// The shader's output mode (effect.wgsl).
+    fn mode(self) -> f32 {
+        match self {
+            Blend::Alpha => 0.,
+            Blend::Add => 1.,
+            Blend::Replace => 2.,
+            Blend::Subtract => 3.,
+        }
+    }
+}
+
+/// An effect draw as pixel shader 026 shades it: page texel × vertex colour
+/// (both stored values, the colour 0x80 = 1.0), alpha test "alpha > 0" (the
+/// effects' default GS TEST 0x7000d, FUN_1404af5e0 → FUN_1404724e0), then
+/// the blend of the draw's ALPHA byte. Untextured draws take the vertex
+/// colour alone.
+#[derive(Asset, AsBindGroup, TypePath, Clone, Debug)]
+pub struct EffectMaterial {
+    /// x: blend mode (0 alpha, 1 add, 2 replace, 3 subtract), y: 1 when
+    /// textured, z: 1 when the camera composites in sRGB space (else the
+    /// output is taken to linear light), w unused.
+    #[uniform(0)]
+    pub params: Vec4,
+    #[texture(1)]
+    #[sampler(2)]
+    pub texture: Option<Handle<Image>>,
+    pub blend: Blend,
+    /// The draw layer's depth bias.
+    pub bias: f32,
+}
+
+impl EffectMaterial {
+    pub fn new(blend: Blend, texture: Option<Handle<Image>>, bias: f32, srgb: bool) -> Self {
+        EffectMaterial {
+            params: Vec4::new(
+                blend.mode(),
+                f32::from(u8::from(texture.is_some())),
+                f32::from(u8::from(srgb)),
+                0.,
+            ),
+            texture,
+            blend,
+            bias,
+        }
+    }
+}
+
+impl Material for EffectMaterial {
+    fn fragment_shader() -> ShaderRef {
+        ShaderRef::Path(
+            AssetPath::from_path_buf(embedded_path!("effect.wgsl")).with_source("embedded"),
+        )
+    }
+
+    fn alpha_mode(&self) -> AlphaMode {
+        self.blend.alpha_mode()
+    }
+
+    fn depth_bias(&self) -> f32 {
+        self.bias
+    }
+
+    fn enable_prepass() -> bool {
+        false
+    }
+
+    fn enable_shadows() -> bool {
+        false
+    }
+
+    fn specialize(
+        _pipeline: &MaterialPipeline,
+        descriptor: &mut RenderPipelineDescriptor,
+        _layout: &MeshVertexBufferLayoutRef,
+        key: MaterialPipelineKey<Self>,
+    ) -> Result<(), SpecializedMeshPipelineError> {
+        descriptor.primitive.cull_mode = None;
+        let mesh_key = key.mesh_key;
+        let multiply =
+            mesh_key & MeshPipelineKey::BLEND_RESERVED_BITS == MeshPipelineKey::BLEND_MULTIPLY;
+        if multiply && let Some(fragment) = descriptor.fragment.as_mut() {
+            // Cd − Cs·As (FUN_140472110, D3D BLEND_OP_REV_SUBTRACT); the
+            // shader hands Cs·As.
+            for target in fragment.targets.iter_mut().flatten() {
+                target.blend = Some(BlendState {
+                    color: BlendComponent {
+                        src_factor: BlendFactor::One,
+                        dst_factor: BlendFactor::One,
+                        operation: BlendOperation::ReverseSubtract,
+                    },
+                    alpha: BlendComponent {
+                        src_factor: BlendFactor::Zero,
+                        dst_factor: BlendFactor::One,
+                        operation: BlendOperation::Add,
+                    },
+                });
+            }
+        }
+        Ok(())
+    }
+}
+
+/// The scene camera's compositing as the PC's: blends on the stored sRGB
+/// values (`CompositingSpace::Srgb`, an `Rgba8Unorm` main texture), with
+/// the PBR materials' linear output encoded to sRGB in their tone mapping
+/// (marked by the grading, see [`EffectPlugin`]).
+pub fn scene_compositing() -> (CompositingSpace, ColorGrading) {
+    let mut grading = ColorGrading::default();
+    for section in [
+        &mut grading.shadows,
+        &mut grading.midtones,
+        &mut grading.highlights,
+    ] {
+        section.gamma = SRGB_MARK;
+    }
+    (CompositingSpace::Srgb, grading)
+}
+
+/// The colour grading gamma (every section) that marks the sRGB encode.
+const SRGB_MARK: f32 = 2.2;
+
+const TONEMAPPING_SHARED: &str =
+    "embedded://bevy_core_pipeline/tonemapping/tonemapping_shared.wgsl";
+/// Where `tone_mapping` starts grading, after the hue and white balance.
+const GRADING_ANCHOR: &str =
+    "    // Perform the \"sectional\" color grading: i.e. the color grading that";
+const SRGB_ENCODE: &str = "    // KH2RW: the sRGB-compositing scene camera (every section's gamma 2.2):
+    // the exact sRGB encode of the linear output, and nothing else.
+    if all(color_grading.gamma == vec3(2.2)) {
+        return vec4(select(1.055 * pow(color, vec3(1.0 / 2.4)) - 0.055, color * 12.92, color <= vec3(0.0031308)), in.a);
+    }
+";
+
+/// The effect material and the scene's sRGB encode. Bevy's PBR materials
+/// tone-map in their shader (`tone_mapping`, with no colour grading for an
+/// LDR camera) and then write linear values; once that shader library
+/// loads it gains the marked encode, so the opaque scene keeps its look on
+/// the sRGB-compositing camera and every blend runs on sRGB values.
+pub struct EffectPlugin;
+
+impl Plugin for EffectPlugin {
+    fn build(&self, app: &mut App) {
+        embedded_asset!(app, "effect.wgsl");
+        app.add_plugins(MaterialPlugin::<EffectMaterial>::default())
+            .add_systems(Update, patch_grading);
+    }
+}
+
+fn patch_grading(
+    mut done: Local<bool>,
+    mut handle: Local<Option<Handle<Shader>>>,
+    server: Res<AssetServer>,
+    mut shaders: ResMut<Assets<Shader>>,
+) {
+    if *done {
+        return;
+    }
+    let h = handle.get_or_insert_with(|| server.load(TONEMAPPING_SHARED));
+    if server.load_state(&*h).is_failed() {
+        *done = true;
+        error!("effect_draw: {TONEMAPPING_SHARED} not found; the 3D scene is not sRGB-encoded");
+        return;
+    }
+    let Some(shader) = shaders.get(&*h) else {
+        return;
+    };
+    *done = true;
+    let source = shader.source.as_str();
+    if source.matches(GRADING_ANCHOR).count() != 1 {
+        error!("effect_draw: Bevy's tone mapping changed; the 3D scene is not sRGB-encoded");
+        return;
+    }
+    let patched = Shader::from_wgsl(
+        source.replace(GRADING_ANCHOR, &format!("{SRGB_ENCODE}{GRADING_ANCHOR}")),
+        shader.path.clone(),
+    );
+    info!("effect_draw: the scene's tone mapping encodes to sRGB");
+    if let Some(mut s) = shaders.get_mut(&*h) {
+        *s = patched;
+    }
+}
+
+/// A draw whose texture the effect does not have: logged once per buffer
+/// pointer and left undrawn (never a white quad).
+pub fn report_missing(seen: &mut Vec<(usize, u16)>, dpd: usize, tex0: u64, what: &str) {
+    let tbp = (tex0 & 0x3fff) as u16;
+    if !seen.contains(&(dpd, tbp)) {
+        seen.push((dpd, tbp));
+        error!(
+            "effect texture missing: {what} TEX0 {tex0:#x} (buffer {tbp:#x}); the draw is left out"
+        );
     }
 }
 
@@ -242,5 +465,37 @@ mod tests {
         assert_eq!(model_alpha(0x48, Some(0x42)), 0x42);
         assert_eq!(model_alpha(0x44, Some(0)), 0x44);
         assert_eq!(model_alpha(0x44, None), 0x44);
+    }
+
+    #[test]
+    fn every_blend_has_a_pipeline_and_a_shader_mode() {
+        // Straight alpha; add and replace on the premultiplied pipeline
+        // (alpha 0 / 1 from the shader); subtract on the multiply pipeline
+        // that `specialize` turns into a reverse subtract.
+        let cases = [
+            (Blend::Alpha, AlphaMode::Blend, 0.),
+            (Blend::Add, AlphaMode::Add, 1.),
+            (Blend::Replace, AlphaMode::Premultiplied, 2.),
+            (Blend::Subtract, AlphaMode::Multiply, 3.),
+        ];
+        for (blend, mode, shader) in cases {
+            let m = EffectMaterial::new(blend, None, 500., true);
+            assert_eq!(m.alpha_mode(), mode);
+            assert_eq!(m.params, Vec4::new(shader, 0., 1., 0.));
+            assert_eq!(m.depth_bias(), 500.);
+        }
+        let textured = EffectMaterial::new(Blend::Add, Some(Handle::default()), 0., false);
+        assert_eq!((textured.params.y, textured.params.z), (1., 0.));
+    }
+
+    #[test]
+    fn the_scene_camera_composites_in_srgb_with_the_marked_grading() {
+        let (space, grading) = scene_compositing();
+        assert_eq!(space, CompositingSpace::Srgb);
+        for section in [grading.shadows, grading.midtones, grading.highlights] {
+            assert_eq!(section.gamma, SRGB_MARK);
+        }
+        // The shader's test reads the same constant.
+        assert!(SRGB_ENCODE.contains(&format!("gamma == vec3({SRGB_MARK:?})")));
     }
 }

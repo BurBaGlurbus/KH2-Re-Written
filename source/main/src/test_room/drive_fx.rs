@@ -14,7 +14,9 @@
 use super::*;
 use ::effect::{Instance, ModelDraw, Quad, Rng, math::Mat};
 use data::object_effect::{Dpd, OmdHeader, OmdMesh, Pax};
-use visual::effect_draw::{Blend, TexKey, model_alpha, page_image};
+use visual::effect_draw::{
+    Blend, EffectMaterial, TexKey, model_alpha, page_image, report_missing, transparent_image,
+};
 
 /// A start request: the PAX, the element id, and whether it binds to Sora.
 pub struct FxRequest {
@@ -151,7 +153,8 @@ pub struct DriveFx {
     batches: HashMap<BatchKey, Batch>,
     dirty: bool,
     images: HashMap<TexKey, Handle<Image>>,
-    materials: HashMap<BatchKey, Handle<StandardMaterial>>,
+    materials: HashMap<BatchKey, Handle<EffectMaterial>>,
+    missing: Vec<(usize, u16)>,
     spawned: Vec<Entity>,
     /// DPDs seen, for the texture lookup by key.
     dpds: Vec<Arc<Dpd>>,
@@ -620,13 +623,16 @@ pub fn tick(
     for (dpd, mask, layer, list) in quads {
         for q in list {
             let Some(key) = TexKey::pick(&dpd, &mask, fx.common.as_ref(), q.tex0) else {
+                report_missing(
+                    &mut fx.missing,
+                    Arc::as_ptr(&dpd) as usize,
+                    q.tex0,
+                    "drive sprite",
+                );
                 continue;
             };
             let size = key.size();
             let blend = Blend::of(q.blend);
-            if blend.alpha_mode().is_none() {
-                continue;
-            }
             let batch = fx
                 .batches
                 .entry(BatchKey {
@@ -636,14 +642,7 @@ pub fn tick(
                     layer,
                 })
                 .or_default();
-            let grade = |c: [f32; 4]| {
-                [
-                    c[0].clamp(0., 1.99).powf(2.2),
-                    c[1].clamp(0., 1.99).powf(2.2),
-                    c[2].clamp(0., 1.99).powf(2.2),
-                    c[3].clamp(0., 1.),
-                ]
-            };
+            let grade = |c: [f32; 4]| c.map(|v| v.clamp(0., 1.99));
             for i in [0, 1, 2, 0, 2, 3] {
                 let colour = grade(q.corner_colours.map_or(q.colour, |c| c[i]));
                 batch.positions.push(scene(q.corners[i]));
@@ -655,14 +654,10 @@ pub fn tick(
         }
     }
     // KeTh lightning: untextured gouraud triangles (GS colour bytes, 0x80 =
-    // 1.0); a subtractive blend (0x42) has no standard-material form and is
-    // left out.
+    // 1.0).
     for (layer, list) in triangles {
         for t in list {
             let blend = Blend::of(t.blend);
-            if blend.alpha_mode().is_none() {
-                continue;
-            }
             let batch = fx
                 .batches
                 .entry(BatchKey {
@@ -676,12 +671,7 @@ pub fn tick(
                 let c = t.colours[i].map(|v| v as f32 / 128.);
                 batch.positions.push(scene(t.corners[i]));
                 batch.uvs.push([0.; 2]);
-                batch.colors.push([
-                    c[0].clamp(0., 1.99).powf(2.2),
-                    c[1].clamp(0., 1.99).powf(2.2),
-                    c[2].clamp(0., 1.99).powf(2.2),
-                    c[3].clamp(0., 1.),
-                ]);
+                batch.colors.push(c.map(|v| v.clamp(0., 1.99)));
             }
         }
     }
@@ -726,18 +716,25 @@ fn model(
         Some(scene([p[0], p[1], p[2]]))
     };
     let blend = Blend::of(model_alpha(header.alpha, d.mode));
-    if blend.alpha_mode().is_none() {
-        return;
-    }
     let repeat = header.flags & 4 != 0;
     let part = d.rgba.map(|c| c as f32 / 128.);
     let common = fx.common.clone();
     let mut out_batches: Vec<(BatchKey, Batch)> = Vec::new();
     for mesh in meshes {
-        let texture = mesh
-            .textured
-            .then(|| TexKey::pick(dpd, mask, common.as_ref(), mesh.tex0))
-            .flatten();
+        let texture = if mesh.textured {
+            let Some(t) = TexKey::pick(dpd, mask, common.as_ref(), mesh.tex0) else {
+                report_missing(
+                    &mut fx.missing,
+                    Arc::as_ptr(dpd) as usize,
+                    mesh.tex0,
+                    "drive model",
+                );
+                continue;
+            };
+            Some(t)
+        } else {
+            None
+        };
         let shift = texture.map_or(4, |t| t.tw as u32 + 4).min(31);
         let mut batch = Batch::default();
         for t in &mesh.triangles {
@@ -757,12 +754,7 @@ fn model(
                 let out: [f32; 4] = std::array::from_fn(|i| {
                     ((c[i] as f32 / 255.) * part[i]).min(1.) * (255. / 128.)
                 });
-                batch.colors.push([
-                    out[0].powf(2.2),
-                    out[1].powf(2.2),
-                    out[2].powf(2.2),
-                    out[3].min(1.),
-                ]);
+                batch.colors.push(out);
             }
         }
         out_batches.push((
@@ -792,7 +784,13 @@ fn image(fx: &mut DriveFx, key: TexKey, repeat: bool, images: &mut Assets<Image>
         .iter()
         .chain(fx.common.as_ref())
         .find(|d| Arc::as_ptr(d) as usize == key.dpd)
-        .map_or_else(Image::default, |d| page_image(d, key, repeat));
+        .map_or_else(
+            || {
+                error!("effect texture missing: no DPD for {key:?}; drawn transparent");
+                transparent_image()
+            },
+            |d| page_image(d, key, repeat),
+        );
     let handle = images.add(image);
     fx.images.insert(key, handle.clone());
     handle
@@ -804,7 +802,7 @@ pub fn present(
     fx: Option<ResMut<DriveFx>>,
     scene: Option<Res<SceneRoot>>,
     mut meshes: ResMut<Assets<Mesh>>,
-    mut materials: ResMut<Assets<StandardMaterial>>,
+    mut materials: ResMut<Assets<EffectMaterial>>,
     mut images: ResMut<Assets<Image>>,
 ) {
     let Some(mut fx) = fx else { return };
@@ -826,15 +824,12 @@ pub fn present(
                 let texture = key
                     .texture
                     .map(|t| image(&mut fx, t, key.repeat, &mut images));
-                let m = materials.add(StandardMaterial {
-                    base_color: Color::WHITE,
-                    base_color_texture: texture,
-                    unlit: true,
-                    cull_mode: None,
-                    depth_bias: key.layer as f32 * 500.,
-                    alpha_mode: key.blend.alpha_mode().unwrap_or(AlphaMode::Blend),
-                    ..default()
-                });
+                let m = materials.add(EffectMaterial::new(
+                    key.blend,
+                    texture,
+                    key.layer as f32 * 500.,
+                    true,
+                ));
                 fx.materials.insert(*key, m.clone());
                 m
             }

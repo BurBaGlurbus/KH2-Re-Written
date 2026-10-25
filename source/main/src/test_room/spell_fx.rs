@@ -21,7 +21,9 @@ use super::*;
 use ::effect::{Instance, ModelDraw, Quad, Rng, math::Mat};
 use data::object_effect::{Dpd, OmdHeader, OmdMesh, Pax};
 use player::magic::{Anchor, Fx, FxLive};
-use visual::effect_draw::{Blend, TexKey, model_alpha, page_image};
+use visual::effect_draw::{
+    Blend, EffectMaterial, TexKey, model_alpha, page_image, report_missing, transparent_image,
+};
 
 /// A script's effect call with the PAX of the spell it belongs to.
 pub struct Call {
@@ -350,7 +352,8 @@ pub struct SpellFx {
     batches: HashMap<BatchKey, Batch>,
     dirty: bool,
     images: HashMap<TexKey, Handle<Image>>,
-    materials: HashMap<BatchKey, Handle<StandardMaterial>>,
+    materials: HashMap<BatchKey, Handle<EffectMaterial>>,
+    missing: Vec<(usize, u16)>,
     spawned: Vec<Entity>,
     dpds: Vec<Arc<Dpd>>,
     reported: Vec<u32>,
@@ -500,6 +503,7 @@ pub fn tick(mut game: ResMut<Game>, rig: Res<CameraRig>, mut fx: ResMut<SpellFx>
     let mut draws: Vec<Drawn<ModelDraw>> = Vec::new();
     let mut triangles: Vec<(i8, Vec<::effect::Triangle>)> = Vec::new();
     let mut unsupported = Vec::new();
+    let trace = std::env::var_os("KH2_FX_TRACE").is_some();
     for r in fx.running.iter_mut() {
         let world = r.world(&frames);
         r.instance.world = world;
@@ -513,6 +517,21 @@ pub fn tick(mut game: ResMut<Game>, rig: Res<CameraRig>, mut fx: ResMut<SpellFx>
         // A program this translation lacks: stepped, not shown.
         let complete = r.instance.unsupported.is_empty();
         let d = std::mem::take(&mut r.instance.model_draws);
+        if trace {
+            let models: Vec<_> = d
+                .iter()
+                .map(|m| serde_json::json!([m.model, m.rgba, m.mode, m.depth_only]))
+                .collect();
+            let near = q
+                .iter()
+                .flat_map(|q| q.corners)
+                .map(|c| c[2])
+                .fold(f32::MAX, f32::min);
+            log.push(
+                serde_json::json!({"event":"fx_trace","tick":tick,"key":r.key,
+                "quads":q.len(),"quad_near":near,"models":models}),
+            );
+        }
         let layer = layer_rank(r.instance.layer());
         let mask = r.instance.use_texture();
         if complete && !q.is_empty() {
@@ -557,13 +576,16 @@ pub fn tick(mut game: ResMut<Game>, rig: Res<CameraRig>, mut fx: ResMut<SpellFx>
     for (dpd, mask, layer, list) in quads {
         for q in list {
             let Some(key) = TexKey::pick(&dpd, &mask, fx.common.as_ref(), q.tex0) else {
+                report_missing(
+                    &mut fx.missing,
+                    Arc::as_ptr(&dpd) as usize,
+                    q.tex0,
+                    "spell sprite",
+                );
                 continue;
             };
             let size = key.size();
             let blend = Blend::of(q.blend);
-            if blend.alpha_mode().is_none() {
-                continue;
-            }
             let batch = fx
                 .batches
                 .entry(BatchKey {
@@ -573,12 +595,7 @@ pub fn tick(mut game: ResMut<Game>, rig: Res<CameraRig>, mut fx: ResMut<SpellFx>
                     layer,
                 })
                 .or_default();
-            let colour = [
-                q.colour[0].clamp(0., 1.99).powf(2.2),
-                q.colour[1].clamp(0., 1.99).powf(2.2),
-                q.colour[2].clamp(0., 1.99).powf(2.2),
-                q.colour[3].clamp(0., 1.),
-            ];
+            let colour = q.colour.map(|c| c.clamp(0., 1.99));
             for i in [0, 1, 2, 0, 2, 3] {
                 batch.positions.push(scene(q.corners[i]));
                 batch
@@ -591,9 +608,6 @@ pub fn tick(mut game: ResMut<Game>, rig: Res<CameraRig>, mut fx: ResMut<SpellFx>
     for (layer, list) in triangles {
         for t in list {
             let blend = Blend::of(t.blend);
-            if blend.alpha_mode().is_none() {
-                continue;
-            }
             let batch = fx
                 .batches
                 .entry(BatchKey {
@@ -607,12 +621,7 @@ pub fn tick(mut game: ResMut<Game>, rig: Res<CameraRig>, mut fx: ResMut<SpellFx>
                 let c = t.colours[i].map(|v| v as f32 / 128.);
                 batch.positions.push(scene(t.corners[i]));
                 batch.uvs.push([0.; 2]);
-                batch.colors.push([
-                    c[0].clamp(0., 1.99).powf(2.2),
-                    c[1].clamp(0., 1.99).powf(2.2),
-                    c[2].clamp(0., 1.99).powf(2.2),
-                    c[3].clamp(0., 1.),
-                ]);
+                batch.colors.push(c.map(|v| v.clamp(0., 1.99)));
             }
         }
     }
@@ -657,18 +666,25 @@ fn model(
         Some(scene([p[0], p[1], p[2]]))
     };
     let blend = Blend::of(model_alpha(header.alpha, d.mode));
-    if blend.alpha_mode().is_none() {
-        return;
-    }
     let repeat = header.flags & 4 != 0;
     let part = d.rgba.map(|c| c as f32 / 128.);
     let common = fx.common.clone();
     let mut out_batches: Vec<(BatchKey, Batch)> = Vec::new();
     for mesh in meshes {
-        let texture = mesh
-            .textured
-            .then(|| TexKey::pick(dpd, mask, common.as_ref(), mesh.tex0))
-            .flatten();
+        let texture = if mesh.textured {
+            let Some(t) = TexKey::pick(dpd, mask, common.as_ref(), mesh.tex0) else {
+                report_missing(
+                    &mut fx.missing,
+                    Arc::as_ptr(dpd) as usize,
+                    mesh.tex0,
+                    "spell model",
+                );
+                continue;
+            };
+            Some(t)
+        } else {
+            None
+        };
         let shift = texture.map_or(4, |t| t.tw as u32 + 4).min(31);
         let mut batch = Batch::default();
         for t in &mesh.triangles {
@@ -688,12 +704,7 @@ fn model(
                 let out: [f32; 4] = std::array::from_fn(|i| {
                     ((c[i] as f32 / 255.) * part[i]).min(1.) * (255. / 128.)
                 });
-                batch.colors.push([
-                    out[0].powf(2.2),
-                    out[1].powf(2.2),
-                    out[2].powf(2.2),
-                    out[3].min(1.),
-                ]);
+                batch.colors.push(out);
             }
         }
         out_batches.push((
@@ -723,7 +734,13 @@ fn image(fx: &mut SpellFx, key: TexKey, repeat: bool, images: &mut Assets<Image>
         .iter()
         .chain(fx.common.as_ref())
         .find(|d| Arc::as_ptr(d) as usize == key.dpd)
-        .map_or_else(Image::default, |d| page_image(d, key, repeat));
+        .map_or_else(
+            || {
+                error!("effect texture missing: no DPD for {key:?}; drawn transparent");
+                transparent_image()
+            },
+            |d| page_image(d, key, repeat),
+        );
     let handle = images.add(image);
     fx.images.insert(key, handle.clone());
     handle
@@ -735,7 +752,7 @@ pub fn present(
     fx: Option<ResMut<SpellFx>>,
     scene: Option<Res<SceneRoot>>,
     mut meshes: ResMut<Assets<Mesh>>,
-    mut materials: ResMut<Assets<StandardMaterial>>,
+    mut materials: ResMut<Assets<EffectMaterial>>,
     mut images: ResMut<Assets<Image>>,
 ) {
     let Some(mut fx) = fx else { return };
@@ -757,15 +774,12 @@ pub fn present(
                 let texture = key
                     .texture
                     .map(|t| image(&mut fx, t, key.repeat, &mut images));
-                let m = materials.add(StandardMaterial {
-                    base_color: Color::WHITE,
-                    base_color_texture: texture,
-                    unlit: true,
-                    cull_mode: None,
-                    depth_bias: key.layer as f32 * 500.,
-                    alpha_mode: key.blend.alpha_mode().unwrap_or(AlphaMode::Blend),
-                    ..default()
-                });
+                let m = materials.add(EffectMaterial::new(
+                    key.blend,
+                    texture,
+                    key.layer as f32 * 500.,
+                    true,
+                ));
                 fx.materials.insert(*key, m.clone());
                 m
             }

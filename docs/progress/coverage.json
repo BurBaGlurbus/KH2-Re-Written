@@ -1733,6 +1733,14 @@
           ]
         },
         {
+          "id": "NATIVE-T229-01",
+          "label": "Effect shading and blends in the PC's gamma space - texel times colour, alpha test, add, alpha, replace and subtract - translation, equivalence unproved",
+          "status": "PARTIAL",
+          "evidence": [
+            "docs/tasks/T229-effect-blending-gamma-space.md"
+          ]
+        },
+        {
           "id": "NATIVE-T211-01",
           "label": "Reaction command search over the held command, record 1, partner, shapes, attacks and auto offers - translation, equivalence unproved",
           "status": "PARTIAL",
