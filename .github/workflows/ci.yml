@@ -9,6 +9,8 @@ jobs:
         with:
           components: rustfmt, clippy
       - run: cargo fmt --all --check
-      - run: cargo clippy --workspace --all-targets --locked -- -D warnings
-      - run: cargo test --workspace --locked
-      - run: cargo build --workspace --locked
+      - run: cargo clippy --all-targets --locked -- -D warnings
+      - run: cargo test --locked
+      - run: cargo build --locked
+      - run: cargo clippy --workspace --features main/skate3 --all-targets --locked -- -D warnings
+      - run: cargo test --workspace --features main/skate3 --locked

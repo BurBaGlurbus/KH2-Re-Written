@@ -1,7 +1,8 @@
 //! The tests' configs with each installed file given by its path name
 //! (`{"$file": "obj/P_EX100.mdlx"}`) [test-room choices]: `title`, `room`,
-//! `talk` (its NPC) and the model selections they name. Names and test-room
-//! numbers only; the launcher fills in where each file is (T109).
+//! `talk` (its NPC), the model selections they name and the image viewer's
+//! title-screen selection. Names and test-room numbers only; the launcher
+//! fills in where each file is (T109, T228).
 pub const TEST_CONFIGS: &str = r#"{
   "title": {
     "schema_version": 1,
@@ -298,6 +299,15 @@ pub const TEST_CONFIGS: &str = r#"{
     "model_uv_profiles": [
       "openkh_kkdf2_integer_truncated_uv_v1"
     ]
+  },
+  "title-selection": {
+    "schema_version": 1,
+    "selections": [
+      {
+        "$file": "menu/us/title.2ld"
+      }
+    ],
+    "inspect_hd_images": true
   }
 }
 "#;

@@ -27,7 +27,8 @@ established.
 | Which sounds a scene requests | `source/visual/src/sound.rs`, `footsteps.rs` |
 | Reading a game file format | [source/data/src/](../source/data/src/); descriptive model, motion, room and table prefixes |
 | Supported-source checks | [validation/src/lib.rs](../validation/src/lib.rs) |
-| Model/image viewers or motion probes | [source/main/src/bin/](../source/main/src/bin/) |
+| Model/image viewers | [source/main/src/model_inspector.rs](../source/main/src/model_inspector.rs), [image_inspector.rs](../source/main/src/image_inspector.rs) (run inside the launcher) |
+| Motion probes | [source/main/src/bin/](../source/main/src/bin/) |
 | Build/research scripts | [tools/README.md](../tools/README.md) |
 | What has been verified | [tasks/README.md](tasks/README.md), [progress/README.md](progress/README.md) |
 
