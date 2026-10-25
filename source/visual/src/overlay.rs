@@ -327,22 +327,34 @@ fn quad_mesh(quads: &[&Quad], sheet: &Sheet) -> Mesh {
     .with_inserted_indices(Indices::U32(indices))
 }
 
+/// What a slot's mesh was built from: the sheet (its image, size and texel
+/// scale) and the quads.
+#[derive(PartialEq)]
+struct SlotSource {
+    image: AssetId<Image>,
+    size: [u32; 2],
+    texel_scale: u32,
+    quads: Vec<Quad>,
+}
+
+type SlotParts = (
+    Entity,
+    &'static Mesh2d,
+    &'static mut MeshMaterial2d<LayoutMaterial>,
+    &'static mut Transform,
+    &'static mut Visibility,
+);
+
 /// Draws this frame's list: one mesh per run of quads sharing a sheet and a
-/// blend, stacked in list order; then clears the list.
+/// blend, stacked in list order; then clears the list. A slot whose run is
+/// the same as last frame's keeps its mesh (no rebuild, no upload).
 fn present(
     mut commands: Commands,
     mut frame: ResMut<Ui2dFrame>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<LayoutMaterial>>,
-    mut slots: Query<
-        (
-            &Mesh2d,
-            &mut MeshMaterial2d<LayoutMaterial>,
-            &mut Transform,
-            &mut Visibility,
-        ),
-        With<Slot>,
-    >,
+    mut slots: Query<SlotParts, With<Slot>>,
+    mut built: Local<HashMap<Entity, SlotSource>>,
 ) {
     let frame = &mut *frame;
     let mut runs: Vec<(usize, u8, Vec<&Quad>)> = Vec::new();
@@ -357,7 +369,13 @@ fn present(
     }
     let mut existing = slots.iter_mut();
     for (order, (sheet, blend, quads)) in runs.iter().enumerate() {
-        let mesh = quad_mesh(quads, &frame.sheets[*sheet]);
+        let sheet_data = &frame.sheets[*sheet];
+        let source = || SlotSource {
+            image: sheet_data.image.id(),
+            size: sheet_data.size,
+            texel_scale: sheet_data.texel_scale.to_bits(),
+            quads: quads.iter().map(|q| **q).collect(),
+        };
         let material = frame
             .materials
             .entry((*sheet, *blend))
@@ -371,18 +389,29 @@ fn present(
             .clone();
         let z = order as f32 * 0.01;
         match existing.next() {
-            Some((handle, mut m, mut t, mut v)) => {
-                if let Some(mut slot) = meshes.get_mut(&handle.0) {
-                    *slot = mesh;
+            Some((entity, handle, mut m, mut t, mut v)) => {
+                let same = built.get(&entity).is_some_and(|b| {
+                    b.image == sheet_data.image.id()
+                        && b.size == sheet_data.size
+                        && b.texel_scale == sheet_data.texel_scale.to_bits()
+                        && b.quads.len() == quads.len()
+                        && b.quads.iter().zip(quads).all(|(a, b)| a == *b)
+                });
+                if !same && let Some(mut slot) = meshes.get_mut(&handle.0) {
+                    *slot = quad_mesh(quads, sheet_data);
+                    built.insert(entity, source());
                 }
                 if m.0 != material {
                     m.0 = material;
                 }
-                t.translation.z = z;
-                *v = Visibility::Visible;
+                if t.translation.z != z {
+                    t.translation.z = z;
+                }
+                v.set_if_neq(Visibility::Visible);
             }
             None => {
-                commands.spawn((
+                let mesh = quad_mesh(quads, sheet_data);
+                let entity = commands.spawn((
                     Slot,
                     Mesh2d(meshes.add(mesh)),
                     MeshMaterial2d(material),
@@ -390,11 +419,12 @@ fn present(
                     Visibility::Visible,
                     RenderLayers::layer(LAYER),
                 ));
+                built.insert(entity.id(), source());
             }
         }
     }
-    for (_, _, _, mut v) in existing {
-        *v = Visibility::Hidden;
+    for (_, _, _, _, mut v) in existing {
+        v.set_if_neq(Visibility::Hidden);
     }
     frame.draws.clear();
 }

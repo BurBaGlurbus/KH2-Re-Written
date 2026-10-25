@@ -113,7 +113,8 @@ const FOLLOW_SECONDS: f32 = 0.035;
 const OPEN_DISTANCE: f32 = 16.;
 const SLIDE_DISTANCE: f32 = 18.;
 
-/// Held arrows repeat after 18 frames, then every 4.
+/// Held arrows repeat after 18 ticks, then every 4 (ticks, so the repeat
+/// is as fast at any frame rate).
 const REPEAT_DELAY: u32 = 18;
 const REPEAT_EVERY: u32 = 4;
 /// Spell items hold a level; other stock counts stop at 99.
@@ -393,6 +394,7 @@ enum Action {
     ToggleSkeleton,
     ToggleHideModel,
     ToggleCollisionOverlay,
+    TogglePerfOverlay,
     RemoveActor,
     ClearActors,
     Warp(u8, u8),
@@ -464,6 +466,7 @@ impl Action {
             Self::ToggleSkeleton => "Draw a line from each bone to its parent.",
             Self::ToggleHideModel => "Hide the model and keep the skeleton.",
             Self::ToggleCollisionOverlay => "Show the room's collision. F1 does the same.",
+            Self::TogglePerfOverlay => "FPS, frame times, GPU and entities at the top left.",
             Self::RemoveActor => "Remove this enemy from the room.",
             Self::ClearActors => "Remove every summoned enemy.",
             Self::Warp(..) => "Warp to this room.",
@@ -551,7 +554,7 @@ pub struct DebugMenu {
     top: usize,
     /// The last of the menu's own tabs and its cursor, for reopening.
     home: (HomeTab, usize),
-    /// The arrow being held and for how many frames.
+    /// The arrow being held and for how many ticks.
     held: Option<(Dir, u32)>,
     /// The current world's saved launcher start (read on opening Warp).
     saved: Option<(u8, u8)>,
@@ -757,6 +760,7 @@ fn read_input(
     keys: &ButtonInput<KeyCode>,
     pads: &Query<(&Gamepad, Option<&Name>)>,
     held: &mut Option<(Dir, u32)>,
+    ticks: u64,
 ) -> Input {
     let pad_pressed = |b: GamepadButton| pads.iter().any(|(p, _)| p.pressed(b));
     let pad_just = |b: GamepadButton| pads.iter().any(|(p, _)| p.just_pressed(b));
@@ -800,12 +804,15 @@ fn read_input(
         .into_iter()
         .find(|&d| down(d));
     *held = match (current, *held) {
-        (Some(d), Some((h, frames))) if d == h => {
-            let frames = frames + 1;
-            if frames >= REPEAT_DELAY && (frames - REPEAT_DELAY).is_multiple_of(REPEAT_EVERY) {
+        (Some(d), Some((h, held_for))) if d == h => {
+            // One repeat when any of this frame's ticks reaches a repeat
+            // point (several ticks in one slow frame still step once).
+            let repeats = (held_for + 1..=held_for + ticks as u32)
+                .any(|t| t >= REPEAT_DELAY && (t - REPEAT_DELAY).is_multiple_of(REPEAT_EVERY));
+            if repeats {
                 input.step = Some(d);
             }
-            Some((d, frames))
+            Some((d, held_for + ticks as u32))
         }
         (Some(d), _) => {
             input.step = Some(d);
@@ -1115,6 +1122,11 @@ fn rows(
                             .iter()
                             .any(|s| s & 0x7fff == enemy_target::SCAN_ITEM),
                     )
+                },
+                section("Display"),
+                Row {
+                    value: on_off(game.perf_overlay),
+                    ..row("Performance overlay", Action::TogglePerfOverlay, true)
                 },
                 section("Items and forms"),
                 row(
@@ -1822,6 +1834,10 @@ fn act(
             game.show_collision = !game.show_collision;
             None
         }
+        Action::TogglePerfOverlay => {
+            game.perf_overlay = !game.perf_overlay;
+            None
+        }
         Action::RemoveActor => {
             gallery.remove_selected();
             menu.slide_to(Page::Actors, 0, -1.);
@@ -1897,6 +1913,7 @@ pub fn tick(
     mut key_events: MessageReader<KeyboardInput>,
     time: Res<Time>,
     real: Res<Time<Real>>,
+    clock: Res<visual::smoothing::TickClock>,
     pads: Query<(&Gamepad, Option<&Name>)>,
     mut menu: ResMut<DebugMenu>,
     mut game: ResMut<Game>,
@@ -1941,7 +1958,7 @@ pub fn tick(
         return;
     }
     let menu = &mut *menu;
-    let input = read_input(&keys, &pads, &mut menu.held);
+    let input = read_input(&keys, &pads, &mut menu.held, clock.ticks_this_frame());
     let was_open = menu.open;
     let mut sounds = Vec::new();
     // Esc backs out of the menu; the room must not also take it as exit.
@@ -2109,7 +2126,8 @@ pub fn tick(
         enemy_gallery::advance(&mut gallery, time.delta_secs() * TICKS_PER_SECOND);
     }
     if let Some((_, frames)) = menu.notice.as_mut() {
-        *frames = frames.saturating_sub(1);
+        // Counted in ticks, so the notice lasts as long at any frame rate.
+        *frames = frames.saturating_sub(clock.ticks_this_frame() as u32);
         if *frames == 0 {
             menu.notice = None;
         }

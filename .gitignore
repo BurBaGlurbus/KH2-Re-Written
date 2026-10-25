@@ -41,6 +41,8 @@
 !/source/game/*/examples/*.rs
 !/source/extras/skateboard/source/examples/*.rs
 !/source/visual/src/**/*.wgsl
+# Criterion benchmarks on generated inputs.
+!/source/*/benches/*.rs
 !/source/game/README.md
 !/source/main/README.md
 !/source/visual/README.md
@@ -73,6 +75,9 @@
 # Authored progress tooling and public aggregate evidence only.
 !/tools/progress.py
 !/tools/test_progress.py
+# Performance record and trace summaries (read private run outputs, hold none).
+!/tools/perf_report.py
+!/tools/trace_summary.py
 !/docs/progress/coverage.json
 !/docs/progress/summary.json
 /target/

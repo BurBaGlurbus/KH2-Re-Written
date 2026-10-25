@@ -660,6 +660,61 @@ pub fn line_mesh(positions: Vec<[f32; 3]>, colors: Vec<[f32; 4]>) -> Mesh {
 /// Updates an animated part without replacing its CPU vertex allocation.
 /// The caller still obtains the mesh through `Assets::get_mut`, so Bevy's
 /// normal asset change tracking and GPU upload path are preserved.
+/// Sets a triangle list's positions, UVs and colours unless the mesh
+/// already holds them (an unchanged mesh is not uploaded again).
+pub fn set_triangles(
+    meshes: &mut Assets<Mesh>,
+    id: impl Into<AssetId<Mesh>>,
+    positions: Vec<[f32; 3]>,
+    uvs: Vec<[f32; 2]>,
+    colors: Vec<[f32; 4]>,
+) {
+    let id = id.into();
+    if let Some(mesh) = meshes.get(id)
+        && let (
+            Some(VertexAttributeValues::Float32x3(p)),
+            Some(VertexAttributeValues::Float32x2(u)),
+            Some(VertexAttributeValues::Float32x4(c)),
+        ) = (
+            mesh.attribute(Mesh::ATTRIBUTE_POSITION),
+            mesh.attribute(Mesh::ATTRIBUTE_UV_0),
+            mesh.attribute(Mesh::ATTRIBUTE_COLOR),
+        )
+        && *p == positions
+        && *u == uvs
+        && *c == colors
+    {
+        return;
+    }
+    if let Some(mut mesh) = meshes.get_mut(id) {
+        mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, positions);
+        mesh.insert_attribute(Mesh::ATTRIBUTE_UV_0, uvs);
+        mesh.insert_attribute(Mesh::ATTRIBUTE_COLOR, colors);
+    }
+}
+
+/// Sets a mesh's positions unless it already holds them: an unchanged
+/// mesh is not marked modified, so it is not uploaded again (skinned
+/// actors are re-posed every frame but change once per tick).
+pub fn set_positions<I>(meshes: &mut Assets<Mesh>, id: impl Into<AssetId<Mesh>>, positions: I)
+where
+    I: IntoIterator<Item = [f32; 3]>,
+    I::IntoIter: Clone,
+{
+    let id = id.into();
+    let positions = positions.into_iter();
+    if let Some(mesh) = meshes.get(id)
+        && let Some(VertexAttributeValues::Float32x3(held)) =
+            mesh.attribute(Mesh::ATTRIBUTE_POSITION)
+        && held.iter().copied().eq(positions.clone())
+    {
+        return;
+    }
+    if let Some(mut mesh) = meshes.get_mut(id) {
+        update_positions(&mut mesh, positions);
+    }
+}
+
 pub fn update_positions(mesh: &mut Mesh, positions: impl IntoIterator<Item = [f32; 3]>) {
     if let Some(VertexAttributeValues::Float32x3(values)) =
         mesh.attribute_mut(Mesh::ATTRIBUTE_POSITION)

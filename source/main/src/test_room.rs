@@ -101,6 +101,7 @@ mod party_hit_tour;
 mod party_items_tour;
 mod party_limit;
 mod party_room;
+mod perf_overlay;
 mod prize_room;
 mod reaction_command;
 mod second_deck;
@@ -1197,6 +1198,8 @@ struct Game {
     action_started: u64,
     exit_code: Option<u8>,
     show_collision: bool,
+    /// The debug menu's performance overlay (`perf_overlay`).
+    perf_overlay: bool,
     rendered_frames: u64,
     autoplay_failed: bool,
     /// Sound requests raised this tick: (id, cause).
@@ -4618,6 +4621,23 @@ fn frame_stats(
     }
 }
 
+/// The Keyblade's own pose at the end of this tick, which the next tick's
+/// effects anchor at its top (`spell_fx::Frames`). It was kept by `present`,
+/// so at frame rates under 60 a tick could read a pose two or more ticks
+/// old; kept here, every tick reads its predecessor's, as at 60 FPS.
+fn keep_weapon_pose(mut game: ResMut<Game>) {
+    let Some(&clip) = game.poses.get(&(game.player.action, game.player.armed)) else {
+        return;
+    };
+    let frame = game.player.motion_frame(&game.clips) as usize;
+    let weapon_frames = &game.clip_poses[clip].weapon_frames;
+    if let Some(pose) = weapon_frames.get(frame.min(weapon_frames.len().saturating_sub(1)))
+        && *pose != game.weapon_display
+    {
+        game.weapon_display = pose.clone();
+    }
+}
+
 /// Loads the area an exit asked for and swaps the room, the collision, the
 /// camera collision and Sora's placement (FUN_140152a90 → FUN_140152be0 →
 /// FUN_140152680; the iris presentation is not drawn yet).
@@ -4845,9 +4865,7 @@ fn bob_present(
             .indices
             .iter()
             .map(|&i| frame[i as usize].to_array());
-        if let Some(mut mesh) = meshes.get_mut(&handle.0) {
-            visual::room::update_positions(&mut mesh, positions);
-        }
+        visual::room::set_positions(&mut meshes, &handle.0, positions);
     }
 }
 
@@ -5252,9 +5270,7 @@ fn field_npc_present(
             .indices
             .iter()
             .map(|&i| frame[i as usize].to_array());
-        if let Some(mut mesh) = meshes.get_mut(&handle.0) {
-            visual::room::update_positions(&mut mesh, positions);
-        }
+        visual::room::set_positions(&mut meshes, &handle.0, positions);
     }
 }
 
@@ -5616,7 +5632,11 @@ fn setup(
     // them to the screen without a mirror (model +X on screen right,
     // camp-03 §1.4), as the rotation from_world does.
     let world = commands
-        .spawn((Transform::default(), Visibility::default()))
+        .spawn((
+            Transform::default(),
+            Visibility::default(),
+            visual::smoothing::SmoothRoot,
+        ))
         .id();
     if let Some(arena) = startup.arena_mesh.take() {
         let (w, h, rgba) = arena.texture;
@@ -6023,6 +6043,7 @@ fn setup(
     compose.scene_sheet = frame.add_image(compose.scene.clone(), size, true);
     commands.spawn((
         Camera3d::default(),
+        visual::smoothing::Smoothed,
         Camera {
             order: -2,
             ..default()
@@ -6120,9 +6141,7 @@ fn menu_model_present(
         if let Some(positions) = game_over::pose(g, rig, t) {
             for (part, handle) in &parts {
                 let positions = model.indices[part.0].iter().map(|&i| positions[i as usize]);
-                if let Some(mut mesh) = meshes.get_mut(&handle.0) {
-                    visual::room::update_positions(&mut mesh, positions);
-                }
+                visual::room::set_positions(&mut meshes, &handle.0, positions);
             }
         }
         return;
@@ -6139,9 +6158,7 @@ fn menu_model_present(
         let positions = model.indices[part.0]
             .iter()
             .map(|&i| (c.frames[f][i as usize] + root).to_array());
-        if let Some(mut mesh) = meshes.get_mut(&handle.0) {
-            visual::room::update_positions(&mut mesh, positions);
-        }
+        visual::room::set_positions(&mut meshes, &handle.0, positions);
     }
 }
 /// The 2D composition's sheets: the rendered scene, the dissolve snapshot
@@ -6182,6 +6199,7 @@ struct Afterimage {
 /// history lacks the HUD the exe's prevFrameTex holds [I].
 fn afterimage(
     mut after: ResMut<Afterimage>,
+    clock: Res<visual::smoothing::TickClock>,
     game: Res<Game>,
     game_over: Option<Res<game_over::GameOverRes>>,
     mut cameras: Query<&mut Camera>,
@@ -6210,7 +6228,13 @@ fn afterimage(
         after.blur.set_zoom(zoom, &mut meshes);
     }
     let step = overlay.map(|o| o.1);
-    let advance = step.is_none() || step != after.step;
+    // The pictures step once per tick (an overlay's once per event frame),
+    // not once per drawn frame, so the trail fades at the same speed at
+    // any frame rate.
+    let advance = match step {
+        None => clock.ticks_this_frame() > 0,
+        Some(_) => step != after.step,
+    };
     after.step = step;
     let weight = alpha.map(|a| if after.on { a } else { 0. });
     after.on = alpha.is_some();
@@ -8090,11 +8114,7 @@ fn present_effects(
             uvs = vec![[0.; 2]; 3];
             colors = vec![[0.; 4]; 3];
         }
-        if let Some(mut mesh) = meshes.get_mut(&handle.0) {
-            mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, positions);
-            mesh.insert_attribute(Mesh::ATTRIBUTE_UV_0, uvs);
-            mesh.insert_attribute(Mesh::ATTRIBUTE_COLOR, colors);
-        }
+        visual::room::set_triangles(&mut meshes, &handle.0, positions, uvs, colors);
     }
 }
 
@@ -8436,9 +8456,7 @@ fn present_npc(
         let positions = talk.indices[part.0]
             .iter()
             .map(|&i| frame[i as usize].to_array());
-        if let Some(mut mesh) = meshes.get_mut(&handle.0) {
-            visual::room::update_positions(&mut mesh, positions);
-        }
+        visual::room::set_positions(&mut meshes, &handle.0, positions);
     }
 }
 
@@ -9241,9 +9259,15 @@ fn hud_present(
         });
         draws.extend(debug_menu::draws(&debug.view, white, *sheet, widths));
     }
-    canvas.render(&draws, &textures);
-    if let Some(mut target) = images.get_mut(image.id()) {
-        target.data = Some(canvas.rgba.clone());
+    // An unchanged HUD keeps its texture; the tiles that changed are copied
+    // into it.
+    if canvas.render(&draws, &textures)
+        && let Some(mut target) = images.get_mut(image.id())
+    {
+        match target.data.as_mut() {
+            Some(data) if data.len() == canvas.rgba.len() => canvas.copy_redrawn(data),
+            _ => target.data = Some(canvas.rgba.clone()),
+        }
     }
 }
 
@@ -10112,9 +10136,7 @@ fn present_enemy(
         let positions = rt.indices[part.0]
             .iter()
             .map(|&i| pose[i as usize].to_array());
-        if let Some(mut mesh) = meshes.get_mut(&handle.0) {
-            visual::room::update_positions(&mut mesh, positions);
-        }
+        visual::room::set_positions(&mut meshes, &handle.0, positions);
     }
 }
 
@@ -10614,8 +10636,11 @@ fn skate_present(
     board_models.shown = Some(wanted);
 }
 
+// Bevy systems take each resource as a parameter.
+#[allow(clippy::too_many_arguments)]
 fn present(
     fixed: Res<Time<Fixed>>,
+    virt: Res<Time<Virtual>>,
     mut game: ResMut<Game>,
     mut roots: Query<&mut Transform, (With<SoraRoot>, Without<WeaponRoot>)>,
     mut hands: Query<(&mut Transform, &mut Visibility), WeaponOnly>,
@@ -10671,7 +10696,13 @@ fn present(
     // blend; the weight is that clock over the duration.
     let mut shown_joints = target_joints.clone().unwrap_or_default();
     if let Some((from, from_hand, start)) = &game.blend_from {
-        let elapsed = (game.tick - start) as f32 + fixed.overstep_fraction();
+        // A held clock (an unattended capture) shows the tick itself.
+        let overstep = if virt.is_paused() {
+            0.
+        } else {
+            fixed.overstep_fraction()
+        };
+        let elapsed = (game.tick - start) as f32 + overstep;
         let blend = game.player.blend;
         let weight = if blend > 2. {
             ((elapsed + 3.) / blend).clamp(0., 1.)
@@ -10737,9 +10768,7 @@ fn present(
         let positions = game.part_indices[part.0]
             .iter()
             .map(|&i| display[i as usize].to_array());
-        if let Some(mut mesh) = meshes.get_mut(&handle.0) {
-            visual::room::update_positions(&mut mesh, positions);
-        }
+        visual::room::set_positions(&mut meshes, &handle.0, positions);
     }
     if let Some((from, jump, from_frame)) = switched {
         let (tick, blend) = (game.tick, game.player.blend);
@@ -10772,11 +10801,8 @@ fn present(
             let positions = game.weapon_indices[part.0]
                 .iter()
                 .map(|&i| pose[i as usize].to_array());
-            if let Some(mut mesh) = meshes.get_mut(&handle.0) {
-                visual::room::update_positions(&mut mesh, positions);
-            }
+            visual::room::set_positions(&mut meshes, &handle.0, positions);
         }
-        game.weapon_display = pose;
     }
     if let Ok(mut root) = roots.single_mut() {
         root.translation = Vec3::from_array(game.player.position);
@@ -12526,12 +12552,13 @@ fn run(mut args: Vec<PathBuf>) -> Result<AppExit, Box<dyn std::error::Error>> {
     }
     let started = Instant::now();
     if args.len() < 3 {
-        return Err("usage: room <Steam-root> <manifest> <test-room-config> [--log new.jsonl] [--frames N] [--autoplay <new-capture-dir> | --ability-tour <new-capture-dir> | --gear-tour <new-capture-dir> | --enemy-tour <new-capture-dir>] [--enemy-audit <new-private-report.json>] [--gamepad] [--show-collision] [--basic-fk]".into());
+        return Err("usage: room <Steam-root> <manifest> <test-room-config> [--log new.jsonl] [--frames N] [--autoplay <new-capture-dir> | --ability-tour <new-capture-dir> | --gear-tour <new-capture-dir> | --enemy-tour <new-capture-dir>] [--enemy-audit <new-private-report.json>] [--gamepad] [--show-collision] [--basic-fk] [--uncapped | --frame-cap N] [--perf-overlay]".into());
     }
     let mut log_path = None;
     let mut limit = None;
     let mut autoplay = None;
     let mut show_collision = false;
+    let mut perf_overlay = false;
     let mut basic_fk = false;
     let mut ability_tour = false;
     let mut gear_tour = false;
@@ -12563,12 +12590,32 @@ fn run(mut args: Vec<PathBuf>) -> Result<AppExit, Box<dyn std::error::Error>> {
     let mut capture_at: Option<Vec<u64>> = None;
     // `--party-styles D:G` (or D,G): the members' battle styles [tour setup].
     let mut party_styles: Vec<u8> = Vec::new();
+    // `--perf <new-dir>`: the per-frame record (perf-diag builds).
+    #[cfg(feature = "perf-diag")]
+    let mut perf_dir: Option<PathBuf> = None;
+    // `--uncapped` / `--frame-cap N`: no V-Sync and no limit, or a cap of N
+    // frames per second, whatever the settings say (frame-rate checks).
+    let mut frame_rate: Option<Option<u16>> = None;
     let mut options = args[3..].iter();
     while let Some(option) = options.next() {
         match option.to_str() {
+            #[cfg(feature = "perf-diag")]
+            Some("--perf") if perf_dir.is_none() => {
+                perf_dir = Some(options.next().cloned().ok_or("perf directory absent")?);
+            }
+            Some("--uncapped") => frame_rate = Some(None),
+            Some("--frame-cap") => {
+                let cap = options
+                    .next()
+                    .and_then(|v| v.to_str())
+                    .ok_or("frame cap absent")?
+                    .parse::<u16>()?;
+                frame_rate = Some(Some(cap.max(1)));
+            }
             // Pads are always read now; the flag is accepted for old launch files.
             Some("--gamepad") => {}
             Some("--show-collision") => show_collision = true,
+            Some("--perf-overlay") => perf_overlay = true,
             Some("--basic-fk") => basic_fk = true,
             Some("--enemy-audit") if enemy_audit.is_none() => {
                 enemy_audit = Some(options.next().cloned().ok_or("enemy audit output absent")?);
@@ -12896,7 +12943,7 @@ fn run(mut args: Vec<PathBuf>) -> Result<AppExit, Box<dyn std::error::Error>> {
         started.elapsed().as_secs_f64() * 1e3
     );
     // Beside the room's configuration; unattended runs keep the defaults.
-    let settings = settings_room::SettingsRes::new(
+    let mut settings = settings_room::SettingsRes::new(
         source.clone(),
         autoplay.is_none().then(|| {
             args[2]
@@ -12906,6 +12953,14 @@ fn run(mut args: Vec<PathBuf>) -> Result<AppExit, Box<dyn std::error::Error>> {
         }),
         loaded.language.take(),
     )?;
+    if let Some(cap) = frame_rate {
+        settings.current.vsync = false;
+        settings.current.custom_frame_cap = cap.is_some();
+        settings.current.frame_cap = 0;
+        if let Some(cap) = cap {
+            settings.current.custom_cap = cap;
+        }
+    }
     let log = match log_path {
         Some(path) => Some(OpenOptions::new().write(true).create_new(true).open(path)?),
         None => None,
@@ -13315,6 +13370,7 @@ fn run(mut args: Vec<PathBuf>) -> Result<AppExit, Box<dyn std::error::Error>> {
         action_started: 0,
         exit_code: None,
         show_collision,
+        perf_overlay,
         rendered_frames: 0,
         autoplay_failed: false,
         sound_queue: Vec::new(),
@@ -13719,6 +13775,8 @@ fn run(mut args: Vec<PathBuf>) -> Result<AppExit, Box<dyn std::error::Error>> {
             game_over_tour,
         ));
     }
+    #[cfg(feature = "perf-diag")]
+    app.add_plugins(crate::perf::PerfPlugin { dir: perf_dir });
     Ok(app
         .insert_resource(game)
         .insert_resource(Startup {
@@ -13772,6 +13830,8 @@ fn run(mut args: Vec<PathBuf>) -> Result<AppExit, Box<dyn std::error::Error>> {
             ..default()
         }))
         .add_plugins(FogPlugin)
+        .add_plugins(visual::frame_limit::FrameLimitPlugin)
+        .add_plugins(visual::smoothing::SmoothingPlugin)
         .add_plugins(visual::effect_draw::EffectPlugin)
         .add_plugins(Ui2dPlugin {
             order: 0,
@@ -13779,6 +13839,7 @@ fn run(mut args: Vec<PathBuf>) -> Result<AppExit, Box<dyn std::error::Error>> {
         })
         .init_resource::<crate::skate::Skate>()
         .init_resource::<debug_menu::DebugMenu>()
+        .init_resource::<perf_overlay::PerfOverlay>()
         .init_resource::<enemy_battle_tour::Checks>()
         .init_resource::<sephiroth::Fight>()
         .add_plugins(SkatePlugins)
@@ -13821,6 +13882,7 @@ fn run(mut args: Vec<PathBuf>) -> Result<AppExit, Box<dyn std::error::Error>> {
                 )
                     .chain()
                     .run_if(field_running),
+                keep_weapon_pose,
             )
                 .chain(),
         )
@@ -13864,7 +13926,14 @@ fn run(mut args: Vec<PathBuf>) -> Result<AppExit, Box<dyn std::error::Error>> {
                 afterimage.run_if(resource_exists::<Afterimage>),
                 compose_2d,
                 menu_model_present,
-                (camp_present, game_over::present, game_over::snap).chain(),
+                (
+                    camp_present,
+                    game_over::present,
+                    game_over::snap,
+                    perf_overlay::sample,
+                    perf_overlay::present,
+                )
+                    .chain(),
                 finish,
                 frame_stats,
             )
