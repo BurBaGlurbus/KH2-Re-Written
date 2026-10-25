@@ -2391,9 +2391,7 @@ fn present(
             .iter()
             .map(|&i| pose[i as usize])
             .collect();
-        if let Some(mut mesh) = meshes.get_mut(&handle.0) {
-            visual::room::update_positions(&mut mesh, positions);
-        }
+        visual::room::set_positions(&mut meshes, &handle.0, positions);
     }
     // The map objects: looping motions and the slots' hiding.
     if let Some(bobs) = bobs {
@@ -2426,9 +2424,7 @@ fn present(
                 .indices
                 .iter()
                 .map(|&i| frame[i as usize].to_array());
-            if let Some(mut mesh) = meshes.get_mut(&handle.0) {
-                visual::room::update_positions(&mut mesh, positions);
-            }
+            visual::room::set_positions(&mut meshes, &handle.0, positions);
         }
     }
     if let Ok((mut transform, mut projection)) = cameras.single_mut() {
@@ -2639,9 +2635,7 @@ fn present_widgets(
             .iter()
             .map(|&i| pose[i as usize])
             .collect();
-        if let Some(mut mesh) = meshes.get_mut(&handle.0) {
-            visual::room::update_positions(&mut mesh, positions);
-        }
+        visual::room::set_positions(&mut meshes, &handle.0, positions);
     }
     if shown && let Ok((mut transform, mut projection)) = cameras.single_mut() {
         *transform = Transform::IDENTITY;

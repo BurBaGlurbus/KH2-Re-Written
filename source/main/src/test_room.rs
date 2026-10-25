@@ -4862,9 +4862,7 @@ fn bob_present(
             .indices
             .iter()
             .map(|&i| frame[i as usize].to_array());
-        if let Some(mut mesh) = meshes.get_mut(&handle.0) {
-            visual::room::update_positions(&mut mesh, positions);
-        }
+        visual::room::set_positions(&mut meshes, &handle.0, positions);
     }
 }
 
@@ -5269,9 +5267,7 @@ fn field_npc_present(
             .indices
             .iter()
             .map(|&i| frame[i as usize].to_array());
-        if let Some(mut mesh) = meshes.get_mut(&handle.0) {
-            visual::room::update_positions(&mut mesh, positions);
-        }
+        visual::room::set_positions(&mut meshes, &handle.0, positions);
     }
 }
 
@@ -6142,9 +6138,7 @@ fn menu_model_present(
         if let Some(positions) = game_over::pose(g, rig, t) {
             for (part, handle) in &parts {
                 let positions = model.indices[part.0].iter().map(|&i| positions[i as usize]);
-                if let Some(mut mesh) = meshes.get_mut(&handle.0) {
-                    visual::room::update_positions(&mut mesh, positions);
-                }
+                visual::room::set_positions(&mut meshes, &handle.0, positions);
             }
         }
         return;
@@ -6161,9 +6155,7 @@ fn menu_model_present(
         let positions = model.indices[part.0]
             .iter()
             .map(|&i| (c.frames[f][i as usize] + root).to_array());
-        if let Some(mut mesh) = meshes.get_mut(&handle.0) {
-            visual::room::update_positions(&mut mesh, positions);
-        }
+        visual::room::set_positions(&mut meshes, &handle.0, positions);
     }
 }
 /// The 2D composition's sheets: the rendered scene, the dissolve snapshot
@@ -8465,9 +8457,7 @@ fn present_npc(
         let positions = talk.indices[part.0]
             .iter()
             .map(|&i| frame[i as usize].to_array());
-        if let Some(mut mesh) = meshes.get_mut(&handle.0) {
-            visual::room::update_positions(&mut mesh, positions);
-        }
+        visual::room::set_positions(&mut meshes, &handle.0, positions);
     }
 }
 
@@ -10147,9 +10137,7 @@ fn present_enemy(
         let positions = rt.indices[part.0]
             .iter()
             .map(|&i| pose[i as usize].to_array());
-        if let Some(mut mesh) = meshes.get_mut(&handle.0) {
-            visual::room::update_positions(&mut mesh, positions);
-        }
+        visual::room::set_positions(&mut meshes, &handle.0, positions);
     }
 }
 
@@ -10781,9 +10769,7 @@ fn present(
         let positions = game.part_indices[part.0]
             .iter()
             .map(|&i| display[i as usize].to_array());
-        if let Some(mut mesh) = meshes.get_mut(&handle.0) {
-            visual::room::update_positions(&mut mesh, positions);
-        }
+        visual::room::set_positions(&mut meshes, &handle.0, positions);
     }
     if let Some((from, jump, from_frame)) = switched {
         let (tick, blend) = (game.tick, game.player.blend);
@@ -10816,9 +10802,7 @@ fn present(
             let positions = game.weapon_indices[part.0]
                 .iter()
                 .map(|&i| pose[i as usize].to_array());
-            if let Some(mut mesh) = meshes.get_mut(&handle.0) {
-                visual::room::update_positions(&mut mesh, positions);
-            }
+            visual::room::set_positions(&mut meshes, &handle.0, positions);
         }
     }
     if let Ok(mut root) = roots.single_mut() {
