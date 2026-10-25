@@ -113,7 +113,8 @@ const FOLLOW_SECONDS: f32 = 0.035;
 const OPEN_DISTANCE: f32 = 16.;
 const SLIDE_DISTANCE: f32 = 18.;
 
-/// Held arrows repeat after 18 frames, then every 4.
+/// Held arrows repeat after 18 ticks, then every 4 (ticks, so the repeat
+/// is as fast at any frame rate).
 const REPEAT_DELAY: u32 = 18;
 const REPEAT_EVERY: u32 = 4;
 /// Spell items hold a level; other stock counts stop at 99.
@@ -553,7 +554,7 @@ pub struct DebugMenu {
     top: usize,
     /// The last of the menu's own tabs and its cursor, for reopening.
     home: (HomeTab, usize),
-    /// The arrow being held and for how many frames.
+    /// The arrow being held and for how many ticks.
     held: Option<(Dir, u32)>,
     /// The current world's saved launcher start (read on opening Warp).
     saved: Option<(u8, u8)>,
@@ -759,6 +760,7 @@ fn read_input(
     keys: &ButtonInput<KeyCode>,
     pads: &Query<(&Gamepad, Option<&Name>)>,
     held: &mut Option<(Dir, u32)>,
+    ticks: u64,
 ) -> Input {
     let pad_pressed = |b: GamepadButton| pads.iter().any(|(p, _)| p.pressed(b));
     let pad_just = |b: GamepadButton| pads.iter().any(|(p, _)| p.just_pressed(b));
@@ -802,12 +804,15 @@ fn read_input(
         .into_iter()
         .find(|&d| down(d));
     *held = match (current, *held) {
-        (Some(d), Some((h, frames))) if d == h => {
-            let frames = frames + 1;
-            if frames >= REPEAT_DELAY && (frames - REPEAT_DELAY).is_multiple_of(REPEAT_EVERY) {
+        (Some(d), Some((h, held_for))) if d == h => {
+            // One repeat when any of this frame's ticks reaches a repeat
+            // point (several ticks in one slow frame still step once).
+            let repeats = (held_for + 1..=held_for + ticks as u32)
+                .any(|t| t >= REPEAT_DELAY && (t - REPEAT_DELAY).is_multiple_of(REPEAT_EVERY));
+            if repeats {
                 input.step = Some(d);
             }
-            Some((d, frames))
+            Some((d, held_for + ticks as u32))
         }
         (Some(d), _) => {
             input.step = Some(d);
@@ -1953,7 +1958,7 @@ pub fn tick(
         return;
     }
     let menu = &mut *menu;
-    let input = read_input(&keys, &pads, &mut menu.held);
+    let input = read_input(&keys, &pads, &mut menu.held, clock.ticks_this_frame());
     let was_open = menu.open;
     let mut sounds = Vec::new();
     // Esc backs out of the menu; the room must not also take it as exit.
