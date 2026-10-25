@@ -93,6 +93,8 @@ struct PerfRecord {
     written: bool,
 }
 
+// Bevy systems take each resource as a parameter.
+#[allow(clippy::too_many_arguments)]
 fn record_frame(
     real: Res<Time<Real>>,
     virt: Res<Time<Virtual>>,
