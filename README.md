@@ -104,13 +104,6 @@ cargo run -p main --locked -- --frames 180
 
 The full list of checks, and the rules for contributing, are in [CONTRIBUTING.md](CONTRIBUTING.md). Developer tools for reading the installed game are in [docs/developer-tools.md](docs/developer-tools.md).
 
-## 1. Verification in Decompilation (Byte-for-Byte Matching)
-
-If you are working on a decompilation/reverse-engineering project (such as matching a game's source code back to its original compiled binary), a "byte match" means your recompiled code generates an identical binary byte-for-byte. [[1](https://www.reddit.com/r/decomps/comments/1x97rgo/early_look_littlebigplanet_ps3_pc_port/)]
-
-* The Process: You write scripts (often using Python or custom tools) that run a `diff` or a checksum hashing algorithm (like SHA-256) comparing your compiled output against the original target slice.
-* GitHub Integration: These projects usually use [GitHub Actions](https://github.com/features/actions) to run automated testing (CI). Every time you push a commit, the runner compiles the code and checks for a 100% byte-match success rate before passing the build.
-
 ## Private data
 
 Source manifests, package records, captures and saves stay outside this repository, in `%LOCALAPPDATA%\KH2FinalRewrite\`. See [ARCHITECTURE.md](ARCHITECTURE.md) for the layout.
