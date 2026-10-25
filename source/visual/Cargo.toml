@@ -20,5 +20,14 @@ fontdue = { version = "=0.9.4", default-features = false, features = ["std"] }
 image = { version = "=0.25.10", default-features = false, features = ["png"] }
 bevy = { version = "=0.19.1", default-features = false, features = ["std", "async_executor", "multi_threaded", "bevy_log", "bevy_asset", "bevy_window", "bevy_winit", "bevy_render", "bevy_camera", "bevy_image", "bevy_sprite", "bevy_sprite_render", "bevy_core_pipeline", "bevy_pbr", "bmp", "bevy_gilrs"] }
 
+# Statistics-driven timing of hot functions (`cargo bench -p visual`); only
+# for benchmarks, never in the game.
+[dev-dependencies]
+criterion = { version = "=0.7.0", default-features = false, features = ["cargo_bench_support"] }
+
+[[bench]]
+name = "hud_canvas"
+harness = false
+
 [lints]
 workspace = true

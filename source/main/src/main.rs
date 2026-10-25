@@ -18,6 +18,8 @@ mod keyblade_board;
 mod launcher;
 mod model_inspector;
 mod npcs;
+#[cfg(feature = "perf-diag")]
+mod perf;
 mod save_files;
 mod sephiroth;
 mod skate;

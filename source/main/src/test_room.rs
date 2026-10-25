@@ -12563,9 +12563,21 @@ fn run(mut args: Vec<PathBuf>) -> Result<AppExit, Box<dyn std::error::Error>> {
     let mut capture_at: Option<Vec<u64>> = None;
     // `--party-styles D:G` (or D,G): the members' battle styles [tour setup].
     let mut party_styles: Vec<u8> = Vec::new();
+    // `--perf <new-dir>`: the per-frame record (perf-diag builds);
+    // `--uncapped`: present without vsync whatever the settings say.
+    #[cfg(feature = "perf-diag")]
+    let mut perf_dir: Option<PathBuf> = None;
+    #[cfg(feature = "perf-diag")]
+    let mut uncapped = false;
     let mut options = args[3..].iter();
     while let Some(option) = options.next() {
         match option.to_str() {
+            #[cfg(feature = "perf-diag")]
+            Some("--perf") if perf_dir.is_none() => {
+                perf_dir = Some(options.next().cloned().ok_or("perf directory absent")?);
+            }
+            #[cfg(feature = "perf-diag")]
+            Some("--uncapped") => uncapped = true,
             // Pads are always read now; the flag is accepted for old launch files.
             Some("--gamepad") => {}
             Some("--show-collision") => show_collision = true,
@@ -12896,7 +12908,8 @@ fn run(mut args: Vec<PathBuf>) -> Result<AppExit, Box<dyn std::error::Error>> {
         started.elapsed().as_secs_f64() * 1e3
     );
     // Beside the room's configuration; unattended runs keep the defaults.
-    let settings = settings_room::SettingsRes::new(
+    #[allow(unused_mut)]
+    let mut settings = settings_room::SettingsRes::new(
         source.clone(),
         autoplay.is_none().then(|| {
             args[2]
@@ -12906,6 +12919,10 @@ fn run(mut args: Vec<PathBuf>) -> Result<AppExit, Box<dyn std::error::Error>> {
         }),
         loaded.language.take(),
     )?;
+    #[cfg(feature = "perf-diag")]
+    if uncapped {
+        settings.current.vsync = false;
+    }
     let log = match log_path {
         Some(path) => Some(OpenOptions::new().write(true).create_new(true).open(path)?),
         None => None,
@@ -13719,6 +13736,8 @@ fn run(mut args: Vec<PathBuf>) -> Result<AppExit, Box<dyn std::error::Error>> {
             game_over_tour,
         ));
     }
+    #[cfg(feature = "perf-diag")]
+    app.add_plugins(crate::perf::PerfPlugin { dir: perf_dir });
     Ok(app
         .insert_resource(game)
         .insert_resource(Startup {
