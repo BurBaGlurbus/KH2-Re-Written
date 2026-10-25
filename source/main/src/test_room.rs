@@ -9270,9 +9270,14 @@ fn hud_present(
         });
         draws.extend(debug_menu::draws(&debug.view, white, *sheet, widths));
     }
-    canvas.render(&draws, &textures);
-    if let Some(mut target) = images.get_mut(image.id()) {
-        target.data = Some(canvas.rgba.clone());
+    // An unchanged HUD keeps its texture; a changed one is copied into it.
+    if canvas.render(&draws, &textures)
+        && let Some(mut target) = images.get_mut(image.id())
+    {
+        match target.data.as_mut() {
+            Some(data) if data.len() == canvas.rgba.len() => data.copy_from_slice(&canvas.rgba),
+            _ => target.data = Some(canvas.rgba.clone()),
+        }
     }
 }
 

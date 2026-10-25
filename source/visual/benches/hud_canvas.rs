@@ -80,7 +80,17 @@ fn hud_draws() -> Vec<Draw> {
 }
 
 fn render(c: &mut Criterion) {
-    let draws = hud_draws();
+    // Two frames that differ (the gauge moves one unit), so every render
+    // in `render` draws; `unchanged` repeats one frame.
+    let frames = [hud_draws(), {
+        let mut d = hud_draws();
+        if let Draw::Quads { quads, .. } = &mut d[2] {
+            for q in quads {
+                q.corners.iter_mut().for_each(|c| c[0] += 1.);
+            }
+        }
+        d
+    }];
     let mut group = c.benchmark_group("hud_canvas");
     for scale in [2u32, 4] {
         let size = 128 * scale as usize;
@@ -91,19 +101,20 @@ fn render(c: &mut Criterion) {
             texel_scale: scale as f32,
         }];
         let mut canvas = Canvas::new(scale as f32);
+        let mut n = 0;
         group.bench_with_input(BenchmarkId::new("render", scale), &scale, |b, _| {
-            b.iter(|| canvas.render(black_box(&draws), &textures))
+            b.iter(|| {
+                n += 1;
+                canvas.render(black_box(&frames[n % 2]), &textures)
+            })
         });
-        group.bench_with_input(
-            BenchmarkId::new("render_and_copy", scale),
-            &scale,
-            |b, _| {
-                b.iter(|| {
-                    canvas.render(black_box(&draws), &textures);
-                    black_box(canvas.rgba.clone())
-                })
-            },
-        );
+        group.bench_with_input(BenchmarkId::new("unchanged", scale), &scale, |b, _| {
+            b.iter(|| canvas.render(black_box(&frames[0]), &textures))
+        });
+        let mut texture_data = canvas.rgba.clone();
+        group.bench_with_input(BenchmarkId::new("copy", scale), &scale, |b, _| {
+            b.iter(|| texture_data.copy_from_slice(black_box(&canvas.rgba)))
+        });
     }
     group.finish();
 }
