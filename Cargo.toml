@@ -54,6 +54,19 @@ sha2 = "0.10"
 [workspace.lints.rust]
 unsafe_code = "forbid"
 
+# A release for handing out: cross-crate thin LTO and one codegen unit let
+# the optimizer inline across our crates and Bevy's. Measured on the owner's
+# PC, thin LTO made a full release build 28 min and a one-file rebuild
+# 10 min (2-3 min without), and the frame-rate gain could not be told apart
+# from run-to-run noise, so day-to-day builds keep the plain release profile:
+#   cargo build -p main --bin KH2RW --features skate3 --profile release-lto
+# Panics keep unwinding: Bevy's executor reports a panicking system that
+# way, and a research example catches panics.
+[profile.release-lto]
+inherits = "release"
+lto = "thin"
+codegen-units = 1
+
 # Keep file/line backtraces for our code without emitting full type/variable
 # information for every Bevy instantiation. Tests inherit this profile.
 [profile.dev]
