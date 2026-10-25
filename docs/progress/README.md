@@ -4,7 +4,7 @@ Baseline: Steam app 2552430 build 15194255 candidate - supported profile unquali
 
 | Measure | Accepted / tracked | Percentage |
 |---|---:|---:|
-| Complete functions decompiled and checked | 0 / 227 (inventory incomplete) | Unmeasured |
+| Complete functions decompiled and checked | 0 / 228 (inventory incomplete) | Unmeasured |
 | Required behavior scenarios verified 1:1 | 0 / 9 (inventory incomplete) | Unmeasured |
 | Final roadmap gates accepted | 0 / 32 | 0.00% |
 
@@ -278,6 +278,7 @@ A PASS counts one reviewed unit. All other statuses count zero. Unknown required
 | NATIVE-T224-01 | Boss script effects on tracked handles with commands, liveness and per-object containers - translation, equivalence unproved | PARTIAL | [record](../../docs/tasks/T224-boss-script-effects-tracked.md) |
 | NATIVE-T227-01 | Battle actor bone matrices for bound effects - translation, equivalence unproved | PARTIAL | [record](../../docs/tasks/T227-actor-effect-bones.md) |
 | NATIVE-T228-01 | Effect texture binding, remastered pages, sprite page coordinates, blends, depth-only model draws and the prize heal effect's end - translation, equivalence unproved | PARTIAL | [record](../../docs/tasks/T228-effect-textures-uvs-blends.md) |
+| NATIVE-T229-01 | Effect shading and blends in the PC's gamma space - texel times colour, alpha test, add, alpha, replace and subtract - translation, equivalence unproved | PARTIAL | [record](../../docs/tasks/T229-effect-blending-gamma-space.md) |
 
 Accepted share of the tracked subset: 0.00%. This is not a whole-game percentage.
 

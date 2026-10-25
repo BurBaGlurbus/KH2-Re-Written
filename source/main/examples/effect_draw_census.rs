@@ -67,6 +67,41 @@ fn covered(
 type QuadStats = (usize, [u8; 4], [f32; 2]);
 
 fn run(out: &mut String, pax: &object_effect::Pax, common: Option<&object_effect::Dpd>) {
+    // Each OMD model: header ALPHA and flags, meshes, and vertex extent.
+    for (d, dpd) in pax.dpds.iter().enumerate() {
+        let mut ids: Vec<_> = dpd.models.keys().copied().collect();
+        ids.sort_unstable();
+        for id in ids {
+            let m = &dpd.models[&id];
+            let header = object_effect::omd_header(&dpd.bytes, m.hdr).ok();
+            let meshes = object_effect::omd_meshes(&dpd.bytes, m.hdr).unwrap_or_default();
+            let (mut lo, mut hi) = ([i32::MAX; 3], [i32::MIN; 3]);
+            for i in 0..m.vertex_count {
+                if let Some(v) = dpd.vertex(id, i as u16) {
+                    for k in 0..3 {
+                        lo[k] = lo[k].min(v[k] as i32);
+                        hi[k] = hi[k].max(v[k] as i32);
+                    }
+                }
+            }
+            let kinds: Vec<_> = meshes
+                .iter()
+                .map(|s| {
+                    format!(
+                        "{}:{}",
+                        if s.textured { "tex" } else { "flat" },
+                        s.triangles.len()
+                    )
+                })
+                .collect();
+            let _ = writeln!(
+                out,
+                "  dpd {d} model {id}: header {:?} vertices {} extent {lo:?}..{hi:?} meshes {kinds:?}",
+                header.map(|h| (h.alpha, h.flags)),
+                m.vertex_count
+            );
+        }
+    }
     let view = effect::math::IDENTITY;
     let mut rng = effect::Rng::default();
     for element in &pax.elements {
@@ -83,7 +118,7 @@ fn run(out: &mut String, pax: &object_effect::Pax, common: Option<&object_effect
         };
         let mut quads: BTreeMap<(u8, u64, String), QuadStats> = BTreeMap::new();
         let mut tris: BTreeMap<u8, usize> = BTreeMap::new();
-        let mut models: BTreeMap<(i16, Option<u16>), usize> = BTreeMap::new();
+        let mut models: BTreeMap<(i16, Option<u16>, bool), usize> = BTreeMap::new();
         let mut frames = 0;
         let mut max_size = 0f32;
         for _ in 0..1200 {
@@ -109,7 +144,7 @@ fn run(out: &mut String, pax: &object_effect::Pax, common: Option<&object_effect
                 *tris.entry(t.blend).or_default() += 1;
             }
             for m in &instance.model_draws {
-                *models.entry((m.model, m.mode)).or_default() += 1;
+                *models.entry((m.model, m.mode, m.depth_only)).or_default() += 1;
             }
             if instance.finished() {
                 break;
@@ -153,7 +188,7 @@ fn run(out: &mut String, pax: &object_effect::Pax, common: Option<&object_effect
         for (blend, n) in tris {
             let _ = writeln!(out, "    triangles blend {blend:#04x} x{n}");
         }
-        for ((model, mode), n) in models {
+        for ((model, mode, depth_only), n) in models {
             let alpha = dpd
                 .models
                 .get(&model)
@@ -161,7 +196,7 @@ fn run(out: &mut String, pax: &object_effect::Pax, common: Option<&object_effect
                 .map(|h| (h.alpha, h.flags));
             let _ = writeln!(
                 out,
-                "    model {model} mode {mode:?} header (alpha, flags) {alpha:?} x{n}"
+                "    model {model} mode {mode:?} depth_only {depth_only} header (alpha, flags) {alpha:?} x{n}"
             );
             if let Some(m) = dpd.models.get(&model)
                 && let Ok(meshes) = object_effect::omd_meshes(&dpd.bytes, m.hdr)
@@ -292,6 +327,26 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 /// PS2 texture alpha (decoded, 0..255) against its page's HD alpha over the
 /// texture's own area, when the page is stored at 1:1.
 pub fn alpha_report(dpd: &object_effect::Dpd) -> String {
+    // KH2_DUMP_PAGES=<private dir>: each remastered page as a PNG (game
+    // pixels; keep the folder outside the repository).
+    if let Some(dir) = std::env::var_os("KH2_DUMP_PAGES") {
+        for (i, t) in dpd.textures.iter().enumerate() {
+            if let Some(hd) = &t.hd {
+                let path = std::path::Path::new(&dir).join(format!(
+                    "{}-{:x}-{i}.png",
+                    dpd.bytes.len(),
+                    t.data_offset
+                ));
+                let _ = image::save_buffer(
+                    path,
+                    &hd.rgba,
+                    hd.width,
+                    hd.height,
+                    image::ExtendedColorType::Rgba8,
+                );
+            }
+        }
+    }
     let mut out = String::new();
     for (i, t) in dpd.textures.iter().enumerate() {
         let Some(hd) = &t.hd else { continue };

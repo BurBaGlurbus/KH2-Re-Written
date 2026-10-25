@@ -329,6 +329,7 @@ fn setup(
         Tonemapping::None,
         DebandDither::Disabled,
         NoIndirectDrawing,
+        visual::effect_draw::scene_compositing(),
         EventCamera,
     ));
 }
@@ -1016,6 +1017,7 @@ fn run(args: Vec<PathBuf>) -> Result<AppExit, Box<dyn std::error::Error>> {
         ..default()
     }))
     .add_plugins(FogPlugin)
+    .add_plugins(visual::effect_draw::EffectPlugin)
     .add_plugins(Ui2dPlugin {
         order: 0,
         overlay: false,

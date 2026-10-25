@@ -5969,6 +5969,7 @@ fn setup(
             Tonemapping::None,
             DebandDither::Disabled,
             NoIndirectDrawing,
+            visual::effect_draw::scene_compositing(),
             SnapshotCamera,
         ));
         compose.snapshot_sheet = Some(frame.add_image(snapshot, [1280, 720], true));
@@ -6038,6 +6039,8 @@ fn setup(
         Tonemapping::None,
         DebandDither::Disabled,
         NoIndirectDrawing,
+        // Blends in the PC's gamma space (the effects, T229).
+        visual::effect_draw::scene_compositing(),
     ));
     // The Drive change's afterimage (drivefx-02 §3): a feedback pass over
     // the scene, idle until a change turns it on.
@@ -13021,7 +13024,10 @@ fn run(mut args: Vec<PathBuf>) -> Result<AppExit, Box<dyn std::error::Error>> {
     } else if save_point_tour {
         reaction_command::SAVE_TOUR_CAPTURES.to_vec()
     } else if magic_tour {
-        magic_tour::captures(magic_shift)
+        // `--capture-at` replaces the tour's own shots (frame-by-frame checks).
+        capture_at
+            .clone()
+            .unwrap_or_else(|| magic_tour::captures(magic_shift))
     } else if prize_tour {
         prize_room::CAPTURES.to_vec()
     } else if growth_tour {
@@ -13766,6 +13772,7 @@ fn run(mut args: Vec<PathBuf>) -> Result<AppExit, Box<dyn std::error::Error>> {
             ..default()
         }))
         .add_plugins(FogPlugin)
+        .add_plugins(visual::effect_draw::EffectPlugin)
         .add_plugins(Ui2dPlugin {
             order: 0,
             overlay: false,

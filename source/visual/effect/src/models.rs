@@ -135,8 +135,9 @@ pub(crate) fn draw(p: &Program, cursor: usize, part: &mut Part, ctx: &mut Ctx) {
             let u0 = use_val(ctx, p, 0);
             let b = (byte(ctx, cursor + 0xc) != 0).then(|| read_matrix(part, use_val(ctx, p, 2)));
             // Key byte +0xd: a depth-only draw (FUN_1404c8660 → descriptor
-            // +0x80, FUN_1404dc760).
-            let depth_only = byte(ctx, cursor + 0xd) != 0;
+            // +0x80, FUN_1404dc760), which FUN_1404dc760 only honours on the
+            // direct path, descriptor flag 4 (key byte +8 bit 1).
+            let depth_only = byte(ctx, cursor + 0xd) != 0 && byte(ctx, cursor + 8) & 2 != 0;
             let n = ctx.model_draws.len();
             push_draw(ctx, part, word(ctx, cursor + 4), u0, b, [0, 0], None);
             if let Some(d) = ctx.model_draws.get_mut(n) {

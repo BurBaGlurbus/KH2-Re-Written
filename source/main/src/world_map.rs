@@ -743,6 +743,7 @@ fn setup(
         Tonemapping::None,
         DebandDither::Disabled,
         NoIndirectDrawing,
+        visual::effect_draw::scene_compositing(),
         MapCamera,
         RoomPart,
     ));
@@ -2546,7 +2547,7 @@ fn present_effects(
     mut fx: ResMut<effects::Effects>,
     maps: Query<Entity, With<MapRoot>>,
     mut meshes: ResMut<Assets<Mesh>>,
-    mut materials: ResMut<Assets<StandardMaterial>>,
+    mut materials: ResMut<Assets<visual::effect_draw::EffectMaterial>>,
     mut images: ResMut<Assets<Image>>,
 ) {
     effects::present(
@@ -3473,6 +3474,7 @@ fn run(args: Vec<PathBuf>) -> Result<AppExit> {
             ..default()
         }))
         .add_plugins(FogPlugin)
+        .add_plugins(visual::effect_draw::EffectPlugin)
         .add_plugins(Ui2dPlugin {
             order: 1,
             overlay: true,

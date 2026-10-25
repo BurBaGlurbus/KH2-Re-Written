@@ -102,9 +102,10 @@ pub struct ModelDraw {
     /// key +0x20. `None` = the model's own. FUN_1404b6860 takes its low
     /// byte as the GS ALPHA register and its high byte as FIX.
     pub mode: Option<u16>,
-    /// pppDrawMdl3's key byte +0xd (descriptor +0x80): FUN_1404dc760 draws
-    /// the model with GS TEST 0x72001 (alpha test NEVER, fail = Z-buffer
-    /// only), so it writes depth and no colour.
+    /// pppDrawMdl3's key byte +0xd (descriptor +0x80) on a direct draw (key
+    /// byte +8 bit 1, descriptor flag 4): FUN_1404dc760 draws the model with
+    /// GS TEST 0x72001 (alpha test NEVER, fail = Z-buffer only), so it
+    /// writes depth and no colour.
     pub depth_only: bool,
 }
 
