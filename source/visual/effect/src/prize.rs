@@ -133,25 +133,13 @@ impl Prize {
             [0., 0., s, 0.],
             [centre[0], centre[1], centre[2], 1.],
         ];
-        let mut quads = sprite_quads(
+        sprite_quads(
             &dpd.bytes,
             g.anim,
             frame,
             &m,
             [g.colour[0], g.colour[1], g.colour[2], alpha],
-        );
-        // The prize sprites' S and T are 12-bit fractions of the whole
-        // texture (4096 = 1.0) [I: read off the installed atlases, where
-        // every sprite then lands on its own image]; `sprite_quads` scales
-        // them as the other shapes' (S / 16, T / 8) texels.
-        for q in &mut quads {
-            let (w, h) = (1 << ((q.tex0 >> 26) & 0xf), 1 << ((q.tex0 >> 30) & 0xf));
-            for uv in &mut q.uv {
-                uv[0] *= w as f32 / 256.;
-                uv[1] *= h as f32 / 512.;
-            }
-        }
-        quads
+        )
     }
 }
 

@@ -3375,10 +3375,7 @@ fn load(
     let (base_pax, texcommon, prize_pax) = match data::path_lookup::Library::open(source) {
         Ok(mut library) => (
             drive_room::object_pax(&mut library, &config.player_object_name),
-            library
-                .read("effect/texcommon.dpd")
-                .ok()
-                .and_then(|b| object_effect::read_dpd(&b).ok()),
+            object_effect::read_dpd_file(&mut library, "effect/texcommon.dpd").ok(),
             drive_room::file_pax(&mut library, "obj/PRIZE.mdlx"),
         ),
         Err(_) => (None, None, None),

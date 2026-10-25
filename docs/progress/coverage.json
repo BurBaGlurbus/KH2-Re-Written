@@ -1725,6 +1725,14 @@
           ]
         },
         {
+          "id": "NATIVE-T228-01",
+          "label": "Effect texture binding, remastered pages, sprite page coordinates, blends, depth-only model draws and the prize heal effect's end - translation, equivalence unproved",
+          "status": "PARTIAL",
+          "evidence": [
+            "docs/tasks/T228-effect-textures-uvs-blends.md"
+          ]
+        },
+        {
           "id": "NATIVE-T211-01",
           "label": "Reaction command search over the held command, record 1, partner, shapes, attacks and auto offers - translation, equivalence unproved",
           "status": "PARTIAL",

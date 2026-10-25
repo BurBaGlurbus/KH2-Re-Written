@@ -807,17 +807,25 @@ pub(crate) fn sprite_quads(
     let tex0 = u32_at(b, frame + 0x10).unwrap_or(0) as u64
         | (u32_at(b, frame + 0x14).unwrap_or(0) as u64) << 32;
     let tbp = (tex0 & 0x3fff) as u16;
+    let page = [
+        (1u32 << ((tex0 >> 26) & 0xf).min(10)) as f32,
+        (1u32 << ((tex0 >> 30) & 0xf).min(10)) as f32,
+    ];
     for s in sprites {
         let corners = s.corners.map(|[x, y]| {
             let v = math::apply(m, [x as f32 / 16., y as f32 / 16., 0., 1.]);
             [v[0], v[1], v[2]]
         });
+        // S and T are 12-bit fractions of the TEX0 page (4096 = its whole
+        // width or height): FUN_1404ad7b0 hands them on raw and the PC's
+        // texture is the whole page.
         let [su, tv, w, h] = s.uv.map(|x| x as f32);
+        let (pw, ph) = (page[0] / 4096., page[1] / 4096.);
         let uv = [
-            [su / 16., tv / 8.],
-            [(su + w) / 16., tv / 8.],
-            [(su + w) / 16., (tv + h) / 8.],
-            [su / 16., (tv + h) / 8.],
+            [su * pw, tv * ph],
+            [(su + w) * pw, tv * ph],
+            [(su + w) * pw, (tv + h) * ph],
+            [su * pw, (tv + h) * ph],
         ];
         let colour = std::array::from_fn(|i| s.colour[i] as f32 / 128. * packet[i]);
         out.push(Quad {

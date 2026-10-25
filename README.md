@@ -23,7 +23,7 @@ For scope and progress, see the [fidelity contract](docs/fidelity-contract.md), 
 
 | Measure | Accepted / tracked | Percentage |
 |---|---:|---:|
-| Complete functions decompiled and checked | 0 / 226 (inventory incomplete) | Unmeasured |
+| Complete functions decompiled and checked | 0 / 227 (inventory incomplete) | Unmeasured |
 | Required behavior scenarios verified 1:1 | 0 / 9 (inventory incomplete) | Unmeasured |
 | Final roadmap gates accepted | 0 / 32 | 0.00% |
 

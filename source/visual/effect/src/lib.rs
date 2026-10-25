@@ -67,7 +67,7 @@ impl Rng {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Quad {
     pub corners: [[f32; 3]; 4],
-    /// Texel coordinates (u = S/16, v = T/8 in the effect atlas).
+    /// Texel coordinates in the TEX0 page (2^TW × 2^TH texels).
     pub uv: [[f32; 2]; 4],
     /// Sprite colour Ã— part colour, 1.0 = PS2 0x80.
     pub colour: [f32; 4],
@@ -99,8 +99,13 @@ pub struct ModelDraw {
     pub scroll: [i32; 2],
     /// The draw-mode word a program hands FUN_1404dc760 in place of the
     /// model's own (header +0x16): pppDrawMdlSemi3's key +8, pppDrawMdlLoopZ's
-    /// key +0x20. `None` = the model's own. Its bits are not decoded.
+    /// key +0x20. `None` = the model's own. FUN_1404b6860 takes its low
+    /// byte as the GS ALPHA register and its high byte as FIX.
     pub mode: Option<u16>,
+    /// pppDrawMdl3's key byte +0xd (descriptor +0x80): FUN_1404dc760 draws
+    /// the model with GS TEST 0x72001 (alpha test NEVER, fail = Z-buffer
+    /// only), so it writes depth and no colour.
+    pub depth_only: bool,
 }
 
 /// One untextured gouraud triangle (pppKeTh's GS fans and strips, as
@@ -329,6 +334,12 @@ impl Instance {
     /// The DPD this instance reads its models, shapes and textures from.
     pub fn dpd(&self) -> &Arc<Dpd> {
         &self.dpd
+    }
+
+    /// The PDATA header's texture mask (+0xb0): bit n = DPD texture n is
+    /// registered for this effect's draws (FUN_1402c2ae0).
+    pub fn use_texture(&self) -> [u8; 16] {
+        self.dpd.pdata[self.pdata].use_texture
     }
 
     /// The draw layer pppRyjMngFlag set: odd values draw behind the

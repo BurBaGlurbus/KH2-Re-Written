@@ -4,6 +4,10 @@
 use super::*;
 use player::enemy_prizes::{self, Orb};
 
+/// The owner the prize heal effect (system element 6) runs under, so its
+/// release ends only it.
+pub const HEAL_OWNER: u8 = 0xf7;
+
 /// One line of the unattended log.
 pub fn log_event(log: &mut Option<std::fs::File>, record: serde_json::Value) {
     if let Some(file) = log.as_mut() {
@@ -109,6 +113,7 @@ pub fn tick(game: &mut Game, tick: u64) {
         drive,
         sound_queue,
         fx_queue,
+        fx_release,
         items,
         ..
     } = game;
@@ -170,7 +175,16 @@ pub fn tick(game: &mut Game, tick: u64) {
             collected.push(i);
         }
     }
-    rt.heal_ticks = (rt.heal_ticks - 1.).max(0.);
+    // FUN_1403d4cc0: the heal effect's time runs down every frame; at zero
+    // its handle is released (FUN_1402be8f0, the looping element drains)
+    // and forgotten.
+    if rt.heal_ticks > 0. {
+        rt.heal_ticks -= 1.;
+        if rt.heal_ticks <= 0. {
+            rt.heal_ticks = 0.;
+            fx_release.push(HEAL_OWNER);
+        }
+    }
     for i in collected.into_iter().rev() {
         let orb = rt.orbs.remove(i);
         let e = enemy_prizes::effect(orb.kind);
@@ -186,7 +200,7 @@ pub fn tick(game: &mut Game, tick: u64) {
                     req: super::drive_fx::FxRequest {
                         pax,
                         id: 6,
-                        owner: 0xff,
+                        owner: HEAL_OWNER,
                     },
                     anchor: super::drive_fx::Anchor::Sora,
                 });

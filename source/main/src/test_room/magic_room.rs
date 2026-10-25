@@ -106,10 +106,8 @@ pub fn load_effects(source: &ProbeSource, src: &mut MagicSource) {
         eprintln!("Spell effects unavailable: the installation's file library did not open");
         return;
     };
-    src.texcommon = library
-        .read("effect/texcommon.dpd")
+    src.texcommon = object_effect::read_dpd_file(&mut library, "effect/texcommon.dpd")
         .ok()
-        .and_then(|b| object_effect::read_dpd(&b).ok())
         .map(Arc::new);
     let files: Vec<String> = src
         .records
@@ -121,19 +119,7 @@ pub fn load_effects(source: &ProbeSource, src: &mut MagicSource) {
         if src.paxes.contains_key(&file) {
             continue;
         }
-        let pax = library
-            .read(&file)
-            .ok()
-            .and_then(|bytes| {
-                let table = bar::read_bar(&bytes).ok()?;
-                let e = table
-                    .entries
-                    .iter()
-                    .find(|e| e.entry_type == 18 && e.size > 0)?;
-                let pax = bytes.get(e.offset as usize..e.offset as usize + e.size as usize)?;
-                object_effect::read_pax(pax).ok()
-            })
-            .map(Arc::new);
+        let pax = object_effect::read_file_pax(&mut library, &file).map(Arc::new);
         match pax {
             Some(p) => {
                 src.paxes.insert(file, p);

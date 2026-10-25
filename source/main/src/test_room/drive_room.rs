@@ -114,14 +114,7 @@ pub fn object_pax(library: &mut Library, name: &str) -> Option<data::object_effe
 
 /// The first PAX of an installed BAR file.
 pub fn file_pax(library: &mut Library, path: &str) -> Option<data::object_effect::Pax> {
-    let bytes = library.read(path).ok()?;
-    let table = data::bar::read_bar(&bytes).ok()?;
-    let e = table
-        .entries
-        .iter()
-        .find(|e| e.entry_type == 18 && e.size > 0)?;
-    let pax = bytes.get(e.offset as usize..e.offset as usize + e.size as usize)?;
-    data::object_effect::read_pax(pax).ok()
+    data::object_effect::read_file_pax(library, path)
 }
 
 fn u16_at(b: &[u8], at: usize) -> Option<u16> {

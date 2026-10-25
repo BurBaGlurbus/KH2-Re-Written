@@ -7,13 +7,14 @@
 //! start.
 //!
 //! The drawing follows the event player's effect presenter
-//! (`cutscene/fx.rs`): per-DPD textures by TEX0 (the element's own buffers
-//! shadow the resident `effect/texcommon.dpd`), OMD model draws, blend and
-//! layer batches.
+//! (`cutscene/fx.rs`): the PC's texture for each TEX0
+//! ([`visual::effect_draw`]; the element's own textures shadow the
+//! resident `effect/texcommon.dpd`), OMD model draws, blend and layer
+//! batches.
 use super::*;
 use ::effect::{Instance, ModelDraw, Quad, Rng, math::Mat};
-use bevy::image::{ImageAddressMode, ImageFilterMode, ImageSamplerDescriptor};
 use data::object_effect::{Dpd, OmdHeader, OmdMesh, Pax};
+use visual::effect_draw::{Blend, TexKey, model_alpha, page_image};
 
 /// A start request: the PAX, the element id, and whether it binds to Sora.
 pub struct FxRequest {
@@ -71,29 +72,9 @@ pub struct Placed {
     pub anchor: Anchor,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
-struct TexKey {
-    dpd: usize,
-    tbp: u16,
-    cbp: u16,
-    tw: u8,
-    th: u8,
-}
-
-impl TexKey {
-    fn new(dpd: &Arc<Dpd>, tex0: u64) -> Self {
-        TexKey {
-            dpd: Arc::as_ptr(dpd) as usize,
-            tbp: (tex0 & 0x3fff) as u16,
-            cbp: ((tex0 >> 37) & 0x3fff) as u16,
-            tw: ((tex0 >> 26) & 0xf) as u8,
-            th: ((tex0 >> 30) & 0xf) as u8,
-        }
-    }
-    fn size(&self) -> [u32; 2] {
-        [1 << self.tw.min(10), 1 << self.th.min(10)]
-    }
-}
+/// An instance's draws of one kind with its DPD, PDATA texture mask and
+/// layer rank.
+type Drawn<T> = (Arc<Dpd>, [u8; 16], i8, Vec<T>);
 
 type ParsedModel = (OmdHeader, Vec<OmdMesh>);
 
@@ -107,7 +88,7 @@ struct Batch {
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 struct BatchKey {
     texture: Option<TexKey>,
-    additive: bool,
+    blend: Blend,
     repeat: bool,
     layer: i8,
 }
@@ -199,6 +180,10 @@ struct SoraPose<'a> {
     root: Mat4,
     bones: Option<&'a HashMap<usize, Mat4>>,
     slots: [Option<(Mat4, Vec3)>; 2],
+    /// Bone codes 0x4001 / 0x4009 (FUN_1403b50f0): the centres of Sora's
+    /// first type-1 and type-9 collision entries, above his origin.
+    body_lift: f32,
+    heal_lift: f32,
 }
 
 fn sora_pose(game: &Game) -> SoraPose<'_> {
@@ -228,15 +213,26 @@ fn sora_pose(game: &Game) -> SoraPose<'_> {
             slot(&c.weapon2, &c.weapon2_frames),
         ]
     });
-    SoraPose { root, bones, slots }
+    let (body_lift, heal_lift) = game
+        .magic
+        .as_ref()
+        .map_or((85., 105.), |m| (m.src.body_lift, m.src.heal_lift));
+    SoraPose {
+        root,
+        bones,
+        slots,
+        body_lift,
+        heal_lift,
+    }
 }
 
 /// FUN_1402c49d0 for a bound element: the bone's matrix (the bone read
 /// through FUN_1401a7af0 negates its y and z columns) or the object's.
 /// FUN_1403b50f0's codes: 0x4003 / 0x4004 a weapon slot's blade tip,
 /// 0x4005 / 0x4006 its grip, 0x4007 / 0x4008 the blade's middle (slot 0 /
-/// 1); 0x4000, 0x4002 and the shape codes 0x4001 / 0x4009 stay on the
-/// object [I: the shape centres are not posed here].
+/// 1); 0x4001 / 0x4009 the body centre and heal point above the
+/// object (the collision entries' heights; [I] their bones are not posed);
+/// 0x4000 and 0x4002 stay on the object.
 /// A weapon code's matrix: the grip's axes at the tip (0x4003 / 0x4004),
 /// the grip (0x4005 / 0x4006) or halfway along the blade (0x4007 / 0x4008).
 fn slot_matrix(grip: Mat4, tip: Vec3, code: i16) -> Mat4 {
@@ -258,6 +254,8 @@ fn bound_world(pose: &SoraPose, bind: &Bind) -> Mat {
             Some((grip, tip)) => root * slot_matrix(grip, tip, bind.bone) * flip,
             None => root,
         },
+        0x4001 => root * Mat4::from_translation(Vec3::new(0., pose.body_lift, 0.)),
+        0x4009 => root * Mat4::from_translation(Vec3::new(0., pose.heal_lift, 0.)),
         b if !(0..0x4000).contains(&b) => root,
         b => match pose.bones.and_then(|m| m.get(&(b as usize))) {
             Some(m) => root * *m * flip,
@@ -509,8 +507,8 @@ pub fn tick(
     let fx = &mut *fx;
     fx.batches.clear();
     fx.dirty = true;
-    let mut quads: Vec<(Arc<Dpd>, i8, Vec<Quad>)> = Vec::new();
-    let mut draws: Vec<(Arc<Dpd>, i8, Vec<ModelDraw>)> = Vec::new();
+    let mut quads: Vec<Drawn<Quad>> = Vec::new();
+    let mut draws: Vec<Drawn<ModelDraw>> = Vec::new();
     let mut triangles: Vec<(i8, Vec<::effect::Triangle>)> = Vec::new();
     let mut unsupported = Vec::new();
     for r in fx.running.iter_mut() {
@@ -547,11 +545,12 @@ pub fn tick(
         let complete = r.instance.unsupported.is_empty();
         let d = std::mem::take(&mut r.instance.model_draws);
         let layer = layer_rank(r.instance.layer());
+        let mask = r.instance.use_texture();
         if complete && !q.is_empty() {
-            quads.push((r.dpd.clone(), layer, q));
+            quads.push((r.dpd.clone(), mask, layer, q));
         }
         if complete && !d.is_empty() {
-            draws.push((r.dpd.clone(), layer, d));
+            draws.push((r.dpd.clone(), mask, layer, d));
         }
         let t = std::mem::take(&mut r.instance.triangles);
         if complete && !t.is_empty() {
@@ -582,7 +581,7 @@ pub fn tick(
             list.extend(prize.quads(dpd, orb.kind, frame, [v[0], v[1], v[2]], 0x80));
         }
         if !list.is_empty() {
-            quads.push((dpd.clone(), 0, list));
+            quads.push((dpd.clone(), [0xff; 16], 0, list));
         }
     }
     // A limit's shot pool (Trinity Limit: FUN_140541a00 on object 0x5c3,
@@ -604,7 +603,7 @@ pub fn tick(
             list.extend(prize.quads(dpd, p.group, frame, [v[0], v[1], v[2]], p.alpha));
         }
         if !list.is_empty() {
-            quads.push((dpd.clone(), 0, list));
+            quads.push((dpd.clone(), [0xff; 16], 0, list));
         }
     }
     for k in unsupported {
@@ -618,15 +617,21 @@ pub fn tick(
         )
         .to_array()
     };
-    for (dpd, layer, list) in quads {
+    for (dpd, mask, layer, list) in quads {
         for q in list {
-            let key = TexKey::new(&dpd, q.tex0);
+            let Some(key) = TexKey::pick(&dpd, &mask, fx.common.as_ref(), q.tex0) else {
+                continue;
+            };
             let size = key.size();
+            let blend = Blend::of(q.blend);
+            if blend.alpha_mode().is_none() {
+                continue;
+            }
             let batch = fx
                 .batches
                 .entry(BatchKey {
                     texture: Some(key),
-                    additive: q.blend == 0x48,
+                    blend,
                     repeat: true,
                     layer,
                 })
@@ -650,14 +655,19 @@ pub fn tick(
         }
     }
     // KeTh lightning: untextured gouraud triangles (GS colour bytes, 0x80 =
-    // 1.0); a subtractive blend (0x42) is drawn as alpha [I].
+    // 1.0); a subtractive blend (0x42) has no standard-material form and is
+    // left out.
     for (layer, list) in triangles {
         for t in list {
+            let blend = Blend::of(t.blend);
+            if blend.alpha_mode().is_none() {
+                continue;
+            }
             let batch = fx
                 .batches
                 .entry(BatchKey {
                     texture: None,
-                    additive: t.blend == 0x48,
+                    blend,
                     repeat: false,
                     layer,
                 })
@@ -675,9 +685,9 @@ pub fn tick(
             }
         }
     }
-    for (dpd, layer, list) in draws {
+    for (dpd, mask, layer, list) in draws {
         for d in list {
-            model(fx, &dpd, &d, layer, &scene);
+            model(fx, &dpd, &mask, &d, layer, &scene);
         }
     }
 }
@@ -686,10 +696,15 @@ pub fn tick(
 fn model(
     fx: &mut DriveFx,
     dpd: &Arc<Dpd>,
+    mask: &[u8; 16],
     d: &ModelDraw,
     layer: i8,
     scene: &impl Fn([f32; 3]) -> [f32; 3],
 ) {
+    // A depth-only draw writes no colour.
+    if d.depth_only {
+        return;
+    }
     let cached = fx
         .models
         .entry((Arc::as_ptr(dpd) as usize, d.model))
@@ -710,12 +725,19 @@ fn model(
         let p = ::effect::math::apply(&d.a, [v[0] as f32, v[1] as f32, v[2] as f32, 1.]);
         Some(scene([p[0], p[1], p[2]]))
     };
-    let additive = header.alpha == 0x48;
+    let blend = Blend::of(model_alpha(header.alpha, d.mode));
+    if blend.alpha_mode().is_none() {
+        return;
+    }
     let repeat = header.flags & 4 != 0;
     let part = d.rgba.map(|c| c as f32 / 128.);
+    let common = fx.common.clone();
     let mut out_batches: Vec<(BatchKey, Batch)> = Vec::new();
     for mesh in meshes {
-        let texture = mesh.textured.then(|| TexKey::new(dpd, mesh.tex0));
+        let texture = mesh
+            .textured
+            .then(|| TexKey::pick(dpd, mask, common.as_ref(), mesh.tex0))
+            .flatten();
         let shift = texture.map_or(4, |t| t.tw as u32 + 4).min(31);
         let mut batch = Batch::default();
         for t in &mesh.triangles {
@@ -746,7 +768,7 @@ fn model(
         out_batches.push((
             BatchKey {
                 texture,
-                additive,
+                blend,
                 repeat,
                 layer,
             },
@@ -765,71 +787,12 @@ fn image(fx: &mut DriveFx, key: TexKey, repeat: bool, images: &mut Assets<Image>
     if let Some(h) = fx.images.get(&key) {
         return h.clone();
     }
-    let [w, h] = key.size();
-    let mut pixels = vec![0u8; (w * h * 4) as usize];
-    let own = fx
+    let image = fx
         .dpds
         .iter()
+        .chain(fx.common.as_ref())
         .find(|d| Arc::as_ptr(d) as usize == key.dpd)
-        .cloned();
-    let mut sources: Vec<&object_effect::DpdTexture> = Vec::new();
-    if let Some(d) = &own {
-        sources.extend(d.textures.iter().filter(|t| t.dbp == key.tbp));
-    }
-    if sources.is_empty()
-        && let Some(c) = &fx.common
-    {
-        sources.extend(c.textures.iter().filter(|t| t.dbp == key.tbp));
-    }
-    let palette = own
-        .iter()
-        .map(|d| d.as_ref())
-        .chain(fx.common.as_deref())
-        .flat_map(|d| d.textures.iter())
-        .find(|t| t.cbp == key.cbp)
-        .map(|t| t.palette.clone());
-    for t in sources {
-        let rgba =
-            object_effect::decode_psmt8(&t.indices, palette.as_deref().unwrap_or(&t.palette));
-        for row in 0..t.height {
-            let y = t.y as u32 + row;
-            if y >= h {
-                break;
-            }
-            for col in 0..t.width {
-                let x = t.x as u32 + col;
-                if x >= w {
-                    break;
-                }
-                let s = ((row * t.width + col) * 4) as usize;
-                let d = ((y * w + x) * 4) as usize;
-                pixels[d..d + 4].copy_from_slice(&rgba[s..s + 4]);
-            }
-        }
-    }
-    let mut image = Image::new(
-        Extent3d {
-            width: w,
-            height: h,
-            depth_or_array_layers: 1,
-        },
-        TextureDimension::D2,
-        pixels,
-        TextureFormat::Rgba8UnormSrgb,
-        RenderAssetUsages::MAIN_WORLD | RenderAssetUsages::RENDER_WORLD,
-    );
-    let mode = if repeat {
-        ImageAddressMode::Repeat
-    } else {
-        ImageAddressMode::ClampToEdge
-    };
-    image.sampler = ImageSampler::Descriptor(ImageSamplerDescriptor {
-        address_mode_u: mode,
-        address_mode_v: mode,
-        mag_filter: ImageFilterMode::Linear,
-        min_filter: ImageFilterMode::Linear,
-        ..default()
-    });
+        .map_or_else(Image::default, |d| page_image(d, key, repeat));
     let handle = images.add(image);
     fx.images.insert(key, handle.clone());
     handle
@@ -869,11 +832,7 @@ pub fn present(
                     unlit: true,
                     cull_mode: None,
                     depth_bias: key.layer as f32 * 500.,
-                    alpha_mode: if key.additive {
-                        AlphaMode::Add
-                    } else {
-                        AlphaMode::Blend
-                    },
+                    alpha_mode: key.blend.alpha_mode().unwrap_or(AlphaMode::Blend),
                     ..default()
                 });
                 fx.materials.insert(*key, m.clone());

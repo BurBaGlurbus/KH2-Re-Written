@@ -73,6 +73,9 @@ pub struct Pax {
     pub elements: Vec<Element>,
     pub effects: Vec<DpxEffect>,
     pub dpds: Vec<Arc<Dpd>>,
+    /// Where each DPD starts in the PAX bytes (the PC remaster keys its
+    /// replacement textures by file offset).
+    pub dpd_offsets: Vec<usize>,
 }
 
 impl Pax {
@@ -80,6 +83,19 @@ impl Pax {
     /// (FUN_1402c6730).
     pub fn by_category(&self, mask: u64) -> Option<&Element> {
         self.elements.iter().find(|e| e.category & mask == mask)
+    }
+
+    /// [`Dpd::attach_hd`] for every DPD of a PAX that starts at `base` in
+    /// its file (before the DPDs are shared).
+    pub fn attach_hd(&mut self, base: usize, pages: &HashMap<u32, Arc<HdPage>>) {
+        if pages.is_empty() {
+            return;
+        }
+        for (dpd, &at) in self.dpds.iter_mut().zip(&self.dpd_offsets) {
+            if let Some(d) = Arc::get_mut(dpd) {
+                d.attach_hd(base + at, pages);
+            }
+        }
     }
 
     /// First element with `id` (FUN_1402c6b30).
@@ -174,6 +190,7 @@ pub fn read_pax(bytes: &[u8]) -> io::Result<Pax> {
         });
     }
     let mut dpds = Vec::with_capacity(dpd_count);
+    let dpd_offsets = offsets.iter().map(|&o| dpx + o).collect();
     for (j, &start) in offsets.iter().enumerate() {
         let end = offsets.get(j + 1).copied().unwrap_or(x.len());
         let slice = x
@@ -186,6 +203,7 @@ pub fn read_pax(bytes: &[u8]) -> io::Result<Pax> {
         elements,
         effects,
         dpds,
+        dpd_offsets,
     })
 }
 
@@ -221,6 +239,9 @@ pub struct ParticleData {
     pub offset: [f32; 4],
     pub angle: [i32; 4],
     pub scale: [f32; 4],
+    /// Header +0xb0: bit n set = the effect draws with DPD texture n
+    /// (FUN_1402c2ae0 registers only those for its draws).
+    pub use_texture: [u8; 16],
     pub use_shape: [u8; 16],
     pub character_scale: u8,
     /// Instance end time (VM frames × 0x1000) and loop flag (block +0/+4).
@@ -261,6 +282,47 @@ pub struct DpdTexture {
     /// The TEX0 register a mesh uses to select this texture (low dword
     /// at header +0x10, high dword at +0x14).
     pub tex0: u64,
+    /// Where the indices start in the DPD bytes.
+    pub data_offset: usize,
+    /// The PC remaster's page for this texture, when its file has one
+    /// ([`Dpd::attach_hd`]).
+    pub hd: Option<Arc<HdPage>>,
+}
+
+/// A PC remaster texture page (BC3 / BGRA DDS stored after the file's
+/// original bytes): straight RGBA8 covering the texture's whole TEX0 page
+/// (2^TW × 2^TH texels), usually at twice the PS2 resolution.
+#[derive(Debug, PartialEq, Eq)]
+pub struct HdPage {
+    pub width: u32,
+    pub height: u32,
+    pub rgba: Vec<u8>,
+}
+
+/// A file's remaster pages by the file offset their record names (the low
+/// 29 bits of the record's original-asset field; FUN_14012aa20 looks a page
+/// up by the offset of the pointer it is handed). Records that do not
+/// decode as images are left out.
+pub fn hd_pages(
+    replacements: &[crate::replacement_payload::ReplacementSample],
+) -> HashMap<u32, Arc<HdPage>> {
+    replacements
+        .iter()
+        .filter_map(|r| {
+            let m = &r.metadata;
+            let d =
+                crate::hd_image::decode_hd_image(&r.bytes, m.declared_decompressed_length as usize)
+                    .ok()?;
+            Some((
+                m.original_asset_offset as u32 & 0x1fff_ffff,
+                Arc::new(HdPage {
+                    width: d.width,
+                    height: d.height,
+                    rgba: d.pixels_rgba,
+                }),
+            ))
+        })
+        .collect()
 }
 
 /// An OMD model of a DPD: header position, vertex array and count.
@@ -285,6 +347,33 @@ pub struct Dpd {
 }
 
 impl Dpd {
+    /// FUN_1404aecd0: the PC's texture for each DPD texture. Textures that
+    /// share a buffer pointer form a group in list order; the group's page
+    /// is keyed by its first texture's data offset, and member `r` (from 0)
+    /// asks for its own page at that offset + r + 1, keeping the group's
+    /// page when there is none. `base` is where the DPD starts in its file.
+    pub fn attach_hd(&mut self, base: usize, pages: &HashMap<u32, Arc<HdPage>>) {
+        let mut seen: HashMap<u16, (usize, usize)> = HashMap::new();
+        for i in 0..self.textures.len() {
+            let dbp = self.textures[i].dbp;
+            let (first, rank) = match seen.get_mut(&dbp) {
+                Some((first, n)) => {
+                    *n += 1;
+                    (*first, *n)
+                }
+                None => {
+                    seen.insert(dbp, (i, 0));
+                    (i, 0)
+                }
+            };
+            let key = (base + self.textures[first].data_offset) as u32;
+            self.textures[i].hd = pages
+                .get(&(key + rank as u32 + 1))
+                .or_else(|| pages.get(&key))
+                .cloned();
+        }
+    }
+
     pub fn vertex(&self, model: i16, index: u16) -> Option<[i16; 3]> {
         let base = *self.model_vertices.get(&model)? + index as usize * 6;
         Some([
@@ -390,6 +479,8 @@ fn read_pdata(b: &[u8], p: usize) -> io::Result<ParticleData> {
     let block = p + 0x110;
     let mut use_shape = [0; 16];
     use_shape.copy_from_slice(b.get(p + 0xc0..p + 0xd0).ok_or_else(|| invalid("PDATA"))?);
+    let mut use_texture = [0; 16];
+    use_texture.copy_from_slice(b.get(p + 0xb0..p + 0xc0).ok_or_else(|| invalid("PDATA"))?);
     // The entry list (block +0xc → count, then block-relative offsets) is
     // the group table FUN_1404b1600 sizes from.
     let (offsets, _) = offset_list(b, block + u32_at(b, block + 0xc)? as usize)?;
@@ -432,12 +523,54 @@ fn read_pdata(b: &[u8], p: usize) -> io::Result<ParticleData> {
             i32_at(b, p + 0x9c)?,
         ],
         scale: v4f(p + 0xa0)?,
+        use_texture,
         use_shape,
         character_scale: *b.get(p + 0xf9).ok_or_else(|| invalid("PDATA"))?,
         end_time: i32_at(b, block)?,
         looping: u32_at(b, block + 4)? & 1 != 0,
         entries,
     })
+}
+
+/// The first PAX (BAR type 18) of an installed file, with the file's
+/// remaster pages attached ([`Pax::attach_hd`]).
+pub fn read_file_pax(library: &mut crate::path_lookup::Library, name: &str) -> Option<Pax> {
+    let bytes = library.read(name).ok()?;
+    let table = crate::bar::read_bar(&bytes).ok()?;
+    let e = table
+        .entries
+        .iter()
+        .find(|e| e.entry_type == 18 && e.size > 0)?;
+    let at = e.offset as usize;
+    let mut pax = read_pax(bytes.get(at..at + e.size as usize)?).ok()?;
+    if let Ok(r) = library.read_replacements(name) {
+        pax.attach_hd(at, &hd_pages(&r));
+    }
+    Some(pax)
+}
+
+/// A PAX file of its own (`event/effect/*.pax`) with its remaster pages.
+pub fn read_pax_file(library: &mut crate::path_lookup::Library, name: &str) -> io::Result<Pax> {
+    let bytes = library
+        .read(name)
+        .map_err(|e| io::Error::new(io::ErrorKind::NotFound, e.to_string()))?;
+    let mut pax = read_pax(&bytes)?;
+    if let Ok(r) = library.read_replacements(name) {
+        pax.attach_hd(0, &hd_pages(&r));
+    }
+    Ok(pax)
+}
+
+/// A DPD file of its own (`effect/texcommon.dpd`) with its remaster pages.
+pub fn read_dpd_file(library: &mut crate::path_lookup::Library, name: &str) -> io::Result<Dpd> {
+    let bytes = library
+        .read(name)
+        .map_err(|e| io::Error::new(io::ErrorKind::NotFound, e.to_string()))?;
+    let mut dpd = read_dpd(&bytes)?;
+    if let Ok(r) = library.read_replacements(name) {
+        dpd.attach_hd(0, &hd_pages(&r));
+    }
+    Ok(dpd)
 }
 
 /// "TEX@" PSMT8 texture: 0x20-byte header, w·h indices, then a 256-colour
@@ -467,6 +600,8 @@ fn read_texture(b: &[u8], t: usize) -> io::Result<DpdTexture> {
         x: i16_at(b, t + 8)? as u16,
         y: i16_at(b, t + 10)? as u16,
         tex0: u32_at(b, t + 0x10)? as u64 | (u32_at(b, t + 0x14)? as u64) << 32,
+        data_offset: t + 0x20,
+        hd: None,
     })
 }
 
@@ -667,9 +802,68 @@ pub fn omd_meshes(b: &[u8], hdr: usize) -> io::Result<Vec<OmdMesh>> {
     Ok(meshes)
 }
 
+/// A synthetic texture with a buffer pointer and data offset (tests).
+#[cfg(test)]
+pub(crate) fn test_texture(dbp: u16, data_offset: usize) -> DpdTexture {
+    DpdTexture {
+        width: 1,
+        height: 1,
+        rgba: vec![0; 4],
+        indices: vec![0],
+        palette: vec![0; 1024],
+        dbp,
+        cbp: 0,
+        dbw: 1,
+        x: 0,
+        y: 0,
+        tex0: dbp as u64,
+        data_offset,
+        hd: None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn remaster_pages_follow_the_buffer_groups() {
+        // Textures 0, 2 and 3 share buffer 0x3000; 1 is alone at 0x3020.
+        let mut dpd = Dpd {
+            bytes: Vec::new(),
+            pdata: Vec::new(),
+            shapes: HashMap::new(),
+            model_vertices: HashMap::new(),
+            models: HashMap::new(),
+            vsf: HashMap::new(),
+            textures: vec![
+                test_texture(0x3000, 0x100),
+                test_texture(0x3020, 0x200),
+                test_texture(0x3000, 0x300),
+                test_texture(0x3000, 0x400),
+            ],
+        };
+        let page = |w: u32| {
+            Arc::new(HdPage {
+                width: w,
+                height: 1,
+                rgba: vec![0; 4 * w as usize],
+            })
+        };
+        // The file holds the DPD at 0x40: the group's own page, a page for
+        // its second member, and texture 1's page.
+        let pages: HashMap<u32, Arc<HdPage>> =
+            [(0x140, page(1)), (0x140 + 2, page(2)), (0x240, page(3))]
+                .into_iter()
+                .collect();
+        dpd.attach_hd(0x40, &pages);
+        let widths: Vec<_> = dpd
+            .textures
+            .iter()
+            .map(|t| t.hd.as_ref().map(|p| p.width))
+            .collect();
+        assert_eq!(widths, [Some(1), Some(3), Some(2), Some(1)]);
+    }
 
     #[test]
     fn omd_quad_splits_as_the_exe_slot_order() {
