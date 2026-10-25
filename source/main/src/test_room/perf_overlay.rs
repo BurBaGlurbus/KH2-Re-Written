@@ -1,6 +1,8 @@
 //! The debug menu's performance overlay: a few lines at the top left with
 //! the frame rate, frame times, the GPU and the entity count (and, in
-//! `perf-diag` builds, process memory, CPU use and GPU pass times). It is
+//! `perf-diag` builds, process memory and CPU use). The GPU's own frame time
+//! would need Bevy's render diagnostics, which time every pass of every
+//! frame, so it is not shown. It is
 //! drawn by the 2D layer over everything, so the HUD canvas never changes
 //! for it, and it costs a flag test per frame while it is off.
 use super::*;
@@ -104,17 +106,6 @@ pub(super) fn sample(
         lines.push(format!("GPU {} - {:?}", a.name, a.backend));
     }
     let store = store.as_deref();
-    // Bevy's render diagnostics (perf-diag builds): the passes' GPU times.
-    if let Some(store) = store {
-        let gpu: f64 = store
-            .iter()
-            .filter(|d| d.path().as_str().ends_with("/elapsed_gpu"))
-            .filter_map(|d| d.value())
-            .sum();
-        if gpu > 0. {
-            lines.push(format!("GPU passes {gpu:.2} ms"));
-        }
-    }
     let mut last = format!("Entities {}", entities.count_spawned());
     if let Some(mem) = latest(store, "process/mem_usage") {
         last += &format!("   Memory {mem:.2} GiB");
