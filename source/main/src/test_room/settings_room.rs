@@ -3,6 +3,7 @@
 //! the camp is open. They are kept beside the room's configuration.
 use super::*;
 use bevy::window::{MonitorSelection, PresentMode, VideoModeSelection, WindowMode};
+use visual::frame_limit::FrameLimit;
 use visual::settings::{LANGUAGES, Settings};
 
 /// The KH2 package indexes a language's files may sit in.
@@ -329,10 +330,27 @@ impl SettingsRes {
     }
 }
 
-/// The window, the scene camera's multisampling and the mixer's volumes.
+/// The frame cap while the window is in the background (also minimised).
+const UNFOCUSED_FPS: u16 = 30;
+
+/// The frame cap for `s`. In the background the app runs at most
+/// `UNFOCUSED_FPS`, except in unattended runs, which must not depend on
+/// focus.
+fn frame_limit(s: &Settings, focused: bool, unattended: bool) -> Option<u16> {
+    let cap = s.frame_limit();
+    if focused || unattended {
+        cap
+    } else {
+        Some(cap.map_or(UNFOCUSED_FPS, |c| c.min(UNFOCUSED_FPS)))
+    }
+}
+
+/// The window, the frame rate, the scene camera's multisampling and the
+/// mixer's volumes.
 pub(super) fn apply_settings(
     mut settings: ResMut<SettingsRes>,
     mut windows: Query<&mut Window>,
+    mut limit: ResMut<FrameLimit>,
     mut cameras: Query<(&Camera, &mut Msaa), With<Camera3d>>,
     audio: Res<Audio>,
 ) {
@@ -360,6 +378,7 @@ pub(super) fn apply_settings(
             w.present_mode = present;
         }
     }
+    limit.fps = frame_limit(&s, focused, settings.path.is_none());
     // The scene camera (order -2); the menu model and snapshot stay plain.
     for (camera, mut msaa) in &mut cameras {
         let want = if s.anti_aliasing {
@@ -383,4 +402,31 @@ pub(super) fn apply_settings(
         mixer.set_gains(music, effects, &MUSIC_KEYS);
     }
     settings.applied = Some(key);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn frame_caps_follow_settings_and_focus() {
+        let mut s = Settings::default();
+        assert_eq!(frame_limit(&s, true, false), None, "V-Sync paces itself");
+        assert_eq!(frame_limit(&s, false, false), Some(UNFOCUSED_FPS));
+        assert_eq!(
+            frame_limit(&s, false, true),
+            None,
+            "unattended ignores focus"
+        );
+        s.vsync = false;
+        s.frame_cap = 144;
+        assert_eq!(frame_limit(&s, true, false), Some(144));
+        assert_eq!(frame_limit(&s, false, false), Some(UNFOCUSED_FPS));
+        s.frame_cap = 0;
+        assert_eq!(frame_limit(&s, true, true), None, "Unlimited");
+        s.frame_cap = 30;
+        s.custom_frame_cap = true;
+        s.custom_cap = 20;
+        assert_eq!(frame_limit(&s, false, false), Some(20));
+    }
 }

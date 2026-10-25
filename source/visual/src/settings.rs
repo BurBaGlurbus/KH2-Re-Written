@@ -10,6 +10,14 @@ pub const PAGES: [&str; 4] = ["Game", "Graphics", "Sound", "Other"];
 /// Render scale steps, percent of the window's size.
 pub const RENDER_SCALES: [u16; 6] = [50, 75, 100, 125, 150, 200];
 
+/// Frame caps offered with V-Sync off (frames per second).
+pub const FRAME_CAPS: [u16; 7] = [30, 60, 90, 120, 144, 165, 240];
+
+/// The Custom cap's range and step on the Graphics page.
+pub const CUSTOM_CAP_MIN: u16 = 30;
+pub const CUSTOM_CAP_MAX: u16 = 500;
+const CUSTOM_CAP_STEP: u16 = 5;
+
 /// Text languages an install may hold (`msg/<code>/sys.bar`): code and the
 /// name shown. The caller offers the ones the selected source has.
 pub const LANGUAGES: [(&str, &str); 6] = [
@@ -31,6 +39,12 @@ pub struct Settings {
     /// Index into `DISPLAY_MODES`.
     pub display: u8,
     pub vsync: bool,
+    /// With V-Sync off: a `FRAME_CAPS` value, or 0 for no limit.
+    pub frame_cap: u16,
+    /// With V-Sync off: limit to `custom_cap` instead of `frame_cap`.
+    pub custom_frame_cap: bool,
+    /// `CUSTOM_CAP_MIN..=CUSTOM_CAP_MAX` frames per second.
+    pub custom_cap: u16,
     /// Index into `RENDER_SCALES`.
     pub render_scale: u8,
     /// 4x multisampling on the 3D scene.
@@ -55,6 +69,9 @@ impl Default for Settings {
         Self {
             display: 0,
             vsync: true,
+            frame_cap: 0,
+            custom_frame_cap: false,
+            custom_cap: 200,
             render_scale: 2,
             anti_aliasing: false,
             brightness: 5,
@@ -107,6 +124,10 @@ impl Settings {
 
     fn clamped(mut self) -> Self {
         self.display = self.display.min(DISPLAY_MODES.len() as u8 - 1);
+        if !FRAME_CAPS.contains(&self.frame_cap) {
+            self.frame_cap = 0;
+        }
+        self.custom_cap = self.custom_cap.clamp(CUSTOM_CAP_MIN, CUSTOM_CAP_MAX);
         self.render_scale = self.render_scale.min(RENDER_SCALES.len() as u8 - 1);
         self.brightness = self.brightness.clamp(1, 10);
         self.master_volume = self.master_volume.min(10);
@@ -136,9 +157,20 @@ impl Settings {
                     "Play in a window or fill the screen.",
                 ),
                 row(
-                    "V-Sync",
-                    on_off(self.vsync),
-                    "Sync frames to the monitor to stop tearing.",
+                    "Frame Rate",
+                    (frame_rate_choices(), self.frame_rate_choice()),
+                    "V-Sync, no limit, or a frame cap without V-Sync.",
+                ),
+                row(
+                    "Custom Limit",
+                    (
+                        (CUSTOM_CAP_MIN..=CUSTOM_CAP_MAX)
+                            .step_by(CUSTOM_CAP_STEP as usize)
+                            .map(|n| format!("{n} FPS"))
+                            .collect(),
+                        ((self.custom_cap - CUSTOM_CAP_MIN) / CUSTOM_CAP_STEP) as usize,
+                    ),
+                    "The frame cap that Frame Rate Custom uses.",
                 ),
                 row(
                     "Resolution",
@@ -231,10 +263,24 @@ impl Settings {
         };
         match (page, row) {
             (1, 0) => self.display = cycle(self.display as usize, DISPLAY_MODES.len()) as u8,
-            (1, 1) => self.vsync = !self.vsync,
-            (1, 2) => self.render_scale = bump(self.render_scale, 0, RENDER_SCALES.len() as u8 - 1),
-            (1, 3) => self.anti_aliasing = !self.anti_aliasing,
-            (1, 4) => self.brightness = bump(self.brightness, 1, 10),
+            (1, 1) => {
+                let n = frame_rate_choices().len();
+                self.set_frame_rate_choice(cycle(self.frame_rate_choice(), n));
+            }
+            (1, 2) => {
+                // Snapped to the step, so a hand-edited value lines up.
+                let at = (self.custom_cap - CUSTOM_CAP_MIN) / CUSTOM_CAP_STEP;
+                let last = (CUSTOM_CAP_MAX - CUSTOM_CAP_MIN) / CUSTOM_CAP_STEP;
+                let at = if forward {
+                    (at + 1).min(last)
+                } else {
+                    at.saturating_sub(1)
+                };
+                self.custom_cap = CUSTOM_CAP_MIN + at * CUSTOM_CAP_STEP;
+            }
+            (1, 3) => self.render_scale = bump(self.render_scale, 0, RENDER_SCALES.len() as u8 - 1),
+            (1, 4) => self.anti_aliasing = !self.anti_aliasing,
+            (1, 5) => self.brightness = bump(self.brightness, 1, 10),
             (2, 0) => self.master_volume = bump(self.master_volume, 0, 10),
             (2, 1) => self.music_volume = bump(self.music_volume, 0, 10),
             (2, 2) => self.effects_volume = bump(self.effects_volume, 0, 10),
@@ -249,6 +295,43 @@ impl Settings {
             (3, 1) => self.show_hud = !self.show_hud,
             (3, 2) => self.camera_speed = bump(self.camera_speed, 1, 10),
             _ => {}
+        }
+    }
+
+    /// The Frame Rate row's choice: V-Sync, Unlimited, each `FRAME_CAPS`
+    /// value, Custom.
+    fn frame_rate_choice(&self) -> usize {
+        if self.vsync {
+            0
+        } else if self.custom_frame_cap {
+            FRAME_CAPS.len() + 2
+        } else {
+            FRAME_CAPS
+                .iter()
+                .position(|&c| c == self.frame_cap)
+                .map_or(1, |i| i + 2)
+        }
+    }
+
+    fn set_frame_rate_choice(&mut self, choice: usize) {
+        self.vsync = choice == 0;
+        self.custom_frame_cap = choice == FRAME_CAPS.len() + 2;
+        self.frame_cap = choice
+            .checked_sub(2)
+            .and_then(|i| FRAME_CAPS.get(i))
+            .copied()
+            .unwrap_or(0);
+    }
+
+    /// The frame cap to hold, in frames per second (None: V-Sync paces the
+    /// frames, or there is no limit).
+    pub fn frame_limit(&self) -> Option<u16> {
+        if self.vsync {
+            None
+        } else if self.custom_frame_cap {
+            Some(self.custom_cap)
+        } else {
+            (self.frame_cap != 0).then_some(self.frame_cap)
         }
     }
 
@@ -278,6 +361,14 @@ impl Settings {
     }
 }
 
+fn frame_rate_choices() -> Vec<String> {
+    ["V-Sync".to_owned(), "Unlimited".to_owned()]
+        .into_iter()
+        .chain(FRAME_CAPS.iter().map(|c| format!("{c} FPS")))
+        .chain(["Custom".to_owned()])
+        .collect()
+}
+
 fn gain(v: u8) -> f32 {
     let x = v as f32 / 10.;
     x * x
@@ -304,9 +395,10 @@ mod tests {
         let s = Settings::default();
         let g = s.rows(1, &langs());
         assert_eq!(g[0].choices, ["Window", "Borderless", "Fullscreen"]);
-        assert_eq!(g[1].selected, 0);
-        assert_eq!(g[2].choices[g[2].selected], "100%");
-        assert_eq!(g[4].choices[g[4].selected], "5");
+        assert_eq!(g[1].choices[g[1].selected], "V-Sync");
+        assert_eq!(g[2].choices[g[2].selected], "200 FPS");
+        assert_eq!(g[3].choices[g[3].selected], "100%");
+        assert_eq!(g[5].choices[g[5].selected], "5");
         let a = s.rows(2, &langs());
         assert_eq!(a[0].choices[a[0].selected], "10");
         let o = s.rows(3, &langs());
@@ -324,9 +416,9 @@ mod tests {
         s.step(1, 1, true, &l);
         assert!(!s.vsync);
         for _ in 0..20 {
-            s.step(1, 2, true, &l);
+            s.step(1, 3, true, &l);
             s.step(2, 0, true, &l);
-            s.step(1, 4, false, &l);
+            s.step(1, 5, false, &l);
         }
         assert_eq!(s.render_scale, 5);
         assert_eq!(s.master_volume, 10);
@@ -358,5 +450,56 @@ mod tests {
         assert_eq!(s.display, 2);
         assert!(s.vsync);
         assert_eq!(s.language, "us");
+    }
+
+    #[test]
+    fn frame_rate_choices_map_to_limits() {
+        let mut s = Settings::default();
+        let l = langs();
+        assert_eq!(s.frame_limit(), None);
+        s.step(1, 1, true, &l);
+        assert!(!s.vsync);
+        assert_eq!(s.frame_limit(), None, "Unlimited");
+        let mut caps = Vec::new();
+        for _ in 0..FRAME_CAPS.len() + 1 {
+            s.step(1, 1, true, &l);
+            caps.push(s.frame_limit());
+        }
+        assert_eq!(
+            caps,
+            [30, 60, 90, 120, 144, 165, 240, 200].map(Some),
+            "the presets, then Custom at its default 200"
+        );
+        for _ in 0..200 {
+            s.step(1, 2, true, &l);
+        }
+        assert_eq!(s.frame_limit(), Some(CUSTOM_CAP_MAX));
+        for _ in 0..200 {
+            s.step(1, 2, false, &l);
+        }
+        assert_eq!(s.frame_limit(), Some(CUSTOM_CAP_MIN));
+        s.step(1, 1, true, &l);
+        assert!(s.vsync, "wraps back to V-Sync");
+        s.step(1, 1, false, &l);
+        assert_eq!(s.frame_limit(), Some(CUSTOM_CAP_MIN), "and back to Custom");
+    }
+
+    #[test]
+    fn loading_keeps_old_files_and_validates_caps() {
+        let old: Settings = serde_json::from_str(r#"{"vsync":false}"#).unwrap();
+        assert_eq!(
+            old.clamped().frame_limit(),
+            None,
+            "an old file's V-Sync off is Unlimited"
+        );
+        let s: Settings =
+            serde_json::from_str(r#"{"vsync":false,"frame_cap":77,"custom_cap":9000}"#).unwrap();
+        let s = s.clamped();
+        assert_eq!(s.frame_cap, 0);
+        assert_eq!(s.custom_cap, CUSTOM_CAP_MAX);
+        let s: Settings =
+            serde_json::from_str(r#"{"vsync":false,"custom_frame_cap":true,"custom_cap":2}"#)
+                .unwrap();
+        assert_eq!(s.clamped().frame_limit(), Some(CUSTOM_CAP_MIN));
     }
 }

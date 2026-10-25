@@ -12526,7 +12526,7 @@ fn run(mut args: Vec<PathBuf>) -> Result<AppExit, Box<dyn std::error::Error>> {
     }
     let started = Instant::now();
     if args.len() < 3 {
-        return Err("usage: room <Steam-root> <manifest> <test-room-config> [--log new.jsonl] [--frames N] [--autoplay <new-capture-dir> | --ability-tour <new-capture-dir> | --gear-tour <new-capture-dir> | --enemy-tour <new-capture-dir>] [--enemy-audit <new-private-report.json>] [--gamepad] [--show-collision] [--basic-fk]".into());
+        return Err("usage: room <Steam-root> <manifest> <test-room-config> [--log new.jsonl] [--frames N] [--autoplay <new-capture-dir> | --ability-tour <new-capture-dir> | --gear-tour <new-capture-dir> | --enemy-tour <new-capture-dir>] [--enemy-audit <new-private-report.json>] [--gamepad] [--show-collision] [--basic-fk] [--uncapped | --frame-cap N]".into());
     }
     let mut log_path = None;
     let mut limit = None;
@@ -12563,12 +12563,12 @@ fn run(mut args: Vec<PathBuf>) -> Result<AppExit, Box<dyn std::error::Error>> {
     let mut capture_at: Option<Vec<u64>> = None;
     // `--party-styles D:G` (or D,G): the members' battle styles [tour setup].
     let mut party_styles: Vec<u8> = Vec::new();
-    // `--perf <new-dir>`: the per-frame record (perf-diag builds);
-    // `--uncapped`: present without vsync whatever the settings say.
+    // `--perf <new-dir>`: the per-frame record (perf-diag builds).
     #[cfg(feature = "perf-diag")]
     let mut perf_dir: Option<PathBuf> = None;
-    #[cfg(feature = "perf-diag")]
-    let mut uncapped = false;
+    // `--uncapped` / `--frame-cap N`: no V-Sync and no limit, or a cap of N
+    // frames per second, whatever the settings say (frame-rate checks).
+    let mut frame_rate: Option<Option<u16>> = None;
     let mut options = args[3..].iter();
     while let Some(option) = options.next() {
         match option.to_str() {
@@ -12576,8 +12576,15 @@ fn run(mut args: Vec<PathBuf>) -> Result<AppExit, Box<dyn std::error::Error>> {
             Some("--perf") if perf_dir.is_none() => {
                 perf_dir = Some(options.next().cloned().ok_or("perf directory absent")?);
             }
-            #[cfg(feature = "perf-diag")]
-            Some("--uncapped") => uncapped = true,
+            Some("--uncapped") => frame_rate = Some(None),
+            Some("--frame-cap") => {
+                let cap = options
+                    .next()
+                    .and_then(|v| v.to_str())
+                    .ok_or("frame cap absent")?
+                    .parse::<u16>()?;
+                frame_rate = Some(Some(cap.max(1)));
+            }
             // Pads are always read now; the flag is accepted for old launch files.
             Some("--gamepad") => {}
             Some("--show-collision") => show_collision = true,
@@ -12908,7 +12915,6 @@ fn run(mut args: Vec<PathBuf>) -> Result<AppExit, Box<dyn std::error::Error>> {
         started.elapsed().as_secs_f64() * 1e3
     );
     // Beside the room's configuration; unattended runs keep the defaults.
-    #[allow(unused_mut)]
     let mut settings = settings_room::SettingsRes::new(
         source.clone(),
         autoplay.is_none().then(|| {
@@ -12919,9 +12925,13 @@ fn run(mut args: Vec<PathBuf>) -> Result<AppExit, Box<dyn std::error::Error>> {
         }),
         loaded.language.take(),
     )?;
-    #[cfg(feature = "perf-diag")]
-    if uncapped {
+    if let Some(cap) = frame_rate {
         settings.current.vsync = false;
+        settings.current.custom_frame_cap = cap.is_some();
+        settings.current.frame_cap = 0;
+        if let Some(cap) = cap {
+            settings.current.custom_cap = cap;
+        }
     }
     let log = match log_path {
         Some(path) => Some(OpenOptions::new().write(true).create_new(true).open(path)?),
@@ -13791,6 +13801,7 @@ fn run(mut args: Vec<PathBuf>) -> Result<AppExit, Box<dyn std::error::Error>> {
             ..default()
         }))
         .add_plugins(FogPlugin)
+        .add_plugins(visual::frame_limit::FrameLimitPlugin)
         .add_plugins(visual::effect_draw::EffectPlugin)
         .add_plugins(Ui2dPlugin {
             order: 0,
