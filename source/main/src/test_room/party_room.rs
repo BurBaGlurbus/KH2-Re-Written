@@ -539,90 +539,106 @@ fn build_motion(
             })
             .collect();
     }
-    for offset in 0..=end {
+    // The ticks are independent: evaluated on several threads, then kept
+    // in order (each list as the loop used to push it).
+    struct Tick {
+        root: Vec3,
+        joints: Option<Vec<data::motion_eval::World>>,
+        frame: Vec<Vec3>,
+        hit: Vec<Vec3>,
+        body_attack: Vec<Vec3>,
+        hand: Mat4,
+        weapon: Option<Vec<Vec3>>,
+        weapon_local: Option<Vec<Vec3>>,
+        blade: Option<Mat4>,
+        staff: Option<Mat4>,
+        weapon_joints: Option<Vec<data::motion_eval::World>>,
+    }
+    let ticks = visual::par::map_indexed(end as usize + 1, |offset| -> std::io::Result<Tick> {
         // The keys run at 60 a second, twice the declared frame rate (the
         // reader's `frame_window`): one key per tick, as Sora's clips.
-        let key = (start + offset) as f32;
+        let key = (start + offset as u32) as f32;
         let (pose, evaluated) = model.skinning.sample_evaluated(&selected.motion, key)?;
         let r = Vec3::from_array(evaluated.root_translation);
-        data.root.push(r);
         // Raw-matrix motions have no joints to blend.
-        if let Some(own) = evaluated.joints.get(..bones) {
-            data.joints.push(
-                own.iter()
-                    .map(|w| {
-                        let mut w = *w;
-                        for (t, r) in w.translation.iter_mut().zip(r.to_array()) {
-                            *t -= r;
-                        }
-                        w
-                    })
-                    .collect(),
-            );
-        }
-        data.frames.push(
-            pose.position_bits
-                .iter()
-                .map(|p| Vec3::from_array(p.map(f32::from_bits)) - r)
-                .collect(),
-        );
-        data.hit.push(
-            hit_shapes
-                .iter()
-                .map(|&(bone, offset, _, _)| {
-                    pose.matrix_bits
-                        .get(bone)
-                        .map_or(Vec3::ZERO, |m| matrix(m, r).transform_point3(offset))
+        let joints = evaluated.joints.get(..bones).map(|own| {
+            own.iter()
+                .map(|w| {
+                    let mut w = *w;
+                    for (t, r) in w.translation.iter_mut().zip(r.to_array()) {
+                        *t -= r;
+                    }
+                    w
                 })
-                .collect(),
-        );
-        data.body_attack.push(
-            attack_shapes
-                .iter()
-                .map(|&(bone, offset)| match bone {
-                    Some(bone) => pose
-                        .matrix_bits
-                        .get(bone)
-                        .map_or(offset, |m| matrix(m, r).transform_point3(offset)),
-                    None => offset,
-                })
-                .collect(),
-        );
+                .collect()
+        });
+        let frame = pose
+            .position_bits
+            .iter()
+            .map(|p| Vec3::from_array(p.map(f32::from_bits)) - r)
+            .collect();
+        let hit = hit_shapes
+            .iter()
+            .map(|&(bone, offset, _, _)| {
+                pose.matrix_bits
+                    .get(bone)
+                    .map_or(Vec3::ZERO, |m| matrix(m, r).transform_point3(offset))
+            })
+            .collect();
+        let body_attack = attack_shapes
+            .iter()
+            .map(|&(bone, offset)| match bone {
+                Some(bone) => pose
+                    .matrix_bits
+                    .get(bone)
+                    .map_or(offset, |m| matrix(m, r).transform_point3(offset)),
+                None => offset,
+            })
+            .collect();
         let hand = pose
             .matrix_bits
             .get(hand_bone)
             .map_or(Mat4::IDENTITY, |m| matrix(m, r));
-        data.hand.push(hand);
+        let mut tick = Tick {
+            root: r,
+            joints,
+            frame,
+            hit,
+            body_attack,
+            hand,
+            weapon: None,
+            weapon_local: None,
+            blade: None,
+            staff: None,
+            weapon_joints: None,
+        };
         if let Some((local, bone)) = &bind {
-            data.weapon
-                .push(local.iter().map(|p| hand.transform_point3(*p)).collect());
-            data.weapon_local.push(local.clone());
+            tick.weapon = Some(local.iter().map(|p| hand.transform_point3(*p)).collect());
+            tick.weapon_local = Some(local.clone());
             let blade = bone.map_or(hand, |b| hand * b);
-            data.blade.push(blade);
-            data.staff.push(blade);
+            tick.blade = Some(blade);
+            tick.staff = Some(blade);
         }
         if let (Some(w), Some(own)) = (weapon, own) {
             let (wp, we) = w.skinning.sample_evaluated(&own.motion, key)?;
             if let Some(joints) = we.joints.get(..w.skinning.bones.len()) {
-                data.weapon_joints.push(joints.to_vec());
+                tick.weapon_joints = Some(joints.to_vec());
             }
-            data.weapon_local.push(
+            tick.weapon_local = Some(
                 wp.position_bits
                     .iter()
                     .map(|p| Vec3::from_array(p.map(f32::from_bits)))
                     .collect(),
             );
-            data.weapon.push(
-                wp.position_bits
-                    .iter()
-                    .map(|p| hand.transform_point3(Vec3::from_array(p.map(f32::from_bits))))
-                    .collect(),
-            );
+            let weapon_now: Vec<Vec3> = wp
+                .position_bits
+                .iter()
+                .map(|p| hand.transform_point3(Vec3::from_array(p.map(f32::from_bits))))
+                .collect();
             let blade = wp.matrix_bits.get(2).map_or(hand, |m| {
                 hand * Mat4::from_cols_array(&m.map(f32::from_bits))
             });
-            data.blade.push(blade);
-            let weapon_now = data.weapon.last().expect("pushed above");
+            tick.blade = Some(blade);
             let top = weapon_now
                 .iter()
                 .copied()
@@ -631,13 +647,28 @@ fn build_motion(
                         .total_cmp(&b.distance_squared(blade.w_axis.truncate()))
                 })
                 .unwrap_or(blade.w_axis.truncate());
-            data.staff.push(Mat4::from_cols(
+            tick.staff = Some(Mat4::from_cols(
                 blade.x_axis,
                 blade.y_axis,
                 blade.z_axis,
                 top.extend(1.),
             ));
+            tick.weapon = Some(weapon_now);
         }
+        Ok(tick)
+    })?;
+    for t in ticks {
+        data.root.push(t.root);
+        data.joints.extend(t.joints);
+        data.frames.push(t.frame);
+        data.hit.push(t.hit);
+        data.body_attack.push(t.body_attack);
+        data.hand.push(t.hand);
+        data.weapon.extend(t.weapon);
+        data.weapon_local.extend(t.weapon_local);
+        data.blade.extend(t.blade);
+        data.staff.extend(t.staff);
+        data.weapon_joints.extend(t.weapon_joints);
     }
     Ok(data)
 }

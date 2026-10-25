@@ -12967,7 +12967,9 @@ fn run(mut args: Vec<PathBuf>) -> Result<AppExit, Box<dyn std::error::Error>> {
             _ => return Err("unknown/duplicate test room option".into()),
         }
     }
+    let mut timer = LoadTimer::new();
     let source = Arc::new(ProbeSource::bind_session(&args[0], &args[1])?);
+    timer.mark("source binding");
     if let Some(path) = enemy_audit {
         ProbeSource::bind(&args[0], &args[1])?.verify_full_source()?;
         source.verify_session()?;
@@ -13004,6 +13006,7 @@ fn run(mut args: Vec<PathBuf>) -> Result<AppExit, Box<dyn std::error::Error>> {
         }
         None => None,
     };
+    timer.mark("captures and options");
     eprintln!("Validating the selected KH2FM source, then decoding the test room...");
     let mut loaded = load(&source, &args[2], basic_fk)?;
     let mut timer = LoadTimer::new();
