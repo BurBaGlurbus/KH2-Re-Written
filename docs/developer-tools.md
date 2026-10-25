@@ -49,6 +49,15 @@ cargo run -p save --release --bin save_roundtrip --locked -- '<selected-install-
 It checks the header mask, writes the container back, and for each save image checks its checksum and that the
 rewrite's save fields read and write back to the same bytes. See [T232](tasks/T232-save-byte-match.md).
 
+Movement output match, against a private oracle of the executable's own results (made in Ghidra's emulator, see
+[T233](tasks/T233-movement-output-match.md)):
+
+```powershell
+cargo run -p player --release --bin movement_match --locked -- '<private-directory>/movement-oracle.txt' '<private-directory>/new-mismatches.txt'
+```
+
+It prints how many cases of each routine are bit-identical and exits with 2 if any differ.
+
 Bounded storage samples and their first two HD replacements:
 
 ```powershell

@@ -381,8 +381,10 @@ impl Knock {
         if len <= 0. || !len.is_finite() {
             return None;
         }
+        // FUN_140142080 scales by the reciprocal of the length.
+        let inverse = 1. / len;
         Some(Knock {
-            direction: d.map(|c| c / len),
+            direction: d.map(|c| c * inverse),
             speed: (s + bonus) * KNOCK_SCALE,
         })
     }
@@ -410,11 +412,13 @@ pub struct Blow {
 }
 
 impl Blow {
-    /// FUN_1404228b0 (mode 4 enter): floor = |v_xz| × BlowMinXZ.
+    /// FUN_1404228b0 (mode 4 enter): floor = |v_xz| × BlowMinXZ, the
+    /// length taken as √(x² + z²) (FUN_140140f50).
     pub fn new(velocity: [f32; 3], sstm: &Sstm) -> Self {
+        let [x, _, z] = velocity;
         Blow {
             velocity,
-            min_xz: velocity[0].hypot(velocity[2]) * sstm.blow_min_xz,
+            min_xz: (x * x + z * z).sqrt() * sstm.blow_min_xz,
         }
     }
 
@@ -424,13 +428,21 @@ impl Blow {
     /// displacement.
     pub fn step(&mut self, sstm: &Sstm, fall_max: f32, dt: f32) -> [f32; 3] {
         let [x, y, z] = self.velocity;
-        let len = x.hypot(z);
-        let (nx, nz) = if len > 0. {
-            (x / len, z / len)
+        // FUN_140142080: a zero length leaves the vector as it is; otherwise
+        // it is scaled by the reciprocal of the length.
+        let len = (x * x + z * z).sqrt();
+        let (nx, nz) = if len != 0. {
+            let inverse = 1. / len;
+            (x * inverse, z * inverse)
         } else {
-            (0., 0.)
+            (x, z)
         };
-        let speed = (len * sstm.blow_brake_xz).max(self.min_xz);
+        let braked = len * sstm.blow_brake_xz;
+        let speed = if braked <= self.min_xz {
+            self.min_xz
+        } else {
+            braked
+        };
         // Y-down: rising is negative.
         let mut down = -y;
         if down < 0. {
@@ -551,6 +563,32 @@ mod tests {
         assert!((total - 190.58).abs() < 0.05, "{total}");
         let flipped = Knock::new([1., 0., 0.], -50., 0.).unwrap();
         assert_eq!(flipped.direction, [-1., 0., 0.]);
+    }
+
+    #[test]
+    fn directions_are_scaled_by_the_reciprocal_length() {
+        // Here x · (1/len) and x / len round differently.
+        let d = [0.3f32, 0.1, -0.7];
+        let len = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt();
+        assert_ne!((d[1] * (1. / len)).to_bits(), (d[1] / len).to_bits());
+        let k = Knock::new(d, 200., 0.).unwrap();
+        assert_eq!(k.direction, d.map(|c| c * (1. / len)));
+        let s = Sstm {
+            fall_max: 16.,
+            blow_brake_xz: 1.,
+            blow_min_xz: 0.,
+            blow_brake_up: 1.,
+            blow_up: 0.,
+            blow_speed: 0.,
+            blow_to_hit_back: 0.,
+            hit_back: 0.,
+            hit_back_small: 0.,
+            hit_back_to_jump: 0.,
+        };
+        let mut b = Blow::new([d[0], 0., d[2]], &s);
+        b.step(&s, 16., DT);
+        let xz = (d[0] * d[0] + d[2] * d[2]).sqrt();
+        assert_eq!(b.velocity[0], xz * (d[0] * (1. / xz)));
     }
 
     #[test]
