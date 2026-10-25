@@ -300,4 +300,38 @@ mod tests {
         p.write(&mut image);
         assert_eq!(image.u8_at(field::ROXAS), 0b10);
     }
+
+    #[test]
+    fn reading_then_writing_gives_the_image_back_byte_for_byte() {
+        // A sealed image with every byte set to something.
+        let mut image = SaveData::blank();
+        let junk: Vec<u8> = (0..image.bytes().len())
+            .map(|i| (i * 31 + i / 7) as u8)
+            .collect();
+        image.set_slice(12, &junk[12..]);
+        image.set_u8(EVENT_QUEUE_COUNT, 5);
+        image.seal();
+        let p = Persistent::read(&image);
+        let mut copy = image.clone();
+        p.write(&mut copy);
+        assert_eq!(copy, image);
+        // The bytes `write` sets come from the values alone: overwrite them
+        // (the ones that differ between writes over 0x00 and 0xff images
+        // are left alone by `write`) and they come back.
+        let over = |b: u8| {
+            let mut d = image.clone();
+            d.set_slice(12, &vec![b; image.bytes().len() - 12]);
+            p.write(&mut d);
+            d.bytes().to_vec()
+        };
+        let (zeros, ones) = (over(0), over(0xff));
+        let mut scrambled = image.clone();
+        for i in 12..zeros.len() {
+            if zeros[i] == ones[i] {
+                scrambled.set_u8(i, image.u8_at(i) ^ 0x5a);
+            }
+        }
+        p.write(&mut scrambled);
+        assert_eq!(scrambled, image);
+    }
 }

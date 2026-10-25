@@ -7,5 +7,11 @@ rust-version.workspace = true
 
 [dependencies]
 
+# A private check against the original game's files; no tests of its own.
+[[bin]]
+name = "save_roundtrip"
+test = false
+bench = false
+
 [lints]
 workspace = true

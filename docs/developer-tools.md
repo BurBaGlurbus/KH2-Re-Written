@@ -32,6 +32,23 @@ cargo run -p data --bin plain_probe --locked -- '<selected-install-root>' '<priv
 
 This verifies the bound HED hashes and package metadata, retains unknown formats, and exports no original asset files.
 
+BAR byte match: every installed BAR, and every BAR nested in one, is read, written again with `bar::write_bar`, and compared by SHA-256 with the original:
+
+```powershell
+cargo run -p data --release --bin bar_roundtrip --locked -- '<selected-install-root>' '<private-directory>/source-manifest.json' '<private-directory>/new-bar-roundtrip.json'
+```
+
+It prints totals only. The private report lists each record's index, ordinal, name hash, both digests and, where the plain 16-byte packing rule does not reproduce the file, its layout facts. See [T231](tasks/T231-bar-byte-match.md).
+
+Save byte match, on a container the original game wrote (read only):
+
+```powershell
+cargo run -p save --release --bin save_roundtrip --locked -- '<selected-install-root>' '<My Games>/KINGDOM HEARTS HD 1.5+2.5 ReMIX/Steam/<id>/KHIIFM_WW.png' '<private-directory>/new-save-roundtrip.json'
+```
+
+It checks the header mask, writes the container back, and for each save image checks its checksum and that the
+rewrite's save fields read and write back to the same bytes. See [T232](tasks/T232-save-byte-match.md).
+
 Bounded storage samples and their first two HD replacements:
 
 ```powershell

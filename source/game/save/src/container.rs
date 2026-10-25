@@ -365,6 +365,25 @@ mod tests {
     }
 
     #[test]
+    fn an_opened_file_is_written_back_byte_for_byte() {
+        let key = key_from_steam_id(76561198000000003);
+        let sbox = aes_sbox();
+        let mut c = Container::empty(&key);
+        c.write("BISLPM-66675FM-04", &[5; 300], 1_700_000_000)
+            .unwrap();
+        // Chunks the reader does not know, before and after the card.
+        c.before
+            .extend_from_slice(b"\0\0\0\x03teXtabc\x01\x02\x03\x04");
+        c.after.insert(0, 0x42);
+        let png = c.to_png(&key, &sbox);
+        let opened = Container::open(&png, &key, &sbox).unwrap();
+        assert_eq!(opened.to_png(&key, &sbox), png);
+        let mask = Container::recover_mask(&png).unwrap();
+        let masked = Container::open_masked(&png, &mask).unwrap();
+        assert_eq!(masked.to_png(&masked.stored_key(), &sbox), png);
+    }
+
+    #[test]
     fn the_mask_is_recovered_from_a_file_without_its_steam_id() {
         let key = key_from_steam_id(555);
         let sbox = aes_sbox();
