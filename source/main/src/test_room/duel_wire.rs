@@ -182,7 +182,12 @@ pub(crate) struct FighterState {
     pub form: u8,
     /// His item slots (0 = used up).
     pub items: Vec<u16>,
+    /// His Wisdom bullets: key, position, direction.
+    pub bullets: Vec<(u64, [f32; 3], [f32; 3])>,
 }
+
+/// The most bullets a snapshot carries per fighter.
+pub(crate) const MAX_BULLETS: usize = 16;
 
 /// The most item slots a snapshot carries.
 pub(crate) const MAX_ITEM_SLOTS: usize = 8;
@@ -224,6 +229,14 @@ pub(crate) fn encode_snapshot(s: &Snapshot) -> Vec<u8> {
         for &id in items {
             w.u16(id);
         }
+        let bullets = &f.bullets[..f.bullets.len().min(MAX_BULLETS)];
+        w.u8(bullets.len() as u8);
+        for (key, pos, dir) in bullets {
+            w.u64(*key);
+            for v in pos.iter().chain(dir) {
+                w.f32(*v);
+            }
+        }
     }
     w.finish()
 }
@@ -259,6 +272,19 @@ pub(crate) fn decode_snapshot(bytes: &[u8]) -> Option<Snapshot> {
             return None;
         }
         let items = (0..count).map(|_| r.u16()).collect::<Option<Vec<_>>>()?;
+        let count = r.u8()? as usize;
+        if count > MAX_BULLETS {
+            return None;
+        }
+        let mut bullets = Vec::with_capacity(count);
+        for _ in 0..count {
+            let key = r.u64()?;
+            let v = [r.f32()?, r.f32()?, r.f32()?, r.f32()?, r.f32()?, r.f32()?];
+            if !v.iter().all(|x| x.is_finite()) {
+                return None;
+            }
+            bullets.push((key, [v[0], v[1], v[2]], [v[3], v[4], v[5]]));
+        }
         if !position.iter().chain([&yaw, &blend]).all(|v| v.is_finite()) {
             return None;
         }
@@ -278,6 +304,7 @@ pub(crate) fn decode_snapshot(bytes: &[u8]) -> Option<Snapshot> {
             invulnerable,
             form,
             items,
+            bullets,
         });
     }
     r.is_empty().then_some(Snapshot { tick, fighters })
@@ -676,6 +703,7 @@ mod tests {
                     invulnerable: 0.,
                     form: 1,
                     items: vec![1, 0, 5],
+                    bullets: vec![(1 << 60 | 3, [1., 2., 3.], [0., 0., 1.])],
                 },
                 FighterState {
                     slot: 1,
@@ -693,6 +721,7 @@ mod tests {
                     invulnerable: 80.,
                     form: 0,
                     items: Vec::new(),
+                    bullets: Vec::new(),
                 },
             ],
         };

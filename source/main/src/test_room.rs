@@ -453,6 +453,9 @@ const ENEMY_HIT_OWNER: u8 = 0xf9;
 #[derive(Resource)]
 struct Effects {
     weapon: Option<Arc<object_effect::Pax>>,
+    /// The room Keyblade's PAX as loaded (a duel rival's trail until his
+    /// own Keyblade's kit replaces it).
+    room_weapon: Option<Arc<object_effect::Pax>>,
     enemy: Option<Arc<object_effect::Pax>>,
     enemy_paxes: HashMap<u32, Arc<object_effect::Pax>>,
     enemy_banks: HashMap<u32, u16>,
@@ -1176,6 +1179,9 @@ struct Game {
     duel_forfeit: bool,
     /// [Test] `--duel-quick`: the unattended result picks Quick rematch.
     duel_quick: bool,
+    /// [Test] `--duel-wisdom` (joiner): Wisdom Form now and then, and the
+    /// bench's swings (its shots).
+    duel_wisdom: bool,
     duel_shot_keys: std::collections::HashSet<(u8, u64, u64)>,
     /// A match is running: a knocked-out Sora stays down for the round.
     duel_match: bool,
@@ -7882,13 +7888,19 @@ fn simulate(
             game.net_pad.command = net_command;
             // [Test] `--rival-script` on a joiner: the rival's test script
             // presses his buttons, against the host's Sora.
-            if (game.rival_script || game.duel_bench || game.duel_magic)
+            if (game.rival_script || game.duel_bench || game.duel_magic || game.duel_wisdom)
                 && !frozen
                 && let Some(foe) = game.rivals.first().map(|r| r.fighter.player.position)
             {
                 let me = game.sora.player.position;
                 game.net_pad = if game.duel_magic {
                     rival::magic_pad(tick, 100, me, foe)
+                } else if game.duel_wisdom {
+                    let mut p = rival::bench_pad(tick, me, foe);
+                    if tick.is_multiple_of(600) {
+                        p.command = rival::Command::Drive(player::forms::WISDOM);
+                    }
+                    p
                 } else if game.duel_bench {
                     rival::bench_pad(tick, me, foe)
                 } else {
@@ -8281,9 +8293,20 @@ fn effects_tick(
     {
         fx.weapon = Some(pax);
     }
-    weapon_trail::tick(&mut game, fx.weapon.as_ref(), 0);
+    weapon_trail::tick(&mut game, fx.weapon.as_ref(), 0, None);
     let second = game.weapon2_pax.clone();
-    weapon_trail::tick(&mut game, second.as_ref(), 1);
+    weapon_trail::tick(&mut game, second.as_ref(), 1, None);
+    // A duel's other Sora swings his own trails (his state swapped in).
+    let mut rivals = std::mem::take(&mut game.rivals);
+    for r in &mut rivals {
+        rival::swap(&mut game, r);
+        let first = game.weapon_pax.clone().or_else(|| fx.room_weapon.clone());
+        let second = game.weapon2_pax.clone();
+        weapon_trail::tick(&mut game, first.as_ref(), 0, Some(r.slot));
+        weapon_trail::tick(&mut game, second.as_ref(), 1, Some(r.slot));
+        rival::swap(&mut game, r);
+    }
+    game.rivals = rivals;
     let view = game_view(rig.camera.eye, rig.camera.look_at);
     for request in std::mem::take(&mut game.effect_queue) {
         let (pax, element, world, label, bound) = match request {
@@ -13113,6 +13136,7 @@ fn run(mut args: Vec<PathBuf>) -> Result<AppExit, Box<dyn std::error::Error>> {
     let mut duel_shots = false;
     let mut duel_forfeit = false;
     let mut duel_quick = false;
+    let mut duel_wisdom = false;
     let mut duel_no_mirage = false;
     let mut duel_idle = false;
     // The LAN duel (duel_net.rs): host or join, the port, the name shown
@@ -13188,6 +13212,7 @@ fn run(mut args: Vec<PathBuf>) -> Result<AppExit, Box<dyn std::error::Error>> {
             Some("--duel-shots") => duel_shots = true,
             Some("--duel-forfeit") => duel_forfeit = true,
             Some("--duel-quick") => duel_quick = true,
+            Some("--duel-wisdom") => duel_wisdom = true,
             Some("--duel-no-mirage") => duel_no_mirage = true,
             Some("--duel-idle") => duel_idle = true,
             Some("--host") => net_host = true,
@@ -13929,6 +13954,7 @@ fn run(mut args: Vec<PathBuf>) -> Result<AppExit, Box<dyn std::error::Error>> {
         duel_shots,
         duel_forfeit,
         duel_quick,
+        duel_wisdom,
         duel_shot_keys: std::collections::HashSet::new(),
         duel_match: false,
         duel_dealt: [0; 2],
@@ -14275,6 +14301,7 @@ fn run(mut args: Vec<PathBuf>) -> Result<AppExit, Box<dyn std::error::Error>> {
                 "weapon_elements":e.weapon.elements.len(),"enemy_pax":e.enemy.as_ref().map(|p| p.name.clone()),
                 "atlas_size":e.atlas.size,"atlas_texels":e.atlas.texel_size,"atlas_hd":e.atlas.hd,
                 "atlas_alignment":e.atlas.alignment}));
+            let weapon = Arc::new(e.weapon);
             let size = if e.atlas.hd {
                 e.atlas.size
             } else {
@@ -14283,7 +14310,8 @@ fn run(mut args: Vec<PathBuf>) -> Result<AppExit, Box<dyn std::error::Error>> {
             game.enemy_voice_banks = e.enemy_voices.clone();
             (
                 Effects {
-                    weapon: { Some(Arc::new(e.weapon)) },
+                    weapon: Some(Arc::clone(&weapon)),
+                    room_weapon: Some(weapon),
                     enemy: e.enemy.map(Arc::new),
                     enemy_paxes: e
                         .enemy_paxes
@@ -14305,6 +14333,7 @@ fn run(mut args: Vec<PathBuf>) -> Result<AppExit, Box<dyn std::error::Error>> {
         None => (
             Effects {
                 weapon: None,
+                room_weapon: None,
                 enemy: None,
                 enemy_paxes: HashMap::new(),
                 enemy_banks: HashMap::new(),

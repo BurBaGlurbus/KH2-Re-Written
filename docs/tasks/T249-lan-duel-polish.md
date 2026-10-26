@@ -115,3 +115,24 @@ Checks for items 3 and 4: fmt, clippy, `cargo test` (all passed), single-player 
 against 4d33db8 (`q3-*`: talk, deck exit tick ±1, magic one float at 1e-5 as before, party-hit identical but
 the exit; `auto` the same up to tick 7700, where the debug-built baseline itself panics on an integer
 overflow in `enemy/src/script.rs:215`, an existing bug outside this work), loopback duels: PASS.
+
+## 5. The other Sora's trail and Wisdom shots
+
+- **Trails**: the swing trail (weapon_trail.rs) followed `game.sora` only, so neither instance drew the other
+  Sora's. Each rival now keeps his own trail state (`Own::trail_live`, `trail_length`, swapped with his kit)
+  and runs the same window rule with his state swapped in, under owners of his own
+  (`weapon_trail::RIVAL_OWNERS`, 0xf0-0xf3), anchored `RivalWeapon(slot, weapon)`; drive_fx takes his trail's
+  points with him swapped in. A rival whose Keyblade kit never changed has no weapon PAX of his own: he uses the
+  room Keyblade's as loaded (`Effects::room_weapon`). Trails are each instance's own (nothing on the wire).
+- **Wisdom shots**: bullets lived only in the host's simulation and their effect looked only in the room Sora's
+  Drive state, so the host lost the joiner's and the joiner saw none. A rival's bullet keys now carry his slot
+  (`offset_bullet_keys`); the effect finds a bullet on either Sora (`bullet_at`) and the rivals' bullet ends are
+  drained; each snapshot fighter carries his bullets (key, position, direction; at most 16), and the joiner puts
+  them on that Sora (`show_bullets`: a new one starts its element, one gone fades).
+- Test flag `--duel-wisdom` (joiner): Wisdom Form every ten seconds and the bench's swings.
+
+Loopback `fx6` (host `--duel-bench`, joiner `--duel-wisdom`): the host starts the joiner's trail (owner 0xf2,
+`weapon_trail_length` rival 1), the joiner the host's (0xf0, rival 0), and both start the Wisdom shots' element
+20. Shot: `.local\lan-review\polish\joiner-wisdom-shot-and-host-trail.png`. Snapshot test with a bullet.
+Checks: fmt, clippy, `cargo test` (all passed), tours (`f6-*`: talk identical, deck exit ±1, magic the 1e-5
+float, party-hit identical but the exit): PASS.

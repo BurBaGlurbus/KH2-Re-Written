@@ -97,6 +97,9 @@ pub(crate) struct Own {
     pub body: Vec<(usize, Vec3, f32, bool)>,
     /// The spell effects' feedback under his own keys.
     pub fx_live: HashMap<u64, magic::FxLive>,
+    /// His swing trails (weapon_trail.rs): live, and each slot's blade length.
+    pub trail_live: [bool; 2],
+    pub trail_length: [Option<f32>; 2],
     /// Where his motions' sound and dust triggers were last scanned.
     pub scans: Scans,
 }
@@ -193,7 +196,11 @@ fn own_from(game: &Game, kit: &RivalKit, slot: u8) -> Own {
         sora_attack: game.sora_attack.clone(),
         magic,
         items,
-        drive: game.drive.as_ref().map(|d| d.sibling()),
+        drive: game.drive.as_ref().map(|d| {
+            let mut d = d.sibling();
+            d.offset_bullet_keys(slot);
+            d
+        }),
         ability_slots: game.ability_slots.clone(),
         equipment: game.equipment.clone(),
         gear: game.gear,
@@ -205,6 +212,8 @@ fn own_from(game: &Game, kit: &RivalKit, slot: u8) -> Own {
         blades,
         body: kit.body.clone(),
         fx_live: HashMap::new(),
+        trail_live: [false; 2],
+        trail_length: [None; 2],
         scans: Scans::default(),
     }
 }
@@ -234,6 +243,8 @@ pub(crate) fn swap(game: &mut Game, rival: &mut Rival) {
     x(&mut game.weapon_pax, &mut o.weapon_pax);
     x(&mut game.weapon2_pax, &mut o.weapon2_pax);
     x(&mut game.fx_live, &mut o.fx_live);
+    x(&mut game.trail_live, &mut o.trail_live);
+    x(&mut game.trail_length, &mut o.trail_length);
     x(&mut game.sound_frame, &mut o.scans.sound_frame);
     x(&mut game.move_se_scan, &mut o.scans.move_se);
     x(&mut game.step_scan, &mut o.scans.step);

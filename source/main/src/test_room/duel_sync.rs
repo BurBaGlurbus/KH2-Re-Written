@@ -135,6 +135,9 @@ fn state_of(
         invulnerable: vitals.invulnerable,
         form: drive.map_or(0, |d| d.shown),
         items: items.map(|i| i.slots.clone()).unwrap_or_default(),
+        bullets: drive
+            .map(|d| d.bullets.iter().map(|b| (b.key, b.pos, b.dir)).collect())
+            .unwrap_or_default(),
     }
 }
 
@@ -321,6 +324,9 @@ pub(crate) fn join_apply(net: Option<ResMut<DuelNet>>, mut game: ResMut<Game>) {
             if let Some(it) = game.items.as_mut() {
                 it.slots.clone_from(&s.items);
             }
+            if let Some(d) = game.drive.as_mut() {
+                d.show_bullets(&s.bullets, &mut game.fx_queue);
+            }
             if apply_state(s, &mut game.sora.player, &mut game.sora.vitals) {
                 game.action_started = now;
             }
@@ -329,6 +335,9 @@ pub(crate) fn join_apply(net: Option<ResMut<DuelNet>>, mut game: ResMut<Game>) {
             rival::swap(game, &mut r);
             show_form(game, s.slot, s.form);
             rival::swap(game, &mut r);
+            if let Some(d) = r.own.drive.as_mut() {
+                d.show_bullets(&s.bullets, &mut game.fx_queue);
+            }
             if apply_state(s, &mut r.fighter.player, &mut r.fighter.vitals) {
                 r.started = now;
             }

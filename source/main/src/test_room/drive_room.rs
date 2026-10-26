@@ -620,6 +620,48 @@ impl DriveRt {
 
     /// A second Sora's drive state (the duel's rival): the same tables and
     /// form records, kits of its own (loaded as it needs them).
+    /// A duel rival's bullet keys: his slot in the serial's high bits, so
+    /// his bullets' effects never meet the room Sora's.
+    pub(crate) fn offset_bullet_keys(&mut self, slot: u8) {
+        self.bullet_serial = (u64::from(slot) + 1) << 40;
+    }
+
+    /// Joiner: a Sora's bullets as the host's snapshot has them (key,
+    /// position, direction). A new one starts its effect; one gone fades.
+    pub(crate) fn show_bullets(
+        &mut self,
+        shown: &[(u64, [f32; 3], [f32; 3])],
+        fx_queue: &mut Vec<super::drive_fx::Placed>,
+    ) {
+        let ends = &mut self.bullet_ends;
+        self.bullets.retain(|b| {
+            let keep = shown.iter().any(|s| s.0 == b.key);
+            if !keep {
+                ends.push((b.key, true));
+            }
+            keep
+        });
+        for &(key, pos, dir) in shown {
+            if let Some(b) = self.bullets.iter_mut().find(|b| b.key == key) {
+                b.pos = pos;
+                b.dir = dir;
+                continue;
+            }
+            self.bullets
+                .push(player::wisdom_form::Bullet::new(key, 0, pos, dir));
+            if let Some(pax) = self.paxes.get(&forms::WISDOM).cloned() {
+                fx_queue.push(super::drive_fx::Placed {
+                    req: super::drive_fx::FxRequest {
+                        pax,
+                        id: BULLET_ELEMENT,
+                        owner: forms::WISDOM,
+                    },
+                    anchor: super::drive_fx::Anchor::Bullet(key),
+                });
+            }
+        }
+    }
+
     pub fn sibling(&self) -> Self {
         let mut d = DriveRt::with_shared(
             Arc::clone(&self.src),
