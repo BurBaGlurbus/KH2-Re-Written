@@ -760,6 +760,8 @@ fn run(mut args: Vec<PathBuf>) -> Result<AppExit, Box<dyn std::error::Error>> {
     if args.len() < 3 {
         return Err("usage: title <Steam-root> <manifest> <title-config> [--log new.jsonl] [--frames N] [--autoplay <new-capture-dir>]".into());
     }
+    // The GPU device starts while the data decodes (used by the app below).
+    let early_renderer = crate::early_renderer::EarlyRenderer::start();
     let (mut log_path, mut limit, mut autoplay) = (None, None, None);
     let mut files_plan = false;
     let mut savepoint_plan = false;
@@ -952,16 +954,20 @@ fn run(mut args: Vec<PathBuf>) -> Result<AppExit, Box<dyn std::error::Error>> {
         .insert_resource(session)
         .insert_resource(Time::<Fixed>::from_hz(60.))
         .insert_resource(ClearColor(Color::BLACK))
-        .add_plugins(DefaultPlugins.set(WindowPlugin {
-            primary_window: Some(Window {
-                title: "Kingdom Hearts II Re:Written (title; quarantined source)".into(),
-                resolution: (1280, 720).into(),
-                ..default()
-            }),
-            exit_condition: bevy::window::ExitCondition::DontExit,
-            close_when_requested: false,
-            ..default()
-        }))
+        .add_plugins(
+            DefaultPlugins
+                .set(WindowPlugin {
+                    primary_window: Some(Window {
+                        title: "Kingdom Hearts II Re:Written (title; quarantined source)".into(),
+                        resolution: (1280, 720).into(),
+                        ..default()
+                    }),
+                    exit_condition: bevy::window::ExitCondition::DontExit,
+                    close_when_requested: false,
+                    ..default()
+                })
+                .set(early_renderer.plugin()),
+        )
         .add_plugins(Ui2dPlugin {
             order: 0,
             overlay: false,

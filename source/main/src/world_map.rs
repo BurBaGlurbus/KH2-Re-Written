@@ -2774,6 +2774,8 @@ fn run(args: Vec<PathBuf>) -> Result<AppExit> {
     if args.len() < 2 {
         return Err("usage: kh2fm wm <Steam-root> <manifest> [--from <world code>] [--story <first>:<last>]... [--touch <world point>,...] [--seen <world-event bit>,...] [--slot <n>:<state>]... [--at <x>,<z>] [--event <id>]... [--field <test-room config>] [--play-time <h>:<m>] [--world-time <world>:<h>:<m>]... [--load-only] [--autoplay <new-capture-dir> [--decide]]".into());
     }
+    // The GPU device starts while the data decodes (used by the app below).
+    let early_renderer = crate::early_renderer::EarlyRenderer::start();
     let mut from = "tt".to_owned();
     let mut story = Vec::new();
     let mut load_only = false;
@@ -3466,7 +3468,7 @@ fn run(args: Vec<PathBuf>) -> Result<AppExit> {
             exit_condition: bevy::window::ExitCondition::DontExit,
             close_when_requested: false,
             ..default()
-        }))
+        }).set(early_renderer.plugin()))
         .add_plugins(FogPlugin)
         .add_plugins(visual::effect_draw::EffectPlugin)
         .add_plugins(Ui2dPlugin {
