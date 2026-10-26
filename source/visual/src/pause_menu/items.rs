@@ -712,6 +712,12 @@ impl Camp {
 
     /// Items of the "new" types (0x1405bc560) not yet in the stock list's
     /// seen bits.
+    /// FUN_14036a8f0 / FUN_14036a7f0: `Some(seen)` while item `id` is new.
+    pub(super) fn item_badge(&self, id: u16) -> Option<bool> {
+        (id != 0 && self.data.items.new_items.contains(&id))
+            .then(|| self.data.items.seen.contains(&id))
+    }
+
     pub(super) fn magic_badge(&self, id: u16) -> Option<bool> {
         magic_badge(&self.data.items, id)
     }

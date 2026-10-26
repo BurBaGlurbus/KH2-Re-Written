@@ -1,4 +1,4 @@
-# T255 — NEW! badges for abilities and Customize's magic (issue #31, part)
+# T255 — NEW! badges for abilities, Customize's magic and the Equip lists (issue #31, part)
 
 Owner Claude, 2026-10-26, requested by burba in the project chat ("continue working"). Gate:
 development of the test room only; no final gameplay acceptance is inferred. Prerequisites: T162
@@ -37,6 +37,9 @@ while new and seen; visiting a row in the list sets its seen bit (`FUN_140363c70
   the list rows (prio P+3 at the row group's (165, 0)), Sora's row in the character list and
   the top level's Customize row show G50 / G49, and resting on a shortcut or MP Charge row sees
   its magic (save+0x41a8, the items' seen list).
+- Equip (camp-09 §4: `FUN_14036a8f0`, `FUN_14036a7f0`, `FUN_140358ba0`): each pick-list row
+  shows G50 / G49 for a new item (the camp's new items), and every cursor change sees the item
+  under the cursor.
 
 ## Checks
 
@@ -49,8 +52,11 @@ while new and seen; visiting a row in the list sets its seen bit (`FUN_140363c70
 
 ## Uncertainty
 
-- Not built: the Drive forms' and Lion's lists (save+0x4798, `FUN_14036a0b0`), the Status and
-  Journal badges, and the Equip lists.
+- Not built: the Drive forms' and Lion's ability lists (save+0x4798, `FUN_14036a0b0`) and the
+  Status screen's form and Summon rows (new bits block +0xc8, seen save+0x4274): the room's
+  Abilities and Status screens have no form or Summon rows to carry them. The Journal's badges.
+- No run showed an Equip badge: the staves, shields and Keyblades the room owns are starting
+  stock, which is never new.
 - No run showed a Customize badge: the room's magic is part of its starting stock, which is
   never new [test-room choice, T162]; the rule is checked by the unit test only.
 - The room has no save: the lists start empty, so every ability of the development catalog is
@@ -59,6 +65,6 @@ while new and seen; visiting a row in the list sets its seen bit (`FUN_140363c70
   it opens).
 - Not compared with the installed game.
 
-Verdict: PARTIAL for issue #31: the Abilities and Customize badges follow the traced producer;
-the forms', Status, Journal and Equip badges remain.
+Verdict: PARTIAL for issue #31: the Abilities, Customize and Equip badges follow the traced
+producer; the forms', Status and Journal badges remain.
 Next: the forms' lists and the Status badges (block +0xc8, seen save+0x4274).
