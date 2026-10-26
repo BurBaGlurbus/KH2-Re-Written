@@ -161,6 +161,138 @@ fn reserve(bytes: &mut usize, additional: usize) -> io::Result<()> {
         .ok_or_else(|| invalid("inspection texture cumulative RGBA exceeds 128 MiB"))?;
     Ok(())
 }
+/// How an admitted replacement decodes: a BC3 mip chain, or one image of
+/// the admitted size.
+enum Admitted {
+    Chain,
+    Single(u32, u32),
+}
+
+/// A replacement's header checks and its share of the RGBA budget.
+fn admit(replacement: &ReplacementSample, total_rgba: &mut usize) -> io::Result<Admitted> {
+    let bytes = &replacement.bytes;
+    let declared = replacement.metadata.declared_decompressed_length as usize;
+    let count = bytes
+        .get(28..32)
+        .map(|v| u32::from_le_bytes(v.try_into().unwrap()));
+    if bytes.starts_with(b"DDS ") && count.is_some_and(|n| n > 1) {
+        let layout = hd_image::read_bc3_mip_layout(bytes, declared)?;
+        reserve(total_rgba, layout.rgba_byte_count)?;
+        return Ok(Admitted::Chain);
+    }
+    let (width, height) = if bytes.starts_with(b"DDS ") && bytes.len() >= 128 {
+        (
+            u32::from_le_bytes(bytes[16..20].try_into().unwrap()),
+            u32::from_le_bytes(bytes[12..16].try_into().unwrap()),
+        )
+    } else if bytes.starts_with(b"\x89PNG\r\n\x1a\n") && bytes.len() >= 33 {
+        (
+            u32::from_be_bytes(bytes[16..20].try_into().unwrap()),
+            u32::from_be_bytes(bytes[20..24].try_into().unwrap()),
+        )
+    } else {
+        return Err(invalid(
+            "replacement texture header is incomplete or unknown",
+        ));
+    };
+    if !(1..=hd_image::MAX_SIDE).contains(&width) || !(1..=hd_image::MAX_SIDE).contains(&height) {
+        return Err(invalid(&format!(
+            "replacement inspection dimensions outside bound ({width}x{height})"
+        )));
+    }
+    reserve(total_rgba, width as usize * height as usize * 4)?;
+    Ok(Admitted::Single(width, height))
+}
+
+/// Decodes an admitted replacement.
+fn decode_admitted_one(
+    replacement: &ReplacementSample,
+    plan: &Admitted,
+) -> io::Result<TextureImage> {
+    let bytes = &replacement.bytes;
+    let declared = replacement.metadata.declared_decompressed_length as usize;
+    let (levels, mip_layout, pixel_decode_profile) = match *plan {
+        Admitted::Chain => {
+            let chain = hd_image::decode_bc3_mip_chain(bytes, declared)?;
+            let levels = chain
+                .layout
+                .levels
+                .iter()
+                .zip(chain.levels_rgba)
+                .map(|(m, p)| TextureLevel::new(m.width, m.height, p))
+                .collect();
+            (
+                levels,
+                Some(chain.layout),
+                serde_json::to_value(chain.pixel_decode_profile)?,
+            )
+        }
+        Admitted::Single(width, height) => {
+            let decoded = hd_image::decode_hd_image_with_profile(
+                bytes,
+                declared,
+                HdPixelDecodeProfile::Bc3NormalizedNearestRgba8V1,
+            )?;
+            if decoded.width != width
+                || decoded.height != height
+                || decoded.pixels_rgba.len() != width as usize * height as usize * 4
+            {
+                return Err(invalid("decoded texture differs from allocation admission"));
+            }
+            (
+                vec![TextureLevel::new(width, height, decoded.pixels_rgba)],
+                None,
+                serde_json::to_value(decoded.pixel_decode_profile)?,
+            )
+        }
+    };
+    Ok(TextureImage {
+        identity: ImageIdentity::Replacement {
+            replacement_ordinal: replacement.metadata.ordinal,
+        },
+        pixel_decode_profile,
+        mip_layout,
+        levels,
+    })
+}
+
+/// `decode_admitted_one` of each planned replacement (the first
+/// `plans.len()`), on up to eight threads, in replacement order.
+fn decode_admitted(
+    replacements: &[impl std::borrow::Borrow<ReplacementSample> + Sync],
+    plans: &[Admitted],
+) -> Vec<io::Result<TextureImage>> {
+    let threads = plans.len().min(8);
+    if threads <= 1 {
+        return plans
+            .iter()
+            .enumerate()
+            .map(|(i, plan)| decode_admitted_one(replacements[i].borrow(), plan))
+            .collect();
+    }
+    let mut out: Vec<Option<io::Result<TextureImage>>> = (0..plans.len()).map(|_| None).collect();
+    std::thread::scope(|scope| {
+        let workers: Vec<_> = (0..threads)
+            .map(|t| {
+                scope.spawn(move || {
+                    (t..plans.len())
+                        .step_by(threads)
+                        .map(|i| (i, decode_admitted_one(replacements[i].borrow(), &plans[i])))
+                        .collect::<Vec<_>>()
+                })
+            })
+            .collect();
+        for worker in workers {
+            for (i, image) in worker.join().expect("texture decode thread") {
+                out[i] = Some(image);
+            }
+        }
+    });
+    out.into_iter()
+        .map(|o| o.expect("every plan decoded"))
+        .collect()
+}
+
 /// Read original environments and EVERY replacement, retaining complete chains.
 /// Global expansion is admitted before pixels allocate; raw headers alone do
 /// not authorize a format. Existing decoders still perform their full admission.
@@ -168,7 +300,7 @@ pub fn read_textures(
     payload: &[u8],
     asset_offset: usize,
     texture_bar_ordinal: usize,
-    replacements: &[impl std::borrow::Borrow<ReplacementSample>],
+    replacements: &[impl std::borrow::Borrow<ReplacementSample> + Sync],
     modes: &[TextureMode],
     total_rgba: &mut usize,
 ) -> io::Result<InspectionTextures> {
@@ -214,79 +346,37 @@ pub fn read_textures(
             levels: vec![TextureLevel::new(i.width, i.height, i.pixels_rgba)],
         })
         .collect();
+    // Each replacement is admitted in order against the budget from its
+    // header alone; the admitted ones then decode on several threads. The
+    // first error in replacement order wins and the budget is left as it was
+    // after that replacement's admission, as when they decoded one by one.
+    let mut plans = Vec::new();
+    let mut budget_after = Vec::new();
+    let mut admission_error = None;
     for replacement in replacements {
-        let replacement = replacement.borrow();
-        let bytes = &replacement.bytes;
-        let declared = replacement.metadata.declared_decompressed_length as usize;
-        let count = bytes
-            .get(28..32)
-            .map(|v| u32::from_le_bytes(v.try_into().unwrap()));
-        let (levels, mip_layout, pixel_decode_profile) =
-            if bytes.starts_with(b"DDS ") && count.is_some_and(|n| n > 1) {
-                let layout = hd_image::read_bc3_mip_layout(bytes, declared)?;
-                reserve(total_rgba, layout.rgba_byte_count)?;
-                let chain = hd_image::decode_bc3_mip_chain(bytes, declared)?;
-                let levels = chain
-                    .layout
-                    .levels
-                    .iter()
-                    .zip(chain.levels_rgba)
-                    .map(|(m, p)| TextureLevel::new(m.width, m.height, p))
-                    .collect();
-                (
-                    levels,
-                    Some(chain.layout),
-                    serde_json::to_value(chain.pixel_decode_profile)?,
-                )
-            } else {
-                let (width, height) = if bytes.starts_with(b"DDS ") && bytes.len() >= 128 {
-                    (
-                        u32::from_le_bytes(bytes[16..20].try_into().unwrap()),
-                        u32::from_le_bytes(bytes[12..16].try_into().unwrap()),
-                    )
-                } else if bytes.starts_with(b"\x89PNG\r\n\x1a\n") && bytes.len() >= 33 {
-                    (
-                        u32::from_be_bytes(bytes[16..20].try_into().unwrap()),
-                        u32::from_be_bytes(bytes[20..24].try_into().unwrap()),
-                    )
-                } else {
-                    return Err(invalid(
-                        "replacement texture header is incomplete or unknown",
-                    ));
-                };
-                if !(1..=hd_image::MAX_SIDE).contains(&width)
-                    || !(1..=hd_image::MAX_SIDE).contains(&height)
-                {
-                    return Err(invalid(&format!(
-                        "replacement inspection dimensions outside bound ({width}x{height})"
-                    )));
-                }
-                reserve(total_rgba, width as usize * height as usize * 4)?;
-                let decoded = hd_image::decode_hd_image_with_profile(
-                    bytes,
-                    declared,
-                    HdPixelDecodeProfile::Bc3NormalizedNearestRgba8V1,
-                )?;
-                if decoded.width != width
-                    || decoded.height != height
-                    || decoded.pixels_rgba.len() != width as usize * height as usize * 4
-                {
-                    return Err(invalid("decoded texture differs from allocation admission"));
-                }
-                (
-                    vec![TextureLevel::new(width, height, decoded.pixels_rgba)],
-                    None,
-                    serde_json::to_value(decoded.pixel_decode_profile)?,
-                )
-            };
-        images.push(TextureImage {
-            identity: ImageIdentity::Replacement {
-                replacement_ordinal: replacement.metadata.ordinal,
-            },
-            pixel_decode_profile,
-            mip_layout,
-            levels,
-        });
+        match admit(replacement.borrow(), total_rgba) {
+            Ok(plan) => {
+                plans.push(plan);
+                budget_after.push(*total_rgba);
+            }
+            Err(e) => {
+                admission_error = Some(e);
+                break;
+            }
+        }
+    }
+    let decoded = decode_admitted(replacements, &plans);
+    for (i, image) in decoded.into_iter().enumerate() {
+        match image {
+            Ok(image) => images.push(image),
+            Err(e) => {
+                *total_rgba = budget_after[i];
+                return Err(e);
+            }
+        }
+    }
+    if let Some(e) = admission_error {
+        return Err(e);
     }
     Ok(InspectionTextures {
         texture_bar_ordinal,
@@ -435,6 +525,56 @@ impl InspectionTextures {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn png_sample(ordinal: u32, width: u32) -> ReplacementSample {
+        let mut bytes = Vec::new();
+        image::RgbaImage::from_pixel(width, 1, image::Rgba([ordinal as u8, 0, 0, 255]))
+            .write_to(
+                &mut std::io::Cursor::new(&mut bytes),
+                image::ImageFormat::Png,
+            )
+            .unwrap();
+        ReplacementSample {
+            metadata: crate::replacement_payload::ReplacementMetadata {
+                ordinal,
+                name_bytes: [0; 32],
+                declared_offset: 0,
+                original_asset_offset: 0,
+                declared_decompressed_length: bytes.len() as u32,
+                compression_tag: -1,
+                package_offset: 0,
+                padded_stored_length: bytes.len() as u64,
+                compressed_bytes_consumed: None,
+                uncompressed_padding_retained: false,
+            },
+            bytes,
+        }
+    }
+
+    #[test]
+    fn replacements_decode_in_order_on_threads_and_the_first_error_wins() {
+        let samples: Vec<_> = (0..11).map(|i| png_sample(i, i + 1)).collect();
+        let mut budget = 0;
+        let plans: Vec<_> = samples
+            .iter()
+            .map(|s| admit(s, &mut budget).unwrap())
+            .collect();
+        assert_eq!(budget, (1..=11).sum::<usize>() * 4);
+        let images = decode_admitted(&samples, &plans);
+        for (i, image) in images.into_iter().enumerate() {
+            let image = image.unwrap();
+            assert_eq!(image.levels[0].width, i as u32 + 1);
+            assert_eq!(image.levels[0].pixels_rgba[0], i as u8);
+        }
+        // A replacement whose pixels disagree with its admitted size fails;
+        // an earlier failure is reported before a later one.
+        let mut bad = plans;
+        bad[3] = Admitted::Single(99, 1);
+        bad[7] = Admitted::Single(98, 1);
+        let images = decode_admitted(&samples, &bad);
+        let first = images.iter().position(|r| r.is_err());
+        assert_eq!(first, Some(3));
+    }
     #[test]
     fn explicit_uv_expressions_retain_truncation_sign_and_low_bits() {
         assert_eq!(

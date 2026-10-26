@@ -13333,6 +13333,8 @@ fn run(mut args: Vec<PathBuf>) -> Result<AppExit, Box<dyn std::error::Error>> {
     timer.mark("captures and options");
     eprintln!("Validating the selected KH2FM source, then decoding the test room...");
     let mut loaded = load(&source, &args[2], basic_fk)?;
+    // The motion sets the load read many times are not needed in play.
+    data::motion::release_motion_sets();
     let mut timer = LoadTimer::new();
     let catalog = enemy_catalog::Catalog::load(&source)?;
     timer.mark("enemy catalog");
