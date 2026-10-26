@@ -318,7 +318,7 @@ struct ShapeConfig {
     height: f32,
 }
 
-#[derive(Deserialize)]
+#[derive(Clone, Deserialize)]
 struct EffectConfig {
     weapon: Locator,
     #[serde(default)]
@@ -3171,6 +3171,60 @@ fn player_params(
     Ok((params, prty_index, prty_offset))
 }
 
+/// The effect sources with their enemy bank maps still empty, and each enemy
+/// object's sound and voice bank bytes (objentry id, 0 for the room's own
+/// enemy) to register.
+type ReadEffects = (EffectSources, Vec<(u32, Option<Vec<u8>>, Option<Vec<u8>>)>);
+
+/// The configured effect containers (with their remaster pages) and the
+/// battle enemies' object effects and sound banks.
+fn read_effect_sources(source: &ProbeSource, e: &EffectConfig) -> Result<ReadEffects, String> {
+    use visual::effects::{load_atlas, load_pax};
+    // Each enemy object's own sound bank (the `se/obj/seNNN` asset of its
+    // archive): registered under its header number, which is the thousand
+    // of the ids its hits play.
+    let mut enemy_bank_bytes = Vec::new();
+    let mut register = |key: u32, index: &str, ordinal: usize, hash: [u8; 16]| {
+        let bank = sound::object_bank(source, index, ordinal, hash);
+        let voice = (key != 0)
+            .then(|| sound::object_voice_bank(source, index, ordinal, hash))
+            .flatten();
+        enemy_bank_bytes.push((key, bank, voice));
+    };
+    if let Some(l) = &e.enemy {
+        register(0, &l.index, l.ordinal, l.name_hash);
+    }
+    if let Ok(library) = data::path_lookup::Library::open(source) {
+        for &(id, name) in &enemy_battle::SUPPORTED {
+            if let Some(f) = library.find(&format!("obj/{name}.a.us")) {
+                register(id, f.index, f.ordinal, f.name_hash);
+            }
+        }
+    }
+    let fail = |e: Box<dyn std::error::Error>| e.to_string();
+    let pax = |l: &Locator| load_pax(source, &l.index, l.ordinal, l.name_hash);
+    let sources = EffectSources {
+        weapon: pax(&e.weapon).map_err(fail)?,
+        enemy: e.enemy.as_ref().map(pax).transpose().map_err(fail)?,
+        enemy_banks: HashMap::new(),
+        enemy_voices: HashMap::new(),
+        enemy_paxes: data::path_lookup::Library::open(source)
+            .map(|mut library| {
+                enemy_battle::SUPPORTED
+                    .iter()
+                    .filter_map(|&(id, name)| {
+                        drive_room::object_pax(&mut library, name).map(|p| (id, p))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default(),
+        system: e.system.as_ref().map(pax).transpose().map_err(fail)?,
+        atlas: load_atlas(source, &e.atlas.index, e.atlas.ordinal, e.atlas.name_hash)
+            .map_err(fail)?,
+    };
+    Ok((sources, enemy_bank_bytes))
+}
+
 /// A world, its footstep table and its step banks' bytes by bank number.
 type Footsteps = (
     u8,
@@ -3321,6 +3375,11 @@ fn load(
         .ok_or("SSTM record truncated")?;
     timer.mark("objects and room start");
     let battle = read_archive(source, &config.battle)?;
+    // The effect containers and the enemies' sound banks likewise.
+    let effects_job = config.effects.clone().map(|e| {
+        let source = source.clone();
+        std::thread::spawn(move || read_effect_sources(&source, &e))
+    });
     // The camp, journal and music decode on a thread of their own while the
     // rest loads: they need only the archives and their locators.
     let background = {
@@ -3957,56 +4016,24 @@ fn load(
         None => None,
     };
     timer.mark("NPC");
-    let effects = match &config.effects {
-        Some(e) => {
-            use visual::effects::{load_atlas, load_pax};
-            // Each enemy object's own sound bank (the `se/obj/seNNN` asset of
-            // its archive): registered under its header number, which is the
-            // thousand of the ids its hits play.
-            let mut enemy_banks = HashMap::new();
-            let mut enemy_voices = HashMap::new();
-            let mut register = |key: u32, index: &str, ordinal: usize, hash: [u8; 16]| {
-                if let Some(bytes) = sound::object_bank(source, index, ordinal, hash)
+    // Read on their own thread since the start (`read_effect_sources`);
+    // the enemies' banks register here, in the order they did before.
+    let effects = match effects_job {
+        Some(job) => {
+            let (mut sources, enemy_bank_bytes) = job.join().expect("effect sources thread")?;
+            for (key, bank, voice) in enemy_bank_bytes {
+                if let Some(bytes) = bank
                     && let Ok(number) = banks.insert(bytes)
                 {
-                    enemy_banks.insert(key, number);
+                    sources.enemy_banks.insert(key, number);
                 }
-                if key != 0
-                    && let Some(bytes) = sound::object_voice_bank(source, index, ordinal, hash)
+                if let Some(bytes) = voice
                     && let Ok(number) = banks.insert(bytes)
                 {
-                    enemy_voices.insert(key, number);
-                }
-            };
-            if let Some(l) = &e.enemy {
-                register(0, &l.index, l.ordinal, l.name_hash);
-            }
-            if let Ok(library) = data::path_lookup::Library::open(source) {
-                for &(id, name) in &enemy_battle::SUPPORTED {
-                    if let Some(f) = library.find(&format!("obj/{name}.a.us")) {
-                        register(id, f.index, f.ordinal, f.name_hash);
-                    }
+                    sources.enemy_voices.insert(key, number);
                 }
             }
-            let pax = |l: &Locator| load_pax(source, &l.index, l.ordinal, l.name_hash);
-            Some(EffectSources {
-                weapon: pax(&e.weapon)?,
-                enemy: e.enemy.as_ref().map(pax).transpose()?,
-                enemy_banks,
-                enemy_voices,
-                enemy_paxes: data::path_lookup::Library::open(source)
-                    .map(|mut library| {
-                        enemy_battle::SUPPORTED
-                            .iter()
-                            .filter_map(|&(id, name)| {
-                                drive_room::object_pax(&mut library, name).map(|p| (id, p))
-                            })
-                            .collect()
-                    })
-                    .unwrap_or_default(),
-                system: e.system.as_ref().map(pax).transpose()?,
-                atlas: load_atlas(source, &e.atlas.index, e.atlas.ordinal, e.atlas.name_hash)?,
-            })
+            Some(sources)
         }
         None => None,
     };
