@@ -399,6 +399,8 @@ enum Action {
     SpawnRival,
     RemoveRival,
     ToggleNetOverlay,
+    /// The duel's damage rule (host): Left/Right step it.
+    DuelDamage,
     /// Steps the link simulator through its presets.
     CycleNetSimulator,
     RemoveActor,
@@ -413,7 +415,11 @@ impl Action {
     fn adjustable(self) -> bool {
         matches!(
             self,
-            Self::Item(_) | Self::Growth(_) | Self::PlaybackSpeed | Self::GoToFrame
+            Self::Item(_)
+                | Self::Growth(_)
+                | Self::PlaybackSpeed
+                | Self::GoToFrame
+                | Self::DuelDamage
         )
     }
 
@@ -476,6 +482,9 @@ impl Action {
             Self::SpawnRival => "A second Sora, run by a test script, to try the duel alone.",
             Self::RemoveRival => "Remove the scripted second Sora.",
             Self::ToggleNetOverlay => "Ping, loss, data rates and warnings at the top right.",
+            Self::DuelDamage => {
+                "Left/Right: what every Sora-against-Sora hit's damage is multiplied by."
+            }
             Self::CycleNetSimulator => {
                 "Adds latency and loss to what this game sends. Set both games for a round trip."
             }
@@ -1156,6 +1165,14 @@ fn rows(
                     ..row("Simulated network", Action::CycleNetSimulator, game.duel)
                 },
                 section("Duel"),
+                Row {
+                    value: text(&format!("x{}", game.duel_rules.damage)),
+                    ..row(
+                        "Damage",
+                        Action::DuelDamage,
+                        (game.duel || !game.rivals.is_empty()) && !game.net_client,
+                    )
+                },
                 row(
                     "Scripted rival Sora",
                     Action::SpawnRival,
@@ -1878,6 +1895,12 @@ fn act(
         Action::TogglePerfOverlay => {
             game.perf_overlay = !game.perf_overlay;
             None
+        }
+        Action::DuelDamage => {
+            let (lo, hi) = duel_loadout::DAMAGE_RANGE;
+            let d = &mut game.duel_rules.damage;
+            *d = (*d + step as f32 * duel_loadout::DAMAGE_STEP).clamp(lo, hi);
+            Some(format!("Duel damage x{}", *d))
         }
         Action::ToggleNetOverlay => {
             game.net_overlay = !game.net_overlay;

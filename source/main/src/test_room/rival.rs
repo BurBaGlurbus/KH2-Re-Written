@@ -195,6 +195,21 @@ pub(crate) fn script_pad(tick: u64, me: [f32; 3], toward: [f32; 3]) -> RivalPad 
     pad
 }
 
+/// `KH2RW_RIVAL_BENCH` (a damage measurement): close in and swing without
+/// pause, every press inside the combo's window.
+pub(crate) fn bench_pad(tick: u64, me: [f32; 3], toward: [f32; 3]) -> RivalPad {
+    let d = Vec2::new(toward[0] - me[0], toward[2] - me[2]);
+    RivalPad {
+        direction: if d.length() > 90. {
+            d.normalize_or_zero().to_array()
+        } else {
+            [0., 0.]
+        },
+        attack: d.length() < 220. && tick.is_multiple_of(6),
+        ..RivalPad::default()
+    }
+}
+
 /// The room Sora's TARGET shape as a rival's attacks aim at it.
 fn sora_target(game: &Game, radius: f32) -> Option<ptya::Target> {
     let centre = enemy_target::player_targetcentre(game)?;
@@ -246,13 +261,18 @@ pub(crate) fn tick(mut game: ResMut<Game>) {
         return;
     };
     let tick = game.tick;
+    let bench = std::env::var_os("KH2RW_RIVAL_BENCH").is_some();
     let sora_at = game.sora.player.position;
     let sora_shape = sora_target(game, kit.target_radius);
     let mut rivals = std::mem::take(&mut game.rivals);
     for rival in &mut rivals {
         let player = &mut rival.fighter.player;
         if rival.control == Control::Script {
-            rival.pad = script_pad(tick, player.position, sora_at);
+            rival.pad = if bench {
+                bench_pad(tick, player.position, sora_at)
+            } else {
+                script_pad(tick, player.position, sora_at)
+            };
         }
         let pad = rival.pad;
         let me = target_centre(&kit, player);

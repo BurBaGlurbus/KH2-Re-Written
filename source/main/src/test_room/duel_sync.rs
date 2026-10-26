@@ -131,6 +131,12 @@ pub(crate) fn host_send(net: Option<ResMut<DuelNet>>, mut game: ResMut<Game>) {
     if net.role != Role::Host || !net.playing() {
         return;
     }
+    // The rules, whenever the joiner does not have the current ones.
+    if net.sent_rules != Some(game.duel_rules) {
+        net.sent_rules = Some(game.duel_rules);
+        net.session
+            .send(RELIABLE, duel_wire::encode_rules(&game.duel_rules));
+    }
     let mut fighters = vec![state_of(
         fighter_slots::HOST,
         &game.sora.player,
@@ -229,6 +235,8 @@ pub(crate) fn join_apply(net: Option<ResMut<DuelNet>>, mut game: ResMut<Game>) {
             for e in &events {
                 play_event(&mut game, e);
             }
+        } else if let Some(rules) = duel_wire::decode_rules(&m) {
+            game.duel_rules = rules;
         }
     }
     if net.snapshots.len() > SNAPSHOT_BACKLOG {

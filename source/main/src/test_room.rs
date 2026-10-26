@@ -1098,6 +1098,9 @@ struct Game {
     rival_kit: Option<Arc<rival::RivalKit>>,
     /// `--rival-script`: a scripted rival from the first tick.
     rival_script: bool,
+    /// The duel's rules (`--duel-damage`, F3 on the host; the host's reach
+    /// the joiner).
+    duel_rules: duel_loadout::MatchRules,
     /// A duel runs (a LAN session or `--rival-script`): the pause menu,
     /// the debug menu and game over no longer stop the field.
     duel: bool,
@@ -12847,6 +12850,7 @@ fn run(mut args: Vec<PathBuf>) -> Result<AppExit, Box<dyn std::error::Error>> {
     let mut net_name: Option<String> = None;
     let mut net_sim = net::link::Conditions::default();
     let mut net_overlay = false;
+    let mut duel_rules = duel_loadout::MatchRules::default();
     let mut ability_tour = false;
     let mut gear_tour = false;
     let mut gear_tour_quick = false;
@@ -12940,6 +12944,14 @@ fn run(mut args: Vec<PathBuf>) -> Result<AppExit, Box<dyn std::error::Error>> {
                 )?;
             }
             Some("--net-overlay") => net_overlay = true,
+            Some("--duel-damage") => {
+                duel_rules.damage = options
+                    .next()
+                    .and_then(|v| v.to_str())
+                    .ok_or("duel damage absent")?
+                    .parse::<f32>()?
+                    .clamp(duel_loadout::DAMAGE_RANGE.0, duel_loadout::DAMAGE_RANGE.1);
+            }
             Some("--bind") => {
                 net_bind = options
                     .next()
@@ -13552,6 +13564,7 @@ fn run(mut args: Vec<PathBuf>) -> Result<AppExit, Box<dyn std::error::Error>> {
         rivals: Vec::new(),
         rival_kit: Some(rival_kit),
         rival_script,
+        duel_rules,
         duel: rival_script,
         local_slot: 0,
         net_client: false,

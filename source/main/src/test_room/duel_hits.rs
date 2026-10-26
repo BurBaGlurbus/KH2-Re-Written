@@ -255,8 +255,9 @@ pub(crate) fn tick(mut game: ResMut<Game>, mut previous: Local<HashMap<(u64, usi
     }
     let facts: Vec<(Vec3, Vec3, u8)> = views.iter().map(|v| (v.at, v.facing, v.slot)).collect();
     let sstm = rt.enemy.sstm;
+    let rules = game.duel_rules;
     for hit in landed {
-        land(game, &kit, sstm, &facts, hit, tick);
+        land(game, rules, &kit, sstm, &facts, hit, tick);
     }
     knock_outs(game, tick);
 }
@@ -289,6 +290,7 @@ fn set_started(game: &mut Game, who: Who, tick: u64) {
 
 fn land(
     game: &mut Game,
+    rules: duel_loadout::MatchRules,
     kit: &rival::RivalKit,
     sstm: actor_physics::Sstm,
     facts: &[(Vec3, Vec3, u8)],
@@ -387,7 +389,9 @@ fn land(
         // difficulty.
         difficulty: combat::Difficulty::Standard,
     };
-    let damage = combat::damage_with(&attacker_stats, &attack, &victim.vitals.target, &state);
+    // The game's formula, then the duel's damage rule.
+    let formula = combat::damage_with(&attacker_stats, &attack, &victim.vitals.target, &state);
+    let damage = rules.damage(formula);
     let damage_motion = (10..=39).contains(&victim.player.motion_id(clips));
     let veto = combat::sora_veto(ab.has(127), ab.has(128), victim.vitals.hp, 0, damage_motion);
     let max = victim.vitals.target.max_hp;
@@ -437,7 +441,7 @@ fn land(
     game.duel_events.extend(events);
     game.event(
         serde_json::json!({"event":"duel_hit","tick":tick,"attacker":attacker_slot,
-        "victim":victim_slot,"atkp":hit.atkp,"step":row,"damage":damage,"hp":hp}),
+        "victim":victim_slot,"atkp":hit.atkp,"step":row,"formula":formula,"damage":damage,"hp":hp}),
     );
 }
 

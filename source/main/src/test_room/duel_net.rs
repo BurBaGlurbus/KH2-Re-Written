@@ -83,6 +83,8 @@ pub(crate) struct DuelNet {
     pub preset: Option<usize>,
     /// Snapshots skipped to catch up, inputs dropped as too old.
     pub skipped: u64,
+    /// Host: the rules last sent to the joiner.
+    pub sent_rules: Option<duel_loadout::MatchRules>,
     pub warnings: VecDeque<String>,
     since_refresh: u32,
     lines: Vec<(String, bool)>,
@@ -218,6 +220,7 @@ impl DuelNet {
             stale_run: 0,
             preset: setup.conditions.is_clear().then_some(0),
             skipped: 0,
+            sent_rules: None,
             warnings: VecDeque::new(),
             since_refresh: 0,
             lines: Vec::new(),
@@ -277,6 +280,7 @@ pub(crate) fn begin(
                 net.used_input = None;
                 net.snapshots.clear();
                 net.shown_snapshot = None;
+                net.sent_rules = None;
                 let slot = remote_slot(net.role);
                 rival::spawn_remote(&mut game, slot);
                 game.event(serde_json::json!({"event":"net_connected","tick":tick,
@@ -430,7 +434,10 @@ pub(crate) fn sample(net: Option<ResMut<DuelNet>>, game: Res<Game>) {
     }
     let warnings: Vec<String> = net.warnings.iter().cloned().collect();
     lines.extend(warnings.into_iter().map(|w| (w, true)));
-    lines.push((format!("Tick {}", game.tick), false));
+    lines.push((
+        format!("Damage x{}   tick {}", game.duel_rules.damage, game.tick),
+        false,
+    ));
     net.starved = 0;
     net.stale = 0;
     net.lines = lines;

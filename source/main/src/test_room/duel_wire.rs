@@ -12,6 +12,7 @@ use player::Action;
 const INPUT: u8 = 1;
 const SNAPSHOT: u8 = 2;
 const EVENTS: u8 = 3;
+const RULES: u8 = 4;
 
 /// Ticks of buttons each input message repeats.
 pub(crate) const INPUT_REDUNDANCY: usize = 6;
@@ -227,6 +228,24 @@ pub(crate) fn decode_snapshot(bytes: &[u8]) -> Option<Snapshot> {
     r.is_empty().then_some(Snapshot { tick, fighters })
 }
 
+/// The host's match rules (reliable, on connecting and on every change).
+pub(crate) fn encode_rules(rules: &super::duel_loadout::MatchRules) -> Vec<u8> {
+    let mut w = Writer::default();
+    w.u8(RULES);
+    w.f32(rules.damage);
+    w.finish()
+}
+
+pub(crate) fn decode_rules(bytes: &[u8]) -> Option<super::duel_loadout::MatchRules> {
+    let mut r = Reader::new(bytes);
+    if r.u8()? != RULES {
+        return None;
+    }
+    let damage = r.f32()?;
+    (r.is_empty() && damage.is_finite() && damage > 0.)
+        .then_some(super::duel_loadout::MatchRules { damage })
+}
+
 /// What the joiner shows of a host-side moment: sounds and sparks are
 /// played and drawn locally from these, never replicated as such.
 #[derive(Clone, Debug, PartialEq)]
@@ -437,6 +456,16 @@ mod tests {
         let mut nan = bytes.clone();
         nan[11..15].copy_from_slice(&f32::NAN.to_le_bytes());
         assert_eq!(decode_snapshot(&nan), None);
+    }
+
+    #[test]
+    fn rules_round_trip() {
+        let rules = super::super::duel_loadout::MatchRules { damage: 3.5 };
+        assert_eq!(decode_rules(&encode_rules(&rules)), Some(rules));
+        assert_eq!(decode_rules(&[RULES]), None);
+        let mut nan = encode_rules(&rules);
+        nan[1..5].copy_from_slice(&f32::NAN.to_le_bytes());
+        assert_eq!(decode_rules(&nan), None);
     }
 
     #[test]
