@@ -67,4 +67,4 @@ while new and seen; visiting a row in the list sets its seen bit (`FUN_140363c70
 
 Verdict: PARTIAL for issue #31: the Abilities, Customize and Equip badges follow the traced
 producer; the forms', Status and Journal badges remain.
-Next: the forms' lists and the Status badges (block +0xc8, seen save+0x4274).
+Next: issue #161 (the Journal row badge, the forms' lists and the Status form and Summon rows).
