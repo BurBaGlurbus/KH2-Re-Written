@@ -315,6 +315,10 @@ pub struct MemberRt {
     pub item_fired: bool,
     /// The member's character record (abilities, item slots, frequencies).
     pub save: party_members::Save,
+    /// What the record's weapon, armor and accessories add to its status
+    /// totals (FUN_1403c1d90 through FUN_1403c1190), rebuilt when the camp
+    /// closes; the level row's numbers stay in `kind`.
+    pub gear: player::equipment_stats::Totals,
     /// The HUD event the gauge has not read yet (0 none, 1-3 hit, 4 heal;
     /// FUN_1403d60c0 and FUN_1403d2eb0 post it).
     pub event: u8,
@@ -1192,10 +1196,10 @@ fn enemy_centre(rt: &EnemyRuntime) -> Vec3 {
 
 /// A member's attacker terms: Strength and Magic of its level row, a
 /// player-type owner.
-fn attacker(kind: &PartyKind) -> combat::AttackerStats {
+fn attacker(kind: &PartyKind, gear: &player::equipment_stats::Totals) -> combat::AttackerStats {
     combat::AttackerStats {
-        strength: kind.strength,
-        magic: kind.magic,
+        strength: kind.strength + i32::from(gear.strength),
+        magic: kind.magic + i32::from(gear.magic),
         max: 99999,
         min: 1,
         mods: combat::AttackerMods {
@@ -1495,6 +1499,16 @@ const KO_FX: u64 = FX_BASE | 1 << 39;
 const ITEM_FX: u64 = FX_BASE | 1 << 38;
 
 impl MemberRt {
+    /// The member as a target: the level row's defense plus the equipment's,
+    /// and the equipment's resists (status totals, FUN_1403c1d90).
+    pub fn target(&self) -> combat::TargetStats {
+        combat::TargetStats {
+            defense: self.kind.target.defense + i32::from(self.gear.defense),
+            weakness: self.gear.resist.map(i32::from),
+            ..self.kind.target
+        }
+    }
+
     /// FUN_1403d69b0: a battle voice, picked from the vtbl rows of the
     /// character.
     pub fn say(&mut self, n: i16, sound_queue: &mut Vec<(u32, &'static str)>) {
@@ -1708,7 +1722,7 @@ fn take_hit<W: player::World>(
         damage_control_ratio: 50,
         difficulty: src.difficulty,
     };
-    let damage = combat::damage_with(src.attacker, &attack, &m.kind.target, &state);
+    let damage = combat::damage_with(src.attacker, &attack, &m.target(), &state);
     let before = m.hp;
     m.hp = combat::apply_damage(m.hp, 0, m.max_hp, damage, false);
     // FUN_1403d2eb0: HP 0 runs vt+0xb0 (FUN_1403c33d0): the dead bit and
@@ -2181,7 +2195,7 @@ pub fn tick(game: &mut Game, tick: u64) {
                     party_blade::Start {
                         position: m.follower.position,
                         yaw: m.follower.yaw,
-                        stats: kind.target,
+                        stats: m.target(),
                         sstm: kind.sstm,
                         target: centre,
                         records: kind.records,
@@ -2548,13 +2562,13 @@ pub fn tick(game: &mut Game, tick: u64) {
                     v.previous.map(Vec3::from_array),
                 )],
                 moving: None,
-                stats: attacker(&kind),
+                stats: attacker(&kind, &m.gear),
                 origin: Vec3::from_array(m.follower.position),
                 spell: true,
                 pax: kind.pax.clone(),
             });
             if let Some(rt) = enemy.as_mut() {
-                let stats = attacker(&kind);
+                let stats = attacker(&kind, &m.gear);
                 if let Some((at, dir, effect)) = land_volume(
                     rt,
                     index,
@@ -2663,7 +2677,7 @@ pub fn tick(game: &mut Game, tick: u64) {
                         v.previous.map(Vec3::from_array),
                     )],
                     moving: v.moving.map(Vec3::from_array),
-                    stats: attacker(&kind),
+                    stats: attacker(&kind, &m.gear),
                     origin: Vec3::from_array(pos),
                     spell: true,
                     pax: kind.pax.clone(),
@@ -2693,7 +2707,7 @@ pub fn tick(game: &mut Game, tick: u64) {
                 }
             }
             if let Some(rt) = enemy.as_mut() {
-                let stats = attacker(&kind);
+                let stats = attacker(&kind, &m.gear);
                 for v in &out.volumes {
                     let key = KEY_BASE | 1 << 47 | (v.key & 0x7fff_ffff_ffff);
                     if let Some((at, dir, effect)) = land_volume(
@@ -2770,7 +2784,7 @@ pub fn tick(game: &mut Game, tick: u64) {
                         .map(|&(c, radius)| (at + turn * c, radius, radius, None))
                         .collect(),
                     moving: None,
-                    stats: attacker(&kind),
+                    stats: attacker(&kind, &m.gear),
                     origin: at,
                     spell: false,
                     pax: kind.weapon_pax.clone(),
@@ -2831,7 +2845,7 @@ pub fn tick(game: &mut Game, tick: u64) {
                 0.,
                 m.follower.yaw.cos(),
             ));
-            let stats = attacker(&kind);
+            let stats = attacker(&kind, &m.gear);
             if let Some(damage) =
                 rt.enemy
                     .hit_by(dir.to_array(), high, &attack, &stats, rt.difficulty, false)
@@ -2964,8 +2978,9 @@ pub fn tick(game: &mut Game, tick: u64) {
     // (Power x Magic + 99) / 100 with the healer's Magic, clamped to the
     // maximum HP.
     for (slot, atkp, healer) in heals {
-        let Some((stats, healer_name)) =
-            party.get(healer).map(|m| (attacker(&m.kind), m.kind.name))
+        let Some((stats, healer_name)) = party
+            .get(healer)
+            .map(|m| (attacker(&m.kind, &m.gear), m.kind.name))
         else {
             continue;
         };

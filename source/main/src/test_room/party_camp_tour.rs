@@ -1,8 +1,8 @@
 //! The unattended `--party-camp-tour <dir>` (in the ability tour's setup,
 //! a room with Donald and Goofy): the camp's Customize, Abilities, Status
 //! and Equip pages of Donald, each switched to Goofy with R2, the top
-//! level's and Party's member models, and a check that Donald's record
-//! took every change.
+//! level's and Party's member models, Donald's first staff, and a check
+//! that Donald's record took every change.
 //!
 //! Customize: △ on Battle Style (Technic → Target), △ on Thunder (Free →
 //! Well-Balanced), its popup's Rare, △ twice on Potion (OFF+Often →
@@ -75,7 +75,7 @@ const STEPS: &[(u64, u64, bool)] = &[
     (20, DECIDE, true),
     (SCREEN, CANCEL, false),
     (SCREEN, CANCEL, false),
-    // Items: Donald → Equip, his weapon list, R2 to Goofy.
+    // Items: Donald → Equip, his weapon list, the first staff, R2 to Goofy.
     (SCREEN, UP, false),
     (MOVE, UP, false),
     (MOVE, UP, false),
@@ -84,7 +84,7 @@ const STEPS: &[(u64, u64, bool)] = &[
     (SCREEN, DOWN, true),
     (20, DECIDE, true),
     (SCREEN, DECIDE, true),
-    (SCREEN, CANCEL, false),
+    (SCREEN, DECIDE, true),
     (SCREEN, R2, true),
     (SCREEN, CANCEL, false),
     (SCREEN, CANCEL, false),
@@ -123,11 +123,11 @@ pub fn tour(slots: Vec<u16>) -> Tour {
 }
 
 /// Donald's record after the tour: Target Attack, Thunder equipped at
-/// Well-Balanced, Potion on Auto-Reload at Last hope!.
+/// Well-Balanced, Potion on Auto-Reload at Last hope!, a staff in hand.
 pub fn donald_passes(s: &player::party_members::Save) -> bool {
     let thunder = s.abilities.contains(&0x80a7);
     let potion = s.originals[..usize::from(s.item_slots)].contains(&1);
-    s.style == 1 && thunder && s.frequency[9] == 1 && potion && s.frequency[0] == 2
+    s.style == 1 && thunder && s.frequency[9] == 1 && potion && s.frequency[0] == 2 && s.weapon != 0
 }
 
 #[cfg(test)]

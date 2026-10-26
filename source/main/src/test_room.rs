@@ -11997,7 +11997,12 @@ fn camp_tick(
             // The party members' records and HP / MP, by character (a Party
             // swap reorders the camp's pages; the room's party order is
             // not written back).
-            for rt in game.party.iter_mut() {
+            let Game {
+                party,
+                ability_source,
+                ..
+            } = &mut *game;
+            for rt in party.iter_mut() {
                 let Some(m) = menu
                     .data
                     .items
@@ -12016,6 +12021,9 @@ fn camp_tick(
                         menu.data.abilities.members.get(m),
                         menu.data.customize.styles.get(m).copied(),
                     );
+                    // FUN_1402fc760 → FUN_1403c2100: the record's status
+                    // totals follow its equipment.
+                    rt.gear = ability_source.gear(e, None);
                 }
                 if let Some(p) = menu.data.panels.members.get(m) {
                     rt.hp = p.hp;
@@ -12031,7 +12039,8 @@ fn camp_tick(
                     "frequency": m.save.frequency.to_vec(), "items": m.save.items.to_vec(),
                     "originals": m.save.originals.to_vec(),
                     "abilities": m.save.abilities.iter().filter(|&&v| v != 0).copied().collect::<Vec<_>>(),
-                    "weapon": m.save.weapon, "hp": m.hp, "mp": m.mp.cur})).collect();
+                    "weapon": m.save.weapon, "hp": m.hp, "mp": m.mp.cur,
+                    "gear": [m.gear.strength, m.gear.magic, m.gear.defense]})).collect();
                 game.event(serde_json::json!({"event":"camp_party","tick":tick,"members":records}));
             }
             // Items used in the camp change the room's HP / MP.
@@ -13680,6 +13689,7 @@ fn run(mut args: Vec<PathBuf>) -> Result<AppExit, Box<dyn std::error::Error>> {
                 limit: None,
                 fx_at: None,
                 record: combat::HitRecord::new(true),
+                gear: player::equipment_stats::Totals::start(0, 0, 0, 0),
                 ko_fx: false,
                 cast_motion: 0,
                 reflected: false,
