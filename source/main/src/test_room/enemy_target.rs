@@ -42,6 +42,8 @@ fn set_scan_slots(slots: &mut [u16], enabled: bool) -> Result<(), String> {
 pub enum TargetId {
     Legacy(usize),
     Gallery(u64, usize),
+    /// The duel's other Sora, by slot.
+    Rival(u8),
 }
 
 #[derive(Resource, Default)]
@@ -126,6 +128,18 @@ pub fn candidates(game: &Game, gallery: &enemy_gallery::EnemyGallery) -> Vec<Can
                     },
                 });
             }
+        }
+    }
+    if let Some(kit) = &game.rival_kit {
+        for r in game.rivals.iter().filter(|r| r.fighter.vitals.hp > 0) {
+            out.push(Candidate {
+                key: TargetId::Rival(r.slot),
+                shape: player::ptya::Target {
+                    centre: rival::target_centre(kit, &r.fighter.player),
+                    radius: kit.target_radius,
+                    height: kit.target_radius,
+                },
+            });
         }
     }
     for actor in &gallery.actors {
@@ -292,7 +306,15 @@ pub fn camera_anchor(
             .enemy
             .as_ref()
             .and_then(|rt| enemy_targets(rt).get(ordinal).map(|s| s.centre)),
+        TargetId::Rival(slot) => rival_centre(game, slot),
     }
+}
+
+/// A rival Sora's TARGET centre, while he is there.
+fn rival_centre(game: &Game, slot: u8) -> Option<[f32; 3]> {
+    let kit = game.rival_kit.as_ref()?;
+    let r = game.rivals.iter().find(|r| r.slot == slot)?;
+    Some(rival::target_centre(kit, &r.fighter.player))
 }
 
 /// The dynamic camera-collision spheres of the gallery's live actors
@@ -334,6 +356,10 @@ pub fn untargetable_but_present(
             .find(|a| a.id == actor)
             .and_then(|a| a.battle.as_ref())
             .is_some_and(|battle| !battle.brain.targetable()),
+        TargetId::Rival(slot) => game
+            .rivals
+            .iter()
+            .any(|r| r.slot == slot && r.fighter.vitals.hp <= 0),
     }
 }
 
@@ -356,6 +382,11 @@ fn hp_pool(game: &Game, gallery: &enemy_gallery::EnemyGallery, id: TargetId) -> 
                 .filter(|battle| battle.brain.targetable())?;
             Some((battle.brain.hp(), battle.assets.stats.max_hp))
         }
+        TargetId::Rival(slot) => {
+            let r = game.rivals.iter().find(|r| r.slot == slot)?;
+            let v = &r.fighter.vitals;
+            (v.hp > 0).then_some((v.hp, v.target.max_hp))
+        }
     }
 }
 
@@ -368,7 +399,7 @@ fn hp_events(gallery: &enemy_gallery::EnemyGallery, id: TargetId) -> Vec<i32> {
             .and_then(|actor| actor.battle.as_ref())
             .map(|battle| battle.hp_events.clone())
             .unwrap_or_default(),
-        TargetId::Legacy(_) => Vec::new(),
+        TargetId::Legacy(_) | TargetId::Rival(_) => Vec::new(),
     }
 }
 
@@ -382,7 +413,7 @@ fn primary_pool(gallery: &enemy_gallery::EnemyGallery, id: TargetId) -> bool {
             .and_then(|a| a.battle.as_ref())
             .and_then(|battle| battle.pose.targets.iter().find(|s| s.ordinal == ordinal))
             .is_some_and(|shape| shape.parts == 0),
-        TargetId::Legacy(_) => true,
+        TargetId::Legacy(_) | TargetId::Rival(_) => true,
     }
 }
 
@@ -462,6 +493,7 @@ pub fn reticle_view(
                 .map(|s| s.centre.to_array())?,
             (actor & 0xff_ffff) << 16 | (ordinal as u64 & 0xffff),
         ),
+        TargetId::Rival(slot) => (rival_centre(game, slot)?, 2 << 40 | u64::from(slot)),
     };
     Some((
         visual::lock_on::Held {

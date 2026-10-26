@@ -395,6 +395,9 @@ enum Action {
     ToggleHideModel,
     ToggleCollisionOverlay,
     TogglePerfOverlay,
+    /// The duel's test script: a second Sora that fights the room's.
+    SpawnRival,
+    RemoveRival,
     RemoveActor,
     ClearActors,
     Warp(u8, u8),
@@ -467,6 +470,8 @@ impl Action {
             Self::ToggleHideModel => "Hide the model and keep the skeleton.",
             Self::ToggleCollisionOverlay => "Show the room's collision. F1 does the same.",
             Self::TogglePerfOverlay => "FPS, frame times, GPU and entities at the top left.",
+            Self::SpawnRival => "A second Sora, run by a test script, to try the duel alone.",
+            Self::RemoveRival => "Remove the scripted second Sora.",
             Self::RemoveActor => "Remove this enemy from the room.",
             Self::ClearActors => "Remove every summoned enemy.",
             Self::Warp(..) => "Warp to this room.",
@@ -1131,6 +1136,19 @@ fn rows(
                     value: on_off(game.perf_overlay),
                     ..row("Performance overlay", Action::TogglePerfOverlay, true)
                 },
+                section("Duel"),
+                row(
+                    "Scripted rival Sora",
+                    Action::SpawnRival,
+                    game.rivals.is_empty() && game.rival_kit.is_some(),
+                ),
+                row(
+                    "Remove the rival",
+                    Action::RemoveRival,
+                    game.rivals
+                        .iter()
+                        .any(|r| r.control == rival::Control::Script),
+                ),
                 section("Items and forms"),
                 row(
                     "Items",
@@ -1841,6 +1859,15 @@ fn act(
         Action::TogglePerfOverlay => {
             game.perf_overlay = !game.perf_overlay;
             None
+        }
+        Action::SpawnRival => {
+            rival::spawn_scripted(game);
+            menu.open = false;
+            Some("A scripted rival Sora joined".into())
+        }
+        Action::RemoveRival => {
+            game.rivals.retain(|r| r.control != rival::Control::Script);
+            Some("The rival left".into())
         }
         Action::RemoveActor => {
             gallery.remove_selected();

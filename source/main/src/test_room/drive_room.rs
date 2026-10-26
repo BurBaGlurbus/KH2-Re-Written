@@ -453,7 +453,7 @@ struct Stash {
     params: Params,
     clips: Clips,
     poses: HashMap<(Action, bool), usize>,
-    clip_poses: Vec<ClipPoses>,
+    clip_poses: Arc<Vec<ClipPoses>>,
     body: Vec<(usize, Vec3, f32, bool)>,
     attack: HashMap<u8, Vec<(usize, Vec3, f32)>>,
     /// The kit's two Keyblades' attack spheres.
@@ -914,7 +914,7 @@ fn swap_kit(game: &mut Game, form: u8) -> Result<(), String> {
                 params: kit.params,
                 clips: kit.clips,
                 poses: kit.actions.into_iter().collect(),
-                clip_poses: kit.clip_poses,
+                clip_poses: Arc::new(kit.clip_poses),
                 body: kit.body,
                 attack: kit.attack,
             }

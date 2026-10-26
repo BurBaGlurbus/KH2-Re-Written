@@ -106,6 +106,7 @@ mod party_room;
 mod perf_overlay;
 mod prize_room;
 mod reaction_command;
+mod rival;
 mod second_deck;
 mod sephiroth;
 mod settings_room;
@@ -1084,8 +1085,14 @@ struct Game {
     world: RoomWorld,
     /// The room's own Sora.
     sora: fighter::Fighter,
+    /// The duel's other Soras (none outside a duel or its test script),
+    /// in slot order, and the kit they move and are drawn with.
+    rivals: Vec<rival::Rival>,
+    rival_kit: Option<Arc<rival::RivalKit>>,
+    /// `--rival-script`: a scripted rival from the first tick.
+    rival_script: bool,
     poses: HashMap<(Action, bool), usize>,
-    clip_poses: Vec<ClipPoses>,
+    clip_poses: Arc<Vec<ClipPoses>>,
     part_indices: Vec<Vec<u32>>,
     tick: u64,
     log: Option<File>,
@@ -12651,6 +12658,7 @@ fn run(mut args: Vec<PathBuf>) -> Result<AppExit, Box<dyn std::error::Error>> {
     let mut show_collision = false;
     let mut perf_overlay = false;
     let mut basic_fk = false;
+    let mut rival_script = false;
     let mut ability_tour = false;
     let mut gear_tour = false;
     let mut gear_tour_quick = false;
@@ -12708,6 +12716,7 @@ fn run(mut args: Vec<PathBuf>) -> Result<AppExit, Box<dyn std::error::Error>> {
             Some("--show-collision") => show_collision = true,
             Some("--perf-overlay") => perf_overlay = true,
             Some("--basic-fk") => basic_fk = true,
+            Some("--rival-script") => rival_script = true,
             Some("--enemy-audit") if enemy_audit.is_none() => {
                 enemy_audit = Some(options.next().cloned().ok_or("enemy audit output absent")?);
             }
@@ -13256,6 +13265,16 @@ fn run(mut args: Vec<PathBuf>) -> Result<AppExit, Box<dyn std::error::Error>> {
     if let Some(h) = &loaded.hud {
         player.mp = magic::Mp::new(h.stats.1);
     }
+    // The rivals' kit: the room's starting one, shared with the room Sora.
+    let base_clip_poses = Arc::new(std::mem::take(&mut loaded.kit.clip_poses));
+    let rival_kit = Arc::new(rival::RivalKit {
+        params: loaded.params,
+        clips: loaded.kit.clips.clone(),
+        poses: poses.clone(),
+        clip_poses: base_clip_poses.clone(),
+        target_shape: loaded.kit.target_shape,
+        target_radius: loaded.kit.target_radius,
+    });
     let spell_fx_resource =
         spell_fx::SpellFx::new(loaded.magic.as_ref().and_then(|m| m.texcommon.clone()));
     // The room's stock with every Keyblade, armor and accessory it owns.
@@ -13293,8 +13312,11 @@ fn run(mut args: Vec<PathBuf>) -> Result<AppExit, Box<dyn std::error::Error>> {
         clips: loaded.kit.clips,
         world: loaded.world,
         sora: fighter::Fighter::new(player),
+        rivals: Vec::new(),
+        rival_kit: Some(rival_kit),
+        rival_script,
         poses,
-        clip_poses: loaded.kit.clip_poses,
+        clip_poses: base_clip_poses,
         part_indices: Vec::new(),
         display_frame: 0,
         tick: 0,
@@ -13940,7 +13962,13 @@ fn run(mut args: Vec<PathBuf>) -> Result<AppExit, Box<dyn std::error::Error>> {
         .add_plugins(SkatePlugins)
         .add_systems(
             Startup,
-            (setup, pause_for_autoplay, camp_setup, game_over::setup),
+            (
+                setup,
+                pause_for_autoplay,
+                camp_setup,
+                game_over::setup,
+                rival::script_setup,
+            ),
         )
         .add_systems(Update, crate::skate::toggle)
         .add_systems(Update, settings_room::apply_settings)
@@ -13957,7 +13985,7 @@ fn run(mut args: Vec<PathBuf>) -> Result<AppExit, Box<dyn std::error::Error>> {
                     // The command manager's reaction search and Triangle
                     // (FUN_1403b2340) run before Sora's update.
                     reaction_command::tick,
-                    simulate,
+                    (simulate, rival::tick).chain(),
                     summon::tick,
                     skate_tick,
                     area_tick,
@@ -14005,7 +14033,7 @@ fn run(mut args: Vec<PathBuf>) -> Result<AppExit, Box<dyn std::error::Error>> {
                 .chain(),
             (
                 drive_room::present,
-                present,
+                (present, rival::spawn_drawing, rival::present).chain(),
                 drive_room::thrown_keyblade,
                 skate_present,
                 present_enemy,
