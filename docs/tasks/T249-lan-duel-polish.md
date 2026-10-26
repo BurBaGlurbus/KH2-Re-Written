@@ -136,3 +136,23 @@ Loopback `fx6` (host `--duel-bench`, joiner `--duel-wisdom`): the host starts th
 20. Shot: `.local\lan-review\polish\joiner-wisdom-shot-and-host-trail.png`. Snapshot test with a bullet.
 Checks: fmt, clippy, `cargo test` (all passed), tours (`f6-*`: talk identical, deck exit ±1, magic the 1e-5
 float, party-hit identical but the exit): PASS.
+
+## 6. Result, GO, K.O. and the coin
+
+All by the tick (the host's clock for the match, this instance's for the menu and the vote), with the part of
+a tick since (`Time<Fixed>::overstep_fraction`) for the fades and the coin, so they run at the same speed at
+30, 144 or unlimited FPS; nothing is spawned (quads on the 2D layer each frame, rows in the camp).
+
+- **Results count up**: once the Results page has opened (the camp's Config screen, substate 1), each number row
+  comes in 10 ticks after the one above and counts up over 30 (ease-out), from blank. The over-field result
+  (no menu art) keeps its numbers as they are.
+- **GO**: a faint gold flash over the field, fading over 12 ticks. **K.O.**: a white flash at a knock-out,
+  fading over 20 ticks. [Duel choice; no slow motion: the duel's clock is the host's, and a cosmetic slow-down
+  would put one screen behind the other.]
+- **The coin**: a tie's coin flip shows a gold disc that turns edge-on as each face changes (in step with the
+  faces the help line names) and pops as it lands.
+- Shots: `.local\lan-review\polish\results-counting.png`, `go-flash.png`, `ko-flash.png`, `coin-spin.png`
+  (`--duel-shots` adds the moments).
+
+Checks: fmt, clippy, `cargo test` (1,102 passed), tours (`a2-*`: talk identical; magic, deck, party-hit the
+known noise), loopback (`anim1`, `anim2`): PASS.

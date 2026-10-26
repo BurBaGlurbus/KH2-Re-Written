@@ -531,6 +531,48 @@ fn backing(white: usize, rect: [f32; 4]) -> (usize, Vec<data::sprite_sequence::Q
     faded_backing(white, rect, 1.)
 }
 
+/// A rectangle in one colour.
+fn tinted(rect: [f32; 4], c: [f32; 4]) -> data::sprite_sequence::Quad {
+    let [x0, y0, x1, y1] = rect;
+    data::sprite_sequence::Quad {
+        corners: [[x0, y0], [x1, y0], [x0, y1], [x1, y1]],
+        uv: [0, 0, 1, 1],
+        colors: [c; 4],
+        blend: 0,
+    }
+}
+
+/// Past every edge of the 2D layer (the flashes).
+const SCREEN: [f32; 4] = [-512., -256., 1024., 768.];
+/// The tie's coin: where, how large, its rim.
+const COIN_CENTRE: [f32; 2] = [256., 150.];
+const COIN_RADIUS: f32 = 26.;
+const COIN_RIM: [f32; 4] = [1.1, 0.8, 0.3, 1.];
+
+/// A disc `width` times as wide as it is tall, in horizontal strips.
+fn disc(centre: [f32; 2], r: f32, width: f32, c: [f32; 4]) -> Vec<data::sprite_sequence::Quad> {
+    const STRIPS: usize = 20;
+    let half = |y: f32| r * width * (1. - (y / r).powi(2)).max(0.).sqrt();
+    (0..STRIPS)
+        .map(|i| {
+            let y0 = -r + 2. * r * i as f32 / STRIPS as f32;
+            let y1 = -r + 2. * r * (i + 1) as f32 / STRIPS as f32;
+            let [cx, cy] = centre;
+            data::sprite_sequence::Quad {
+                corners: [
+                    [cx - half(y0), cy + y0],
+                    [cx + half(y0), cy + y0],
+                    [cx - half(y1), cy + y1],
+                    [cx + half(y1), cy + y1],
+                ],
+                uv: [0, 0, 1, 1],
+                colors: [c; 4],
+                blend: 0,
+            }
+        })
+        .collect()
+}
+
 /// The backing at an opacity (the lobby's fade).
 fn faded_backing(
     white: usize,
@@ -569,10 +611,14 @@ pub(crate) fn present(
     camp: Option<Res<CampRes>>,
     game: Res<Game>,
     hud: Option<Res<Hud>>,
+    fixed: Res<Time<Fixed>>,
     mut frame: ResMut<Ui2dFrame>,
     mut images: ResMut<Assets<Image>>,
 ) {
     let Some(mut net) = net else { return };
+    // The part of a fixed tick since the last: the cosmetics below follow
+    // the tick, smoothly between ticks.
+    let frac = fixed.overstep_fraction().clamp(0., 1.);
     let Some(font) = hud.as_ref().and_then(|h| h.menu.as_ref()).map(|m| &m.font) else {
         return;
     };
@@ -623,6 +669,13 @@ pub(crate) fn present(
                 .is_some_and(|d| d.owner.0 == duel_camp::RESULT);
             !(result && m.state == pause_menu::State::Top)
         });
+    if let Some(c) = duel_match
+        .as_ref()
+        .filter(|_| !covered)
+        .and_then(|m| duel_match_room::flash(m, &net, &game, frac))
+    {
+        frame.draws.push((white, vec![tinted(SCREEN, c)]));
+    }
     let labels = duel_match
         .filter(|_| !covered)
         .map(|m| duel_match_room::labels(&m, &net, &game, in_camp))
@@ -641,6 +694,16 @@ pub(crate) fn present(
             sheet,
             field_command_menu::text_quads_sized(&l.text, [x, y], l.colour, &f, l.size),
         ));
+    }
+    // A tie's coin, over the vote.
+    if let Some((width, size)) = vote.as_ref().and_then(|v| duel_vote::coin(v, &game, frac)) {
+        let r = COIN_RADIUS * size;
+        frame
+            .draws
+            .push((white, disc(COIN_CENTRE, r, width, COIN_RIM)));
+        frame
+            .draws
+            .push((white, disc(COIN_CENTRE, r * 0.82, width, CURSOR)));
     }
     // A vote without the pause menu's art: its own panel.
     let vote_lines: Vec<(Vec<u8>, bool)> = vote

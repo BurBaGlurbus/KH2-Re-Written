@@ -83,6 +83,24 @@ pub(crate) struct MatchRoom {
     forfeit_armed: bool,
     /// [Test] `--duel-forfeit` has forfeited.
     forfeit_done: bool,
+    /// The local tick the result's Results page came up (its numbers count
+    /// up from there).
+    results_at: Option<u64>,
+}
+
+/// [Duel choice] The Results page's numbers: each row's value comes in
+/// REVEAL_STEP ticks after the one above and counts up over COUNT_TICKS.
+const REVEAL_FIRST: f32 = 8.;
+const REVEAL_STEP: f32 = 10.;
+const COUNT_TICKS: f32 = 30.;
+
+/// How far row `i`'s count has got `elapsed` ticks in (None: all of it).
+fn counted(elapsed: Option<f32>, i: usize) -> Option<f32> {
+    let Some(e) = elapsed else {
+        return Some(1.);
+    };
+    let k = (e - REVEAL_FIRST - REVEAL_STEP * i as f32) / COUNT_TICKS;
+    (k >= 0.).then(|| 1. - (1. - k.min(1.)).powi(3))
 }
 
 impl MatchRoom {
@@ -291,7 +309,7 @@ pub(crate) fn tick(
     if let Some(m) = room.m
         && matches!(
             (m.phase, now.saturating_sub(m.since)),
-            (Phase::Countdown, 100) | (Phase::Fight, 20)
+            (Phase::Countdown, 100) | (Phase::Fight, 3 | 20) | (Phase::RoundOver, 4)
         )
     {
         duel_camp::shot(game, (2, m.since, now.saturating_sub(m.since)));
@@ -308,7 +326,8 @@ pub(crate) fn tick(
             .m
             .filter(|_| over && !game.duel_vote_up)
             .map(|m| m.began as u32);
-        let text = room.m.map(|m| result_text(&m, seat, net, game));
+        // The Results page opens with its numbers still to count.
+        let text = room.m.map(|m| result_text(&m, seat, net, game, Some(0.)));
         let them = net.peer.clone().unwrap_or_else(|| "Opponent".into());
         let menu = duel_camp::hold(camp, game, duel_camp::RESULT, want, || {
             let (pages, help) = text.clone().unwrap_or_default();
@@ -333,7 +352,25 @@ pub(crate) fn tick(
                 pages,
             }
         });
-        if let (Some(menu), Some(m)) = (menu, room.m.as_ref()) {
+        if let (Some(menu), Some(m)) = (menu, room.m) {
+            // The Results page: once it has opened, its numbers count up,
+            // one row after another.
+            if menu.state == pause_menu::State::Config && menu.substate == 1 {
+                let at = *room.results_at.get_or_insert(game.tick);
+                let e = game.tick.saturating_sub(at) as f32;
+                // [Test] `--duel-shots`: the numbers mid-count.
+                if e == 30. {
+                    duel_camp::shot(game, (5, m.since, 30));
+                }
+                let (pages, _) = result_text(&m, seat, net, game, Some(e));
+                if let Some(d) = menu.data.duel.as_mut()
+                    && d.rows != pages.rows
+                {
+                    d.rows = pages.rows;
+                }
+            } else if menu.state != pause_menu::State::Config {
+                room.results_at = None;
+            }
             let (_, help) = text.unwrap_or_default();
             let wants = |s: usize| {
                 if m.quick[s] {
@@ -539,6 +576,24 @@ fn forfeit_menu(
     }
 }
 
+/// [Duel choice] A flash over the field at GO (faint gold) and at a
+/// knock-out (white), fading over a few frames by the host's clock; `frac`
+/// is the part of a tick since it, so it fades as smoothly at any frame
+/// rate.
+pub(crate) fn flash(room: &MatchRoom, net: &DuelNet, game: &Game, frac: f32) -> Option<[f32; 4]> {
+    let m = room.m?;
+    let t = now(net, game).saturating_sub(m.since) as f32 + frac;
+    let (colour, peak, ticks) = match m.phase {
+        Phase::Fight => ([2., 1.75, 0.9], 0.35, 12.),
+        Phase::RoundOver if m.why == Some(Why::KnockOut) => ([2., 2., 2.], 0.6, 20.),
+        _ => return None,
+    };
+    (t < ticks).then(|| {
+        let k = 1. - t / ticks;
+        [colour[0], colour[1], colour[2], peak * k * k]
+    })
+}
+
 /// The result's title, its colour and why the match ended.
 fn result_head(m: &Match, seat: usize, net: &DuelNet) -> (&'static str, [f32; 4], String) {
     let me = net.name.as_str();
@@ -560,23 +615,38 @@ fn result_head(m: &Match, seat: usize, net: &DuelNet) -> (&'static str, [f32; 4]
 }
 
 /// The result's numbers: (label, this player's - the other's).
-fn result_rows(m: &Match, seat: usize, game: &Game) -> Vec<(&'static str, String)> {
+/// `elapsed`: ticks since the numbers came up, for their count (None: as
+/// they are).
+fn result_rows(
+    m: &Match,
+    seat: usize,
+    game: &Game,
+    elapsed: Option<f32>,
+) -> Vec<(&'static str, String)> {
     let mut rows = Vec::new();
+    let pair = |i: usize, [a, b]: [u32; 2]| {
+        counted(elapsed, i).map_or(String::new(), |k| {
+            let n = |v: u32| (v as f32 * k).round() as u32;
+            format!("{} - {}", n(a), n(b))
+        })
+    };
     if duel_match::wins_needed(&game.duel_rules) > 1 {
-        rows.push(("Rounds", format!("{} - {}", m.wins[seat], m.wins[1 - seat])));
+        let wins = [m.wins[seat], m.wins[1 - seat]].map(u32::from);
+        rows.push(("Rounds", pair(rows.len(), wins)));
     }
+    let time = m.since.saturating_sub(m.began) as u32;
     rows.push((
         "Match time",
-        duel_rules::clock(m.since.saturating_sub(m.began) as u32),
+        counted(elapsed, rows.len()).map_or(String::new(), |k| {
+            duel_rules::clock((time as f32 * k).round() as u32)
+        }),
     ));
     rows.push((
         "Damage dealt",
-        format!("{} - {}", m.dealt[seat], m.dealt[1 - seat]),
+        pair(rows.len(), [m.dealt[seat], m.dealt[1 - seat]]),
     ));
-    rows.push((
-        "Hits landed",
-        format!("{} - {}", m.hits[seat], m.hits[1 - seat]),
-    ));
+    let hits = [m.hits[seat], m.hits[1 - seat]].map(u32::from);
+    rows.push(("Hits landed", pair(rows.len(), hits)));
     rows
 }
 
@@ -586,6 +656,7 @@ fn result_text(
     seat: usize,
     net: &DuelNet,
     game: &Game,
+    elapsed: Option<f32>,
 ) -> (pause_menu::DuelPages, String) {
     let (title, _, why) = result_head(m, seat, net);
     let mut rows = vec![duel_camp::info_row(
@@ -595,7 +666,7 @@ fn result_text(
     )];
     let note = "Yours first, then the other player's.";
     rows.extend(
-        result_rows(m, seat, game)
+        result_rows(m, seat, game, elapsed)
             .into_iter()
             .map(|(label, value)| duel_camp::info_row(label, &value, note)),
     );
@@ -865,7 +936,7 @@ pub(crate) fn labels(room: &MatchRoom, net: &DuelNet, game: &Game, in_camp: bool
             out.push(label(title, [256., 64.], 44. + 16. * (1. - k), colour));
             let mut rows = vec![why];
             rows.extend(
-                result_rows(&m, seat, game)
+                result_rows(&m, seat, game, None)
                     .into_iter()
                     .map(|(l, v)| format!("{l}   {v}")),
             );

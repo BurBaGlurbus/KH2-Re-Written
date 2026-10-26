@@ -119,6 +119,27 @@ pub(crate) fn flip_face(seed: u32, a: u8, b: u8, ticks: u64) -> u8 {
     }
 }
 
+/// [Duel choice] The tie's coin as it spins and lands: its width as a share
+/// of its height (edge-on as each turn ends, when the face changes) and its
+/// size (a short pop on landing), by the tick (`frac`: the part of a tick
+/// since), so it turns at the same speed at any frame rate.
+pub(crate) fn coin(room: &VoteRoom, game: &Game, frac: f32) -> Option<(f32, f32)> {
+    let v = room.vote.as_ref()?;
+    let (o, at) = (v.outcome?, room.decided_at?);
+    o.flip?;
+    let t = game.tick.saturating_sub(at) as f32 + frac;
+    let flip = FLIP_TICKS as f32;
+    if t >= flip + 45. {
+        return None;
+    }
+    if t >= flip {
+        let pop = (1. - (t - flip) / 12.).max(0.);
+        return Some((1., 1. + 0.15 * pop));
+    }
+    let u = (t % TURN_TICKS as f32) / TURN_TICKS as f32;
+    Some(((u * std::f32::consts::PI).sin().max(0.06), 1.))
+}
+
 pub(crate) fn encode_vote(vote: &Vote) -> Vec<u8> {
     let mut w = Writer::default();
     w.u8(VOTE);
@@ -378,6 +399,10 @@ pub(crate) fn tick(
         let t = game.tick - at;
         if o.flip.is_some() && t < FLIP_TICKS && t % TURN_TICKS == 0 {
             game.sound_queue.push((SE_MOVE, "coin"));
+        }
+        // [Test] `--duel-shots`: the coin mid-turn.
+        if o.flip.is_some() && t == 40 {
+            duel_camp::shot(game, (6, at, t));
         }
         if o.flip.is_some() && t == FLIP_TICKS {
             game.sound_queue.push((SE_DECIDE, "coin"));
