@@ -330,11 +330,13 @@ impl AreaSource {
             .get(world as usize)
             .ok_or("world index outside the world table")?;
         let name = format!("{code}{area:02}");
+        let mut timer = crate::load_timer::LoadTimer::new();
         let map = self.library.read(&format!("map/{name}.map"))?;
         let ard_bytes = self
             .library
             .read(&format!("ard/{}/{name}.ard", self.language))?;
         let ard_bar = bar::read_bar(&ard_bytes)?;
+        timer.mark("area: map and ard read");
         let entry = |kind: u16, name: u32| -> Option<&[u8]> {
             ard_bar
                 .entries
@@ -392,20 +394,40 @@ impl AreaSource {
             }
         }
         let (state, spawns, location) = chosen.ok_or("area scripts did not run")?;
+        timer.mark("area: area scripts");
         let programs = location.programs;
-        let (npcs, deferred, scripts, lines) =
-            self.townspeople(code, area, &state, &spawns, &types);
-        let music = self.music_change(world, area, state.setup.bgm);
-        let room = load_room_archive(&map, None)?;
-        let bobs = visual::scenery::load(&map).unwrap_or_else(|e| {
-            eprintln!("{name}: map objects not loaded: {e}");
-            visual::scenery::LoadedBobs {
-                models: Vec::new(),
-                placements: Vec::new(),
-            }
+        // The map's remaster images: its textures' (and its effects').
+        let replacements = self
+            .library
+            .read_map_replacements(&format!("map/{name}.map"))
+            .unwrap_or_default();
+        // The room and its map objects decode on a thread of their own while
+        // the townspeople and music load (neither reads the other).
+        let (room, bobs, npcs, deferred, scripts, lines, music) = std::thread::scope(|s| {
+            let scenery = s.spawn(|| {
+                let room = load_room_archive(&map, None, &replacements).map_err(|e| e.to_string());
+                let bobs = visual::scenery::load(&map, &replacements).unwrap_or_else(|e| {
+                    eprintln!("{name}: map objects not loaded: {e}");
+                    visual::scenery::LoadedBobs {
+                        models: Vec::new(),
+                        placements: Vec::new(),
+                    }
+                });
+                (room, bobs)
+            });
+            let (npcs, deferred, scripts, lines) =
+                self.townspeople(code, area, &state, &spawns, &types);
+            timer.mark("area: townspeople");
+            let music = self.music_change(world, area, state.setup.bgm);
+            timer.mark("area: music");
+            let (room, bobs) = scenery.join().expect("room thread");
+            (room, bobs, npcs, deferred, scripts, lines, music)
         });
+        let room = room?;
+        timer.mark("area: room and map objects (alongside the townspeople)");
         let collision = map_collision(&map, state.setup.bg_mask)?;
-        let pax = map_pax(&map).map(Arc::new);
+        let pax = map_pax(&map, &replacements).map(Arc::new);
+        timer.mark("area: collision and map effects");
         let save_points = self.save_points(&spawns);
         let player = Area::player_spawn(&spawns)
             .map(|s| {
@@ -782,15 +804,25 @@ impl script::Game for Flags<'_> {
 
 /// The map BAR's first type-6 COCT as the body collision world
 /// (FUN_1401613c0 +0x68 → FUN_1401722f0 with the area's group mask).
-/// The map's effect container: the first type-18 entry of the map BAR.
-fn map_pax(map: &[u8]) -> Option<data::object_effect::Pax> {
+/// The map's effect container: the first type-18 entry of the map BAR, with
+/// the remaster pages of its textures among the map's replacements.
+fn map_pax(
+    map: &[u8],
+    replacements: &[data::replacement_payload::ReplacementSample],
+) -> Option<data::object_effect::Pax> {
     let table = data::bar::read_bar(map).ok()?;
     let e = table
         .entries
         .iter()
         .find(|e| e.entry_type == 18 && e.size > 0)?;
     let bytes = map.get(e.offset as usize..e.offset as usize + e.size as usize)?;
-    data::object_effect::read_pax(bytes).ok()
+    let mut pax = data::object_effect::read_pax(bytes).ok()?;
+    let at = e.offset as usize;
+    pax.attach_hd(
+        at,
+        &data::object_effect::hd_pages_within(replacements, at, bytes.len()),
+    );
+    Some(pax)
 }
 
 fn map_collision(map: &[u8], mask: u64) -> Result<collision::World> {

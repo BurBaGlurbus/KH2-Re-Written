@@ -31,7 +31,7 @@ pub fn read_first_replacements<R: Read + Seek>(
     reader: &mut R,
     entry: &HedEntry,
 ) -> io::Result<Vec<ReplacementSample>> {
-    read_replacements(reader, entry, false)
+    read_replacements(reader, entry, None)
 }
 
 /// Read every declared replacement, or reject the container before returning a
@@ -40,14 +40,43 @@ pub fn read_all_replacements<R: Read + Seek>(
     reader: &mut R,
     entry: &HedEntry,
 ) -> io::Result<Vec<ReplacementSample>> {
-    read_replacements(reader, entry, true)
+    read_replacements(reader, entry, Some(Limits::INSPECTION))
+}
+
+/// `read_all_replacements` for a field map, whose textures and effects carry
+/// more remaster images than a model (hundreds, not 64) under larger, still
+/// finite bounds.
+pub fn read_map_replacements<R: Read + Seek>(
+    reader: &mut R,
+    entry: &HedEntry,
+) -> io::Result<Vec<ReplacementSample>> {
+    read_replacements(reader, entry, Some(Limits::MAP))
+}
+
+/// Count and cumulative allocation bounds of a complete read.
+#[derive(Clone, Copy)]
+struct Limits {
+    count: u32,
+    bytes: u64,
+}
+
+impl Limits {
+    const INSPECTION: Self = Self {
+        count: 64,
+        bytes: 128 * 1024 * 1024,
+    };
+    const MAP: Self = Self {
+        count: 1024,
+        bytes: 1024 * 1024 * 1024,
+    };
 }
 
 fn read_replacements<R: Read + Seek>(
     reader: &mut R,
     entry: &HedEntry,
-    all: bool,
+    all: Option<Limits>,
 ) -> io::Result<Vec<ReplacementSample>> {
+    let limits = all.unwrap_or(Limits::INSPECTION);
     let invalid = |message| io::Error::new(io::ErrorKind::InvalidData, message);
     let package_end = reader.seek(SeekFrom::End(0))?;
     let indexed_end = entry
@@ -62,10 +91,8 @@ fn read_replacements<R: Read + Seek>(
     let mut seed = [0; 16];
     reader.read_exact(&mut seed)?;
     let header = read_asset_header(&seed, entry.stored_length)?;
-    if all && header.remastered_asset_count > 64 {
-        return Err(invalid(
-            "replacement count exceeds 64-entry inspection limit",
-        ));
+    if all.is_some() && header.remastered_asset_count > limits.count {
+        return Err(invalid("replacement count exceeds the entry limit"));
     }
     let original_stored = if header.compression_tag >= 0 {
         header.compression_tag as u64
@@ -75,7 +102,7 @@ fn read_replacements<R: Read + Seek>(
     let mut payload_start =
         entry.package_offset + 16 + header.remastered_asset_count as u64 * 48 + original_stored;
     let mut samples = Vec::new();
-    let count = if all {
+    let count = if all.is_some() {
         header.remastered_asset_count
     } else {
         header.remastered_asset_count.min(2)
@@ -104,10 +131,8 @@ fn read_replacements<R: Read + Seek>(
         // Include both input and output for compressed data, even though the
         // input can be released between entries. Plain output retains padding.
         total_allocation += padded + if tag >= 0 { expected as u64 } else { 0 };
-        if total_allocation > 128 * 1024 * 1024 {
-            return Err(invalid(
-                "replacement allocation exceeds 128 MiB inspection limit",
-            ));
+        if total_allocation > limits.bytes {
+            return Err(invalid("replacement allocation exceeds the limit"));
         }
         payload_start = payload_start
             .checked_add(15)
@@ -271,6 +296,10 @@ mod tests {
         }
         let (mut reader, entry) = plain_fixture(65);
         assert!(read_all_replacements(&mut reader, &entry).is_err());
+        assert_eq!(
+            read_map_replacements(&mut reader, &entry).unwrap().len(),
+            65
+        );
         assert_eq!(
             read_first_replacements(&mut reader, &entry).unwrap().len(),
             2

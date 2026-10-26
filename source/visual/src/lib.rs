@@ -20,6 +20,7 @@ pub mod lock_on;
 pub mod menu_screen;
 pub mod new_game;
 pub mod overlay;
+pub mod par;
 pub mod pause_definition;
 pub mod pause_menu;
 pub mod room;

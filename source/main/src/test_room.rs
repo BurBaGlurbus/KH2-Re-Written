@@ -8,6 +8,7 @@
 //! public lead exists, explicit choices elsewhere. It is not a measured
 //! reproduction of the installed game's movement or combat rules.
 use crate::area::{self, AreaSource, LoadedArea, MapWorld};
+use crate::load_timer::LoadTimer;
 use bevy::{
     app::AppExit,
     asset::RenderAssetUsages,
@@ -24,9 +25,8 @@ use bevy::{
     },
 };
 use data::{
-    bar, model_inspection, model_inspection_textures::TextureMode, motion, object_collision,
-    object_effect, objentry, original_payload, party_records, probe_source::ProbeSource, ptya,
-    sklt, sprite_sequence,
+    bar, model_inspection, motion, object_collision, object_effect, objentry, original_payload,
+    party_records, probe_source::ProbeSource, ptya, sklt, sprite_sequence,
 };
 use player::shadow::{self, ScriptRandom, Shadow};
 use player::{
@@ -270,7 +270,7 @@ fn no_programs() -> [i16; 3] {
     [-1; 3]
 }
 
-#[derive(Deserialize)]
+#[derive(Clone, Deserialize)]
 struct RoomMusic {
     field: Locator,
     battle: Locator,
@@ -3167,11 +3167,49 @@ fn player_params(
     Ok((params, prty_index, prty_offset))
 }
 
+/// A world, its footstep table and its step banks' bytes by bank number.
+type Footsteps = (
+    u8,
+    visual::footsteps::WorldInfo,
+    Vec<(u16, Result<Vec<u8>, String>)>,
+);
+
+/// A world's footstep table (its 12soundinfo row) and every Sora step and
+/// ambient bank it names (se<bank>.win32.scd), read but not registered.
+fn read_footsteps(source: &ProbeSource, world: u8) -> Option<Footsteps> {
+    let code = ::area::progress::WORLDS.get(world as usize)?;
+    let mut library = data::path_lookup::Library::open(source).ok()?;
+    let bytes = library.read("12soundinfo.bar").ok()?;
+    let table = data::bar::read_bar(&bytes).ok()?;
+    let entry = table
+        .entries
+        .iter()
+        .find(|e| e.name_bytes[..2] == *code.as_bytes())?;
+    let start = entry.offset as usize;
+    let info = visual::footsteps::WorldInfo::read(
+        bytes.get(start..start.checked_add(entry.size as usize)?)?,
+    )?;
+    let read = info
+        .sora_banks()
+        .into_iter()
+        .chain(info.ambient_banks())
+        .map(|bank| {
+            // An ambient bank is a long stream bank, past the 32 MiB default.
+            let bytes = library
+                .read_limited(&format!("se/se{bank:03}.win32.scd"), SOUND_BANK_LIMIT)
+                .map_err(|e| e.to_string());
+            (bank, bytes)
+        })
+        .collect();
+    Some((world, info, read))
+}
+
 fn load(
     source: &Arc<ProbeSource>,
     config_path: &Path,
     basic_fk: bool,
 ) -> Result<Loaded, Box<dyn std::error::Error>> {
+    let mut timer = LoadTimer::new();
     let config: Config = serde_json::from_slice(&read_limited(config_path)?)?;
     if config.schema_version != 1 || config.source_content_identity != source.content_identity() {
         return Err("test room configuration identity/schema invalid".into());
@@ -3180,6 +3218,7 @@ fn load(
     // The session check (executable and indexes rehashed, every package
     // byte read verified by chunk) admits this session.
     source.verify_session()?;
+    timer.mark("source check");
     let mut actors =
         model_inspection::read_selected_models(source, &base.join(&config.actor_selection))?;
     if actors.len() != 1 {
@@ -3192,6 +3231,7 @@ fn load(
         return Err("test room requires exactly one weapon model".into());
     }
     let weapon = weapons.remove(0);
+    timer.mark("models");
     let objects = objentry::read(&read_archive(source, &config.objentry)?)?;
     // Sora's object (entry 0x236) weight, which vacuums scale with.
     let sora_weight = objects
@@ -3226,8 +3266,10 @@ fn load(
         return Err("weapon joint outside the actor skeleton".into());
     }
     let mut area_load: Option<(AreaSource, LoadedArea)> = None;
-    // An area decodes on a worker thread while Sora's kit loads below.
+    // An area decodes on a worker thread while Sora's kit loads below, and
+    // its world's footstep banks on another.
     let mut area_job = None;
+    let mut footsteps_job = None;
     let (room, arena_mesh) = match (&config.arena, &config.room_selection) {
         (Some(a), _) => {
             let a = a.expanded()?;
@@ -3239,6 +3281,10 @@ fn load(
             Some(a) => {
                 let world = ::area::progress::world_index(&a.world).ok_or("unknown world code")?;
                 let story: Vec<(u32, u32)> = a.story.iter().map(|r| (r[0], r[1])).collect();
+                footsteps_job = Some({
+                    let source = Arc::clone(source);
+                    std::thread::spawn(move || read_footsteps(&source, world))
+                });
                 let source = Arc::clone(source);
                 let (number, entrance, programs) = (a.area, a.entrance, a.programs);
                 area_job = Some(std::thread::Builder::new().name("area load".into()).spawn(
@@ -3269,7 +3315,52 @@ fn load(
         .get(sstm_offset as usize..)
         .and_then(actor_physics::Sstm::read)
         .ok_or("SSTM record truncated")?;
+    timer.mark("objects and room start");
     let battle = read_archive(source, &config.battle)?;
+    // The camp, journal and music decode on a thread of their own while the
+    // rest loads: they need only the archives and their locators.
+    let background = {
+        let (source, battle, system) = (source.clone(), battle.clone(), system.clone());
+        let (camp_l, journal_l) = (config.camp.clone(), config.journal.clone());
+        let (menu, music_l) = (config.menu.clone(), config.music.clone());
+        std::thread::spawn(move || -> Result<_, String> {
+            let fail = |e: Box<dyn std::error::Error>| e.to_string();
+            let camp = match (&camp_l, &menu) {
+                (Some(l), Some(m)) => {
+                    Some(load_camp_source(&source, l, m, &battle, &system).map_err(fail)?)
+                }
+                _ => None,
+            };
+            let journal = match (&journal_l, &menu, &camp) {
+                (Some(j), Some(m), Some(_)) => {
+                    Some(load_journal(&source, j, &m.messages, &system).map_err(fail)?)
+                }
+                _ => None,
+            };
+            let music = match &music_l {
+                Some(m) => Some([
+                    sound::load_bank(
+                        &source,
+                        &m.field.index,
+                        m.field.ordinal,
+                        m.field.name_hash,
+                        None,
+                    )
+                    .map_err(fail)?,
+                    sound::load_bank(
+                        &source,
+                        &m.battle.index,
+                        m.battle.ordinal,
+                        m.battle.name_hash,
+                        None,
+                    )
+                    .map_err(fail)?,
+                ]),
+                None => None,
+            };
+            Ok((camp, journal, music))
+        })
+    };
     let ability_source = {
         let rates = sstm_bytes
             .get(sstm_offset as usize..)
@@ -3313,6 +3404,7 @@ fn load(
         .unwrap_or_default();
 
     // PTYA attack entries chosen by ID for the grounded and aerial combos.
+    timer.mark("battle and abilities");
     let hud = match &config.hud {
         Some(l) => {
             let mut sheets = vec![hud::load(
@@ -3414,6 +3506,7 @@ fn load(
         }
         None => None,
     };
+    timer.mark("HUD");
     let ptya_bytes = bar_entry(&battle, b"ptya")?;
     // The six spells' tables and cast motions (magc, pref/magi, cmd).
     let mut magic_src = magic_room::load(&battle, pref, &system, 70.)
@@ -3450,6 +3543,7 @@ fn load(
     };
     // Sora's object effects (obj/P_EX100.a.us), 00effect's and the
     // resident common effect textures.
+    timer.mark("magic");
     let (base_pax, texcommon, prize_pax) = match data::path_lookup::Library::open(source) {
         Ok(mut library) => (
             drive_room::object_pax(&mut library, &config.player_object_name),
@@ -3465,10 +3559,75 @@ fn load(
         .and_then(|l| visual::effects::load_pax(source, &l.index, l.ordinal, l.name_hash).ok());
     // The party limits' files: Sora's motions join his kit, the friends'
     // their motion tables.
+    timer.mark("effects");
     let mut limit_source = match (&config.enemy, data::path_lookup::Library::open(source)) {
         (Some(_), Ok(mut library)) => party_limit::load(source, &mut library, &battle, "us"),
         _ => party_limit::LimitSource::default(),
     };
+    timer.mark("limits");
+    // Donald's and Goofy's limit motions, for their motion tables. The
+    // party (rooms with a fight to join) loads on a thread of its own while
+    // Sora's kit and the rest decode.
+    let mut member_limit_motions: HashMap<u8, Vec<_>> =
+        [2u8, 3].map(|c| (c, limit_source.motions(c))).into();
+    let party_thread = config.enemy.as_ref().map(|_| {
+        let jobs: Vec<_> = party_names()
+            .into_iter()
+            .filter_map(|name| {
+                // The personality of the object's character id
+                // (FUN_1401b06e0).
+                let Some(member) = objects
+                    .iter()
+                    .find(|o| o.model_name == name.as_bytes())
+                    .and_then(|o| player::party_roster::by_character(o.character as u8))
+                else {
+                    eprintln!("party member {name}: no friend personality");
+                    return None;
+                };
+                let motions = member_limit_motions
+                    .remove(&member.character)
+                    .unwrap_or_default();
+                Some((name, member, motions))
+            })
+            .collect();
+        let source = source.clone();
+        let (system, battle, objects) = (system.clone(), battle.clone(), objects.clone());
+        std::thread::spawn(move || {
+            // The members load on their own threads, each with its own
+            // library; the results keep the roster order.
+            let (source, system, objects) = (&source, &system, &objects);
+            let lvup = bar_entry(&battle, b"lvup").unwrap_or(&[]);
+            let plrp = bar_entry(&battle, b"plrp").unwrap_or(&[]);
+            std::thread::scope(|s| -> Vec<Result<_, String>> {
+                let threads: Vec<_> = jobs
+                    .into_iter()
+                    .map(|(name, member, motions)| {
+                        s.spawn(move || {
+                            let mut library = data::path_lookup::Library::open(source)
+                                .map_err(|e| format!("party member {name}: {e}"))?;
+                            party_room::load(
+                                source,
+                                &mut library,
+                                system,
+                                lvup,
+                                plrp,
+                                objects,
+                                name,
+                                member,
+                                motions,
+                            )
+                            .map(|k| (k, member))
+                            .map_err(|e| format!("party member {name}: {e}"))
+                        })
+                    })
+                    .collect();
+                threads
+                    .into_iter()
+                    .map(|t| t.join().expect("party member thread"))
+                    .collect()
+            })
+        })
+    });
     let kit = character_kit::load_kit(
         source,
         character_kit::KitInputs {
@@ -3506,9 +3665,7 @@ fn load(
             },
         },
     )?;
-    // Donald's and Goofy's limit motions, for their motion tables.
-    let mut member_limit_motions: HashMap<u8, Vec<_>> =
-        [2u8, 3].map(|c| (c, limit_source.motions(c))).into();
+    timer.mark("Sora's kit");
     let sora_body = kit.body.clone();
     let (sora_target_radius, sora_target_lift) = (kit.target_radius, kit.target_lift);
     let (sora_body_lift, sora_heal_lift) = (kit.body_lift, kit.heal_lift);
@@ -3629,6 +3786,7 @@ fn load(
     };
     // The enemy's character id (objentry +0x4c) by its model's name hash:
     // Wisdom and Final Form EXP count defeated Heartless / Nobodies.
+    timer.mark("forms and party");
     let enemy_character = config.enemy.as_ref().map_or(0, |e| {
         objects
             .iter()
@@ -3743,6 +3901,7 @@ fn load(
         "missing":["scale channels","up-vector/path/camera constraint types","limiter damping","root rotation","weapon constraint motion","hit detection","enemies","measured installed timing"],
         "inferred_rules":["direction constraints aim local +X","two-joint IK bends the middle joint about local Z","expression list/condition semantics","Hermite tangents scaled by key span","field/battle mode switch with 6 s disarm timeout"],
         "gameplay_verified":false});
+    timer.mark("room join and collision");
     let mut banks = Banks::default();
     for b in &config.sounds {
         let l = &b.locator;
@@ -3760,6 +3919,7 @@ fn load(
         .area
         .as_ref()
         .map_or("tt".to_owned(), |a| a.world.clone());
+    timer.mark("sound banks");
     let voices = data::path_lookup::Library::open(source)
         .ok()
         .and_then(|mut library| {
@@ -3769,38 +3929,30 @@ fn load(
         })
         .and_then(|bytes| banks.insert(bytes).ok())
         .and_then(|bank| drive_room::Voices::read(bar_entry(&battle, b"vtbl").ok()?, bank));
-    // Footsteps: the world's 12soundinfo rows and every Sora step bank
-    // they name (se<bank>.win32.scd).
-    let step_info = area_load.as_ref().and_then(|(_, a)| {
-        let code = ::area::progress::WORLDS.get(a.world as usize)?;
-        let mut library = data::path_lookup::Library::open(source).ok()?;
-        let bytes = library.read("12soundinfo.bar").ok()?;
-        let table = data::bar::read_bar(&bytes).ok()?;
-        let entry = table
-            .entries
-            .iter()
-            .find(|e| e.name_bytes[..2] == *code.as_bytes())?;
-        let start = entry.offset as usize;
-        let info = visual::footsteps::WorldInfo::read(
-            bytes.get(start..start.checked_add(entry.size as usize)?)?,
-        )?;
-        for bank in info.sora_banks().into_iter().chain(info.ambient_banks()) {
-            // An ambient bank is a long stream bank, past the 32 MiB default.
-            match library.read_limited(&format!("se/se{bank:03}.win32.scd"), SOUND_BANK_LIMIT) {
-                Ok(bank_bytes) => {
-                    if let Err(error) = banks.insert(bank_bytes) {
-                        eprintln!("Sound bank {bank} not registered: {error}");
+    // Footsteps: the world's step banks, read on their own thread since
+    // the start (`read_footsteps`), registered here.
+    let step_info = footsteps_job
+        .and_then(|job| job.join().ok().flatten())
+        .filter(|_| area_load.is_some())
+        .map(|(world, info, read)| {
+            for (bank, bytes) in read {
+                match bytes {
+                    Ok(bank_bytes) => {
+                        if let Err(error) = banks.insert(bank_bytes) {
+                            eprintln!("Sound bank {bank} not registered: {error}");
+                        }
                     }
+                    Err(error) => eprintln!("Sound bank {bank} not read: {error}"),
                 }
-                Err(error) => eprintln!("Sound bank {bank} not read: {error}"),
             }
-        }
-        Some((a.world, info))
-    });
+            (world, info)
+        });
+    timer.mark("voices and footsteps");
     let npc = match &config.npc {
         Some(n) => Some(load_npc(source, base, &config, n)?),
         None => None,
     };
+    timer.mark("NPC");
     let effects = match &config.effects {
         Some(e) => {
             use visual::effects::{load_atlas, load_pax};
@@ -3854,33 +4006,9 @@ fn load(
         }
         None => None,
     };
-    let camp = match (&config.camp, &config.menu) {
-        (Some(l), Some(m)) => Some(load_camp_source(source, l, m, &battle, &system)?),
-        _ => None,
-    };
-    let journal = match (&config.journal, &config.menu, &camp) {
-        (Some(j), Some(m), Some(_)) => Some(load_journal(source, j, &m.messages, &system)?),
-        _ => None,
-    };
-    let music = match &config.music {
-        Some(m) => Some([
-            sound::load_bank(
-                source,
-                &m.field.index,
-                m.field.ordinal,
-                m.field.name_hash,
-                None,
-            )?,
-            sound::load_bank(
-                source,
-                &m.battle.index,
-                m.battle.ordinal,
-                m.battle.name_hash,
-                None,
-            )?,
-        ]),
-        None => None,
-    };
+    timer.mark("effect sources");
+    let (camp, journal, music) = background.join().expect("camp and music thread")?;
+    timer.mark("camp, journal and music (on their own thread)");
     let magic_src = magic_src.map(|mut m| {
         m.target_lift = sora_target_lift;
         m.body_lift = sora_body_lift;
@@ -4070,6 +4198,44 @@ fn load(
             ))
         })
         .unwrap_or_default();
+    timer.mark("music and the rest");
+    let party = match party_thread {
+        Some(thread) => {
+            let loaded = thread.join().expect("party thread");
+            let mut kinds = Vec::new();
+            if let Ok(mut library) = data::path_lookup::Library::open(source) {
+                for result in loaded {
+                    let (mut k, member) = match result {
+                        Ok(v) => v,
+                        Err(e) => {
+                            eprintln!("{e}");
+                            continue;
+                        }
+                    };
+                    eprintln!("party member {} loaded", k.name);
+                    // The member's battle voices: the same vtbl rows and
+                    // `voice/us/battle/<world>0_<name>` (the exe's `%s%d_%s`,
+                    // names by character id).
+                    let who = member.voice;
+                    k.voices = library
+                        .read(&format!("voice/us/battle/{voice_world}0_{who}.win32.scd"))
+                        .or_else(|_| {
+                            library
+                                .read(&format!("voice/us/battle/{}0_{who}.win32.scd", member.home))
+                        })
+                        .ok()
+                        .and_then(|bytes| banks.insert(bytes).ok())
+                        .and_then(|bank| {
+                            drive_room::Voices::read(bar_entry(&battle, b"vtbl").ok()?, bank)
+                        });
+                    kinds.push(std::sync::Arc::new(k));
+                }
+            }
+            kinds
+        }
+        None => Vec::new(),
+    };
+    timer.mark("party");
     Ok(Loaded {
         atkp: bar_entry(&battle, b"atkp")?.to_vec(),
         wall_blade,
@@ -4090,71 +4256,7 @@ fn load(
         summons,
         party_limits: std::mem::take(&mut limit_source),
         items: item_room::load(&system).ok(),
-        party: match config.enemy {
-            // The party stands in rooms with a fight to join.
-            Some(_) => {
-                let mut kinds = Vec::new();
-                if let Ok(mut library) = data::path_lookup::Library::open(source) {
-                    let lvup = bar_entry(&battle, b"lvup").unwrap_or(&[]);
-                    let plrp = bar_entry(&battle, b"plrp").unwrap_or(&[]);
-                    for name in party_names() {
-                        // The personality of the object's character id
-                        // (FUN_1401b06e0).
-                        let Some(member) = objects
-                            .iter()
-                            .find(|o| o.model_name == name.as_bytes())
-                            .and_then(|o| player::party_roster::by_character(o.character as u8))
-                        else {
-                            eprintln!("party member {name}: no friend personality");
-                            continue;
-                        };
-                        match party_room::load(
-                            source,
-                            &mut library,
-                            &system,
-                            lvup,
-                            plrp,
-                            &objects,
-                            name,
-                            member,
-                            member_limit_motions
-                                .remove(&member.character)
-                                .unwrap_or_default(),
-                        ) {
-                            Ok(mut k) => {
-                                eprintln!("party member {} loaded", k.name);
-                                // The member's battle voices: the same vtbl rows
-                                // and `voice/us/battle/<world>0_<name>` (the
-                                // exe's `%s%d_%s`, names by character id).
-                                let who = member.voice;
-                                k.voices = library
-                                    .read(&format!(
-                                        "voice/us/battle/{voice_world}0_{who}.win32.scd"
-                                    ))
-                                    .or_else(|_| {
-                                        library.read(&format!(
-                                            "voice/us/battle/{}0_{who}.win32.scd",
-                                            member.home
-                                        ))
-                                    })
-                                    .ok()
-                                    .and_then(|bytes| banks.insert(bytes).ok())
-                                    .and_then(|bank| {
-                                        drive_room::Voices::read(
-                                            bar_entry(&battle, b"vtbl").ok()?,
-                                            bank,
-                                        )
-                                    });
-                                kinds.push(std::sync::Arc::new(k));
-                            }
-                            Err(e) => eprintln!("party member {name}: {e}"),
-                        }
-                    }
-                }
-                kinds
-            }
-            None => Vec::new(),
-        },
+        party,
         forms,
         reaction_commands,
         sora_weight,
@@ -4495,6 +4597,41 @@ struct Startup {
 }
 
 /// Spawns one textured mesh per model part under `parent`, in part order.
+/// Model textures uploaded once per (texture set, image) and shared by every
+/// part and every spawn of the model. `Weak` keeps a dropped set's address
+/// from being taken for a new set's.
+type ModelTextureCache = Vec<(
+    std::sync::Weak<data::model_inspection_textures::InspectionTextures>,
+    usize,
+    Handle<Image>,
+)>;
+static MODEL_TEXTURES: std::sync::Mutex<ModelTextureCache> = std::sync::Mutex::new(Vec::new());
+
+/// The GPU texture of `set`'s image `image` (uploaded on first use).
+fn model_texture(
+    set: &Arc<data::model_inspection_textures::InspectionTextures>,
+    image: usize,
+    images: &mut Assets<Image>,
+) -> Handle<Image> {
+    let mut cache = MODEL_TEXTURES.lock().expect("model texture cache");
+    cache.retain(|(set, ..)| set.strong_count() > 0);
+    if let Some((.., handle)) = cache
+        .iter()
+        .find(|(s, i, _)| *i == image && s.upgrade().is_some_and(|s| Arc::ptr_eq(&s, set)))
+    {
+        return handle.clone();
+    }
+    let level = &set.images[image].levels[0];
+    let handle = visual::room::static_rgba_image(
+        level.width,
+        level.height,
+        level.pixels_rgba.clone(),
+        images,
+    );
+    cache.push((Arc::downgrade(set), image, handle.clone()));
+    handle
+}
+
 pub(crate) fn spawn_model(
     commands: &mut Commands,
     model: &model_inspection::InspectionModel,
@@ -4525,16 +4662,10 @@ pub(crate) fn spawn_model(
                 .map(|uv| uv.map(f32::from_bits))
                 .collect();
             let binding = set
-                .bind(route.environment_ordinal, TextureMode::OriginalIndexed)
+                .bind_hd_or_original(route.environment_ordinal)
                 .expect("admitted model binding");
             if let Some(image) = binding.image_index {
-                let level = &set.images[image].levels[0];
-                texture = Some(rgba_image(
-                    level.width,
-                    level.height,
-                    level.pixels_rgba.clone(),
-                    images,
-                ));
+                texture = Some(model_texture(set, image, images));
             }
         }
         let entity = commands
@@ -5389,12 +5520,25 @@ pub(crate) fn spawn_room(
                 )
             })
             .collect();
+        // The HD remaster image of the region where the environment has one
+        // (already cropped); an environment with a TEXA animation keeps the
+        // original, whose texels the animation's sprites overwrite.
         let handles: Vec<_> = part
             .textures
             .iter()
             .zip(&regions)
-            .map(|(t, r)| {
-                let (w, h, px) = r.crop_rgba(t);
+            .enumerate()
+            .map(|(i, (t, r))| {
+                let animated = part.texa.iter().any(|x| x.env == t.environment_ordinal);
+                let hd = part
+                    .hd
+                    .get(i)
+                    .and_then(Option::as_ref)
+                    .filter(|_| !animated);
+                let (w, h, px) = match hd {
+                    Some(hd) => (hd.width, hd.height, hd.pixels_rgba.clone()),
+                    None => r.crop_rgba(t),
+                };
                 visual::room::region_image(w, h, px, r.wrap, images)
             })
             .collect();
@@ -12681,6 +12825,8 @@ fn run(mut args: Vec<PathBuf>) -> Result<AppExit, Box<dyn std::error::Error>> {
         args = launch_file_args("launch-talk")?;
     }
     let started = Instant::now();
+    // The GPU device starts while the data decodes (used by the app below).
+    let early_renderer = crate::early_renderer::EarlyRenderer::start();
     if args.len() < 3 {
         return Err("usage: room <Steam-root> <manifest> <test-room-config> [--log new.jsonl] [--frames N] [--autoplay <new-capture-dir> | --ability-tour <new-capture-dir> | --gear-tour <new-capture-dir> | --enemy-tour <new-capture-dir>] [--enemy-audit <new-private-report.json>] [--gamepad] [--show-collision] [--basic-fk] [--uncapped | --frame-cap N] [--perf-overlay]".into());
     }
@@ -13068,7 +13214,9 @@ fn run(mut args: Vec<PathBuf>) -> Result<AppExit, Box<dyn std::error::Error>> {
             _ => return Err("unknown/duplicate test room option".into()),
         }
     }
+    let mut timer = LoadTimer::new();
     let source = Arc::new(ProbeSource::bind_session(&args[0], &args[1])?);
+    timer.mark("source binding");
     if let Some(path) = enemy_audit {
         ProbeSource::bind(&args[0], &args[1])?.verify_full_source()?;
         source.verify_session()?;
@@ -13105,9 +13253,12 @@ fn run(mut args: Vec<PathBuf>) -> Result<AppExit, Box<dyn std::error::Error>> {
         }
         None => None,
     };
+    timer.mark("captures and options");
     eprintln!("Validating the selected KH2FM source, then decoding the test room...");
     let mut loaded = load(&source, &args[2], basic_fk)?;
+    let mut timer = LoadTimer::new();
     let catalog = enemy_catalog::Catalog::load(&source)?;
+    timer.mark("enemy catalog");
     eprintln!(
         "Enemy catalog: {} entries, {} unclassified candidates, {} classification issues",
         catalog.entries.len(),
@@ -13121,6 +13272,7 @@ fn run(mut args: Vec<PathBuf>) -> Result<AppExit, Box<dyn std::error::Error>> {
     let mut gallery = enemy_gallery::EnemyGallery::new(source.clone(), catalog, basic_fk);
     gallery.target_params = Some(enemy_battle::target_params(&source)?);
     gallery.lock_range = Some(enemy_battle::lock_range(&source)?);
+    timer.mark("enemy gallery");
     eprintln!(
         "Decoded in {:.0} ms.",
         started.elapsed().as_secs_f64() * 1e3
@@ -14078,18 +14230,22 @@ fn run(mut args: Vec<PathBuf>) -> Result<AppExit, Box<dyn std::error::Error>> {
         .init_resource::<enemy_target::Targeting>()
         .insert_resource(Time::<Fixed>::from_hz(60.))
         .insert_resource(ClearColor(Color::srgb(0.06, 0.07, 0.09)))
-        .add_plugins(DefaultPlugins.set(WindowPlugin {
-            primary_window: Some(Window {
-                title: "Kingdom Hearts II Re:Written (test room; quarantined source) | WASD move, Space jump, Enter/LMB attack, RMB guard, F talk, M menu, F3 debug, Esc".into(),
-                resolution: (1280, 720).into(),
-                ..default()
-            }),
-            // Closing the window goes through finish() so the exit code and
-            // log record reflect an unfinished unattended run.
-            exit_condition: bevy::window::ExitCondition::DontExit,
-            close_when_requested: false,
-            ..default()
-        }))
+        .add_plugins(
+            DefaultPlugins
+                .set(WindowPlugin {
+                    primary_window: Some(Window {
+                        title: "Kingdom Hearts II Re:Written (test room; quarantined source) | WASD move, Space jump, Enter/LMB attack, RMB guard, F talk, M menu, F3 debug, Esc".into(),
+                        resolution: (1280, 720).into(),
+                        ..default()
+                    }),
+                    // Closing the window goes through finish() so the exit code
+                    // and log record reflect an unfinished unattended run.
+                    exit_condition: bevy::window::ExitCondition::DontExit,
+                    close_when_requested: false,
+                    ..default()
+                })
+                .set(early_renderer.plugin()),
+        )
         .add_plugins(FogPlugin)
         .add_plugins(visual::frame_limit::FrameLimitPlugin)
         .add_plugins(visual::texel_upload::TexelUploadPlugin)

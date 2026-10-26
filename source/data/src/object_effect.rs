@@ -303,26 +303,71 @@ pub struct HdPage {
 /// 29 bits of the record's original-asset field; FUN_14012aa20 looks a page
 /// up by the offset of the pointer it is handed). Records that do not
 /// decode as images are left out.
+/// `hd_pages` of the replacements whose original bytes lie inside
+/// `start..start + len` of their file (a PAX entry), so a map's or an
+/// archive's other HD images are not decoded for its effects.
+pub fn hd_pages_within(
+    replacements: &[crate::replacement_payload::ReplacementSample],
+    start: usize,
+    len: usize,
+) -> HashMap<u32, Arc<HdPage>> {
+    pages_of(replacements.iter().filter(|r| {
+        let at = (r.metadata.original_asset_offset & 0x1fff_ffff) as usize;
+        (start..start + len).contains(&at)
+    }))
+}
+
 pub fn hd_pages(
     replacements: &[crate::replacement_payload::ReplacementSample],
 ) -> HashMap<u32, Arc<HdPage>> {
-    replacements
-        .iter()
-        .filter_map(|r| {
-            let m = &r.metadata;
-            let d =
-                crate::hd_image::decode_hd_image(&r.bytes, m.declared_decompressed_length as usize)
-                    .ok()?;
-            Some((
-                m.original_asset_offset as u32 & 0x1fff_ffff,
-                Arc::new(HdPage {
-                    width: d.width,
-                    height: d.height,
-                    rgba: d.pixels_rgba,
-                }),
-            ))
-        })
-        .collect()
+    pages_of(replacements.iter())
+}
+
+/// A remaster page and its original texture's file offset.
+type KeyedPage = (u32, Arc<HdPage>);
+
+fn pages_of<'a>(
+    replacements: impl Iterator<Item = &'a crate::replacement_payload::ReplacementSample>,
+) -> HashMap<u32, Arc<HdPage>> {
+    let list: Vec<_> = replacements.collect();
+    let page = |r: &crate::replacement_payload::ReplacementSample| {
+        let m = &r.metadata;
+        let d = crate::hd_image::decode_hd_image(&r.bytes, m.declared_decompressed_length as usize)
+            .ok()?;
+        Some((
+            m.original_asset_offset as u32 & 0x1fff_ffff,
+            Arc::new(HdPage {
+                width: d.width,
+                height: d.height,
+                rgba: d.pixels_rgba,
+            }),
+        ))
+    };
+    // The images decode on several threads; they are kept in their order,
+    // so a later page with the same key still wins.
+    let threads = std::thread::available_parallelism()
+        .map_or(1, |n| n.get())
+        .clamp(1, 8)
+        .min(list.len().max(1));
+    let mut decoded: Vec<(usize, Option<KeyedPage>)> = std::thread::scope(|scope| {
+        let workers: Vec<_> = (0..threads)
+            .map(|t| {
+                let (list, page) = (&list, &page);
+                scope.spawn(move || {
+                    (t..list.len())
+                        .step_by(threads)
+                        .map(|i| (i, page(list[i])))
+                        .collect::<Vec<_>>()
+                })
+            })
+            .collect();
+        workers
+            .into_iter()
+            .flat_map(|w| w.join().expect("page decoder"))
+            .collect()
+    });
+    decoded.sort_by_key(|(i, _)| *i);
+    decoded.into_iter().filter_map(|(_, p)| p).collect()
 }
 
 /// An OMD model of a DPD: header position, vertex array and count.

@@ -11,6 +11,7 @@ use data::{
     model_texture_pixels::{self, DecodedTexture},
     original_payload,
     probe_source::ProbeSource,
+    replacement_payload::ReplacementSample,
     room_collision,
     room_geometry::{self, RoomModel},
 };
@@ -21,6 +22,9 @@ pub struct Room {
     pub name: [u8; 3],
     pub model: RoomModel,
     pub textures: Vec<DecodedTexture>,
+    /// Per texture (same order), its HD remaster image of the environment's
+    /// region when exactly one replacement matches it (the PC draws that one).
+    pub hd: Vec<Option<DecodedTexture>>,
     /// Per chunk, the background group bit of its DOCT group (FUN_140186380
     /// entry byte +1), or `NO_GROUP` for models without a DOCT (sky).
     pub chunk_bits: Vec<u8>,
@@ -409,11 +413,13 @@ pub fn load_rooms(
         return Err("room identity mismatch".into());
     }
     let archive = original_payload::read_original(&mut index.reader, entry)?;
+    let replacements = data::replacement_payload::read_map_replacements(&mut index.reader, entry)
+        .unwrap_or_default();
     let ground = item
         .get("inspection_ground_polygon")
         .map(|p| p.as_u64().ok_or("inspection polygon ordinal invalid"))
         .transpose()?;
-    let room = load_room_archive(&archive.bytes, ground)?;
+    let room = load_room_archive(&archive.bytes, ground, &replacements)?;
     index.verify_unchanged()?;
     Ok(room)
 }
@@ -425,6 +431,7 @@ pub fn load_rooms(
 pub fn load_room_archive(
     bytes: &[u8],
     inspection_ground_polygon: Option<u64>,
+    replacements: &[ReplacementSample],
 ) -> Result<LoadedRoom, Box<dyn std::error::Error>> {
     let table = bar::read_bar(bytes)?;
     let mut rooms = Vec::new();
@@ -565,6 +572,13 @@ pub fn load_room_archive(
                 );
             }
         }
+        let hd = hd_textures(
+            bank,
+            entry.offset as usize,
+            &textures,
+            &regions,
+            replacements,
+        );
         rgba_bytes += textures.iter().map(|t| t.pixels_rgba.len()).sum::<usize>();
         if rgba_bytes > 128 * 1024 * 1024 {
             return Err("room textures exceed cumulative limit".into());
@@ -577,6 +591,7 @@ pub fn load_room_archive(
             ],
             model,
             textures,
+            hd,
             chunk_bits,
             regions,
             uv_scroll,
@@ -605,6 +620,97 @@ pub fn load_room_archive(
     })
 }
 
+/// Each environment's HD remaster image: the replacement that alone matches
+/// its base texture (`model_texture_routing`, the rule the model textures
+/// use). A map's image holds only the environment's region, already cropped,
+/// at the original size or a whole multiple of it (true colour where the
+/// original is indexed). The images decode on several threads.
+fn hd_textures(
+    bank: &[u8],
+    bank_offset: usize,
+    textures: &[DecodedTexture],
+    regions: &std::collections::HashMap<usize, EnvRegion>,
+    replacements: &[ReplacementSample],
+) -> Vec<Option<DecodedTexture>> {
+    let none = || textures.iter().map(|_| None).collect::<Vec<_>>();
+    // The replacements of this bank's bytes.
+    let inside: Vec<&ReplacementSample> = replacements
+        .iter()
+        .filter(|r| {
+            let at = (r.metadata.original_asset_offset & 0x1fff_ffff) as usize;
+            (bank_offset..bank_offset + bank.len()).contains(&at)
+        })
+        .collect();
+    if inside.is_empty() {
+        return none();
+    }
+    let metadata: Vec<_> = inside.iter().map(|r| r.metadata.clone()).collect();
+    let Ok(links) = data::model_texture_routing::read_links(bank, bank_offset, &metadata) else {
+        return none();
+    };
+    let chosen: Vec<Option<&ReplacementSample>> = textures
+        .iter()
+        .map(|t| {
+            let target = links.ordered_targets.iter().find(|x| {
+                matches!(x.kind, data::model_texture_routing::TargetKind::Base)
+                    && x.environment_ordinal == t.environment_ordinal
+            })?;
+            if target.matching_replacement_ordinals.len() != 1
+                || links
+                    .duplicate_candidate_offsets
+                    .contains(&target.candidate_original_asset_offset)
+            {
+                return None;
+            }
+            let ordinal = target.matching_replacement_ordinals[0];
+            inside
+                .iter()
+                .copied()
+                .find(|r| r.metadata.ordinal == ordinal)
+        })
+        .collect();
+    crate::par::map_indexed(textures.len(), |i| {
+        let t = &textures[i];
+        let Some(r) = chosen[i] else {
+            return Ok::<_, ()>(None);
+        };
+        let Some((width, height, pixels_rgba)) = base_level(r) else {
+            return Ok(None);
+        };
+        // The image is the environment's region (its CLAMP crop), at the
+        // original size or a whole multiple of it.
+        let [.., cw, ch] = regions
+            .get(&t.environment_ordinal)
+            .map_or([0, 0, t.width, t.height], |r| r.crop);
+        let k = width / cw.max(1);
+        let whole = k >= 1 && width == cw * k && height == ch * k;
+        Ok(whole.then(|| DecodedTexture {
+            environment_ordinal: t.environment_ordinal,
+            width,
+            height,
+            indexed_bits_per_pixel: 0,
+            upload_psm: 0,
+            packed_indices: Vec::new(),
+            clut_rgba: Vec::new(),
+            pixels_rgba,
+        }))
+    })
+    .unwrap_or_else(|()| none())
+}
+
+/// The full-size image of a replacement: a single image, or the first level
+/// of a BC3 mip chain (the form the map textures take).
+fn base_level(r: &ReplacementSample) -> Option<(u32, u32, Vec<u8>)> {
+    let length = r.metadata.declared_decompressed_length as usize;
+    if let Ok(d) = data::hd_image::decode_hd_image(&r.bytes, length) {
+        return Some((d.width, d.height, d.pixels_rgba));
+    }
+    let chain = data::hd_image::decode_bc3_mip_chain(&r.bytes, length).ok()?;
+    let level = chain.layout.levels.first()?;
+    let pixels = chain.levels_rgba.into_iter().next()?;
+    Some((level.width, level.height, pixels))
+}
+
 pub fn upload(texture: &DecodedTexture, images: &mut Assets<Image>) -> Handle<Image> {
     rgba_image(
         texture.width,
@@ -630,6 +736,29 @@ pub fn rgba_image(
         pixels,
         TextureFormat::Rgba8UnormSrgb,
         RenderAssetUsages::MAIN_WORLD | RenderAssetUsages::RENDER_WORLD,
+    );
+    image.sampler = ImageSampler::nearest();
+    images.add(image)
+}
+
+/// `rgba_image` for a texture that never changes after upload: the pixels
+/// live only on the GPU (no copy kept in the main world).
+pub fn static_rgba_image(
+    width: u32,
+    height: u32,
+    pixels: Vec<u8>,
+    images: &mut Assets<Image>,
+) -> Handle<Image> {
+    let mut image = Image::new(
+        Extent3d {
+            width,
+            height,
+            depth_or_array_layers: 1,
+        },
+        TextureDimension::D2,
+        pixels,
+        TextureFormat::Rgba8UnormSrgb,
+        RenderAssetUsages::RENDER_WORLD,
     );
     image.sampler = ImageSampler::nearest();
     images.add(image)

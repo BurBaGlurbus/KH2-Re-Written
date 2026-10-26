@@ -45,14 +45,14 @@ fn read_entry(
     Ok((bytes, hd))
 }
 
-/// The PAX of an object archive.
+/// The PAX of an object archive, with its textures' remaster pages.
 pub fn load_pax(
     source: &ProbeSource,
     index: &str,
     ordinal: usize,
     name_hash: [u8; 16],
 ) -> Result<object_effect::Pax, Box<dyn std::error::Error>> {
-    let (archive, _) = read_entry(source, index, ordinal, name_hash, false)?;
+    let (archive, hd) = read_entry(source, index, ordinal, name_hash, true)?;
     let table = bar::read_bar(&archive)?;
     let e = table
         .entries
@@ -62,7 +62,10 @@ pub fn load_pax(
     let bytes = archive
         .get(e.offset as usize..e.offset as usize + e.size as usize)
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "PAX exceeds archive"))?;
-    Ok(object_effect::read_pax(bytes)?)
+    let mut pax = object_effect::read_pax(bytes)?;
+    let at = e.offset as usize;
+    pax.attach_hd(at, &object_effect::hd_pages_within(&hd, at, bytes.len()));
+    Ok(pax)
 }
 
 /// texcommon.dpd texture 10, from its first replacement (keyed to that

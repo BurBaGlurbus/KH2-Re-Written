@@ -173,6 +173,25 @@ impl Library {
         &mut self,
         name: &str,
     ) -> Result<Vec<crate::replacement_payload::ReplacementSample>> {
+        self.read_replacements_with(name, crate::replacement_payload::read_all_replacements)
+    }
+
+    /// `read_replacements` of a field map (`read_map_replacements` bounds).
+    pub fn read_map_replacements(
+        &mut self,
+        name: &str,
+    ) -> Result<Vec<crate::replacement_payload::ReplacementSample>> {
+        self.read_replacements_with(name, crate::replacement_payload::read_map_replacements)
+    }
+
+    fn read_replacements_with(
+        &mut self,
+        name: &str,
+        read: fn(
+            &mut crate::probe_source::SourceReader,
+            &crate::HedEntry,
+        ) -> std::io::Result<Vec<crate::replacement_payload::ReplacementSample>>,
+    ) -> Result<Vec<crate::replacement_payload::ReplacementSample>> {
         let found = self
             .find(name)
             .ok_or_else(|| format!("{name} is not in the installed packages"))?;
@@ -186,10 +205,7 @@ impl Library {
             .entries
             .get(found.ordinal)
             .ok_or("entry outside index")?;
-        Ok(crate::replacement_payload::read_all_replacements(
-            &mut checked.reader,
-            entry,
-        )?)
+        Ok(read(&mut checked.reader, entry)?)
     }
 }
 

@@ -95,8 +95,10 @@ pub fn load(source: &ProbeSource, id: &EventId) -> Result<Loaded> {
     let mut library = Library::open(source)?;
     let ard = library.read(&format!("ard/{LANGUAGE}/{}{:02}.ard", id.world, id.area))?;
     let commands = event_script::read(event_script::find_in_ard(&ard, &id.name)?)?;
-    let map = library.read(&format!("map/{}{:02}.map", id.world, id.area))?;
-    let room = room::load_room_archive(&map, None)?;
+    let map_name = format!("map/{}{:02}.map", id.world, id.area);
+    let map = library.read(&map_name)?;
+    let replacements = library.read_map_replacements(&map_name).unwrap_or_default();
+    let room = room::load_room_archive(&map, None, &replacements)?;
 
     let mut actor_names: HashMap<i16, (u16, String)> = HashMap::new();
     let mut motion_requests = Vec::new();

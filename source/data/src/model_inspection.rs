@@ -492,9 +492,13 @@ fn read_models_profile(
 /// as used for map objects that live inside the map archive. Original
 /// indexed textures only; the legacy bind pose and integer-truncated UVs
 /// are the same explicit profiles as the named loader.
+/// `textures` is the texture bank, its offset in its file and its BAR
+/// ordinal; `replacements` are the file's remaster images, of which those
+/// inside the bank are read with it.
 pub fn model_from_payload(
     model: &[u8],
     textures: Option<(&[u8], usize, usize)>,
+    replacements: &[crate::replacement_payload::ReplacementSample],
 ) -> io::Result<InspectionModel> {
     let geometry = crate::model_geometry::read_geometry(model)?;
     let skinning = crate::model_pose::Skinning::read(model)?;
@@ -502,15 +506,34 @@ pub fn model_from_payload(
     let mesh_parts = parts(&geometry, &poses)?;
     let (textures, texture_routes) = match textures {
         Some((bank, offset, ordinal)) => {
+            let inside: Vec<_> = replacements
+                .iter()
+                .filter(|r| {
+                    let at = (r.metadata.original_asset_offset & 0x1fff_ffff) as usize;
+                    (offset..offset + bank.len()).contains(&at)
+                })
+                .collect();
             let mut budget = 0usize;
-            let set = crate::model_inspection_textures::read_textures(
-                bank,
-                offset,
-                ordinal,
-                &[],
-                &[TextureMode::OriginalIndexed],
+            let read = |replacements: &[&_], modes: &[_], budget: &mut usize| {
+                crate::model_inspection_textures::read_textures(
+                    bank,
+                    offset,
+                    ordinal,
+                    replacements,
+                    modes,
+                    budget,
+                )
+            };
+            // The remaster images where they read, else the originals alone.
+            let set = read(
+                &inside,
+                &[TextureMode::OriginalIndexed, TextureMode::ExactHdBase],
                 &mut budget,
-            )?;
+            )
+            .or_else(|_| {
+                budget = 0;
+                read(&[], &[TextureMode::OriginalIndexed], &mut budget)
+            })?;
             let environments = set.images.len();
             let routes = crate::model_inspection_textures::read_uv_routes(
                 model,

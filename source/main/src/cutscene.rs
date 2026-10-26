@@ -231,8 +231,18 @@ fn setup(
                     .iter()
                     .map(|uv| uv.map(f32::from_bits))
                     .collect();
-                if let Ok(binding) =
+                // An environment with texture animation (eyes, mouth)
+                // keeps its original: the patches are painted in its pixels.
+                let animated = set
+                    .play
+                    .iter()
+                    .any(|p| p.patch.environment == route.environment_ordinal);
+                let binding = if animated {
                     set.bind(route.environment_ordinal, TextureMode::OriginalIndexed)
+                } else {
+                    set.bind_hd_or_original(route.environment_ordinal)
+                };
+                if let Ok(binding) = binding
                     && let Some(image) = binding.image_index
                 {
                     let level = &set.images[image].levels[0];
@@ -837,6 +847,8 @@ fn run(args: Vec<PathBuf>) -> Result<AppExit, Box<dyn std::error::Error>> {
     if args.len() < 2 {
         return Err("usage: kh2fm event <Steam-root> <manifest> [--event tt:19:613] [--load-only] [--bg-mask <hex>] [--autoplay <new-capture-dir>] [--captures f1,f2,...]".into());
     }
+    // The GPU device starts while the data decodes (used by the app below).
+    let early_renderer = crate::early_renderer::EarlyRenderer::start();
     let mut id = load::EventId {
         world: "tt".into(),
         area: 19,
@@ -1006,16 +1018,20 @@ fn run(args: Vec<PathBuf>) -> Result<AppExit, Box<dyn std::error::Error>> {
     })
     .insert_resource(Time::<Fixed>::from_hz(TICK_HZ))
     .insert_resource(ClearColor(Color::BLACK))
-    .add_plugins(DefaultPlugins.set(WindowPlugin {
-        primary_window: Some(Window {
-            title: "Kingdom Hearts II Re:Written (event; rewrite)".into(),
-            resolution: (1280, 720).into(),
-            ..default()
-        }),
-        exit_condition: bevy::window::ExitCondition::DontExit,
-        close_when_requested: false,
-        ..default()
-    }))
+    .add_plugins(
+        DefaultPlugins
+            .set(WindowPlugin {
+                primary_window: Some(Window {
+                    title: "Kingdom Hearts II Re:Written (event; rewrite)".into(),
+                    resolution: (1280, 720).into(),
+                    ..default()
+                }),
+                exit_condition: bevy::window::ExitCondition::DontExit,
+                close_when_requested: false,
+                ..default()
+            })
+            .set(early_renderer.plugin()),
+    )
     .add_plugins(FogPlugin)
     .add_plugins(visual::effect_draw::EffectPlugin)
     .add_plugins(Ui2dPlugin {

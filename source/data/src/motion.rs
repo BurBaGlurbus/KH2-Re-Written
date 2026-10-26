@@ -571,6 +571,42 @@ pub fn read_slots_optional(
     Ok(result)
 }
 
+/// Like [`read_slots`] for each slot on its own, reading the set once: a
+/// slot that is absent, a dummy or does not read gives `None`, as separate
+/// `read_slots` calls of one slot each would have failed.
+pub fn read_slots_each(
+    source: &crate::probe_source::ProbeSource,
+    index: &str,
+    ordinal: usize,
+    name_hash: [u8; 16],
+    slots: &[usize],
+) -> Result<Vec<Option<SelectedMotion>>, Box<dyn std::error::Error>> {
+    let mut checked = source.open_index(index)?;
+    let entry = checked
+        .inventory
+        .entries
+        .get(ordinal)
+        .filter(|e| e.name_hash == name_hash)
+        .ok_or("motion source entry mismatch")?;
+    let original = crate::original_payload::read_original(&mut checked.reader, entry)?;
+    let table = crate::bar::read_bar(&original.bytes)?;
+    let result = slots
+        .iter()
+        .map(|&slot| {
+            let entry = table
+                .entries
+                .get(slot)
+                .filter(|e| e.offset > 0 && e.size > 0)?;
+            let anb = original
+                .bytes
+                .get(entry.offset as usize..entry.offset as usize + entry.size as usize)?;
+            read_anb(anb, slot).ok()
+        })
+        .collect();
+    checked.verify_unchanged()?;
+    Ok(result)
+}
+
 /// Public slot chooser from pinned OpenKH MotionSet.GetMotionSetIndex: four
 /// variant slots per motion ID, probed in a mode-dependent order.
 pub fn motion_set_index(
