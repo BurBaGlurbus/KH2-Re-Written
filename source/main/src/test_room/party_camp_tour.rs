@@ -1,7 +1,8 @@
 //! The unattended `--party-camp-tour <dir>` (in the ability tour's setup,
 //! a room with Donald and Goofy): the camp's Customize, Abilities, Status
-//! and Equip pages of Donald, each switched to Goofy with R2, and a check
-//! that Donald's record took every change.
+//! and Equip pages of Donald, each switched to Goofy with R2, the top
+//! level's and Party's member models, and a check that Donald's record
+//! took every change.
 //!
 //! Customize: △ on Battle Style (Technic → Target), △ on Thunder (Free →
 //! Well-Balanced), its popup's Rare, △ twice on Potion (OFF+Often →
@@ -24,8 +25,9 @@ const SCREEN: u64 = 90;
 
 /// (wait, press, capture 35 ticks after it).
 const STEPS: &[(u64, u64, bool)] = &[
-    // Top: Items → Abilities → Customize.
-    (20, DOWN, false),
+    // Top: the party frame with the three models; Items → Abilities →
+    // Customize.
+    (20, DOWN, true),
     (MOVE, DOWN, false),
     (20, DECIDE, false),
     // 0x19: Donald's preview.
@@ -85,6 +87,13 @@ const STEPS: &[(u64, u64, bool)] = &[
     (SCREEN, CANCEL, false),
     (SCREEN, R2, true),
     (SCREEN, CANCEL, false),
+    (SCREEN, CANCEL, false),
+    // Party: the members' cards with their models.
+    (SCREEN, DOWN, false),
+    (MOVE, DOWN, false),
+    (MOVE, DOWN, false),
+    (20, DECIDE, false),
+    (SCREEN, UP, true),
     (SCREEN, CANCEL, false),
     (SCREEN, CANCEL, false),
 ];

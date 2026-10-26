@@ -94,6 +94,7 @@ mod limit_form_tour;
 mod limit_tour;
 mod magic_room;
 mod magic_tour;
+mod menu_friend;
 mod party_anim_tour;
 mod party_blade;
 mod party_camp_tour;
@@ -2096,6 +2097,8 @@ struct Loaded {
     step_info: Option<(u8, visual::footsteps::WorldInfo)>,
     /// Donald and Goofy's models and motions (empty when not installed).
     party: Vec<std::sync::Arc<party_room::PartyKind>>,
+    /// Each member's camp model (MENU_FRIEND_n), in `party` order.
+    menu_friends: Vec<Option<menu_friend::MenuFriend>>,
     spawn: Vec3,
     /// Sora's facing at the spawn (scene yaw).
     yaw: f32,
@@ -3638,13 +3641,36 @@ fn load(
             .collect();
         let source = source.clone();
         let (system, battle, objects) = (system.clone(), battle.clone(), objects.clone());
+        // The camp's model of each party slot (MENU_FRIEND_n). [I] Only
+        // Donald and Goofy in their own slots: what object a world guest's
+        // slot resolves to (FUN_1403dfeb0) is not traced.
+        let friend_slots: Vec<bool> = jobs
+            .iter()
+            .enumerate()
+            .map(|(i, (name, ..))| ["P_EX020", "P_EX030"].get(i) == Some(name))
+            .collect();
         std::thread::spawn(move || {
             // The members load on their own threads, each with its own
             // library; the results keep the roster order.
             let (source, system, objects) = (&source, &system, &objects);
             let lvup = bar_entry(&battle, b"lvup").unwrap_or(&[]);
             let plrp = bar_entry(&battle, b"plrp").unwrap_or(&[]);
-            std::thread::scope(|s| -> Vec<Result<_, String>> {
+            std::thread::scope(|s| {
+                let friends: Vec<_> = friend_slots
+                    .iter()
+                    .enumerate()
+                    .map(|(i, &wanted)| {
+                        s.spawn(move || {
+                            if !wanted {
+                                return None;
+                            }
+                            let mut library = data::path_lookup::Library::open(source).ok()?;
+                            menu_friend::load(source, &mut library, objects, i + 1)
+                                .map_err(|e| eprintln!("camp model of party slot {}: {e}", i + 1))
+                                .ok()
+                        })
+                    })
+                    .collect();
                 let threads: Vec<_> = jobs
                     .into_iter()
                     .map(|(name, member, motions)| {
@@ -3667,10 +3693,15 @@ fn load(
                         })
                     })
                     .collect();
-                threads
+                let members: Vec<Result<_, String>> = threads
                     .into_iter()
                     .map(|t| t.join().expect("party member thread"))
-                    .collect()
+                    .collect();
+                let friends: Vec<_> = friends
+                    .into_iter()
+                    .map(|t| t.join().expect("camp model thread"))
+                    .collect();
+                (members, friends)
             })
         })
     });
@@ -4218,12 +4249,13 @@ fn load(
         })
         .unwrap_or_default();
     timer.mark("music and the rest");
+    let mut menu_friends = Vec::new();
     let party = match party_thread {
         Some(thread) => {
-            let loaded = thread.join().expect("party thread");
+            let (loaded, friends) = thread.join().expect("party thread");
             let mut kinds = Vec::new();
             if let Ok(mut library) = data::path_lookup::Library::open(source) {
-                for result in loaded {
+                for (result, friend) in loaded.into_iter().zip(friends) {
                     let (mut k, member) = match result {
                         Ok(v) => v,
                         Err(e) => {
@@ -4248,6 +4280,8 @@ fn load(
                             drive_room::Voices::read(bar_entry(&battle, b"vtbl").ok()?, bank)
                         });
                     kinds.push(std::sync::Arc::new(k));
+                    // The camp model goes with the member it was read for.
+                    menu_friends.push(friend);
                 }
             }
             kinds
@@ -4276,6 +4310,7 @@ fn load(
         party_limits: std::mem::take(&mut limit_source),
         items: item_room::load(&system).ok(),
         party,
+        menu_friends,
         forms,
         reaction_commands,
         sora_weight,
@@ -4613,6 +4648,7 @@ struct Startup {
     enemy_model: Option<model_inspection::InspectionModel>,
     effect_atlas: Option<visual::effects::Atlas>,
     npc_model: Option<model_inspection::InspectionModel>,
+    menu_friends: Vec<Option<menu_friend::MenuFriend>>,
 }
 
 /// Spawns one textured mesh per model part under `parent`, in part order.
@@ -5977,65 +6013,94 @@ fn setup(
         let c = &game.clip_poses[walk];
         c.frame(0).iter().map(|p| *p + c.root[0]).collect()
     };
-    let menu_root = commands
-        .spawn((
-            MenuModelRoot,
-            Transform::from_xyz(0., 0., 100.),
-            Visibility::Hidden,
-            RenderLayers::layer(MENU_LAYER),
-        ))
-        .id();
-    for (ordinal, entity) in spawn_model(
-        &mut commands,
-        &actor,
-        &walk_pose,
-        menu_root,
-        &mut meshes,
-        &mut materials,
-        &mut images,
-    ) {
-        if let Some(entity) = entity {
-            commands
-                .entity(entity)
-                .insert((MenuModelPart(ordinal), RenderLayers::layer(MENU_LAYER)));
+    // Each slot renders alone into its own target (camp-03 §5.1: RT1 is
+    // cleared and drawn per member): Sora on MENU_LAYER, the members on
+    // the layers after it.
+    let mut spawn_menu_slot = |commands: &mut Commands,
+                               member: usize,
+                               model: &model_inspection::InspectionModel,
+                               pose: &[Vec3]|
+     -> usize {
+        let layer = RenderLayers::layer(MENU_LAYER + member);
+        let menu_root = commands
+            .spawn((
+                MenuModelRoot,
+                Transform::from_xyz(0., 0., 100.),
+                Visibility::Hidden,
+                layer.clone(),
+            ))
+            .id();
+        for (ordinal, entity) in spawn_model(
+            commands,
+            model,
+            pose,
+            menu_root,
+            &mut meshes,
+            &mut materials,
+            &mut images,
+        ) {
+            if let Some(entity) = entity {
+                commands
+                    .entity(entity)
+                    .insert((MenuModelPart { member, ordinal }, layer.clone()));
+            }
         }
-    }
-    let menu_target = images.add(Image::new_target_texture(
-        MENU_TARGET[0],
-        MENU_TARGET[1],
-        TextureFormat::Rgba8UnormSrgb,
-        None,
-    ));
-    commands.spawn((
-        Camera3d::default(),
-        Camera {
-            order: -3,
-            is_active: false,
-            clear_color: ClearColorConfig::Custom(Color::NONE),
-            ..default()
-        },
-        bevy::camera::RenderTarget::Image(menu_target.clone().into()),
-        // A 640x480-style camera with horizontal FOV 40° (focal 879.19):
-        // vertical 2·atan(240 / 879.19); squeezed to the layout, the
-        // target's 16:9 square pixels match it (camp-03 §1).
-        Projection::Perspective(PerspectiveProjection {
-            fov: 2. * (240f32 / 879.1928).atan(),
-            near: 1.,
-            far: 100_000.,
-            ..default()
-        }),
-        Transform::from_xyz(0., 50., 800.).looking_at(Vec3::new(0., 0., -55.), Vec3::Y),
-        Msaa::Off,
-        Tonemapping::None,
-        DebandDither::Disabled,
-        NoIndirectDrawing,
-        RenderLayers::layer(MENU_LAYER),
-        MenuCamera,
-    ));
+        let menu_target = images.add(Image::new_target_texture(
+            MENU_TARGET[0],
+            MENU_TARGET[1],
+            TextureFormat::Rgba8UnormSrgb,
+            None,
+        ));
+        commands.spawn((
+            Camera3d::default(),
+            Camera {
+                order: -3,
+                is_active: false,
+                clear_color: ClearColorConfig::Custom(Color::NONE),
+                ..default()
+            },
+            bevy::camera::RenderTarget::Image(menu_target.clone().into()),
+            // A 640x480-style camera with horizontal FOV 40° (focal 879.19):
+            // vertical 2·atan(240 / 879.19); squeezed to the layout, the
+            // target's 16:9 square pixels match it (camp-03 §1).
+            Projection::Perspective(PerspectiveProjection {
+                fov: 2. * (240f32 / 879.1928).atan(),
+                near: 1.,
+                far: 100_000.,
+                ..default()
+            }),
+            Transform::from_xyz(0., 50., 800.).looking_at(Vec3::new(0., 0., -55.), Vec3::Y),
+            Msaa::Off,
+            Tonemapping::None,
+            DebandDither::Disabled,
+            NoIndirectDrawing,
+            layer,
+            MenuCamera(member),
+        ));
+        frame.add_image(menu_target, MENU_TARGET, true)
+    };
+    let sheet = spawn_menu_slot(&mut commands, 0, &actor, &walk_pose);
+    let friends = std::mem::take(&mut startup.menu_friends)
+        .into_iter()
+        .enumerate()
+        .map(|(i, friend)| {
+            let f = friend?;
+            let sheet = spawn_menu_slot(&mut commands, i + 1, &f.model, &f.frames[0]);
+            Some(MenuFriendView {
+                sheet,
+                indices: f.model.parts.iter().map(|p| p.indices.clone()).collect(),
+                frames: f.frames,
+                length: f.length,
+            })
+        })
+        .collect();
     commands.insert_resource(MenuModel {
-        sheet: frame.add_image(menu_target, MENU_TARGET, true),
+        sheet,
         clip: walk,
         indices: actor.parts.iter().map(|p| p.indices.clone()).collect(),
+        friends,
+        last_time: None,
+        steps: 0,
     });
     // Sora's skeleton for the skateboard's rider retarget.
     let skinning = std::mem::take(&mut actor.skinning);
@@ -6330,15 +6395,33 @@ const MENU_TARGET: [u32; 2] = [1280, 720];
 #[derive(Component)]
 struct MenuModelRoot;
 #[derive(Component)]
-struct MenuModelPart(usize);
+struct MenuModelPart {
+    /// The camp member (0 = Sora).
+    member: usize,
+    ordinal: usize,
+}
+/// The camp member a menu camera renders.
 #[derive(Component)]
-struct MenuCamera;
+struct MenuCamera(usize);
 
 #[derive(Resource)]
 struct MenuModel {
     sheet: usize,
     clip: usize,
     indices: Vec<Vec<u32>>,
+    /// Members 1.. (`None`: not rendered).
+    friends: Vec<Option<MenuFriendView>>,
+    /// Sora's walk time when last presented, and the camp updates since
+    /// the members were added (their walks have their own lengths).
+    last_time: Option<f32>,
+    steps: u32,
+}
+
+struct MenuFriendView {
+    sheet: usize,
+    indices: Vec<Vec<u32>>,
+    frames: Vec<Vec<Vec3>>,
+    length: f32,
 }
 
 /// While the camp shows its members, render Sora's walk at the menu time
@@ -6346,23 +6429,39 @@ struct MenuModel {
 #[allow(clippy::too_many_arguments)]
 fn menu_model_present(
     camp: Option<Res<CampRes>>,
-    model: Option<Res<MenuModel>>,
+    model: Option<ResMut<MenuModel>>,
     game_over: Option<Res<game_over::GameOverRes>>,
     sora_rig: Option<Res<SoraRig>>,
     game: Res<Game>,
-    mut cameras: Query<&mut Camera, With<MenuCamera>>,
+    mut cameras: Query<(&mut Camera, &MenuCamera)>,
     mut roots: Query<&mut Visibility, With<MenuModelRoot>>,
     parts: Query<(&MenuModelPart, &Mesh3d)>,
     mut meshes: ResMut<Assets<Mesh>>,
 ) {
-    let Some(model) = model else { return };
+    let Some(mut model) = model else { return };
     // The game-over list shows Sora on the GAMEOVER set's motion.
     let over = game_over.as_ref().and_then(|g| g.model_time());
-    let time = camp
-        .and_then(|c| c.open.as_ref().and_then(|m| m.model_time))
-        .or(over);
-    if let Ok(mut camera) = cameras.single_mut() {
-        camera.is_active = time.is_some();
+    let camp_time = camp.and_then(|c| c.open.as_ref().and_then(|m| m.model_time));
+    let time = camp_time.or(over);
+    // The game-over list shows Sora alone.
+    for (mut camera, slot) in &mut cameras {
+        camera.is_active = if slot.0 == 0 {
+            time.is_some()
+        } else {
+            camp_time.is_some()
+        };
+    }
+    // The members walk while the camp shows them (FUN_1403001b0 per slot).
+    match camp_time {
+        Some(t) => {
+            let last = model.last_time;
+            model.steps += menu_friend::steps_between(last, t);
+            model.last_time = Some(t);
+        }
+        None => {
+            model.last_time = None;
+            model.steps = 0;
+        }
     }
     for mut v in &mut roots {
         let want = if time.is_some() {
@@ -6377,12 +6476,25 @@ fn menu_model_present(
     let Some(t) = time else { return };
     if let (Some(t), Some(g), Some(rig)) = (over, game_over.as_ref(), sora_rig.as_ref()) {
         if let Some(positions) = game_over::pose(g, rig, t) {
-            for (part, handle) in &parts {
-                let positions = model.indices[part.0].iter().map(|&i| positions[i as usize]);
+            for (part, handle) in parts.iter().filter(|(p, _)| p.member == 0) {
+                let positions = model.indices[part.ordinal]
+                    .iter()
+                    .map(|&i| positions[i as usize]);
                 visual::room::set_positions(&mut meshes, &handle.0, positions);
             }
         }
         return;
+    }
+    for (part, handle) in parts.iter().filter(|(p, _)| p.member > 0) {
+        let Some(Some(f)) = model.friends.get(part.member - 1) else {
+            continue;
+        };
+        let k = menu_friend::time(model.steps, f.length).min(f.frames.len() - 1);
+        let pose = &f.frames[k];
+        let positions = f.indices[part.ordinal]
+            .iter()
+            .map(|&i| pose[i as usize].to_array());
+        visual::room::set_positions(&mut meshes, &handle.0, positions);
     }
     // The member model is base Sora's walk; in a Drive form the room's
     // clips are the form's.
@@ -6393,8 +6505,8 @@ fn menu_model_present(
     let f = (t as usize).min(c.len() - 1);
     let root = c.root[f.min(c.root.len() - 1)];
     let pose = c.frame(f);
-    for (part, handle) in &parts {
-        let positions = model.indices[part.0]
+    for (part, handle) in parts.iter().filter(|(p, _)| p.member == 0) {
+        let positions = model.indices[part.ordinal]
             .iter()
             .map(|&i| (pose[i as usize] + root).to_array());
         visual::room::set_positions(&mut meshes, &handle.0, positions);
@@ -12588,15 +12700,19 @@ fn camp_present(
                 pause_menu::Sheet::Art => art,
                 pause_menu::Sheet::Font => c.font_sheet,
                 pause_menu::Sheet::Icon => c.icon_sheet,
-                // Only Sora's model is rendered in this room.
+                // Sora's target, or the member's (MENU_FRIEND_n).
                 pause_menu::Sheet::Model(i) => {
-                    let Some(m) = model.as_ref().filter(|_| i == 0) else {
+                    let sheet = model.as_ref().and_then(|m| match i {
+                        0 => Some(m.sheet),
+                        _ => m.friends.get(i - 1)?.as_ref().map(|f| f.sheet),
+                    });
+                    let Some(sheet) = sheet else {
                         continue;
                     };
                     for q in &mut quads {
                         q.uv = [0, 0, MENU_TARGET[0] as i32, MENU_TARGET[1] as i32];
                     }
-                    m.sheet
+                    sheet
                 }
                 pause_menu::Sheet::Picture(id) => {
                     let Some(&Some(s)) = c.picture_sheets.get(&id) else {
@@ -14045,6 +14161,7 @@ fn run(mut args: Vec<PathBuf>) -> Result<AppExit, Box<dyn std::error::Error>> {
             enemy_model,
             effect_atlas,
             npc_model,
+            menu_friends: std::mem::take(&mut loaded.menu_friends),
         })
         .insert_resource(rig)
         .insert_resource(SparkRing::default())
