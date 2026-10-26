@@ -26,6 +26,8 @@ const BACKING: [f32; 4] = [0., 0., 0., 0.55];
 /// The banner ("Waiting for a player", "Opponent left"): its size and row.
 const BANNER_SIZE: f32 = 16.;
 const BANNER_Y: f32 = 120.;
+/// The middle of the 512-wide layout.
+const BANNER_CENTRE: f32 = 256.;
 
 /// Where the session stands, for the banner.
 #[derive(Clone, Debug, PartialEq)]
@@ -35,8 +37,8 @@ pub(crate) enum Status {
     /// Joiner: knocking at the host.
     Joining(SocketAddr),
     Playing,
-    /// The session ended; the reason to show.
-    Ended(String),
+    /// The session ended at this tick; the reason to show.
+    Ended(String, u64),
 }
 
 /// What `--host` / `--join` asked for.
@@ -232,31 +234,50 @@ pub(crate) fn begin(net: Option<ResMut<DuelNet>>, mut game: ResMut<Game>) {
             }
             NetEvent::Rejected(reason) => {
                 game.event(serde_json::json!({"event":"net_rejected","tick":tick,"reason":reason}));
-                net.status = Status::Ended(format!("The host refused: {reason}"));
+                net.status = Status::Ended(format!("The host refused: {reason}"), tick);
+                leave_session(&mut game);
             }
             NetEvent::Disconnected(reason) => {
                 game.event(
                     serde_json::json!({"event":"net_disconnected","tick":tick,"reason":reason}),
                 );
                 game.rivals.clear();
-                let who = net.peer.take().unwrap_or_else(|| "The other player".into());
-                net.status = Status::Ended(match net.role {
+                let text = match (net.role, net.peer.take()) {
                     // The host keeps listening for the next player.
-                    Role::Host => format!("{who} left ({reason}). Waiting for a player"),
-                    Role::Join => format!("Opponent left: {reason}"),
-                });
+                    (Role::Host, who) => format!(
+                        "{} left: {reason}. Waiting for a player",
+                        who.as_deref().unwrap_or("The other player")
+                    ),
+                    (Role::Join, Some(_)) => format!("Opponent left: {reason}. Esc to quit"),
+                    (Role::Join, None) => format!("Could not join: {reason}"),
+                };
+                net.status = Status::Ended(text, tick);
+                if net.role == Role::Join {
+                    leave_session(&mut game);
+                }
             }
         }
     }
     // A host whose player left goes back to waiting once the banner was read.
     if net.role == Role::Host
-        && !net.session.is_connected()
-        && matches!(net.status, Status::Ended(_))
-        && game.tick.is_multiple_of(60 * 5)
+        && let Status::Ended(_, since) = net.status
+        && game.tick.saturating_sub(since) >= BANNER_TICKS
     {
         let port = net.session.local_addr().map(|a| a.port()).unwrap_or(0);
         net.status = Status::Waiting(port);
     }
+}
+
+/// How long the host shows why its player left before waiting again.
+const BANNER_TICKS: u64 = 5 * 60;
+
+/// The joiner's session ended: its Sora is its own again (the field
+/// simulates him) and the room pauses as usual.
+fn leave_session(game: &mut Game) {
+    game.net_client = false;
+    game.net_pad = rival::RivalPad::default();
+    game.duel = false;
+    game.rivals.clear();
 }
 
 /// End of every fixed step: what this tick queued goes out.
@@ -341,7 +362,7 @@ pub(crate) fn sample(net: Option<ResMut<DuelNet>>, game: Res<Game>) {
     if !c.is_clear() {
         lines.push((
             format!(
-                "Simulated: +{} ms ±{} ms, {:.0}% lost ({} dropped)",
+                "Simulated +{} ms, jitter {} ms, {:.0}% lost, {} dropped",
                 c.latency_ms, c.jitter_ms, c.loss_percent, s.simulated_drops
             ),
             true,
@@ -410,15 +431,15 @@ pub(crate) fn present(
         pad: 1,
     };
     let banner = match &net.status {
-        Status::Waiting(port) => Some(format!("Waiting for a player (UDP port {port})")),
+        Status::Waiting(port) => Some(format!("Waiting for a player on UDP port {port}")),
         Status::Joining(host) => Some(format!("Joining {host}...")),
         Status::Playing => None,
-        Status::Ended(reason) => Some(reason.clone()),
+        Status::Ended(reason, _) => Some(reason.clone()),
     };
     if let Some(text) = banner {
         let encoded = pause_menu::encode_text(&text);
         let width = field_command_menu::text_width(&encoded, &f, BANNER_SIZE);
-        let x = -width / 2.;
+        let x = BANNER_CENTRE - width / 2.;
         frame.draws.push(backing(
             white,
             [
