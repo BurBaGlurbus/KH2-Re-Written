@@ -219,6 +219,16 @@ impl Lobby {
         }
     }
 
+    /// Host: the next match's lobby: new bans, the builds chosen again
+    /// (each player's last build is where the camp starts).
+    pub(crate) fn next_match(&mut self) {
+        let n = self.match_no + 1;
+        *self = Lobby {
+            match_no: n,
+            ..Lobby::default()
+        };
+    }
+
     /// Host: the rules changed; nobody stays ready on the old ones.
     pub(crate) fn rules_changed(&mut self) {
         if self.stage == Stage::Loadout {
@@ -465,6 +475,10 @@ mod tests {
         assert!(!lobby.seats[1].ready, "a new build un-readies");
         lobby.apply(1, Intent::Ready(true), &l).unwrap();
         assert_eq!(lobby.stage, Stage::Start);
+        lobby.next_match();
+        assert_eq!(lobby.stage, Stage::Bans);
+        assert_eq!(lobby.match_no, 1);
+        assert!(lobby.banned().is_empty(), "each match has its own bans");
     }
 
     #[test]

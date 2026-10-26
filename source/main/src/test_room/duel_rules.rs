@@ -42,6 +42,16 @@ pub(crate) const MODES: [ModeInfo; 3] = [
     },
 ];
 
+/// A mode by its command-line name (`--duel-mode`).
+pub(crate) fn mode_named(name: &str) -> Option<Mode> {
+    match name {
+        "stock" => Some(Mode::Stock),
+        "best3" => Some(Mode::BestOf3),
+        "time" => Some(Mode::Timed),
+        _ => None,
+    }
+}
+
 /// The time limits the host can pick, in seconds.
 pub(crate) const TIME_LIMITS: [u16; 5] = [60, 90, 120, 180, 300];
 const DEFAULT_TIME: u16 = 180;
@@ -197,6 +207,8 @@ mod tests {
         assert_eq!(r.lines().len(), 3, "the timed mode shows its limit");
         assert_eq!(MatchRules::mode_from(r.mode_code()), Some(r.mode));
         assert!(!MatchRules { time_limit: 7, ..r }.valid());
+        assert_eq!(mode_named("best3"), Some(Mode::BestOf3));
+        assert_eq!(mode_named("rounds"), None);
     }
 
     #[test]

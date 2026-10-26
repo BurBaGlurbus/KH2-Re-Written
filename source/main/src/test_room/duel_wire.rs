@@ -22,6 +22,10 @@ pub(crate) const REFUSED: u8 = 7;
 /// A vote (host to joiner) and a joiner's ballot (duel_vote.rs).
 pub(crate) const VOTE: u8 = 8;
 pub(crate) const BALLOT: u8 = 9;
+/// The match (host to joiner) and a joiner's rematch choice
+/// (duel_match_room.rs).
+pub(crate) const MATCH: u8 = 10;
+pub(crate) const REMATCH: u8 = 11;
 
 /// Ticks of buttons each input message repeats.
 pub(crate) const INPUT_REDUNDANCY: usize = 6;

@@ -79,6 +79,8 @@ mod duel_hits;
 mod duel_loadout;
 mod duel_lobby;
 mod duel_lobby_room;
+mod duel_match;
+mod duel_match_room;
 mod duel_net;
 mod duel_rules;
 mod duel_sync;
@@ -1133,6 +1135,11 @@ struct Game {
     duel_camp: bool,
     /// F3 asked the host for a test vote.
     duel_test_vote: bool,
+    /// A match is running: a knocked-out Sora stays down for the round.
+    duel_match: bool,
+    /// Damage dealt and hits landed this match, by the attacker's slot.
+    duel_dealt: [u32; 2],
+    duel_landed: [u16; 2],
     poses: HashMap<(Action, bool), usize>,
     clip_poses: Arc<Vec<ClipPoses>>,
     part_indices: Vec<Vec<u32>>,
@@ -1362,6 +1369,9 @@ struct Game {
     /// A running mission overlay's camera (scene transform, field of view)
     /// and its `SeqBlur` weight with the event frame it belongs to.
     overlay_camera: Option<boss::OverlayView>,
+    /// The duel match's shots (the intro, the result), when no mission
+    /// overlay holds the view.
+    duel_camera: Option<boss::OverlayView>,
     overlay_blur: Option<(f32, i32)>,
     /// The voice bank of each battle enemy object (objentry id).
     enemy_voice_banks: HashMap<u32, u16>,
@@ -6652,6 +6662,7 @@ fn read_pad(
     game_over: Option<Res<game_over::GameOverRes>>,
     lobby: Option<Res<duel_lobby_room::LobbyRoom>>,
     vote: Option<Res<duel_vote::VoteRoom>>,
+    duel_match: Option<Res<duel_match_room::MatchRoom>>,
     mut game: ResMut<Game>,
     mut targeting: ResMut<enemy_target::Targeting>,
 ) {
@@ -6662,7 +6673,8 @@ fn read_pad(
     let menu = camp.is_some_and(|c| c.menu_up())
         || game_over.is_some_and(|g| g.menu_up())
         || lobby.is_some_and(|l| l.menu_up())
-        || vote.is_some_and(|v| v.menu_up(usize::from(game.net_client)));
+        || vote.is_some_and(|v| v.menu_up(usize::from(game.net_client)))
+        || duel_match.is_some_and(|m| m.menu_up());
     let mode = if menu {
         controller::MODE_TITLE
     } else {
@@ -10594,7 +10606,7 @@ fn camera_control(
     // as the follow camera's is (FUN_140164940 from the target). [I] The
     // camera system's own test for event cameras (FUN_1401780d0) is taken
     // to be that one.
-    let (pose, fov) = match game.overlay_camera {
+    let (pose, fov) = match game.overlay_camera.or(game.duel_camera) {
         Some(v) => {
             let mut eye = v.eye;
             if v.collision {
@@ -13049,6 +13061,27 @@ fn run(mut args: Vec<PathBuf>) -> Result<AppExit, Box<dyn std::error::Error>> {
                     .parse::<f32>()?
                     .clamp(duel_rules::DAMAGE_RANGE.0, duel_rules::DAMAGE_RANGE.1);
             }
+            Some("--duel-mode") => {
+                let name = options
+                    .next()
+                    .and_then(|v| v.to_str())
+                    .ok_or("duel mode absent")?;
+                duel_rules.mode =
+                    duel_rules::mode_named(name).ok_or("duel mode: stock, best3 or time")?;
+            }
+            Some("--duel-time") => {
+                let seconds = options
+                    .next()
+                    .and_then(|v| v.to_str())
+                    .ok_or("duel time absent")?
+                    .parse::<u16>()?;
+                if !duel_rules::TIME_LIMITS.contains(&seconds) {
+                    return Err(
+                        format!("duel time: one of {:?} seconds", duel_rules::TIME_LIMITS).into(),
+                    );
+                }
+                duel_rules.time_limit = seconds;
+            }
             Some("--bind") => {
                 net_bind = options
                     .next()
@@ -13676,6 +13709,9 @@ fn run(mut args: Vec<PathBuf>) -> Result<AppExit, Box<dyn std::error::Error>> {
         duel_frozen: false,
         duel_camp: false,
         duel_test_vote: false,
+        duel_match: false,
+        duel_dealt: [0; 2],
+        duel_landed: [0; 2],
         poses,
         clip_poses: base_clip_poses,
         part_indices: Vec::new(),
@@ -13871,6 +13907,7 @@ fn run(mut args: Vec<PathBuf>) -> Result<AppExit, Box<dyn std::error::Error>> {
         battle_won: false,
         camera_watch: None,
         overlay_camera: None,
+        duel_camera: None,
         overlay_blur: None,
         screen_fade: Fade::default(),
         enemy_voice_banks: HashMap::new(),
@@ -14313,6 +14350,7 @@ fn run(mut args: Vec<PathBuf>) -> Result<AppExit, Box<dyn std::error::Error>> {
         app.insert_resource(session);
         app.init_resource::<duel_lobby_room::LobbyRoom>();
         app.init_resource::<duel_vote::VoteRoom>();
+        app.init_resource::<duel_match_room::MatchRoom>();
     }
     app.insert_resource(duel_loadout);
     Ok(app
@@ -14408,6 +14446,7 @@ fn run(mut args: Vec<PathBuf>) -> Result<AppExit, Box<dyn std::error::Error>> {
                     read_pad,
                     duel_lobby_room::tick,
                     duel_vote::tick,
+                    duel_match_room::tick,
                 )
                     .chain(),
                 camp_tick,

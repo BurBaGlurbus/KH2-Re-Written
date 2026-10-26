@@ -6,11 +6,22 @@
 use super::*;
 use std::f32::consts::PI;
 
+/// Where an arena's fighters are held in.
+pub(crate) enum Bounds {
+    /// The room's own collision walls hold them (their extent is logged
+    /// with the starts, to show both starts inside).
+    Collision,
+    /// A rectangle in scene x/z: min x, min z, max x, max z.
+    #[cfg_attr(not(test), allow(dead_code))]
+    Rect([f32; 4]),
+}
+
 /// One arena.
 pub(crate) struct Arena {
     pub name: &'static str,
     /// Each Sora's distance from the centre.
     pub spacing: f32,
+    pub bounds: Bounds,
 }
 
 /// The arenas [duel choice: the test room's arena, the room the launcher's
@@ -18,7 +29,33 @@ pub(crate) struct Arena {
 pub(crate) const ARENAS: [Arena; 1] = [Arena {
     name: "Test room",
     spacing: 300.,
+    bounds: Bounds::Collision,
 }];
+
+/// The x/z extent the arena's bounds give in this room, if known.
+fn extent(arena: &Arena, world: &RoomWorld) -> Option<[f32; 4]> {
+    match (&arena.bounds, world) {
+        (Bounds::Rect(r), _) => Some(*r),
+        (Bounds::Collision, RoomWorld::Triangles(t)) => {
+            let mut e = [f32::MAX, f32::MAX, f32::MIN, f32::MIN];
+            for v in t.triangles().flatten() {
+                e = [
+                    e[0].min(v[0]),
+                    e[1].min(v[2]),
+                    e[2].max(v[0]),
+                    e[3].max(v[2]),
+                ];
+            }
+            (e[0] <= e[2]).then_some(e)
+        }
+        (Bounds::Collision, RoomWorld::Map(_)) => None,
+    }
+}
+
+/// Whether a point is inside an x/z extent.
+fn inside(e: &[f32; 4], at: [f32; 3]) -> bool {
+    (e[0]..=e[2]).contains(&at[0]) && (e[1]..=e[3]).contains(&at[2])
+}
 
 /// Where the host's Sora (seat 0) and the joiner's (seat 1) start, as
 /// (position, yaw): mirrored through `centre` along the heading `yaw`,
@@ -48,9 +85,12 @@ pub(crate) fn place(game: &mut Game) {
             r.started = tick;
         }
     }
+    let bounds = extent(arena, &game.world);
+    let held = bounds.map(|e| starts.iter().all(|(at, _)| inside(&e, *at)));
     game.event(
         serde_json::json!({"event":"duel_arena","tick":tick,"arena":arena.name,
-        "starts":starts.map(|(at, yaw)| serde_json::json!({"at":at,"yaw":yaw}))}),
+        "starts":starts.map(|(at, yaw)| serde_json::json!({"at":at,"yaw":yaw})),
+        "bounds":bounds,"starts_inside":held}),
     );
 }
 
@@ -63,6 +103,20 @@ fn wrap(a: f32) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_rectangle_holds_the_starts() {
+        let e = [-500., -1000., 500., 0.];
+        let [(a, _), (b, _)] = starts(&ARENAS[0], [0., 0., -600.], 0.);
+        assert!(inside(&e, a) && inside(&e, b));
+        assert!(!inside(&e, [600., 0., -10.]));
+        let rect = Arena {
+            name: "test",
+            spacing: 1.,
+            bounds: Bounds::Rect(e),
+        };
+        assert!(matches!(rect.bounds, Bounds::Rect(_)));
+    }
 
     #[test]
     fn the_starts_mirror_through_the_centre_and_face_each_other() {

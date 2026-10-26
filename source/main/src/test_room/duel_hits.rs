@@ -518,7 +518,9 @@ fn land(
     let damage_motion = (10..=39).contains(&victim.player.motion_id(clips));
     let veto = combat::sora_veto(ab.has(127), ab.has(128), victim.vitals.hp, 0, damage_motion);
     let max = victim.vitals.target.max_hp;
+    let before = victim.vitals.hp;
     victim.vitals.hp = combat::apply_damage(victim.vitals.hp, 0, max, damage, veto);
+    let taken = (before - victim.vitals.hp).max(0) as u32;
     let reaction = player::Hit {
         reaction: attack.reaction,
         original: attack.reaction,
@@ -583,6 +585,12 @@ fn land(
         events.push(DuelEvent::KnockOut(victim_slot));
     }
     game.duel_events.extend(events);
+    // The match's tally, by the attacker's slot.
+    let s = usize::from(attacker_slot);
+    if s < 2 {
+        game.duel_dealt[s] += taken;
+        game.duel_landed[s] = game.duel_landed[s].saturating_add(1);
+    }
     game.event(
         serde_json::json!({"event":"duel_hit","tick":tick,"attacker":attacker_slot,
         "victim":victim_slot,"atkp":hit.atkp,"step":row,"formula":formula,"damage":damage,"hp":hp}),
@@ -592,6 +600,10 @@ fn land(
 /// [Test-room choice, as the room's own KO] A knocked-out rival stands up
 /// with full HP after 120 ticks; the room Sora's own KO stays the room's.
 fn knock_outs(game: &mut Game, tick: u64) {
+    // In a match a knock-out ends the round (duel_match.rs).
+    if game.duel_match {
+        return;
+    }
     let mut stood = Vec::new();
     for r in &mut game.rivals {
         let v = &mut r.fighter.vitals;

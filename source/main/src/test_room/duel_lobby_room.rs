@@ -404,18 +404,14 @@ pub(crate) fn tick(
                 if game.autoplay.is_some() && net.role == Role::Host {
                     game.duel_test_vote = true;
                 }
-                // Both builds go on their Soras, both to the arena's starts;
-                // the match begins.
+                // Both builds go on their Soras; the match begins.
                 for (seat, slot) in [(0, fighter_slots::HOST), (1, fighter_slots::JOIN)] {
                     if let Some(b) = room.lobby.seats[seat].loadout.clone() {
                         apply_build(game, slot, &b);
                     }
                 }
-                let before = game.sora.player.position;
-                if net.role == Role::Host {
-                    duel_arena::place(game);
-                }
-                room.recenter = Some(before);
+                // The match (duel_match_room.rs) refills and places them.
+                room.recenter = Some(game.sora.player.position);
                 room.up = false;
                 game.sound_queue.push((SE_DECIDE, "lobby"));
             }

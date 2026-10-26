@@ -148,6 +148,16 @@ left" (or a timeout after five seconds) and the host waits for the next player.
 own start, 600 units apart, facing each other, with the camera behind each player's Sora. There are no
 enemies, no talk and no exits during a duel.
 
+**The match:** a short shot of both Soras, then 3, 2, 1 and GO on both screens at the same moment; nobody
+moves before GO. A knock-out ends a round (a knocked-out Sora stays down). *One KO* is one round; *Best of 3*
+goes until someone wins two (the round and score show at the top); *Time limit* shows the clock, and at time
+up the larger share of HP left wins. Between rounds both Soras are refilled and put back at the start. At the
+end each screen shows VICTORY, DEFEAT or DRAW with how it was decided, the rounds, the match time, the damage
+dealt and the hits landed; the winner's camera pushes in, the loser's rises behind his Sora. *Rematch* on both
+goes back to the lobby (new bans, the builds where they were); *Leave* closes the game. If the other player
+leaves during a match, it is your win. From a command line the host can set `--duel-mode stock|best3|time` and
+`--duel-time 60|90|120|180|300`.
+
 F3 → Sora → Duel → *Test vote* (host) tries the vote both players will use for later choices: different answers
 go to a coin flip on the host that both screens show.
 
@@ -165,8 +175,7 @@ the whole duel. The lobby's Keyblade, abilities and item slots go on top of it.
 - The other player's weapon trail is not drawn yet; Wisdom Form's shots show their effect on the host only.
 - The joiner sees its own Sora about one round trip late (one or two ticks on home Wi-Fi): there is no
   prediction yet. The host has no delay.
-- A knocked-out Sora stands up after two seconds (the test room's rule). There is no match result yet: the
-  modes are chosen in the lobby but the countdown, rounds, time limit and results are still to come.
+- Sora has no victory motion in the duel yet; the result's camera frames him as he stands.
 - LAN only: no internet play. Discovery uses a broadcast that guest networks and some routers block; join by
   address then.
 

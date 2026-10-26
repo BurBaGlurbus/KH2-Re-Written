@@ -519,10 +519,12 @@ fn backing(white: usize, rect: [f32; 4]) -> (usize, Vec<data::sprite_sequence::Q
 
 /// The overlay at the top right and the session banner in the middle, on
 /// the 2D layer.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn present(
     net: Option<ResMut<DuelNet>>,
     lobby: Option<Res<duel_lobby_room::LobbyRoom>>,
     vote: Option<Res<duel_vote::VoteRoom>>,
+    duel_match: Option<Res<duel_match_room::MatchRoom>>,
     game: Res<Game>,
     hud: Option<Res<Hud>>,
     mut frame: ResMut<Ui2dFrame>,
@@ -543,7 +545,9 @@ pub(crate) fn present(
         Status::Playing => None,
         Status::Ended(reason, _) => Some(reason.clone()),
     };
-    if let Some(text) = banner {
+    // A match's result says who left; the banner gives way to it.
+    let result_up = duel_match.as_ref().is_some_and(|m| m.menu_up());
+    if let Some(text) = banner.filter(|_| !result_up) {
         let encoded = pause_menu::encode_text(&text);
         let width = field_command_menu::text_width(&encoded, &f, BANNER_SIZE);
         let x = BANNER_CENTRE - width / 2.;
@@ -598,6 +602,25 @@ pub(crate) fn present(
             ));
         }
         frame.draws.push((sheet, quads));
+    }
+    // The match: countdown, clock, rounds and the result, centred.
+    let labels = duel_match
+        .map(|m| duel_match_room::labels(&m, &net, &game))
+        .unwrap_or_default();
+    for l in &labels {
+        let width = field_command_menu::text_width(&l.text, &f, l.size);
+        let x = l.centre[0] - width / 2.;
+        let y = l.centre[1] - l.size / 2.;
+        if l.backed {
+            frame.draws.push(backing(
+                white,
+                [x - 8., y - 3., x + width + 8., y + l.size + 3.],
+            ));
+        }
+        frame.draws.push((
+            sheet,
+            field_command_menu::text_quads_sized(&l.text, [x, y], l.colour, &f, l.size),
+        ));
     }
     // A vote: its own panel below the lobby's place.
     let vote_lines: Vec<(Vec<u8>, bool)> = vote
