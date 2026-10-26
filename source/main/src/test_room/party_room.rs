@@ -319,6 +319,10 @@ pub struct MemberRt {
     /// totals (FUN_1403c1d90 through FUN_1403c1190), rebuilt when the camp
     /// closes; the level row's numbers stay in `kind`.
     pub gear: player::equipment_stats::Totals,
+    /// The weapon item `kind` was built for (0: the base weapon), and the
+    /// rebuild for another one while it loads.
+    pub weapon_item: u16,
+    pub reload: Option<(u16, std::thread::JoinHandle<Result<PartyKind, String>>)>,
     /// The HUD event the gauge has not read yet (0 none, 1-3 hit, 4 heal;
     /// FUN_1403d60c0 and FUN_1403d2eb0 post it).
     pub event: u8,
@@ -689,6 +693,7 @@ pub fn load(
     name: &'static str,
     member: &'static party_roster::Member,
     limit_motions: Vec<(u16, motion::SelectedMotion, Option<motion::SelectedMotion>)>,
+    weapon_object: Option<&str>,
 ) -> Result<PartyKind, Box<dyn std::error::Error>> {
     let character = member.character as usize;
     let records = member.records;
@@ -754,10 +759,10 @@ pub fn load(
         },
         &wanted,
     )?;
-    // The weapon object: the first of the WENT set the object entry's
-    // neo-moveset selects (the base weapon; Donald's and Goofy's sets go on
-    // with the staves and shields an item equips). Ping's is Mulan's W_MU000.
-    let weapon_name = objects
+    // The base weapon object: the first of the WENT set the object entry's
+    // neo-moveset selects (Donald's and Goofy's sets go on with the staves
+    // and shields an item equips). Ping's is Mulan's W_MU000.
+    let base_weapon = objects
         .iter()
         .find(|o| o.model_name == name.as_bytes())
         .and_then(|o| {
@@ -768,7 +773,13 @@ pub fn load(
             String::from_utf8(e.model_name.clone()).ok()
         })
         .unwrap_or_else(|| format!("W_{}", &name[2..]));
-    let weapon_selection = selection(&weapon_name).ok();
+    // An equipped staff or shield names its own object (`weapon_object`);
+    // [I] one without a motion set of its own plays the base weapon's (the
+    // weapon objects' entries name no set).
+    let weapon_name = weapon_object.map_or_else(|| base_weapon.clone(), str::to_owned);
+    let weapon_selection = selection(&weapon_name)
+        .or_else(|_| selection(&base_weapon))
+        .ok();
     let mut weapon = None;
     let mut spheres: HashMap<u8, Vec<(Vec3, f32)>> = HashMap::new();
     let mut weapon_motions: HashMap<usize, motion::SelectedMotion> = HashMap::new();
@@ -1140,6 +1151,145 @@ pub fn load(
         jump_max,
         body_attacks,
     })
+}
+
+/// What a member's kind is rebuilt from when its equipped weapon changes.
+pub struct ReloadSource {
+    pub source: Arc<ProbeSource>,
+    pub system: Vec<u8>,
+    pub battle: Vec<u8>,
+    pub objects: Vec<objentry::ObjectEntry>,
+    pub items: Vec<data::item_table::Item>,
+}
+
+/// FUN_1403ef8b0: the weapon object of `item` in the WENT set of the
+/// member object `member` (objentry +0x4e), by the item record's +4.
+pub fn weapon_object(src: &ReloadSource, member: &str, item: u16) -> Option<String> {
+    let o = src
+        .objects
+        .iter()
+        .find(|o| o.model_name == member.as_bytes())?;
+    let went = bar_entry(&src.system, b"went").ok()?;
+    let set = data::weapon_entry::set(went, usize::from(o.neo_moveset)).ok()?;
+    let amount = src.items.iter().find(|i| i.id == item)?.amount;
+    let id = data::weapon_entry::object_id(&set, amount)?;
+    let e = src.objects.iter().find(|e| e.object_id == id)?;
+    String::from_utf8(e.model_name.clone()).ok()
+}
+
+/// The record's weapon changed: rebuild the member's kind with that weapon
+/// object on a thread (`swap_weapons` puts it in place).
+pub fn start_reweapon(
+    src: &Arc<ReloadSource>,
+    limits: &Arc<party_limit::LimitSource>,
+    m: &mut MemberRt,
+) {
+    let item = m.save.weapon;
+    if item == m.weapon_item || m.reload.as_ref().is_some_and(|(i, _)| *i == item) {
+        return;
+    }
+    let weapon = match item {
+        0 => None,
+        _ => match weapon_object(src, m.kind.name, item) {
+            Some(w) => Some(w),
+            None => {
+                eprintln!("{}: no weapon object for item {item}", m.kind.name);
+                return;
+            }
+        },
+    };
+    eprintln!(
+        "{}: weapon item {item} -> {}",
+        m.kind.name,
+        weapon.as_deref().unwrap_or("the base weapon")
+    );
+    let (src, limits) = (src.clone(), limits.clone());
+    let (name, member) = (m.kind.name, m.kind.member);
+    let handle = std::thread::spawn(move || {
+        let mut library = Library::open(&src.source).map_err(|e| e.to_string())?;
+        load(
+            &src.source,
+            &mut library,
+            &src.system,
+            bar_entry(&src.battle, b"lvup").unwrap_or(&[]),
+            bar_entry(&src.battle, b"plrp").unwrap_or(&[]),
+            &src.objects,
+            name,
+            member,
+            limits.motions(member.character),
+            weapon.as_deref(),
+        )
+        .map_err(|e| e.to_string())
+    });
+    m.reload = Some((item, handle));
+}
+
+/// A rebuilt kind takes the member's place, and its weapon meshes are
+/// spawned again (the body is the same model).
+#[allow(clippy::too_many_arguments)]
+pub fn swap_weapons(
+    mut commands: Commands,
+    mut game: ResMut<Game>,
+    roots: Query<(Entity, &PartyRoot)>,
+    parts: Query<(Entity, &PartyPart)>,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<FogMaterial>>,
+    mut images: ResMut<Assets<Image>>,
+) {
+    let tick = game.tick;
+    let mut events = Vec::new();
+    for (i, m) in game.party.iter_mut().enumerate() {
+        if !m.reload.as_ref().is_some_and(|(_, h)| h.is_finished()) {
+            continue;
+        }
+        let Some((item, handle)) = m.reload.take() else {
+            continue;
+        };
+        let mut kind = match handle.join() {
+            Ok(Ok(kind)) => kind,
+            Ok(Err(e)) => {
+                events.push(serde_json::json!({"event":"party_weapon_error","tick":tick,
+                    "member":m.kind.name,"item":item,"error":e}));
+                continue;
+            }
+            Err(_) => continue,
+        };
+        kind.voices = m.kind.voices.clone();
+        m.kind = Arc::new(kind);
+        m.weapon_item = item;
+        for (e, part) in &parts {
+            if part.member == i && part.weapon {
+                commands.entity(e).despawn();
+            }
+        }
+        let root = roots.iter().find(|(_, r)| r.0 == i).map(|(e, _)| e);
+        let pose = m.kind.motions.get(&0).and_then(|idle| idle.weapon.first());
+        if let (Some(root), Some(weapon), Some(pose)) = (root, &m.kind.weapon, pose) {
+            for (ordinal, entity) in spawn_model(
+                &mut commands,
+                weapon,
+                pose,
+                root,
+                &mut meshes,
+                &mut materials,
+                &mut images,
+            ) {
+                if let Some(entity) = entity {
+                    commands.entity(entity).insert(PartyPart {
+                        member: i,
+                        ordinal,
+                        weapon: true,
+                    });
+                }
+            }
+        }
+        events.push(serde_json::json!({"event":"party_weapon","tick":tick,
+            "member":m.kind.name,"item":item,
+            "parts":m.kind.weapon.as_ref().map(|w| w.parts.len())}));
+    }
+    for e in events {
+        game.event(e);
+    }
 }
 
 /// Marks a member's root and its mesh parts.

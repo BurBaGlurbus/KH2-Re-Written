@@ -1129,6 +1129,8 @@ struct Game {
     /// The party limits' files, the limit running and the one the menu
     /// asked for.
     party_limits: Arc<party_limit::LimitSource>,
+    /// What the members' kinds are rebuilt from (a weapon change).
+    party_reload: Option<Arc<party_room::ReloadSource>>,
     party_limit: Option<party_limit::Running>,
     limit_request: Option<u16>,
     /// The summons' tables, the summon out, and what the menu asked for.
@@ -2103,6 +2105,7 @@ struct Loaded {
     party: Vec<std::sync::Arc<party_room::PartyKind>>,
     /// Each member's camp model (MENU_FRIEND_n), in `party` order.
     menu_friends: Vec<Option<menu_friend::MenuFriend>>,
+    party_reload: Option<party_room::ReloadSource>,
     spawn: Vec3,
     /// Sora's facing at the spawn (scene yaw).
     yaw: f32,
@@ -3703,6 +3706,7 @@ fn load(
                                 name,
                                 member,
                                 motions,
+                                None,
                             )
                             .map(|k| (k, member))
                             .map_err(|e| format!("party member {name}: {e}"))
@@ -4330,6 +4334,14 @@ fn load(
         items: item_room::load(&system).ok(),
         party,
         menu_friends,
+        party_reload: config.enemy.as_ref().map(|_| party_room::ReloadSource {
+            source: source.clone(),
+            system: system.clone(),
+            battle: battle.clone(),
+            objects: objects.clone(),
+            items: data::item_table::read(bar_entry(&system, b"item").unwrap_or(&[]))
+                .unwrap_or_default(),
+        }),
         forms,
         reaction_commands,
         sora_weight,
@@ -12000,6 +12012,8 @@ fn camp_tick(
             let Game {
                 party,
                 ability_source,
+                party_reload,
+                party_limits,
                 ..
             } = &mut *game;
             for rt in party.iter_mut() {
@@ -12024,6 +12038,10 @@ fn camp_tick(
                     // FUN_1402fc760 → FUN_1403c2100: the record's status
                     // totals follow its equipment.
                     rt.gear = ability_source.gear(e, None);
+                    // A new staff or shield: the member's weapon object.
+                    if let Some(src) = party_reload.as_ref() {
+                        party_room::start_reweapon(src, party_limits, rt);
+                    }
                 }
                 if let Some(p) = menu.data.panels.members.get(m) {
                     rt.hp = p.hp;
@@ -13690,6 +13708,8 @@ fn run(mut args: Vec<PathBuf>) -> Result<AppExit, Box<dyn std::error::Error>> {
                 fx_at: None,
                 record: combat::HitRecord::new(true),
                 gear: player::equipment_stats::Totals::start(0, 0, 0, 0),
+                weapon_item: 0,
+                reload: None,
                 ko_fx: false,
                 cast_motion: 0,
                 reflected: false,
@@ -13755,6 +13775,7 @@ fn run(mut args: Vec<PathBuf>) -> Result<AppExit, Box<dyn std::error::Error>> {
         party_items_tour,
         party_camp_tour,
         party_limits: Arc::new(std::mem::take(&mut loaded.party_limits)),
+        party_reload: loaded.party_reload.take().map(Arc::new),
         party_limit: None,
         limit_request: None,
         limit_decide: None,
@@ -14331,7 +14352,7 @@ fn run(mut args: Vec<PathBuf>) -> Result<AppExit, Box<dyn std::error::Error>> {
                 skate_present,
                 present_enemy,
                 (enemy_gallery::present, present_spells, summon::present).chain(),
-                party_room::present,
+                (party_room::swap_weapons, party_room::present).chain(),
                 drive_room::party_visibility,
                 present_npc,
                 present_effects,

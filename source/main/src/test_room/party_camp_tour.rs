@@ -1,7 +1,7 @@
 //! The unattended `--party-camp-tour <dir>` (in the ability tour's setup,
 //! a room with Donald and Goofy): the camp's Customize, Abilities, Status
 //! and Equip pages of Donald, each switched to Goofy with R2, the top
-//! level's and Party's member models, Donald's first staff, and a check
+//! level's and Party's member models, Donald's second staff, and a check
 //! that Donald's record took every change.
 //!
 //! Customize: △ on Battle Style (Technic → Target), △ on Thunder (Free →
@@ -75,7 +75,7 @@ const STEPS: &[(u64, u64, bool)] = &[
     (20, DECIDE, true),
     (SCREEN, CANCEL, false),
     (SCREEN, CANCEL, false),
-    // Items: Donald → Equip, his weapon list, the first staff, R2 to Goofy.
+    // Items: Donald → Equip, his weapon list, the second staff, R2 to Goofy.
     (SCREEN, UP, false),
     (MOVE, UP, false),
     (MOVE, UP, false),
@@ -84,7 +84,8 @@ const STEPS: &[(u64, u64, bool)] = &[
     (SCREEN, DOWN, true),
     (20, DECIDE, true),
     (SCREEN, DECIDE, true),
-    (SCREEN, DECIDE, true),
+    (MOVE, DOWN, false),
+    (MOVE, DECIDE, true),
     (SCREEN, R2, true),
     (SCREEN, CANCEL, false),
     (SCREEN, CANCEL, false),
@@ -112,6 +113,8 @@ pub fn tour(slots: Vec<u16>) -> Tour {
             captures.push(tick + 35);
         }
     }
+    // The room after the camp: Donald holds the staff he was given.
+    captures.push(tick + 90);
     Tour {
         inputs,
         captures,
@@ -138,7 +141,7 @@ mod tests {
     fn inputs_and_captures_end_before_the_close() {
         let t = tour(Vec::new());
         assert!(t.inputs.windows(2).all(|w| w[0].0 < w[1].0));
-        assert!(t.captures.iter().all(|&c| c < t.close));
+        assert!(t.captures.iter().all(|&c| c < t.end));
         assert_eq!(t.inputs.last().map(|i| i.0), Some(t.close));
     }
 }
