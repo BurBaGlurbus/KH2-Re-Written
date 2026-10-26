@@ -807,6 +807,8 @@ impl Camp {
                 let new = self.new_stock_items();
                 (!new.is_empty()).then(|| new.iter().all(|i| self.data.items.seen.contains(i)))
             }
+            // Customize: any new magic (FUN_14036aa70(−1)).
+            2 => self.any_magic_badge(),
             // Abilities: any member's new ability, dim once all are seen.
             1 => {
                 let marks: Vec<bool> = self

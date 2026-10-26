@@ -1,4 +1,4 @@
-# T255 — NEW! badges for abilities (issue #31, part)
+# T255 — NEW! badges for abilities and Customize's magic (issue #31, part)
 
 Owner Claude, 2026-10-26, requested by burba in the project chat ("continue working"). Gate:
 development of the test room only; no final gameplay acceptance is inferred. Prerequisites: T162
@@ -32,26 +32,33 @@ while new and seen; visiting a row in the list sets its seen bit (`FUN_140363c70
   ability.
 - The room keeps each character's list and seen bits across camps (`CampRes::ability_marks`,
   written back when the camp closes).
+- Customize (camp-07 §3.1, §4.2, §4.7: `FUN_14036aa70`, `FUN_14036a9a0`, `FUN_14036a220`): the
+  new magic is the camp's new items of type 0x12 (the producer's first loop in FUN_140369520);
+  the list rows (prio P+3 at the row group's (165, 0)), Sora's row in the character list and
+  the top level's Customize row show G50 / G49, and resting on a shortcut or MP Charge row sees
+  its magic (save+0x41a8, the items' seen list).
 
 ## Checks
 
 | Check | Result |
 | --- | --- |
 | `cargo fmt --all --check`, `cargo clippy --all-targets --locked -- -D warnings`, `cargo build --locked`, smoke | PASS |
-| `cargo test --locked` | PASS (new `new_abilities_badge_until_seen_and_stay_seen`) |
+| `cargo test --locked` | PASS (new `new_abilities_badge_until_seen_and_stay_seen`, `only_new_magic_carries_the_customize_badge`) |
 | Release `--party-camp-tour` (private `camp7`) | verdict pass; the top level's Abilities row shows NEW!; Donald's list shows Cure pulsing and Thunder dim after the cursor visited it |
 | Release `--ability-tour` (private `abil1`) | verdict pass; Sora's list shows the badges, dimming as the cursor passes |
 
 ## Uncertainty
 
-- Not built: the Drive forms' and Lion's lists (save+0x4798, `FUN_14036a0b0`), the Customize,
-  Status and Journal badges, and the Equip lists.
+- Not built: the Drive forms' and Lion's lists (save+0x4798, `FUN_14036a0b0`), the Status and
+  Journal badges, and the Equip lists.
+- No run showed a Customize badge: the room's magic is part of its starting stock, which is
+  never new [test-room choice, T162]; the rule is checked by the unit test only.
 - The room has no save: the lists start empty, so every ability of the development catalog is
   new at the first camp.
 - The character-row badge was not caught in a capture (the tours pass the character list while
   it opens).
 - Not compared with the installed game.
 
-Verdict: PARTIAL for issue #31: the Abilities badges follow the traced producer; the other
-screens' badges remain.
-Next: the forms' lists and the Customize badges.
+Verdict: PARTIAL for issue #31: the Abilities and Customize badges follow the traced producer;
+the forms', Status, Journal and Equip badges remain.
+Next: the forms' lists and the Status badges (block +0xc8, seen save+0x4274).
