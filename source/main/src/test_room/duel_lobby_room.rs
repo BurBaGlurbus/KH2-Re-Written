@@ -10,14 +10,19 @@
 
 use super::duel_lobby::{self, Intent, Limits, Loadout, Lobby, MAX_BANS, Stage};
 use super::duel_net::{DuelNet, Status, fighter_slots};
+use super::duel_prefs::{self, DuelPrefs};
 use super::duel_wire::{INTENT, LOBBY, REFUSED};
 use super::*;
 use net::{RELIABLE, Role};
 use visual::pause_menu::{DuelPages, DuelRow};
 
 /// se000: open, refused.
+const SE_DECIDE: u32 = 2;
 const SE_OPEN: u32 = 3;
 const SE_ERROR: u32 = 5;
+
+/// The lobby's Leave entry on the camp's top level.
+const ENTRY_LEAVE: u8 = pause_menu::CALLER_ENTRY + 6;
 
 /// Sora's AP in a duel [duel rule: level 99 with every AP Boost]: the
 /// LVUP row's 66 at level 99 plus the save's AP bonus at its cap of 100
@@ -102,6 +107,18 @@ pub(crate) struct LobbyRoom {
     peer_mirage: Option<bool>,
     /// Joiner: this install's answer was sent.
     mirage_sent: bool,
+    /// The other player's round trip as shown (ms, to 5), and when it was
+    /// last updated (it changes the pages, so not every tick).
+    ping_shown: Option<u32>,
+    ping_at: u64,
+    /// The player picked Leave.
+    leave: bool,
+    /// Host: the player changed the rules (they are kept for next time).
+    rules_set: bool,
+    /// This player's Ready as last seen (the build is kept when it is set).
+    ready_kept: bool,
+    /// The kept build was put on for this session's first builds.
+    kept_applied: bool,
 }
 
 impl LobbyRoom {
@@ -358,6 +375,8 @@ pub(crate) fn tick(
     room: Option<ResMut<LobbyRoom>>,
     camp: Option<ResMut<CampRes>>,
     mut rig: ResMut<CameraRig>,
+    mut exits: MessageWriter<AppExit>,
+    mut prefs: Option<ResMut<DuelPrefs>>,
     mut game: ResMut<Game>,
 ) {
     let (Some(mut net), Some(mut room), Some(mut camp)) = (net, room, camp) else {
@@ -403,6 +422,13 @@ pub(crate) fn tick(
             seat: usize::from(net.role == Role::Join),
             ..LobbyRoom::default()
         };
+        // The host's rules from last time.
+        if net.role == Role::Host
+            && let Some(r) = prefs.as_ref().and_then(|p| p.rules)
+        {
+            game.duel_rules = r;
+            room.lobby.rules_changed();
+        }
         // Slots that hold no ability record (the room's catalog) stay out.
         let other: Vec<u16> = game
             .ability_slots
@@ -463,6 +489,17 @@ pub(crate) fn tick(
         }
     }
     mirage_check(room, net, game);
+    // The other player's ping, a few times a second at most.
+    if net.session.is_connected() && game.tick.saturating_sub(room.ping_at) >= 120 {
+        room.ping_at = game.tick;
+        let ms = net.session.stats().rtt_ms.max(0.) as u32;
+        room.ping_shown = Some(ms.div_ceil(5) * 5);
+    }
+    // Leave, from the lobby's menu: the launcher's Multiplayer screen comes
+    // back; the other player sees "left".
+    if std::mem::take(&mut room.leave) {
+        exits.write(AppExit::Success);
+    }
     // Stage changes.
     let key = (room.lobby.match_no, room.lobby.stage);
     if room.prepared != Some(key) {
@@ -498,7 +535,22 @@ pub(crate) fn tick(
         }
     }
     game.duel_frozen = room.up;
-    run_camp(room, net, camp, game);
+    run_camp(room, net, camp, prefs.as_deref(), game);
+    // What to keep for next time: the rules the host set, the build this
+    // player readied with.
+    if let Some(p) = prefs.as_deref_mut() {
+        if std::mem::take(&mut room.rules_set) {
+            p.save_rules(game.duel_rules);
+        }
+        let ready = room.lobby.seats[room.seat].ready;
+        if ready
+            && !room.ready_kept
+            && let Some(b) = &room.built
+        {
+            p.save_build(b);
+        }
+        room.ready_kept = ready;
+    }
     if room.up && game.autoplay.is_some() {
         script(room, net, camp, game);
     }
@@ -514,7 +566,13 @@ pub(crate) fn tick(
 /// change, so it writes its build back before the next stage's builds are
 /// prepared), its pages filled from the lobby, this player's steps and
 /// build taken from it.
-fn run_camp(room: &mut LobbyRoom, net: &mut DuelNet, camp: &mut CampRes, game: &mut Game) {
+fn run_camp(
+    room: &mut LobbyRoom,
+    net: &mut DuelNet,
+    camp: &mut CampRes,
+    prefs: Option<&DuelPrefs>,
+    game: &mut Game,
+) {
     let builds = room.lobby.stage == Stage::Loadout;
     // One version of the lobby's camp a match and stage (the builds add
     // the camp's Abilities and Items); a vote takes the camp meanwhile.
@@ -525,6 +583,19 @@ fn run_camp(room: &mut LobbyRoom, net: &mut DuelNet, camp: &mut CampRes, game: &
     let free = camp.open.is_none() && game.duel_camp.is_none();
     if builds && want.is_some() && free && room.builds_for != Some(room.lobby.match_no) {
         room.builds_for = Some(room.lobby.match_no);
+        // The first builds start from the one this player readied with last
+        // time, fitted to this duel.
+        if !room.kept_applied {
+            room.kept_applied = true;
+            if let Some(saved) = prefs.and_then(|p| p.build.as_ref()) {
+                let b = duel_prefs::fit(saved, &room.limits, &build_of(game));
+                put_build(game, &b);
+                game.refresh_gear();
+                let tick = game.tick;
+                game.event(serde_json::json!({"event":"duel_kept_build","tick":tick,
+                    "keyblade":b.keyblade}));
+            }
+        }
         prepare_builds(room, game, camp);
         let build = build_of(game);
         room.built = Some(build.clone());
@@ -545,11 +616,16 @@ fn run_camp(room: &mut LobbyRoom, net: &mut DuelNet, camp: &mut CampRes, game: &
         let mut entries = vec![duel_camp::entry(
             7,
             "Duel",
-            "The match's rules, the bans and Ready.",
+            "The match's rules, the bans and Ready. Start: Ready.",
         )];
         if builds {
             entries.extend([duel_camp::Item::Own(0), duel_camp::Item::Own(1)]);
         }
+        entries.push(duel_camp::entry(
+            ENTRY_LEAVE,
+            "Leave",
+            "Back to the Multiplayer screen.",
+        ));
         duel_camp::Request {
             entries,
             on_config: true,
@@ -602,6 +678,22 @@ fn run_camp(room: &mut LobbyRoom, net: &mut DuelNet, camp: &mut CampRes, game: &
     if room.section_sent != Some(section) {
         room.section_sent = Some(section);
         intend(room, net, game, Intent::Section(section));
+    }
+    // Leave, and Start for Ready while the builds are made.
+    if duel_camp::picked(menu) == Some(ENTRY_LEAVE) {
+        room.leave = true;
+    }
+    let start = menu
+        .data
+        .duel
+        .as_mut()
+        .is_some_and(|d| std::mem::take(&mut d.start));
+    if start && builds {
+        let ready = !room.lobby.seats[room.seat].ready;
+        game.sound_queue.push((SE_DECIDE, "lobby"));
+        let tick = game.tick;
+        game.event(serde_json::json!({"event":"duel_start_ready","tick":tick,"ready":ready}));
+        intend(room, net, game, Intent::Ready(ready));
     }
     // This player's steps, then the pages as they now stand.
     let steps = menu
@@ -689,6 +781,7 @@ fn step(
     }
     if game.duel_rules != rules_before {
         room.lobby.rules_changed();
+        room.rules_set = true;
         let tick = game.tick;
         let rules = game.duel_rules;
         game.event(serde_json::json!({"event":"duel_rules","tick":tick,
@@ -709,6 +802,15 @@ fn name(room: &LobbyRoom, id: u16) -> Vec<u8> {
         .get(&id)
         .cloned()
         .unwrap_or_else(|| text(&format!("? {id}")))
+}
+
+/// Where the other player is, with their round trip once it is known.
+fn status_words(room: &LobbyRoom, seat: &duel_lobby::Seat, stage: Stage) -> String {
+    let at = section_words(seat, stage);
+    match room.ping_shown {
+        Some(ms) => format!("{at}, {ms} ms"),
+        None => at.to_string(),
+    }
 }
 
 /// Where a player is, in words.
@@ -865,7 +967,7 @@ fn pages(room: &LobbyRoom, net: &DuelNet, game: &Game, ap: i32) -> Pages {
     }
     r.push(row(
         them,
-        vec![text(section_words(theirs, stage))],
+        vec![text(&status_words(room, theirs, stage))],
         0,
         help(&format!("Where {them} is.")),
         true,
@@ -965,13 +1067,15 @@ fn pages(room: &LobbyRoom, net: &DuelNet, game: &Game, ap: i32) -> Pages {
                 "Ready",
                 vec![text("Not yet"), text("Ready")],
                 usize::from(mine.ready),
-                help("Right when your build is done. The match starts when both are ready."),
+                help(
+                    "Right, or Start, when your build is done. The match starts when both are ready.",
+                ),
                 false,
             ),
         ];
         r.push(row(
             them,
-            vec![text(section_words(theirs, stage))],
+            vec![text(&status_words(room, theirs, stage))],
             0,
             help(&format!("Where {them} is.")),
             true,
@@ -988,6 +1092,7 @@ fn pages(room: &LobbyRoom, net: &DuelNet, game: &Game, ap: i32) -> Pages {
 }
 
 /// Menu keys in mode 7: Right, R2 (the next page).
+const KEY_START: u64 = 0x2;
 const KEY_RIGHT: u64 = 0x80;
 const KEY_R2: u64 = 0x1_0000;
 
@@ -1012,6 +1117,13 @@ fn script(room: &mut LobbyRoom, net: &mut DuelNet, camp: &mut CampRes, game: &mu
         game.duel_camp_press = match (room.lobby.stage, room.stage_ticks) {
             (Stage::Bans, 30) | (Stage::Loadout, 40 | 46) => KEY_R2,
             (Stage::Bans, 40) if room.seat == 1 => KEY_RIGHT,
+            // The joiner readies with Start once its camp is back from the
+            // vote (the host through the row).
+            (Stage::Loadout, t)
+                if t >= 90 * slow && room.seat == 1 && !seat.ready && (t - 90 * slow) % 30 == 0 =>
+            {
+                KEY_START
+            }
             _ => 0,
         };
         // The Match page, the Bans page, the Ready page.
@@ -1060,7 +1172,11 @@ fn script(room: &mut LobbyRoom, net: &mut DuelNet, camp: &mut CampRes, game: &mu
         Stage::Loadout if room.stage_ticks == 75 * slow && net.role == Role::Host => {
             game.duel_test_vote = true;
         }
-        Stage::Loadout if room.stage_ticks >= 90 * slow && !seat.ready && !game.duel_vote_up => {
+        Stage::Loadout
+            if room.stage_ticks >= (90 + 310 * room.seat as u64) * slow
+                && !seat.ready
+                && !game.duel_vote_up =>
+        {
             intend(room, net, game, Intent::Ready(true));
         }
         _ => {}

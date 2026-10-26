@@ -13,6 +13,7 @@ use visual::pause_menu::{Camp, DuelPages, Entry};
 pub(crate) const LOBBY: u8 = 1;
 pub(crate) const VOTE: u8 = 2;
 pub(crate) const RESULT: u8 = 3;
+pub(crate) const FORFEIT: u8 = 4;
 
 /// A top-level entry: one of the camp's own (by id: its label and help
 /// are the game's) or the screen's.

@@ -28,6 +28,8 @@ pub(crate) const MATCH: u8 = 10;
 pub(crate) const REMATCH: u8 = 11;
 /// The host's pick of the match's music (duel_music.rs).
 pub(crate) const MUSIC: u8 = 12;
+/// A joiner's forfeit (duel_match_room.rs).
+pub(crate) const FORFEIT: u8 = 13;
 
 /// Ticks of buttons each input message repeats.
 pub(crate) const INPUT_REDUNDANCY: usize = 6;

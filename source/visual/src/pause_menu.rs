@@ -219,6 +219,10 @@ pub struct DuelPages {
     pub steps: Vec<(usize, usize, bool)>,
     /// A caller entry picked on the top level (CALLER_ENTRY and up).
     pub picked: Option<u8>,
+    /// Start was pressed (the camp stays open for the caller).
+    pub start: bool,
+    /// Cancel was pressed on the top level (the caller may close it).
+    pub cancel: bool,
     /// The top level's Cancel and Start do not close the camp.
     pub keep_open: bool,
 }
@@ -1206,7 +1210,9 @@ impl Camp {
             self.show_help(seq, help);
             self.substate = 1;
         }
-        if let Some(s) = pick_sound(pick, moved, true) {
+        // Start in a camp kept open is the caller's (it plays its own sound).
+        let callers = matches!(pick, Pick::Start) && self.keep_open();
+        if let Some(s) = pick_sound(pick, moved, true).filter(|_| !callers) {
             sounds.push(s);
         }
         if moved && self.substate == 1 {
@@ -1214,7 +1220,16 @@ impl Camp {
             self.show_help(seq, help);
         }
         match pick {
-            Pick::Cancel | Pick::Start if self.keep_open() => {}
+            Pick::Start if self.keep_open() => {
+                if let Some(d) = self.data.duel.as_mut() {
+                    d.start = true;
+                }
+            }
+            Pick::Cancel if self.keep_open() => {
+                if let Some(d) = self.data.duel.as_mut() {
+                    d.cancel = true;
+                }
+            }
             Pick::Cancel | Pick::Start => {
                 self.memory.entry = self.data.entries[self.top.cursor].id;
                 self.exit = true;
@@ -2231,7 +2246,9 @@ impl Camp {
             self.config_help(seq);
             self.update_config_frame(seq);
         }
-        if let Some(s) = pick_sound(pick, moved, true) {
+        // Start in a camp kept open is the caller's (it plays its own sound).
+        let callers = matches!(pick, Pick::Start) && self.keep_open();
+        if let Some(s) = pick_sound(pick, moved, true).filter(|_| !callers) {
             sounds.push(s);
         }
         if moved {
@@ -2289,7 +2306,11 @@ impl Camp {
                 self.config_help(seq);
                 self.light.retarget();
             }
-            Pick::Start if self.keep_open() => {}
+            Pick::Start if self.keep_open() => {
+                if let Some(d) = self.data.duel.as_mut() {
+                    d.start = true;
+                }
+            }
             Pick::Start => {
                 self.save_config();
                 self.exit = true;

@@ -49,3 +49,69 @@ elsewhere (below).
 Checks for items 1 and 2: fmt, clippy, `cargo test` (1,098 passed), single-player tours against a build of
 4d33db8 (`p2-*`: talk, magic, deck identical; party-hit identical but for the exit tick), loopback duels
 (`perf1`, `hd4`): PASS.
+
+## The lobby's stalls
+
+A `perf-trace` build (`trace1`: a host and a joiner over loopback) shows the lobby's long frames (50-180 ms)
+spread over every system at once, on every worker thread, each with no slow child: systems that take
+microseconds (`check_entities_needing_specialization`, `upload_light_probes`) take 30-50 ms together. That is
+the process starved, not one system's work. The same build alone (`trace2`: a host with no joiner, the same
+lobby and arena) has three long frames in 500 ticks, all at startup or at the capture. So the stalls are the
+two instances on one PC competing while the joiner loads and checks Birth by Sleep (its first 10-20 s); two
+players on two PCs do not share them. Removing the first run's full BBS scan (below) shortens that window.
+The two traces are private (`kh2-lan-out\trace1`, `trace2`, with `stalls.py`). Verdict: explained, nothing in
+the lobby's own code to fix.
+
+## 3. Lobby and match comfort
+
+- **Leave** on the lobby's top level (the launcher's Multiplayer screen comes back; the other player sees
+  "left"), and **Start** toggles Ready while the builds are made (the camp hands a kept-open Start back to its
+  caller, `DuelPages::start`, and leaves its sound to it).
+- **Ping**: the other player's row reads "Ready, 15 ms" (the session's round trip, to 5 ms, refreshed every
+  two seconds).
+- **Remembered rules and builds** (`duel_prefs.rs`): the host's rules when changed and this player's build when
+  Ready is set go to `duel-prefs.json` beside the source manifest (the player's settings; no game data). Read
+  back, each value is checked against the tables (mode by name, damage in range, the caps and limits in their
+  lists, the arena by key); a kept build is fitted to the duel (`duel_prefs::fit`: a Keyblade it has, its
+  abilities as far as the duel has them, items it allows) before the first builds. Unattended runs neither
+  read nor write it. Tests: round trip, bad values keep defaults, a build fitted.
+- **Forfeit**: Start during a match opens *Keep fighting* / *Forfeit* (the fight goes on: nothing pauses a
+  duel); Forfeit asks once more on its help line, then the match goes to the other player
+  (`Match::forfeit`, `Why::Forfeit` code 4; the joiner sends `FORFEIT`). Test: a forfeit ends the match once
+  and round-trips.
+- **Quick rematch** on the result: both quick starts the next match at once with the same builds and bans (the
+  lobby's match number moves on, so the music changes and the builds go back on); either plain Rematch goes to
+  the lobby as before. Wire: the rematch flags carry each seat's quick bit.
+
+Loopback (`qol2`, `qol3`; flags `--duel-forfeit`, `--duel-quick`): the joiner readied with Start
+(`duel_start_ready`), forfeited through the menu (host `duel_forfeit` seat 1, "JoinSora forfeited"), and both
+quick rematches went straight to match 1 (`duel_rematch` quick, stage Start with the same bans). Shots:
+`.local\lan-review\polish\forfeit-confirm.png`, `result-quick.png`.
+
+## 4. No full scan of Birth by Sleep
+
+The first session used to hash the whole 2.6 GB `bbs_third.pkg` (whole file and every 1 MiB chunk) before the
+arena could load. Now the BBS manifest holds the index's digests and the package's size, time and the digests
+of the chunks the duel reads; a chunk with no record is recorded on its first read (`SourceReader::recording`)
+and kept (`BbsSource::keep`), and every later read of it is checked. Trust is as before (the full scan also
+recorded what was on disk on first use); a changed package size or time starts a new record; a recorded chunk
+that differs is refused. Test: `a_recording_reader_records_chunks_once_and_the_next_one_checks_them`
+(synthetic bytes).
+
+| Run (lone host, no BBS manifest yet) | Arena ready at | BBS manifest |
+| --- | --- | --- |
+| `bbs-old` (before, full scan) | tick 1602 (about 27 s) | 2,534 chunks |
+| `bbs-fresh` (after) | tick 0 | 4 chunks, 8 KB |
+| `bbs-again` (after, second session) | tick 0 | the 4 checked |
+
+## Speed after items 1-4
+
+Back to back (`perfA`: the item 1 build, PSP textures; `perfB`: this build, with item 2's HD textures), two
+instances, uncapped: host fight 188.8 → 169.5 FPS (1% low 80.6 → 71.1), joiner 190.1 → 183.5 (84.1 → 75.8);
+lobby stall totals 2.36 / 1.92 s → 2.26 / 1.92 s. The fight's cost is the HD textures' (larger images on a GPU
+the two instances share); still above the PSP-texture baseline `perf0` (170.7 / 181.8).
+
+Checks for items 3 and 4: fmt, clippy, `cargo test` (all passed), single-player tours with the release build
+against 4d33db8 (`q3-*`: talk, deck exit tick ±1, magic one float at 1e-5 as before, party-hit identical but
+the exit; `auto` the same up to tick 7700, where the debug-built baseline itself panics on an integer
+overflow in `enemy/src/script.rs:215`, an existing bug outside this work), loopback duels: PASS.

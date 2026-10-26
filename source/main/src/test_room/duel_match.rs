@@ -33,6 +33,9 @@ pub(crate) enum Why {
     Time,
     /// The other player left.
     Left,
+    /// The other player forfeited [duel choice: it ends the match, not the
+    /// round].
+    Forfeit,
 }
 
 /// The match (the host's; the joiner shows the copy it receives).
@@ -53,8 +56,10 @@ pub(crate) struct Match {
     /// Damage each seat dealt and hits each landed this match.
     pub dealt: [u32; 2],
     pub hits: [u16; 2],
-    /// Each seat asked for a rematch on the result screen.
+    /// Each seat asked for a rematch on the result screen, and whether a
+    /// quick one (the same builds and bans, no lobby).
     pub rematch: [bool; 2],
+    pub quick: [bool; 2],
 }
 
 /// What the host sees of the fight this tick.
@@ -108,6 +113,7 @@ impl Match {
             dealt: [0; 2],
             hits: [0; 2],
             rematch: [false; 2],
+            quick: [false; 2],
         }
     }
 
@@ -119,6 +125,18 @@ impl Match {
     fn enter(&mut self, phase: Phase, now: u64) {
         self.phase = phase;
         self.since = now;
+    }
+
+    /// Host: `seat` gives up the match; the other takes it. False when it
+    /// was already decided.
+    pub(crate) fn forfeit(&mut self, seat: usize, now: u64) -> bool {
+        if self.phase == Phase::Over || seat > 1 {
+            return false;
+        }
+        self.winner = Some(1 - seat as u8);
+        self.why = Some(Why::Forfeit);
+        self.enter(Phase::Over, now);
+        true
     }
 
     /// Host: one tick of the match.
@@ -223,6 +241,7 @@ fn why_code(w: Option<Why>) -> u8 {
         Some(Why::KnockOut) => 1,
         Some(Why::Time) => 2,
         Some(Why::Left) => 3,
+        Some(Why::Forfeit) => 4,
     }
 }
 
@@ -243,7 +262,10 @@ pub(crate) fn encode_match(kind: u8, m: &Match) -> Vec<u8> {
     for h in m.hits {
         w.u16(h);
     }
-    w.u8(u8::from(m.rematch[0]) | u8::from(m.rematch[1]) << 1);
+    w.u8(u8::from(m.rematch[0])
+        | u8::from(m.rematch[1]) << 1
+        | u8::from(m.quick[0]) << 2
+        | u8::from(m.quick[1]) << 3);
     w.finish()
 }
 
@@ -273,6 +295,7 @@ pub(crate) fn decode_match(kind: u8, bytes: &[u8]) -> Option<Match> {
         1 => Some(Why::KnockOut),
         2 => Some(Why::Time),
         3 => Some(Why::Left),
+        4 => Some(Why::Forfeit),
         _ => return None,
     };
     let clock_end = match r.u64()? {
@@ -294,6 +317,7 @@ pub(crate) fn decode_match(kind: u8, bytes: &[u8]) -> Option<Match> {
         dealt,
         hits,
         rematch: [flags & 1 != 0, flags & 2 != 0],
+        quick: [flags & 4 != 0, flags & 8 != 0],
     })
 }
 
@@ -414,6 +438,21 @@ mod tests {
     }
 
     #[test]
+    fn a_forfeit_ends_the_match_once() {
+        let r = rules(Mode::BestOf3);
+        let mut m = Match::new(0);
+        run(&mut m, &r, 0, COUNTDOWN + 5, view([170, 170]));
+        assert!(m.forfeit(1, COUNTDOWN + 6));
+        assert_eq!(
+            (m.phase, m.winner, m.why),
+            (Phase::Over, Some(0), Some(Why::Forfeit))
+        );
+        assert!(!m.forfeit(0, COUNTDOWN + 7));
+        assert_eq!(m.winner, Some(0));
+        assert_eq!(decode_match(10, &encode_match(10, &m)), Some(m));
+    }
+
+    #[test]
     fn matches_round_trip() {
         let mut m = Match::new(42);
         m.phase = Phase::RoundOver;
@@ -424,6 +463,7 @@ mod tests {
         m.dealt = [120, 33];
         m.hits = [7, 2];
         m.rematch = [true, false];
+        m.quick = [true, false];
         let bytes = encode_match(10, &m);
         assert_eq!(decode_match(10, &bytes), Some(m));
         assert_eq!(decode_match(10, &bytes[..bytes.len() - 1]), None);

@@ -84,6 +84,7 @@ mod duel_match;
 mod duel_match_room;
 mod duel_music;
 mod duel_net;
+mod duel_prefs;
 mod duel_rules;
 mod duel_sync;
 mod duel_vote;
@@ -1155,6 +1156,9 @@ struct Game {
     /// entries and pages.
     duel_open_camp: bool,
     duel_camp: Option<duel_camp::Request>,
+    /// START in a duel with no screen holding the camp (the match's
+    /// Forfeit menu takes it).
+    duel_start: bool,
     /// A vote is open: the other duel screens give it the camp.
     duel_vote_up: bool,
     /// Whether this install can show the duel's Mirage Arena.
@@ -1167,6 +1171,11 @@ struct Game {
     /// [Test] `--duel-shots`: the duel's screens add captures of
     /// themselves, once per moment.
     duel_shots: bool,
+    /// [Test] `--duel-forfeit`: this player forfeits two seconds into the
+    /// first fight, through the menu.
+    duel_forfeit: bool,
+    /// [Test] `--duel-quick`: the unattended result picks Quick rematch.
+    duel_quick: bool,
     duel_shot_keys: std::collections::HashSet<(u8, u64, u64)>,
     /// A match is running: a knocked-out Sora stays down for the round.
     duel_match: bool,
@@ -11893,6 +11902,9 @@ fn camp_tick(
     if debug.open {
         return;
     }
+    if game.duel && c.open.is_none() && game.duel_camp.is_none() && c.pad.pressed & 0x2 != 0 {
+        game.duel_start = true;
+    }
     let mut sounds = Vec::new();
     let layout = &c.source.menu.layout;
     // Test-room values: no munny, level 1, the room's HP/MP; the clock is
@@ -13099,6 +13111,8 @@ fn run(mut args: Vec<PathBuf>) -> Result<AppExit, Box<dyn std::error::Error>> {
     let mut duel_bench = false;
     let mut duel_magic = false;
     let mut duel_shots = false;
+    let mut duel_forfeit = false;
+    let mut duel_quick = false;
     let mut duel_no_mirage = false;
     let mut duel_idle = false;
     // The LAN duel (duel_net.rs): host or join, the port, the name shown
@@ -13172,6 +13186,8 @@ fn run(mut args: Vec<PathBuf>) -> Result<AppExit, Box<dyn std::error::Error>> {
             Some("--duel-bench") => duel_bench = true,
             Some("--duel-magic") => duel_magic = true,
             Some("--duel-shots") => duel_shots = true,
+            Some("--duel-forfeit") => duel_forfeit = true,
+            Some("--duel-quick") => duel_quick = true,
             Some("--duel-no-mirage") => duel_no_mirage = true,
             Some("--duel-idle") => duel_idle = true,
             Some("--host") => net_host = true,
@@ -13899,6 +13915,7 @@ fn run(mut args: Vec<PathBuf>) -> Result<AppExit, Box<dyn std::error::Error>> {
         duel_test_vote: false,
         duel_open_camp: false,
         duel_camp: None,
+        duel_start: false,
         duel_vote_up: false,
         // [Test] `--duel-no-mirage`: this install acts as one without
         // Birth by Sleep.
@@ -13910,6 +13927,8 @@ fn run(mut args: Vec<PathBuf>) -> Result<AppExit, Box<dyn std::error::Error>> {
         duel_music: false,
         duel_camp_press: 0,
         duel_shots,
+        duel_forfeit,
+        duel_quick,
         duel_shot_keys: std::collections::HashSet::new(),
         duel_match: false,
         duel_dealt: [0; 2],
@@ -14423,6 +14442,8 @@ fn run(mut args: Vec<PathBuf>) -> Result<AppExit, Box<dyn std::error::Error>> {
         let record = duel_loadout::apply(&mut game, &mut duel_loadout)?;
         game.event(record);
     }
+    // Unattended runs keep no duel prefs (duel_prefs.rs).
+    let duel_unattended = game.autoplay.is_some();
     let duel_session = match &net_setup {
         Some(setup) => {
             let session = duel_net::DuelNet::start(setup)?;
@@ -14550,6 +14571,7 @@ fn run(mut args: Vec<PathBuf>) -> Result<AppExit, Box<dyn std::error::Error>> {
     app.add_plugins(crate::perf::PerfPlugin { dir: perf_dir });
     if let Some(session) = duel_session {
         app.insert_resource(session);
+        app.insert_resource(duel_prefs::DuelPrefs::load(&args[1], duel_unattended));
         app.init_resource::<duel_lobby_room::LobbyRoom>();
         app.init_resource::<duel_vote::VoteRoom>();
         app.init_resource::<duel_match_room::MatchRoom>();

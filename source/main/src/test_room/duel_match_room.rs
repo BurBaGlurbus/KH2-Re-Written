@@ -5,13 +5,15 @@
 //! shows), hold the Soras still outside the fight, play its sounds as they
 //! see it change, and draw it: the countdown, the clock, each round's end
 //! and the result: its title over the field and, in the game's pause menu,
-//! Rematch, Leave and the match's numbers (duel_camp.rs).
+//! Rematch, Leave and the match's numbers (duel_camp.rs). START during a
+//! match opens Keep fighting / Forfeit there; Forfeit asks once more before
+//! it gives the match away.
 
 use super::duel_lobby::Stage;
 use super::duel_lobby_room::LobbyRoom;
 use super::duel_match::{COUNT_STEP, GO_SHOWN, Match, Phase, View, Why, count_at};
 use super::duel_net::{DuelNet, Status, fighter_slots};
-use super::duel_wire::{MATCH, REMATCH};
+use super::duel_wire::{FORFEIT, MATCH, REMATCH};
 use super::*;
 use net::wire::Writer;
 use net::{RELIABLE, Role};
@@ -52,6 +54,13 @@ const DECIDE: u64 = 0x4;
 /// The result's entries in the pause menu.
 const ENTRY_REMATCH: u8 = pause_menu::CALLER_ENTRY;
 const ENTRY_LEAVE: u8 = pause_menu::CALLER_ENTRY + 1;
+/// The Forfeit menu's entries.
+const ENTRY_KEEP: u8 = pause_menu::CALLER_ENTRY + 2;
+const ENTRY_FORFEIT: u8 = pause_menu::CALLER_ENTRY + 3;
+/// The result's Quick rematch: the same builds and bans, straight to the
+/// countdown [duel choice; a plain Rematch from either player goes back to
+/// the lobby].
+const ENTRY_QUICK: u8 = pause_menu::CALLER_ENTRY + 4;
 
 #[derive(Resource, Default)]
 pub(crate) struct MatchRoom {
@@ -68,6 +77,12 @@ pub(crate) struct MatchRoom {
     /// (it is larger than a frame can wait for), registered when read.
     bank_job: Option<std::thread::JoinHandle<Result<Vec<u8>, String>>>,
     bank_tried: bool,
+    /// The Forfeit menu is wanted, and Forfeit was picked once (the next
+    /// pick gives the match away).
+    forfeit_menu: bool,
+    forfeit_armed: bool,
+    /// [Test] `--duel-forfeit` has forfeited.
+    forfeit_done: bool,
 }
 
 impl MatchRoom {
@@ -169,11 +184,20 @@ pub(crate) fn tick(
     let seat = usize::from(!host);
     for m in std::mem::take(&mut net.inbox) {
         match (net.role, m.first().copied()) {
+            (Role::Host, Some(FORFEIT)) => {
+                let tick = game.tick;
+                if let Some(mm) = room.m.as_mut()
+                    && mm.forfeit(1, tick)
+                {
+                    game.event(serde_json::json!({"event":"duel_forfeit","tick":tick,"seat":1}));
+                }
+            }
             (Role::Host, Some(REMATCH)) => {
                 if let Some(mm) = room.m.as_mut()
                     && mm.phase == Phase::Over
                 {
                     mm.rematch[1] = m.get(1).is_some_and(|&b| b != 0);
+                    mm.quick[1] = m.get(1) == Some(&2);
                 }
             }
             (Role::Join, Some(MATCH)) => {
@@ -226,12 +250,18 @@ pub(crate) fn tick(
                     _ => {}
                 }
             }
-            // Both asked for a rematch: back to the lobby (new bans).
+            // Both asked for a rematch: back to the lobby (new bans), or,
+            // both quick, the next match at once with the same builds.
             if m.phase == Phase::Over && m.rematch == [true, true] && playing {
-                lobby.lobby.next_match();
+                let quick = m.quick == [true, true];
+                if quick {
+                    lobby.lobby.match_no += 1;
+                } else {
+                    lobby.lobby.next_match();
+                }
                 room.m = None;
                 reset_round(game);
-                game.event(serde_json::json!({"event":"duel_rematch","tick":now}));
+                game.event(serde_json::json!({"event":"duel_rematch","tick":now,"quick":quick}));
             }
         }
         if playing && room.sent != room.m {
@@ -268,6 +298,7 @@ pub(crate) fn tick(
     }
     let fov = rig.camera.vertical_fov();
     game.duel_camera = shot(room.m.as_ref(), seat, now, game, fov);
+    forfeit_menu(room, net, camp.as_deref_mut(), lobby.up, now, game);
     // The result screen: Rematch or Leave, in the game's pause menu when
     // its art is loaded (else on the labels, with the pad).
     let over = room.m.is_some_and(|m| m.phase == Phase::Over);
@@ -284,6 +315,11 @@ pub(crate) fn tick(
             let mut entries = Vec::new();
             if playing {
                 entries.push(duel_camp::entry(ENTRY_REMATCH, "Rematch", &help));
+                entries.push(duel_camp::entry(
+                    ENTRY_QUICK,
+                    "Quick rematch",
+                    "The same builds and bans, straight to the countdown.",
+                ));
             }
             entries.push(duel_camp::entry(
                 ENTRY_LEAVE,
@@ -299,14 +335,28 @@ pub(crate) fn tick(
         });
         if let (Some(menu), Some(m)) = (menu, room.m.as_ref()) {
             let (_, help) = text.unwrap_or_default();
-            let status = if m.rematch[seat] {
-                format!("{help} Waiting for {them}.")
-            } else if m.rematch[1 - seat] {
-                format!("{help} {them} wants a rematch.")
-            } else {
-                help
+            let wants = |s: usize| {
+                if m.quick[s] {
+                    "a quick rematch"
+                } else {
+                    "a rematch"
+                }
             };
-            duel_camp::set_help(menu, ENTRY_REMATCH, &status);
+            let status = |base: &str| {
+                if m.rematch[seat] {
+                    format!("{base} You asked for {}; waiting for {them}.", wants(seat))
+                } else if m.rematch[1 - seat] {
+                    format!("{base} {them} wants {}.", wants(1 - seat))
+                } else {
+                    base.to_string()
+                }
+            };
+            duel_camp::set_help(menu, ENTRY_REMATCH, &status(&help));
+            duel_camp::set_help(
+                menu,
+                ENTRY_QUICK,
+                &status("The same builds and bans, straight to the countdown."),
+            );
             pick = duel_camp::picked(menu);
         }
     }
@@ -321,7 +371,11 @@ pub(crate) fn tick(
         let t = now.saturating_sub(m.since);
         let rematch_at = if game.duel_shots { 240 } else { 120 };
         if playing && t >= rematch_at && !m.rematch[seat] {
-            pick = Some(ENTRY_REMATCH);
+            pick = Some(if game.duel_quick {
+                ENTRY_QUICK
+            } else {
+                ENTRY_REMATCH
+            });
         }
         if game.duel_shots {
             if t == 40 || t == 150 {
@@ -362,16 +416,125 @@ pub(crate) fn tick(
             // Multiplayer screen; the other player sees "left".
             exits.write(AppExit::Success);
         }
-        Some(ENTRY_REMATCH) if playing => {
-            let want = !m.rematch[seat];
+        Some(e @ (ENTRY_REMATCH | ENTRY_QUICK)) if playing => {
+            // The same choice again takes it back; the other one changes it.
+            let quick = e == ENTRY_QUICK;
+            let want = !(m.rematch[seat] && m.quick[seat] == quick);
             m.rematch[seat] = want;
+            m.quick[seat] = want && quick;
             if !host {
                 let mut w = Writer::default();
                 w.u8(REMATCH);
-                w.u8(u8::from(want));
+                w.u8(if !want {
+                    0
+                } else if quick {
+                    2
+                } else {
+                    1
+                });
                 net.session.send(RELIABLE, w.finish());
             }
         }
+        _ => {}
+    }
+}
+
+/// The Forfeit menu: START during a match opens it (the fight goes on
+/// meanwhile [duel rule: nothing pauses a duel]); Cancel, START or Keep
+/// fighting close it; Forfeit asks once more, then gives the match to the
+/// other player.
+fn forfeit_menu(
+    room: &mut MatchRoom,
+    net: &mut DuelNet,
+    camp: Option<&mut CampRes>,
+    lobby_up: bool,
+    now: u64,
+    game: &mut Game,
+) {
+    let playing = matches!(net.status, Status::Playing);
+    let running = playing && !lobby_up && room.m.is_some_and(|m| m.phase != Phase::Over);
+    if std::mem::take(&mut game.duel_start) && running && !room.forfeit_menu {
+        room.forfeit_menu = true;
+        room.forfeit_armed = false;
+    }
+    if !running {
+        room.forfeit_menu = false;
+    }
+    // [Test] `--duel-forfeit`: START two seconds into the first fight, down
+    // to Forfeit, and Forfeit twice.
+    if game.duel_forfeit
+        && game.autoplay.is_some()
+        && !room.forfeit_done
+        && let Some(m) = room.m.filter(|m| m.phase == Phase::Fight)
+    {
+        let t = now.saturating_sub(m.since);
+        game.duel_camp_press = match t {
+            120 => 0x2,
+            150 => 0x20,
+            160 | 190 => 0x4,
+            _ => 0,
+        };
+        if t == 175 {
+            duel_camp::shot(game, (4, m.since, t));
+        }
+    }
+    let Some(camp) = camp else {
+        return;
+    };
+    let them = net
+        .peer
+        .clone()
+        .unwrap_or_else(|| "the other player".into());
+    let want = room
+        .m
+        .filter(|_| room.forfeit_menu && !game.duel_vote_up)
+        .map(|m| m.began as u32);
+    let menu = duel_camp::hold(camp, game, duel_camp::FORFEIT, want, || {
+        duel_camp::Request {
+            entries: vec![
+                duel_camp::entry(ENTRY_KEEP, "Keep fighting", "Back to the fight."),
+                duel_camp::entry(
+                    ENTRY_FORFEIT,
+                    "Forfeit",
+                    &format!("Give the match to {them}."),
+                ),
+            ],
+            on_config: false,
+            pages: pause_menu::DuelPages::default(),
+        }
+    });
+    let Some(menu) = menu else {
+        return;
+    };
+    let close = menu.data.duel.as_mut().is_some_and(|d| {
+        let c = std::mem::take(&mut d.cancel);
+        std::mem::take(&mut d.start) || c
+    });
+    match duel_camp::picked(menu) {
+        Some(ENTRY_FORFEIT) if room.forfeit_armed => {
+            room.forfeit_menu = false;
+            room.forfeit_done = true;
+            if net.role == Role::Host {
+                if let Some(m) = room.m.as_mut()
+                    && m.forfeit(0, now)
+                {
+                    game.event(serde_json::json!({"event":"duel_forfeit","tick":now,"seat":0}));
+                }
+            } else {
+                net.session.send(RELIABLE, vec![FORFEIT]);
+                game.event(serde_json::json!({"event":"duel_forfeit_sent","tick":now}));
+            }
+        }
+        Some(ENTRY_FORFEIT) => {
+            room.forfeit_armed = true;
+            duel_camp::set_help(
+                menu,
+                ENTRY_FORFEIT,
+                &format!("Sure? Pick Forfeit again to give {them} the match."),
+            );
+        }
+        Some(ENTRY_KEEP) => room.forfeit_menu = false,
+        _ if close => room.forfeit_menu = false,
         _ => {}
     }
 }
@@ -388,6 +551,7 @@ fn result_head(m: &Match, seat: usize, net: &DuelNet) -> (&'static str, [f32; 4]
     };
     let why = match (m.why, m.winner) {
         (Some(Why::Left), _) => format!("{them} left the duel"),
+        (Some(Why::Forfeit), Some(w)) => format!("{} forfeited", name(1 - usize::from(w))),
         (Some(Why::Time), _) => "Time up: the larger share of HP left".to_string(),
         (_, Some(w)) => format!("{} wins by knock-out", name(usize::from(w))),
         _ => "Both knocked out".to_string(),

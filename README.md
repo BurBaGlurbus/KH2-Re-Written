@@ -149,14 +149,20 @@ player is shows on each page):
    used against the limit. While the builds are made the menu's own *Abilities* (up to 166 AP, level 99 with
    every AP Boost the game allows) and *Items* (Equip and the item slots) are on the top level. The host checks
    every build; a refusal shows on the help line.
-4. *Ready* on both starts the match. A rule change takes Ready back.
+4. *Ready* on both starts the match. A rule change takes Ready back. Start toggles Ready from anywhere in the
+   lobby's menu while the builds are made.
+
+The lobby's menu also has *Leave* (back to the Multiplayer screen), and the other player's row shows where they
+are and their round trip in ms. The host's rules and each player's last readied build (Keyblade, abilities,
+items) are kept for the next duel in `duel-prefs.json` beside the source manifest; anything the next duel does
+not allow is left out.
 
 **The arena:** by default the match is fought in the **Mirage Arena** from Birth by Sleep Final Mix, read
 from your own install (the same Steam collection holds both games): its round stage, its sky and its walls,
 scaled to KH2's size. The host can pick the test room's arena on the lobby's Match page instead. Both players
 need Birth by Sleep in their install for the Mirage Arena; if either install cannot show it, the duel stays in
-the test room's arena and the lobby says why. The first time, reading Birth by Sleep's package checks it in
-full, which takes about twenty seconds in the background. Both Soras start 600 units apart, facing each
+the test room's arena and the lobby says why. The first time, only the parts of Birth by Sleep's package the
+arena reads are recorded (a few megabytes, no full scan); later sessions check them. Both Soras start 600 units apart, facing each
 other, with the camera behind each player's Sora. There are no enemies, no talk and no exits during a duel.
 
 **The music:** while you are in the duel's arena (the lobby, the countdown and the fight) one of the game's
@@ -169,10 +175,12 @@ up the larger share of HP left wins. Between rounds both Soras are refilled and 
 end each screen shows VICTORY, DEFEAT or DRAW and how it was decided over the field, and the pause menu with
 *Rematch*, *Leave* and *Results* (the rounds, the match time, the damage dealt and the hits landed); the
 winner's camera pushes in, the loser's rises behind his Sora. *Rematch* on both
-goes back to the lobby (new bans, the builds where they were); *Leave* closes the duel, and the launcher comes
+goes back to the lobby (new bans, the builds where they were); *Quick rematch* on both starts the next match
+at once with the same builds and bans (either player's plain *Rematch* goes to the lobby); *Leave* closes the duel, and the launcher comes
 back on its Multiplayer screen. If the other player leaves in the lobby or the camp, the camp closes without
 keeping the duel's build and the room's own comes back. If the other player
-leaves during a match, it is your win. From a command line the host can set `--duel-mode stock|best3|time` and
+leaves during a match, it is your win. Start during a match opens *Keep fighting* / *Forfeit* (the fight goes
+on meanwhile); *Forfeit* asks once more, then gives the match to the other player. From a command line the host can set `--duel-mode stock|best3|time` and
 `--duel-time 60|90|120|180|300`.
 
 F3 → Sora → Duel → *Test vote* (host) tries the vote both players will use for later choices, in the pause

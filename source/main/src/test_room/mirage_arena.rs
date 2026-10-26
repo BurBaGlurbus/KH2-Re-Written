@@ -122,11 +122,14 @@ fn load(root: PathBuf, manifest: PathBuf) -> Result<Loaded, String> {
             .ok_or_else(|| format!("{MAP} has no {ext}"))
     };
     let model = bbs_map::pmp(file(".pmp")?).map_err(|e| e.to_string())?;
+    let hd_bytes = source.read_hd(MAP).unwrap_or_default();
+    // The chunks read for the first time are bound for the next session.
+    source
+        .keep()
+        .map_err(|e| format!("the BBS manifest was not kept: {e}"))?;
     // The remaster's images (missing or undecodable ones leave the PSP
     // textures).
-    let chains: Vec<bbs_map::MipChain> = source
-        .read_hd(MAP)
-        .unwrap_or_default()
+    let chains: Vec<bbs_map::MipChain> = hd_bytes
         .into_iter()
         .filter_map(|(_, bytes)| {
             let d = data::hd_image::decode_bc3_mip_chain(&bytes, bytes.len()).ok()?;
