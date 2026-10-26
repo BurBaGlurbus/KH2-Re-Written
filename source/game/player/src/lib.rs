@@ -10,6 +10,7 @@
 
 pub mod abilities;
 pub mod actor_physics;
+pub mod body_push;
 pub mod combat;
 pub mod drive;
 pub mod dusk;
@@ -118,6 +119,12 @@ pub struct Clip {
     /// Range trigger 42: mode 0 moves inertially (obj+0x190 bit 0,
     /// FUN_140422350 → FUN_1403b7ad0 with PRTY words 10/11).
     pub inertia: Vec<(u32, u32)>,
+    /// Range trigger 44 (obj+0x190 bit 1): the object weighs
+    /// `DAT_1405b22e4` (10000) when pushing (FUN_1403b5e00).
+    pub heavy: Vec<(u32, u32)>,
+    /// Range trigger 31 (obj+0x18c bit 25): the object cannot be pushed
+    /// (FUN_1403ba7d0).
+    pub fixed: Vec<(u32, u32)>,
     /// Range trigger 28: turn toward the target by up to `deg` per tick.
     pub turn_to_target: Vec<(u32, u32, f32)>,
     /// Frame trigger 21: turn toward the target by up to `deg` at a tick.

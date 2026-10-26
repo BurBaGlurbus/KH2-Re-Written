@@ -135,7 +135,11 @@ const SQUARE_AIR: u64 = 1150;
 /// The air Jump (Aerial Dodge), then the air Square (Glide).
 const SQUARE_AIR_PRESS: [u64; 2] = [1170, 1190];
 const GLIDE_HOLD: (u64, u64) = (1190, 1270);
-const MOVES_LEN: u64 = 1350;
+/// A second mashed ground combo with the enemy placed 300 ahead (the
+/// approach records).
+const FAR_COMBO: u64 = 1350;
+const FAR_DISTANCE: f32 = 300.;
+const MOVES_LEN: u64 = 1650;
 
 /// The last tick of the schedule.
 pub fn end() -> u64 {
@@ -212,6 +216,10 @@ pub fn lock_on(tick: u64, shift: u64) -> Option<bool> {
 
 /// How far ahead of Sora the enemy is put back this tick.
 pub fn place_distance(tick: u64, shift: u64) -> f32 {
+    let m = at(tick, shift).and_then(|t| (t + 2).checked_sub(MOVES_START));
+    if m == Some(FAR_COMBO) {
+        return FAR_DISTANCE;
+    }
     let far = at(tick, shift).is_some_and(|t| {
         LOCK.iter().any(|l| l.0 == t + 2)
             || t + 2 >= MOVES_START && ![GROUND_COMBO, AIR_COMBO].contains(&(t + 2 - MOVES_START))
@@ -290,7 +298,17 @@ pub fn place(tick: u64, shift: u64) -> bool {
         .chain(
             (0..(COMBO_END - COMBO_START) / COMBO_SPACING).map(|k| COMBO_START + k * COMBO_SPACING),
         )
-        .chain([0, GROUND_COMBO, AIR_COMBO, SQUARE_RUN.0, SQUARE_AIR].map(|m| MOVES_START + m));
+        .chain(
+            [
+                0,
+                GROUND_COMBO,
+                AIR_COMBO,
+                SQUARE_RUN.0,
+                SQUARE_AIR,
+                FAR_COMBO,
+            ]
+            .map(|m| MOVES_START + m),
+        );
     tick == 60 || starts.into_iter().any(|b| b == tick + 2)
 }
 
@@ -298,12 +316,16 @@ pub fn place(tick: u64, shift: u64) -> bool {
 pub fn attack(tick: u64, shift: u64) -> bool {
     if let Some(m) = moves(tick, shift) {
         let (from, to, every) = MASH;
-        return [(GROUND_COMBO, to), (AIR_COMBO + 10, AIR_MASH)]
-            .iter()
-            .any(|&(b, to)| {
-                m.checked_sub(b)
-                    .is_some_and(|d| (from..=to).contains(&d) && d % every == 0)
-            });
+        return [
+            (GROUND_COMBO, to),
+            (AIR_COMBO + 10, AIR_MASH),
+            (FAR_COMBO, to),
+        ]
+        .iter()
+        .any(|&(b, to)| {
+            m.checked_sub(b)
+                .is_some_and(|d| (from..=to).contains(&d) && d % every == 0)
+        });
     }
     let Some(tick) = at(tick, shift) else {
         return false;

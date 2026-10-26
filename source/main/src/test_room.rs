@@ -65,6 +65,7 @@ struct Locator {
     name_hash: [u8; 16],
 }
 mod ability_inventory;
+mod actor_push;
 mod boss;
 mod character_kit;
 mod command_layout;
@@ -1113,6 +1114,9 @@ struct Game {
     player_target_shape: Option<object_collision::Entry>,
     /// Sora's push shapes (object collision kind 4).
     player_push_shapes: Vec<object_collision::Entry>,
+    /// Sora's body shapes (kind 1, the shown kit's): what battle objects
+    /// push each other with (FUN_14040ad70).
+    sora_obj_shapes: Vec<object_collision::Entry>,
     clips: Clips,
     world: RoomWorld,
     /// The room's own Sora.
@@ -1886,6 +1890,8 @@ fn clip_for(selected: &motion::SelectedMotion) -> Result<(Clip, u32), Box<dyn st
             46 => clip.no_first_person.push((start, stop)),
             27 => clip.invulnerable.push((start, stop)),
             42 => clip.inertia.push((start, stop)),
+            44 => clip.heavy.push((start, stop)),
+            31 => clip.fixed.push((start, stop)),
             // 28 turns toward the lock-on target, 22 toward the command
             // target; one enemy here, so they are the same.
             28 | 22 => {
@@ -2221,6 +2227,8 @@ struct Loaded {
     /// Sora's objentry weight (+0x50).
     sora_weight: f32,
     enemy_character: u16,
+    /// The room enemy's objentry weight (+0x50, FUN_1403b5e00).
+    enemy_weight: f32,
     fmab: player::growth::Fmab,
     voices: Option<drive_room::Voices>,
     /// The world's 12soundinfo rows (Sora's footstep bank by room).
@@ -2854,6 +2862,10 @@ struct EnemyRuntime {
     /// Hits that landed on it (Sora's, the members', a limit scene's): a
     /// party limit's combo counter counts them.
     hits_landed: u32,
+    /// Body shapes and objentry weight (+0x50): Sora and it push each
+    /// other apart (FUN_14040ad70).
+    obj_shapes: Vec<object_collision::Entry>,
+    weight: f32,
 }
 
 /// A placeholder for a spell's hit volume: the spell effects (the `.mag`
@@ -2913,6 +2925,8 @@ struct EnemySource {
     prize: data::battle_tables::Prize,
     /// Sora's LVUP rows, levels 1..=99.
     sora_levels: Vec<data::battle_tables::PlayerLevel>,
+    /// Body shapes (kind 1, groups on by default; FUN_14040ad70).
+    obj_shapes: Vec<object_collision::Entry>,
 }
 
 /// Walkable collision levels (8-unit height bins) by XZ area, largest first,
@@ -3404,10 +3418,13 @@ fn load(
     let weapon = weapons.remove(0);
     timer.mark("models");
     let objects = objentry::read(&read_archive(source, &config.objentry)?)?;
-    // Sora's object (entry 0x236) weight, which vacuums scale with.
+    // Sora's weight (FUN_1403b5e00: his own objentry's +0x50, P_EX100's
+    // 100), which vacuums scale with and bodies push by. Entry 0x236 is
+    // only the scripts' alias for the player (FUN_1403b4110); its weight
+    // field is 0.
     let sora_weight = objects
         .iter()
-        .find(|o| o.object_id == enemy::world::PLAYER_ENTRY)
+        .find(|o| o.model_name == config.player_object_name.as_bytes())
         .map_or(100., |o| o.weight());
     let object = objects
         .iter()
@@ -4000,15 +4017,14 @@ fn load(
     // The enemy's character id (objentry +0x4c) by its model's name hash:
     // Wisdom and Final Form EXP count defeated Heartless / Nobodies.
     timer.mark("forms and party");
-    let enemy_character = config.enemy.as_ref().map_or(0, |e| {
-        objects
-            .iter()
-            .find(|o| {
-                let name = format!("obj/{}.mdlx", String::from_utf8_lossy(&o.model_name));
-                data::path_lookup::md5(name.as_bytes()) == e.model.name_hash
-            })
-            .map_or(0, |o| o.character)
+    let enemy_object = config.enemy.as_ref().and_then(|e| {
+        objects.iter().find(|o| {
+            let name = format!("obj/{}.mdlx", String::from_utf8_lossy(&o.model_name));
+            data::path_lookup::md5(name.as_bytes()) == e.model.name_hash
+        })
     });
+    let enemy_character = enemy_object.map_or(0, |o| o.character);
+    let enemy_weight = enemy_object.map_or(100., |o| o.weight());
 
     let room = match (room, area_job) {
         (Some(room), _) => room,
@@ -4462,6 +4478,7 @@ fn load(
         reaction_commands,
         sora_weight,
         enemy_character,
+        enemy_weight,
         fmab,
         voices,
         step_info,
@@ -4512,8 +4529,15 @@ fn load_enemy(
         return Err("enemy selection requires exactly one model".into());
     }
     let model = models.remove(0);
-    let collision =
-        object_collision::read(bar_entry_typed(&read_archive(source, &config.model)?, 23)?)?;
+    let collision_archive = read_archive(source, &config.model)?;
+    let collision_bytes = bar_entry_typed(&collision_archive, 23)?;
+    let collision = object_collision::read(collision_bytes)?;
+    let groups = object_collision::default_groups(collision_bytes)?;
+    let obj_shapes: Vec<_> = collision
+        .iter()
+        .filter(|c| c.kind == 1 && groups >> (c.group & 31) & 1 != 0)
+        .copied()
+        .collect();
     // FUN_1403d7520: Sora's TARGET radius plus the target's own shape
     // radius (FUN_1403be0f0) [I: the enemy's TARGET entry].
     let target_reach = sora_target_radius
@@ -4769,6 +4793,7 @@ fn load_enemy(
         hit_sounds,
         hit_effects,
         rows,
+        obj_shapes,
     })
 }
 
@@ -8097,7 +8122,8 @@ fn simulate(
         let record = serde_json::json!({"event":"move_probe","tick":tick,
             "action":format!("{:?}", p.action),"motion":p.motion_id(&game.clips),
             "frame":p.motion_frame(&game.clips),"position":p.position,"yaw":p.yaw,
-            "combo":[p.combo.step,p.combo.finish],"invulnerable":p.range_invulnerable(&game.clips)});
+            "combo":[p.combo.step,p.combo.finish],"invulnerable":p.range_invulnerable(&game.clips),
+            "enemy":game.enemy.as_ref().map(|rt| rt.enemy.position)});
         game.event(record);
     }
     if game.map_fx_pending
@@ -10003,6 +10029,8 @@ fn enemy_targets(rt: &EnemyRuntime) -> Vec<player::ptya::Target> {
 fn combat_tick(game: &mut Game, tick: u64) {
     let Game {
         sora: Fighter { player, vitals, .. },
+        sora_obj_shapes,
+        sora_weight,
         clips,
         clip_poses,
         poses,
@@ -10752,6 +10780,29 @@ fn combat_tick(game: &mut Game, tick: u64) {
             player.position,
             player.position,
         );
+    }
+    // FUN_1403b9090 → FUN_14040ad70: Sora and the Shadow push each other
+    // apart by weight (a dead or gone Shadow has no active shapes,
+    // FUN_1403ba970). [I] Resolved once a tick after both moved; the
+    // pushed positions skip the wall sweep.
+    if rt.enabled
+        && !rt.enemy.gone
+        && rt.enemy.current_act() != Some(shadow::ActKind::Dead)
+        && !player.dead()
+    {
+        let mut sora = actor_push::sora(sora_obj_shapes, *sora_weight, player, clips);
+        let mut other = player::body_push::Body {
+            shapes: actor_push::shapes(&rt.obj_shapes, rt.enemy.position, rt.enemy.yaw),
+            weight: rt.weight,
+            fixed: false,
+        };
+        let (moved, back) = player::body_push::resolve(&mut sora, &mut other, [0.; 3]);
+        if moved != [0.; 3] || back != [0.; 3] {
+            rt.enemy.position[0] += moved[0];
+            rt.enemy.position[2] += moved[2];
+            player.position[0] -= back[0];
+            player.position[2] -= back[2];
+        }
     }
     // The enemy motion's frame-8 sounds reached this tick.
     let e = &rt.enemy;
@@ -14373,6 +14424,7 @@ fn run(mut args: Vec<PathBuf>) -> Result<AppExit, Box<dyn std::error::Error>> {
         target_locked: false,
         player_target_shape: loaded.kit.target_shape,
         player_push_shapes: loaded.kit.push_shapes.clone(),
+        sora_obj_shapes: loaded.kit.obj_shapes.clone(),
         params: loaded.params,
         clips: loaded.kit.clips,
         world: loaded.world,
@@ -14837,7 +14889,9 @@ fn run(mut args: Vec<PathBuf>) -> Result<AppExit, Box<dyn std::error::Error>> {
             "hit_spheres":e.body.len(),"blade_groups":e.blade.keys().collect::<Vec<_>>(),"position":spawn,
             "claw_groups":e.claws.iter().map(|(g, v)| (g.to_string(), v.len())).collect::<HashMap<_, _>>(),
             "claw_windows":e.clips.0.iter().filter(|(_, c)| !c.windows.is_empty()).map(|(s, c)| (s.to_string(), c.windows.clone())).collect::<HashMap<_, _>>(),
-            "sora_hit_spheres":e.sora_body.len(),"target_reach":e.target_reach,"sora_target":format!("{:?}", e.sora_target),"shadow_attacker":format!("{:?}", e.shadow_attacker)}));
+            "sora_hit_spheres":e.sora_body.len(),"target_reach":e.target_reach,"sora_target":format!("{:?}", e.sora_target),"shadow_attacker":format!("{:?}", e.shadow_attacker),
+            "obj_shapes":format!("{:?}", e.obj_shapes),"weight":loaded.enemy_weight,
+            "sora_obj_shapes":format!("{:?}", loaded.kit.obj_shapes),"sora_weight":loaded.sora_weight}));
         enemy_model = Some(e.model);
         game.sora.vitals = fighter::Vitals {
             attacker: e.sora,
@@ -14874,6 +14928,8 @@ fn run(mut args: Vec<PathBuf>) -> Result<AppExit, Box<dyn std::error::Error>> {
             claws_now: Vec::new(),
             last_attacker: party_room::Attacker::Sora,
             hits_landed: 0,
+            obj_shapes: e.obj_shapes,
+            weight: loaded.enemy_weight,
             ids: combat::AttackIds::default(),
             instance_ids: HashMap::new(),
             instance_seen: HashMap::new(),

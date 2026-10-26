@@ -119,6 +119,9 @@ pub(super) struct Kit {
     pub target_shape: Option<object_collision::Entry>,
     /// Push shapes (object collision kind 4; FUN_1403b4f10(obj, 4)).
     pub push_shapes: Vec<object_collision::Entry>,
+    /// Body shapes (kind 1, groups on by default): obj+0xa00, the shapes
+    /// battle objects push each other with (FUN_14040ad70).
+    pub obj_shapes: Vec<object_collision::Entry>,
     pub target_lift: f32,
     pub body_lift: f32,
     pub heal_lift: f32,
@@ -375,6 +378,7 @@ pub(super) fn load_kit(
     let mut target_radius = 0f32;
     let mut target_shape = None;
     let mut push_shapes = Vec::new();
+    let mut obj_shapes = Vec::new();
     let mut target_lift = 70f32;
     // Bone codes 0x4001 and 0x4009 (FUN_1403b50f0): the first type-1 and
     // type-9 collision entries' centres, here above the object's origin.
@@ -383,6 +387,12 @@ pub(super) fn load_kit(
         Some(archive) => {
             let shapes = object_collision::read(super::bar_entry_typed(archive, 23)?)?;
             push_shapes = shapes.iter().filter(|c| c.kind == 4).copied().collect();
+            let groups = object_collision::default_groups(super::bar_entry_typed(archive, 23)?)?;
+            obj_shapes = shapes
+                .iter()
+                .filter(|c| c.kind == 1 && groups >> (c.group & 31) & 1 != 0)
+                .copied()
+                .collect();
             // FUN_1403d7520 reads the attacker's TARGET shape (kind 3) via
             // FUN_1403b5650(obj, 3, -1) / FUN_1403c9c00.
             if let Some(c) = shapes
@@ -939,6 +949,7 @@ pub(super) fn load_kit(
         target_radius,
         target_shape,
         push_shapes,
+        obj_shapes,
         target_lift,
         body_lift,
         heal_lift,

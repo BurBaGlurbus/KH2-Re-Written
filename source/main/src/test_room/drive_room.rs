@@ -462,6 +462,9 @@ struct Stash {
     /// 1's.
     weapon_pax: Option<Arc<data::object_effect::Pax>>,
     weapon2_pax: Option<Arc<data::object_effect::Pax>>,
+    /// Its body shapes (kind 1) and objentry weight (+0x50; Antiform 25).
+    obj_shapes: Vec<object_collision::Entry>,
+    weight: f32,
 }
 
 /// Drive state of the session.
@@ -977,6 +980,7 @@ fn swap_kit(game: &mut Game, form: u8) -> Result<(), String> {
     let incoming = match d.stash.remove(&form) {
         Some(s) => s,
         None => {
+            let weight = d.src.object(form).map_or(100., |o| o.weight());
             let kit = d.ready.remove(&form).ok_or("form kit not loaded")?;
             let n = if kit.weapon_motions == 0 {
                 0
@@ -1002,6 +1006,8 @@ fn swap_kit(game: &mut Game, form: u8) -> Result<(), String> {
                 clip_poses: Arc::new(kit.clip_poses),
                 body: kit.body,
                 attack: kit.attack,
+                obj_shapes: kit.obj_shapes,
+                weight,
             }
         }
     };
@@ -1029,6 +1035,8 @@ fn swap_kit(game: &mut Game, form: u8) -> Result<(), String> {
         blade,
         weapon_pax: std::mem::replace(&mut game.weapon_pax, incoming.weapon_pax),
         weapon2_pax: std::mem::replace(&mut game.weapon2_pax, incoming.weapon2_pax),
+        obj_shapes: std::mem::replace(&mut game.sora_obj_shapes, incoming.obj_shapes),
+        weight: std::mem::replace(&mut game.sora_weight, incoming.weight),
     };
     game.weapon_pax_changed = true;
     // The trail's length follows the new Keyblade's size.

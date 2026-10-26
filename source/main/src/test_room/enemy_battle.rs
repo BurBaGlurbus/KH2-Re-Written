@@ -24,6 +24,19 @@ pub enum Brain {
     Soldier(Box<soldier::Soldier>),
 }
 impl Brain {
+    /// Moves the object by a push (FUN_14040ad70 adds it to obj+0xa48).
+    pub fn nudge(&mut self, d: [f32; 3]) {
+        match self {
+            Self::Script(a) => {
+                let mut p = a.position();
+                (0..3).for_each(|k| p[k] += d[k]);
+                a.set_position(p);
+            }
+            Self::Shadow(a) => (0..3).for_each(|k| a.position[k] += d[k]),
+            Self::Dusk(a) => (0..3).for_each(|k| a.position[k] += d[k]),
+            Self::Soldier(a) => (0..3).for_each(|k| a.position[k] += d[k]),
+        }
+    }
     pub fn position(&self) -> [f32; 3] {
         match self {
             Self::Script(a) => a.position(),
@@ -1074,6 +1087,37 @@ pub fn tick(mut game: ResMut<Game>, mut gallery: ResMut<EnemyGallery>) {
             &mut rng,
         ) {
             Ok((choice, key)) => {
+                // FUN_1403b9090 → FUN_14040ad70: Sora and the actor push
+                // each other apart by weight. [I] Once a tick after the
+                // actor moved; the pushed positions skip the wall sweep.
+                if battle.brain.alive() && !battle.brain.gone() && !game.sora.player.dead() {
+                    let mut sora = super::actor_push::sora(
+                        &game.sora_obj_shapes,
+                        game.sora_weight,
+                        &game.sora.player,
+                        &game.clips,
+                    );
+                    let mut other = player::body_push::Body {
+                        shapes: super::actor_push::shapes(
+                            &battle.assets.obj_shapes,
+                            battle.brain.position(),
+                            battle.brain.yaw(),
+                        ),
+                        weight: battle.assets.weight,
+                        fixed: false,
+                    };
+                    let (moved, back) = player::body_push::resolve(&mut sora, &mut other, [0.; 3]);
+                    battle.brain.nudge([moved[0], 0., moved[2]]);
+                    let p = &mut game.sora.player.position;
+                    p[0] -= back[0];
+                    p[2] -= back[2];
+                    if moved != [0.; 3] || back != [0.; 3] {
+                        let record = serde_json::json!({"event":"body_push","tick":tick,
+                            "actor":actor.id,"moved":moved,"back":back,"weight":battle.assets.weight,
+                            "shapes":battle.assets.obj_shapes.len()});
+                        game.event(record);
+                    }
+                }
                 actor.position = Vec3::from_array(battle.brain.position());
                 actor.yaw = battle.brain.yaw();
                 if let Err(e) = actor.battle_pose(choice, key, forward_kinematics_only) {

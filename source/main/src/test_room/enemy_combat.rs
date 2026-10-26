@@ -171,6 +171,10 @@ pub struct EnemyCombat {
     /// The map collision body (see [`map_body`]); `None` for the classes
     /// whose constructor is not traced, which keep the host's movement.
     pub map_body: Option<enemy::env::MapBody>,
+    /// Body shapes (kind 1, groups on by default) and objentry weight
+    /// (+0x50): Sora and it push each other apart (FUN_14040ad70).
+    pub obj_shapes: Vec<object_collision::Entry>,
+    pub weight: f32,
 }
 
 /// The map body of a boss-class object (objentry type 3): FUN_1403b3200
@@ -280,6 +284,12 @@ impl EnemyCombat {
             .find(|e| e.kind == 1)
             .map_or(0., |e| f32::from(e.radius));
         let map_body = map_body(&collision, object.object_type, object.flags);
+        let obj_shapes = collision
+            .iter()
+            .filter(|e| e.kind == 1 && default_groups >> (e.group & 31) & 1 != 0)
+            .copied()
+            .collect();
+        let weight = object.weight();
         let reactions = reaction_shapes(&collision, kind.model.skinning.bones.len());
         let (body, targets, attacks) =
             collision_shapes(&collision, kind.model.skinning.bones.len())?;
@@ -429,6 +439,8 @@ impl EnemyCombat {
             patn,
             wall_radius,
             map_body,
+            obj_shapes,
+            weight,
         })
     }
 
@@ -854,6 +866,8 @@ mod tests {
             default_groups: 1,
             wall_radius: 0.,
             map_body: None,
+            obj_shapes: Vec::new(),
+            weight: 100.,
             sheets: EnmpSheets {
                 enmp: Default::default(),
                 lvpm: Default::default(),
