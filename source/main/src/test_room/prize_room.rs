@@ -170,8 +170,11 @@ pub fn tick(game: &mut Game, tick: u64) {
         if let Some(id) = orb.tick(floor) {
             sound_queue.push((id, "prize_bounce"));
         }
-        // A dead Sora collects nothing (FUN_1403dc500: 0x9b8 bit 2).
-        if !player.dead() && orb.collected_by(at, draw) {
+        // A dead Sora collects nothing (FUN_1403dc500: 0x9b8 bit 2), and
+        // the leader in Antiform passes over HP prizes, kinds 0 and 1
+        // (FUN_1403dbea0: +0xde0 == 6 skips kinds below 2); they stay.
+        let refused = form == player::forms::ANTI && orb.kind < 2;
+        if !player.dead() && !refused && orb.collected_by(at, draw) {
             collected.push(i);
         }
     }
@@ -209,8 +212,7 @@ pub fn tick(game: &mut Game, tick: u64) {
         }
         // FUN_140413650: the descriptor's pickup sound.
         sound_queue.push((enemy_prizes::sounds(orb.kind).1, "prize_pickup"));
-        // Antiform's pickup skips HP orbs (formcmd-01 §5).
-        if e.hp > 0 && form != player::forms::ANTI {
+        if e.hp > 0 {
             vitals.hp = (vitals.hp + e.hp).min(vitals.target.max_hp);
         }
         if e.mp > 0 {

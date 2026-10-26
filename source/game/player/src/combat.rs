@@ -190,6 +190,9 @@ pub struct TargetState {
     pub damage_control: f32,
     pub damage_control_ratio: i32,
     pub difficulty: Difficulty,
+    /// The target is the lead player (obj+0x6c8 bit 7) in Antiform
+    /// (obj+0xde0 = 6): the damage is × SSTM +0x94.
+    pub antiform: bool,
 }
 
 impl TargetState {
@@ -202,6 +205,7 @@ impl TargetState {
             damage_control: 0.,
             damage_control_ratio: 50,
             difficulty: Difficulty::Standard,
+            antiform: false,
         }
     }
 }
@@ -246,9 +250,8 @@ pub fn damage(attacker: &AttackerStats, attack: &AttackParams, target: &TargetSt
     damage_with(attacker, attack, target, &TargetState::full(target.max_hp))
 }
 
-/// FUN_1403c12f0 with the ability, low-HP and difficulty terms. The special
-/// battle mode (`DAT_142a11400` bit 17) and the Anti form rate are not
-/// modelled.
+/// FUN_1403c12f0 with the ability, low-HP, difficulty and Antiform terms.
+/// The special battle mode (`DAT_142a11400` bit 17) is not modelled.
 pub fn damage_with(
     attacker: &AttackerStats,
     attack: &AttackParams,
@@ -286,6 +289,11 @@ pub fn damage_with(
         dmg = (dmg * state.difficulty.taken() + 99) / 100;
     } else if m.player_type {
         dmg = (dmg * state.difficulty.dealt() + 99) / 100;
+    }
+    // 0x1403c15e0: the lead player in Antiform takes × AntiFormDamageRate,
+    // truncated.
+    if state.antiform {
+        dmg = (dmg as f32 * crate::drive::ANTI_DAMAGE_RATE) as i32;
     }
     if (1..=3).contains(&attack.element) {
         dmg = (m.element_percent[attack.element as usize - 1] * dmg + 99) / 100;
@@ -726,6 +734,11 @@ mod tests {
         assert_eq!(damage_with(&big, &hit, &sora, &st), 20);
         st.difficulty = Difficulty::Beginner;
         assert_eq!(damage_with(&big, &hit, &sora, &st), 5);
+        // Antiform takes × 1.5, truncated, after the difficulty term.
+        st.antiform = true;
+        assert_eq!(damage_with(&big, &hit, &sora, &st), 7);
+        st.difficulty = Difficulty::Standard;
+        assert_eq!(damage_with(&big, &hit, &sora, &st), 15);
         // A veto leaves floor + 1.
         assert_eq!(apply_damage(3, 0, 20, 10, true), 1);
         assert_eq!(apply_damage(3, 0, 20, 10, false), 0);

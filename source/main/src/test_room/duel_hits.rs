@@ -584,6 +584,7 @@ fn land(
         // [Duel rule] Standard: damage taken ×1 whatever the room's
         // difficulty.
         difficulty: combat::Difficulty::Standard,
+        antiform: victim.player.drive.antiform(),
     };
     // The game's formula, then the duel's damage rule.
     let formula = combat::damage_with(&attacker_stats, &attack, &victim.vitals.target, &state);

@@ -968,6 +968,7 @@ pub fn tick(game: &mut Game, actors: &mut [GalleryActor], tick: u64) {
                 damage_control: ab.damage_control,
                 damage_control_ratio: 50,
                 difficulty: rt.difficulty,
+                antiform: player.drive.antiform(),
             };
             let damage = if counted {
                 combat::damage_with(&battle.assets.attacker, &attack, &vitals.target, &state)

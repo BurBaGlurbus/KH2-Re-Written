@@ -879,7 +879,13 @@ impl DriveRt {
             .take();
         match built {
             Some(Ok(kit)) => {
-                log.push(serde_json::json!({"event":"form_kit","form":form,"summary":kit.summary}));
+                let p = &kit.params;
+                log.push(
+                    serde_json::json!({"event":"form_kit","form":form,"summary":kit.summary,
+                    "params":{"walk":p.walk_speed,"run":p.run_speed,"jump":p.jump_height,
+                    "turn":p.turn_speed,"fall_max":p.fall_max,"land_inertia":p.land_inertia,
+                    "land_drag":p.land_drag}}),
+                );
                 self.ready.insert(form, kit);
                 self.loading = None;
                 Ok(true)
@@ -1305,11 +1311,26 @@ pub fn tick(game: &mut Game, abilities: Option<&[u16]>) {
     // Strike Raid and Infinity with MP refilled, each follow-up pressed as
     // soon as it is offered.
     // The magic tour casts in a form (`--magic-form`).
+    // Antiform comes from the roll: Light & Darkness (chance 100) on a
+    // Valor request in battle.
     if game.magic_tour && game.magic_form != 0 {
-        match game.tick {
-            5 => game.sora.player.drive.refill(),
-            10 => d.request = Some(game.magic_form),
-            _ => {}
+        let anti = game.magic_form == forms::ANTI;
+        // (Antiform waits for the enemy placed at tick 60: the battle.)
+        let at = if anti { 70 } else { 10 };
+        let tick = game.tick;
+        if tick == at - 5 {
+            game.sora.player.drive.refill();
+        }
+        if anti && tick == at - 1 {
+            game.sora.player.abilities.set(forms::LIGHT_AND_DARKNESS);
+        }
+        if tick == at {
+            d.request = Some(if anti { forms::VALOR } else { game.magic_form });
+        }
+        // [Tour setup] The form's time stays full: the tour outlasts it.
+        if d.active {
+            let g = &mut game.sora.player.drive;
+            g.time = g.max_time;
         }
     }
     if game.autoplay.is_some()

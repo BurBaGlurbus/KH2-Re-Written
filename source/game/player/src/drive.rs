@@ -21,6 +21,9 @@ pub const FORM_GAIN: f32 = 12.;
 pub const FORM_HIT_DRAIN: f32 = 15.;
 /// SSTM +0x8c (i32 5): Antiform's bars are 5 − 2 + 3.
 pub const ANTI_LEVEL: u8 = 5;
+/// SSTM +0x94 AntiFormDamageRate (1.5): damage the lead player takes in
+/// Antiform (FUN_1403c12f0).
+pub const ANTI_DAMAGE_RATE: f32 = 1.5;
 
 /// Gauge mode, stat+0x1af.
 pub mod mode {
@@ -236,6 +239,12 @@ impl Gauge {
         self.time = 0.;
         self.max_time = 0.;
         self.partial = 100;
+    }
+
+    /// Whether the owner is in Antiform (FUN_1403c12f0's damage-taken
+    /// term reads obj+0xde0 = 6).
+    pub fn antiform(&self) -> bool {
+        self.mode == mode::FORM && self.form == 6
     }
 
     /// The HUD digit in form mode (hud-01 §6.3): `min(time / per, bars − 1)`

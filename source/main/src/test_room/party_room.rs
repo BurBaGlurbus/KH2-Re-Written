@@ -1871,6 +1871,7 @@ fn take_hit<W: player::World>(
         damage_control: 0.,
         damage_control_ratio: 50,
         difficulty: src.difficulty,
+        antiform: false,
     };
     let damage = combat::damage_with(src.attacker, &attack, &m.target(), &state);
     let before = m.hp;

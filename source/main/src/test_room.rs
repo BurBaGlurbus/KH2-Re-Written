@@ -7079,7 +7079,7 @@ fn simulate(
         (party_anim_tour::stick(tick), false, false)
     } else if game.magic_tour {
         (
-            Vec2::ZERO,
+            Vec2::from_array(magic_tour::stick(tick, game.magic_shift)),
             magic_tour::jump(tick, game.magic_shift),
             magic_tour::attack(tick, game.magic_shift)
                 || game.limit_form_tour
@@ -7700,6 +7700,7 @@ fn simulate(
         let guarding = matches!(game.sora.player.action, Action::Guard | Action::GuardRecoil);
         !game.magic_tour && !game.sephiroth_tour && AUTOPLAY_GUARDS.contains(&tick)
             || game.limit_form_tour && limit_form_tour::guard(tick, claw, guarding)
+            || game.magic_tour && magic_tour::guard(tick, game.magic_shift).0
     } else {
         std::mem::take(&mut game.guard_queued)
     } && !talking;
@@ -7797,7 +7798,9 @@ fn simulate(
         attack: attack && !frozen,
         guard: guard && !frozen,
         // Square held (logical 0x200).
-        guard_held: !frozen && game.autoplay.is_none() && game.pad.held & 0x200 != 0,
+        guard_held: !frozen
+            && (game.autoplay.is_none() && game.pad.held & 0x200 != 0
+                || game.magic_tour && magic_tour::guard(tick, game.magic_shift).1),
         target: target.map(|t| [t[0], t[2]]),
         hop_vector,
         target_reach: target.map_or(0., |t| t[3]),
@@ -8086,6 +8089,14 @@ fn simulate(
             sora.player.tick(&input, params, clips, world)
         }
     };
+    if game.magic_tour && magic_tour::probing(tick, game.magic_shift) {
+        let p = &game.sora.player;
+        let record = serde_json::json!({"event":"move_probe","tick":tick,
+            "action":format!("{:?}", p.action),"motion":p.motion_id(&game.clips),
+            "frame":p.motion_frame(&game.clips),"position":p.position,"yaw":p.yaw,
+            "combo":[p.combo.step,p.combo.finish],"invulnerable":p.range_invulnerable(&game.clips)});
+        game.event(record);
+    }
     if game.map_fx_pending
         && let Some(a) = area.as_deref()
     {
@@ -10635,6 +10646,7 @@ fn combat_tick(game: &mut Game, tick: u64) {
             damage_control: ab.damage_control,
             damage_control_ratio: 50,
             difficulty: rt.difficulty,
+            antiform: player.drive.antiform(),
         };
         if counted {
             *hero_hit_tick = Some(tick);
@@ -13834,6 +13846,7 @@ fn run(mut args: Vec<PathBuf>) -> Result<AppExit, Box<dyn std::error::Error>> {
                     .ok_or("magic form absent")?
                     .parse::<u8>()?;
             }
+            Some("--form-moves") => magic_tour::set_moves_only(),
             Some("--magic-tour") if autoplay.is_none() => {
                 magic_tour = true;
                 autoplay = Some(
@@ -14276,7 +14289,7 @@ fn run(mut args: Vec<PathBuf>) -> Result<AppExit, Box<dyn std::error::Error>> {
     } else if save_point_tour {
         reaction_command::SAVE_TOUR_END
     } else if magic_tour {
-        magic_tour::END + magic_shift
+        magic_tour::end() + magic_shift
     } else if prize_tour {
         prize_room::END
     } else if growth_tour {

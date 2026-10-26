@@ -920,7 +920,7 @@ impl Player {
                 self.yaw = facing(back);
                 self.knock = None;
                 self.flight = None;
-                self.arc = actor_physics::Arc::launch(self.position[1], AIR_HIT_HOP);
+                self.launch_arc(AIR_HIT_HOP);
                 self.jump_cut = JumpCut::default();
                 let v = strength * sstm.hit_back_to_jump;
                 self.air_velocity = [dir[0] * v, dir[1] * v];
@@ -1117,7 +1117,7 @@ impl Player {
                 ([0.; 2], 0.)
             };
             self.flight = None;
-            self.arc = actor_physics::Arc::launch(self.position[1], RECOVERY_HEIGHT);
+            self.launch_arc(RECOVERY_HEIGHT);
             self.jump_cut = JumpCut::default();
             self.air_velocity = [dir[0] * speed, dir[1] * speed];
             self.sampler.reset();
@@ -1219,7 +1219,7 @@ impl Player {
             self.queue_motion(4, 0.);
             self.knock = None;
             self.flight = None;
-            self.arc = actor_physics::Arc::launch(self.position[1], AIR_HIT_HOP);
+            self.launch_arc(AIR_HIT_HOP);
             self.jump_cut = JumpCut::default();
             let v = WALL_RECOIL_STRENGTH * sstm.hit_back_to_jump;
             self.air_velocity = [back[0] * v, back[1] * v];
@@ -1299,6 +1299,15 @@ impl Player {
         root.get(self.motion_frame(clips) as usize)
             .copied()
             .unwrap_or([0.; 3])
+    }
+
+    /// The mode's jump slot (physics vt+0x20 → FUN_1403cbb00): a fresh arc
+    /// of `height` from here. Its mode-1 enter FUN_1403cbd30 clears obj+0x120
+    /// bits 23/24, so a no-gravity range that ended with the last motion no
+    /// longer re-seeds the arc as a plain fall (FUN_1403b4780).
+    fn launch_arc(&mut self, height: f32) {
+        self.arc = actor_physics::Arc::launch(self.position[1], height);
+        self.was_floating = false;
     }
 
     fn arm(&mut self) {
@@ -1446,7 +1455,7 @@ impl Player {
                 finite(step.hop_speed),
             ),
         };
-        self.arc = actor_physics::Arc::launch(self.position[1], height);
+        self.launch_arc(height);
         self.air_velocity = [dir[0] * speed, dir[1] * speed];
         self.sampler.reset();
         self.jump_cut = JumpCut::default();
@@ -1497,7 +1506,7 @@ impl Player {
         if moving {
             self.yaw = direction[0].atan2(direction[1]);
         }
-        self.arc = actor_physics::Arc::launch(self.position[1], row.dodge_height);
+        self.launch_arc(row.dodge_height);
         self.air_velocity = [dir[0] * speed, dir[1] * speed];
         self.launch_velocity = Some(self.air_velocity);
         self.sampler.reset();
@@ -1777,7 +1786,7 @@ impl Player {
                     // FUN_1403cbd30 (mode 1 enter): the arc's base is the
                     // take-off height; the stored +0xe0 velocity applies;
                     // a variable jump becomes cuttable (bit 16 → bit 17).
-                    self.arc = actor_physics::Arc::launch(self.position[1], height);
+                    self.launch_arc(height);
                     self.jump_cut = JumpCut {
                         held: self.jump_cut.variable,
                         ..JumpCut::default()
@@ -2027,7 +2036,12 @@ impl Player {
             };
             let moved = world.collide(self.position, disp, airborne, &body);
             self.position = moved.position;
-            if airborne && moved.on_floor {
+            // An attack that hops from the ground (FUN_1403d78d0 → the
+            // mode's jump slot) enters mode 1 at the arc's start; the mode's
+            // land test only runs once it has stepped, so the take-off tick
+            // never lands.
+            let took_off = !was_in_air && disp[1] >= 0.;
+            if airborne && moved.on_floor && !took_off {
                 // Landing switches to the ground mode and plays the land
                 // motion (FUN_1403cb940: obj+0x11c = 5, which FUN_1403d78d0
                 // also sets for aerial attacks), cutting an aerial swing
@@ -2309,7 +2323,7 @@ impl Player {
         self.pending_jump = None;
         let action = if airborne {
             // The air cast hop (physics vt+0x20 with SSTM +0x48 = 40).
-            self.arc = actor_physics::Arc::launch(self.position[1], magic::AIR_HOP);
+            self.launch_arc(magic::AIR_HOP);
             self.jump_cut = JumpCut::default();
             self.air_velocity = [0.; 2];
             self.sampler.reset();
@@ -2618,7 +2632,7 @@ impl Player {
             if matches!(self.action, Action::Jump | Action::HighJump) {
                 self.start(Action::Fall, step);
             }
-            self.arc = actor_physics::Arc::launch(self.position[1], actor_physics::JUMP_CUT_HOP);
+            self.launch_arc(actor_physics::JUMP_CUT_HOP);
             self.sampler.reset();
             self.jump_cut = JumpCut::default();
         } else if self.arc.falling_motion() {
@@ -3281,6 +3295,63 @@ mod tests {
         // at 8 toward +X, then the first two-frame sample drags it ×0.95.
         assert!((player.arc.rise - actor_physics::rise_time(21.)).abs() < 1e-4);
         assert!((player.air_velocity[0] - 7.6).abs() < 1e-4);
+    }
+
+    #[test]
+    fn a_ground_attack_with_a_hop_takes_off() {
+        // Master Form's ground records hop (PTYA +0xc = 41): the press from
+        // the ground must leave it rather than land on the take-off tick.
+        let (p, mut c, w) = (params(), clips(), room());
+        c.records[1].jump = 41.;
+        c.attacks[1].hop = 41.;
+        c.attacks[1].hop_speed = 12.;
+        let mut player = Player::new([0., 0., 0.], 0.);
+        let press = Input {
+            attack: true,
+            ..Input::default()
+        };
+        player.tick(&press, &p, &c, &w);
+        assert_eq!(player.action, Action::AirAttack(1));
+        let mut top: f32 = 0.;
+        for _ in 0..12 {
+            player.tick(&Input::default(), &p, &c, &w);
+            top = top.max(player.position[1]);
+        }
+        assert_eq!(player.action, Action::AirAttack(1));
+        assert!(top > 30., "{top}");
+    }
+
+    #[test]
+    fn a_hop_after_a_hovering_swing_rises_instead_of_falling() {
+        // Master Form: the first swing hovers (range 3 to its end); the
+        // next swing's hop must not be re-seeded as a fall when the hover
+        // ends with the motion change (FUN_1403cbd30 clears the bits).
+        let (p, mut c, w) = (params(), clips(), room());
+        c.records[1].jump = 41.;
+        c.attacks[1].hop = 41.;
+        c.attacks[1].clip.no_gravity = vec![(10, 40)];
+        let mut player = Player::new([0., 0., 0.], 0.);
+        let press = Input {
+            attack: true,
+            ..Input::default()
+        };
+        player.tick(&press, &p, &c, &w);
+        for _ in 0..12 {
+            player.tick(&Input::default(), &p, &c, &w);
+        }
+        assert!(player.was_floating);
+        let before = player.position[1];
+        player.connected = true;
+        player.tick(&press, &p, &c, &w);
+        assert_eq!(player.action, Action::AirAttack(3));
+        for _ in 0..4 {
+            player.tick(&Input::default(), &p, &c, &w);
+        }
+        assert!(
+            player.position[1] > before,
+            "{} {before}",
+            player.position[1]
+        );
     }
 
     #[test]
