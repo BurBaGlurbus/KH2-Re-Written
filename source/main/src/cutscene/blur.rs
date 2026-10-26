@@ -15,7 +15,7 @@ use bevy::{
     core_pipeline::tonemapping::{DebandDither, Tonemapping},
     mesh::PrimitiveTopology,
     prelude::*,
-    render::render_resource::TextureFormat,
+    render::render_resource::{Extent3d, TextureFormat},
 };
 use data::event_script::Command;
 use visual::overlay::{LayoutMaterial, Ui2dFrame};
@@ -179,6 +179,20 @@ impl Blur {
     /// Sheet slot holding this frame's picture (scene plus feedback).
     pub fn sheet(&self) -> usize {
         self.sheets[self.shown]
+    }
+
+    /// Follows the scene image to a new size (the window's).
+    pub fn resize(&self, size: [u32; 2], images: &mut Assets<Image>, frame: &mut Ui2dFrame) {
+        for &sheet in &self.sheets {
+            if let Some(mut image) = images.get_mut(&frame.sheets[sheet].image) {
+                image.resize(Extent3d {
+                    width: size[0],
+                    height: size[1],
+                    depth_or_array_layers: 1,
+                });
+            }
+            frame.sheets[sheet].size = size;
+        }
     }
 
     /// Resizes the previous picture's quads (`ZOOM` for `SeqBlur`, 1 for

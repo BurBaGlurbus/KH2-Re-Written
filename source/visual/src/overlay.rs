@@ -8,7 +8,7 @@
 //! subtractive (destination - source x alpha), as in the repo's gauge
 //! canvas.
 use bevy::{
-    asset::{AssetPath, RenderAssetUsages, embedded_asset, embedded_path},
+    asset::{AssetEventSystems, AssetPath, RenderAssetUsages, embedded_asset, embedded_path},
     camera::{CameraOutputMode, CompositingSpace, ScalingMode, visibility::RenderLayers},
     core_pipeline::tonemapping::{DebandDither, Tonemapping},
     image::{ImageAddressMode, ImageFilterMode, ImageSampler, ImageSamplerDescriptor},
@@ -16,7 +16,8 @@ use bevy::{
     prelude::*,
     render::render_resource::{
         AsBindGroup, BlendComponent, BlendFactor, BlendOperation, BlendState, Extent3d,
-        RenderPipelineDescriptor, SpecializedMeshPipelineError, TextureDimension, TextureFormat,
+        RenderPipelineDescriptor, SpecializedMeshPipelineError, TextureDescriptor,
+        TextureDimension, TextureFormat,
     },
     shader::ShaderRef,
     sprite_render::{AlphaMode2d, Material2d, Material2dKey, Material2dPlugin},
@@ -139,8 +140,65 @@ impl Plugin for Ui2dPlugin {
                 overlay: self.overlay,
             })
             .add_systems(Startup, spawn_camera)
-            .add_systems(PostUpdate, present);
+            .add_systems(
+                PostUpdate,
+                (present, rebind_resized.after(AssetEventSystems)),
+            );
     }
+}
+
+/// A prepared material keeps the texture view it was built with, and an
+/// image whose size or format changes gets a new GPU texture (Bevy only
+/// reuses one with the same descriptor). So when a sheet's image is resized
+/// (the scene target following the window: a resize, a minimize, alt-tab
+/// out of full screen, the Resolution setting), the materials sampling it
+/// are prepared again; otherwise they go on drawing the old texture's last
+/// picture: a frozen scene under a live HUD.
+fn rebind_resized(
+    mut events: MessageReader<AssetEvent<Image>>,
+    images: Res<Assets<Image>>,
+    mut materials: ResMut<Assets<LayoutMaterial>>,
+    mut known: Local<HashMap<AssetId<Image>, TextureDescriptor<'static>>>,
+) {
+    let mut changed = Vec::new();
+    for event in events.read() {
+        match *event {
+            AssetEvent::Added { id } | AssetEvent::Modified { id } => {
+                let Some(image) = images.get(id) else {
+                    continue;
+                };
+                let descriptor = image.texture_descriptor.clone();
+                if known
+                    .insert(id, descriptor.clone())
+                    .is_some_and(|d| d != descriptor)
+                {
+                    changed.push(id);
+                }
+            }
+            AssetEvent::Unused { id } | AssetEvent::Removed { id } => {
+                known.remove(&id);
+            }
+            AssetEvent::LoadedWithDependencies { .. } => {}
+        }
+    }
+    if changed.is_empty() {
+        return;
+    }
+    let stale: Vec<_> = materials
+        .iter()
+        .filter(|(_, m)| changed.contains(&m.texture.id()))
+        .map(|(id, _)| id)
+        .collect();
+    for id in &stale {
+        if let Some(m) = materials.get_mut(*id) {
+            m.into_inner();
+        }
+    }
+    info!(
+        "2D layer: {} image(s) changed size, {} material(s) rebound",
+        changed.len(),
+        stale.len()
+    );
 }
 
 /// A registered sheet: its GPU image, HD size and HD texels per sequence
@@ -427,4 +485,86 @@ fn present(
         v.set_if_neq(Visibility::Hidden);
     }
     frame.draws.clear();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[derive(Resource, Default)]
+    struct Rebound(usize);
+
+    #[test]
+    fn a_resized_image_rebinds_its_materials_and_a_rewrite_does_not() {
+        let mut app = App::new();
+        app.add_plugins((MinimalPlugins, AssetPlugin::default()))
+            .init_asset::<Image>()
+            .init_asset::<LayoutMaterial>()
+            .init_resource::<Rebound>()
+            .add_systems(PostUpdate, rebind_resized.after(AssetEventSystems))
+            .add_systems(
+                Last,
+                |mut events: MessageReader<AssetEvent<LayoutMaterial>>,
+                 mut rebound: ResMut<Rebound>| {
+                    rebound.0 += events
+                        .read()
+                        .filter(|e| matches!(e, AssetEvent::Modified { .. }))
+                        .count();
+                },
+            );
+        let target =
+            app.world_mut()
+                .resource_mut::<Assets<Image>>()
+                .add(Image::new_target_texture(
+                    64,
+                    36,
+                    TextureFormat::Rgba8UnormSrgb,
+                    None,
+                ));
+        let other = app
+            .world_mut()
+            .resource_mut::<Assets<Image>>()
+            .add(Image::new_target_texture(
+                8,
+                8,
+                TextureFormat::Rgba8UnormSrgb,
+                None,
+            ));
+        let _materials = [target.clone(), other].map(|texture| {
+            app.world_mut()
+                .resource_mut::<Assets<LayoutMaterial>>()
+                .add(LayoutMaterial {
+                    texture,
+                    blend: 0,
+                    srgb_source: true,
+                })
+        });
+        let settle = |app: &mut App| {
+            for _ in 0..3 {
+                app.update();
+            }
+        };
+        settle(&mut app);
+        app.world_mut().resource_mut::<Rebound>().0 = 0;
+        // Same descriptor (a pixel rewrite): Bevy keeps the texture.
+        app.world_mut()
+            .resource_mut::<Assets<Image>>()
+            .get_mut(&target)
+            .unwrap()
+            .into_inner();
+        settle(&mut app);
+        assert_eq!(app.world().resource::<Rebound>().0, 0);
+        // A new size: only the material sampling it is prepared again.
+        app.world_mut()
+            .resource_mut::<Assets<Image>>()
+            .get_mut(&target)
+            .unwrap()
+            .resize(Extent3d {
+                width: 128,
+                height: 72,
+                depth_or_array_layers: 1,
+            });
+        settle(&mut app);
+        assert_eq!(app.world().resource::<Rebound>().0, 1);
+    }
 }

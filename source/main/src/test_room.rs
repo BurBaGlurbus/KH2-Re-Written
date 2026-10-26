@@ -6758,9 +6758,10 @@ fn afterimage(
     after.blur.feed(weight, advance, &mut cameras, &mut meshes);
 }
 
-/// The scene image follows the window's size.
+/// The scene image (and the afterimage's pictures) follow the window's size.
 fn resize_scene(
     compose: Option<ResMut<Compose>>,
+    after: Option<Res<Afterimage>>,
     windows: Query<&Window>,
     mut images: ResMut<Assets<Image>>,
     mut frame: ResMut<Ui2dFrame>,
@@ -6771,9 +6772,13 @@ fn resize_scene(
     };
     // The Resolution setting scales the scene against the window.
     let scale = settings.current.scale();
+    c.stable_frames += 1;
+    // A minimized window reports no size; keep the target for the restore.
+    if w.physical_width() == 0 || w.physical_height() == 0 {
+        return;
+    }
     let size = [w.physical_width(), w.physical_height()]
         .map(|v| ((v as f32 * scale).round() as u32).clamp(1, 8192));
-    c.stable_frames += 1;
     if frame.sheets[c.scene_sheet].size == size {
         return;
     }
@@ -6786,6 +6791,10 @@ fn resize_scene(
         });
     }
     frame.sheets[c.scene_sheet].size = size;
+    if let Some(after) = after {
+        after.blur.resize(size, &mut images, &mut frame);
+    }
+    info!("scene target resized to {}x{}", size[0], size[1]);
 }
 
 /// The scene, then the dissolve snapshot fading out over it, then the HUD
