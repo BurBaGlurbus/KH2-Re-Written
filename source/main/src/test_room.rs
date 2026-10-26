@@ -73,6 +73,7 @@ pub(crate) use debug_menu::DebugMenu;
 mod deck_tour;
 mod drive_fx;
 mod drive_room;
+mod duel_arena;
 mod duel_fx;
 mod duel_hits;
 mod duel_loadout;
@@ -1103,6 +1104,10 @@ struct Game {
     rival_kit: Option<Arc<rival::RivalKit>>,
     /// `--rival-script`: a scripted rival from the first tick.
     rival_script: bool,
+    /// Where the room starts Sora (position, yaw): the duel arena's centre.
+    room_start: ([f32; 3], f32),
+    /// The duel's arena (a row of `duel_arena::ARENAS`).
+    duel_arena: usize,
     /// The duel's rules (`--duel-damage`, F3 on the host; the host's reach
     /// the joiner).
     duel_rules: duel_rules::MatchRules,
@@ -7840,7 +7845,8 @@ fn simulate(
                 {
                     game.event(serde_json::json!({"event":"exit","tick":tick,"world":world,
                     "area":area,"entrance":entrance}));
-                    if a.transition.is_none() {
+                    // A duel stays in its arena.
+                    if a.transition.is_none() && !game.duel {
                         a.transition = Some(Transition {
                             stage: Stage::Closing,
                             iris: None,
@@ -8704,7 +8710,7 @@ fn talk_tick(mut game: ResMut<Game>, talk: Option<ResMut<Talk>>) {
     }
     talk.dissolve = talk.dissolve.saturating_sub(1);
     let sora = Vec3::from_array(game.sora.player.position);
-    if talk.active.is_none() && rc {
+    if talk.active.is_none() && rc && !game.duel {
         // FUN_140401410 → FUN_140400f90: lock Sora, snap the NPC to face
         // him, cross-dissolve to the talk camera.
         talk.active = Some(0);
@@ -13657,6 +13663,8 @@ fn run(mut args: Vec<PathBuf>) -> Result<AppExit, Box<dyn std::error::Error>> {
         rivals: Vec::new(),
         rival_kit: Some(rival_kit),
         rival_script,
+        room_start: (loaded.spawn.to_array(), loaded.yaw),
+        duel_arena: 0,
         duel_rules,
         duel: rival_script,
         local_slot: 0,

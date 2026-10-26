@@ -144,6 +144,10 @@ left" (or a timeout after five seconds) and the host waits for the next player.
    every build.
 4. *Ready* on both starts the match; the other player's status shows below. A rule change takes Ready back.
 
+**The arena:** the match is fought in the test room's arena. Both Soras start on a line through the room's
+own start, 600 units apart, facing each other, with the camera behind each player's Sora. There are no
+enemies, no talk and no exits during a duel.
+
 F3 → Sora → Duel → *Test vote* (host) tries the vote both players will use for later choices: different answers
 go to a coin flip on the host that both screens show.
 

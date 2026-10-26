@@ -377,10 +377,14 @@ pub(crate) fn lines(room: &VoteRoom, net: &DuelNet, game: &Game) -> Vec<(String,
                     let (a, b) = (v.ballots[0].unwrap_or(0), v.ballots[1].unwrap_or(0));
                     let face = flip_face(seed, a, b, t);
                     out.push(("Tie: the coin decides".to_string(), false));
-                    out.push((format!("   ( {} )", v.options[usize::from(face)]), true));
+                    out.push((format!("   * {} *", v.options[usize::from(face)]), true));
                 }
                 _ => {
-                    let how = if o.flip.is_some() { " (coin flip)" } else { "" };
+                    let how = if o.flip.is_some() {
+                        ", by coin flip"
+                    } else {
+                        ""
+                    };
                     out.push((
                         format!("Result: {}{how}", v.options[usize::from(o.choice)]),
                         true,
@@ -392,7 +396,7 @@ pub(crate) fn lines(room: &VoteRoom, net: &DuelNet, game: &Game) -> Vec<(String,
             if v.ballots[seat].is_none() {
                 for (i, o) in v.options.iter().enumerate() {
                     let on = i == room.cursor;
-                    out.push((format!("{}{o}", if on { "> " } else { "   " }), on));
+                    out.push((format!("   {o}"), on));
                 }
             } else {
                 let mine = v.ballots[seat].map_or("", |c| v.options[usize::from(c)].as_str());

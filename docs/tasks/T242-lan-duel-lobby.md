@@ -40,6 +40,11 @@ Private evidence: `C:\Users\ANIMA\kh2-lan-out\` (run logs `lobby3-*.jsonl`, thei
    real vote uses it yet (the party vote waits for party members in a duel).
 7. Messages: the reliable channel's messages go to an inbox each tick and each system takes its own kinds.
 
+8. Phase 4, the arena (`test_room/duel_arena.rs`): a table of arenas (the test room's, the room the launcher's
+   duel opens); at the match start the host puts both Soras on a line through the room's own start, 300 units
+   either side, facing each other (`Player::place` starts the motion over and keeps the build); the camera
+   turns behind each player's Sora. No talk and no area exits in a duel (enemies were already off).
+
 ## Checks
 
 | Check | Result |
@@ -50,6 +55,7 @@ Private evidence: `C:\Users\ANIMA\kh2-lan-out\` (run logs `lobby3-*.jsonl`, thei
 | Loopback duel, unattended lobby script (`lobby3`): Bans → Loadout → Start on both; the joiner's ban (Guard) shown by name on both and taken out of the builds; the joiner's Keyblade change built on both (`keyblade_kit`); the test vote tied, flipped and landed on the same choice on both | PASS |
 | The camp's builds under Start (Abilities with 166 AP and no banned ability, Equip with the 24 Keyblades, Items) | NOT RUN (needs a player; unattended runs do not open the camp in the lobby) |
 | Rule changes by the host in the lobby, the joiner's read-only view | NOT RUN unattended (logic tested) |
+| Arena starts (`arena2`): both Soras placed mirrored through the room's start facing each other, the camera behind the host's Sora; the start positions' symmetry and facing (`duel_arena` test) | PASS |
 | Two PCs on a real LAN | NOT RUN |
 
 ## Uncertainty
@@ -62,4 +68,4 @@ Private evidence: `C:\Users\ANIMA\kh2-lan-out\` (run logs `lobby3-*.jsonl`, thei
 ## Verdict / next
 
 Phase 3 PASS on one PC for what the unattended runs cover; the camp-made builds and the host's rule rows are
-NOT RUN with a player. Next: phase 4, the arena.
+NOT RUN with a player. Phase 4 PASS on one PC. Next: phases 5 and 6, the countdown and the match flow.

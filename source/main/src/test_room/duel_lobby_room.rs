@@ -87,6 +87,9 @@ pub(crate) struct LobbyRoom {
     saved: Option<SavedCamp>,
     /// Ability and Keyblade names (game text) by item id.
     names: HashMap<u16, Vec<u8>>,
+    /// The match put the Soras at the arena's starts: the camera turns
+    /// behind this player's Sora once it is there (where it stood before).
+    recenter: Option<[f32; 3]>,
 }
 
 impl LobbyRoom {
@@ -292,11 +295,22 @@ pub(crate) fn tick(
     room: Option<ResMut<LobbyRoom>>,
     camp: Option<ResMut<CampRes>>,
     vote: Option<Res<duel_vote::VoteRoom>>,
+    mut rig: ResMut<CameraRig>,
     mut game: ResMut<Game>,
 ) {
     let (Some(mut net), Some(mut room), Some(mut camp)) = (net, room, camp) else {
         return;
     };
+    // The camera behind Sora once the arena's start has reached him (the
+    // joiner's comes with a snapshot).
+    if let Some(before) = room.recenter {
+        let p = game.sora.player.position;
+        let moved = (p[0] - before[0]).hypot(p[2] - before[2]) > 1.;
+        if moved || net.role == Role::Host {
+            rig.recenter_queued = true;
+            room.recenter = None;
+        }
+    }
     let (net, room, camp, game) = (&mut *net, &mut *room, &mut *camp, &mut *game);
     let playing = matches!(net.status, Status::Playing);
     if !playing {
@@ -390,12 +404,18 @@ pub(crate) fn tick(
                 if game.autoplay.is_some() && net.role == Role::Host {
                     game.duel_test_vote = true;
                 }
-                // Both builds go on their Soras; the match begins.
+                // Both builds go on their Soras, both to the arena's starts;
+                // the match begins.
                 for (seat, slot) in [(0, fighter_slots::HOST), (1, fighter_slots::JOIN)] {
                     if let Some(b) = room.lobby.seats[seat].loadout.clone() {
                         apply_build(game, slot, &b);
                     }
                 }
+                let before = game.sora.player.position;
+                if net.role == Role::Host {
+                    duel_arena::place(game);
+                }
+                room.recenter = Some(before);
                 room.up = false;
                 game.sound_queue.push((SE_DECIDE, "lobby"));
             }
@@ -610,9 +630,10 @@ pub(crate) fn lines(room: &LobbyRoom, net: &DuelNet, game: &Game) -> Vec<(Vec<u8
         room.names
             .get(&id)
             .cloned()
-            .unwrap_or_else(|| text(&format!("#{id}")))
+            .unwrap_or_else(|| text(&format!("? {id}")))
     };
-    let mark = |on: bool| if on { "> " } else { "   " };
+    // The system font has no brackets or arrows: the cursor's row is gold.
+    let mark = |_on: bool| "   ";
     out.push((
         text(&format!("Duel lobby   Match {}", room.lobby.match_no + 1)),
         false,
@@ -627,7 +648,7 @@ pub(crate) fn lines(room: &LobbyRoom, net: &DuelNet, game: &Game) -> Vec<(Vec<u8
         ));
         out.push((
             text(&format!(
-                "{}Done ({} chosen)",
+                "{}Done: {} chosen",
                 mark(p.cursor == 0),
                 p.picks.len()
             )),
@@ -637,11 +658,7 @@ pub(crate) fn lines(room: &LobbyRoom, net: &DuelNet, game: &Game) -> Vec<(Vec<u8
         let pool = room.limits.ban_pool();
         for (i, &id) in pool.iter().enumerate().skip(p.scroll).take(BAN_ROWS) {
             let on = p.cursor == i + 1;
-            let x = if p.picks.contains(&id) {
-                "[X] "
-            } else {
-                "[  ] "
-            };
+            let x = if p.picks.contains(&id) { "* " } else { "   " };
             out.push((
                 joined(&[&text(mark(on)), &text(x), &ability(id)]),
                 on,
@@ -660,7 +677,7 @@ pub(crate) fn lines(room: &LobbyRoom, net: &DuelNet, game: &Game) -> Vec<(Vec<u8
             _ => Row::Time,
         };
         let on = host && cursor_row == Some(row);
-        let arrows = if on { format!("< {value} >") } else { value };
+        let arrows = if on { format!("- {value} +") } else { value };
         out.push((text(&format!("{}{label}   {arrows}", mark(on))), on, false));
     }
     if !host {

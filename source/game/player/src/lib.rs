@@ -688,6 +688,26 @@ fn wrap_angle(a: f32) -> f32 {
 }
 
 impl Player {
+    /// The actor at a place, idle: the motion, combo and physics start
+    /// over; the build, gauges and kit state stay (the duel's arena starts).
+    pub fn place(&mut self, position: Vec3, yaw: f32) {
+        let fresh = Self::new(position, yaw);
+        self.position = fresh.position;
+        self.yaw = fresh.yaw;
+        self.vertical_speed = fresh.vertical_speed;
+        self.arc = fresh.arc;
+        self.air_velocity = fresh.air_velocity;
+        self.pending_jump = fresh.pending_jump;
+        self.jump_cut = fresh.jump_cut;
+        self.action = fresh.action;
+        self.frame = fresh.frame;
+        self.blend = fresh.blend;
+        self.combo = fresh.combo;
+        self.knock = fresh.knock;
+        self.flight = fresh.flight;
+        self.dead_air = fresh.dead_air;
+    }
+
     pub fn new(position: Vec3, yaw: f32) -> Self {
         Self {
             position,
