@@ -5408,12 +5408,25 @@ pub(crate) fn spawn_room(
                 )
             })
             .collect();
+        // The HD remaster image of the region where the environment has one
+        // (already cropped); an environment with a TEXA animation keeps the
+        // original, whose texels the animation's sprites overwrite.
         let handles: Vec<_> = part
             .textures
             .iter()
             .zip(&regions)
-            .map(|(t, r)| {
-                let (w, h, px) = r.crop_rgba(t);
+            .enumerate()
+            .map(|(i, (t, r))| {
+                let animated = part.texa.iter().any(|x| x.env == t.environment_ordinal);
+                let hd = part
+                    .hd
+                    .get(i)
+                    .and_then(Option::as_ref)
+                    .filter(|_| !animated);
+                let (w, h, px) = match hd {
+                    Some(hd) => (hd.width, hd.height, hd.pixels_rgba.clone()),
+                    None => r.crop_rgba(t),
+                };
                 visual::room::region_image(w, h, px, r.wrap, images)
             })
             .collect();

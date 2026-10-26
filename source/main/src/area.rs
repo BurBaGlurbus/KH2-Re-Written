@@ -401,7 +401,12 @@ impl AreaSource {
         timer.mark("area: townspeople");
         let music = self.music_change(world, area, state.setup.bgm);
         timer.mark("area: music");
-        let room = load_room_archive(&map, None)?;
+        // The map's remaster images: its textures' (and its effects').
+        let replacements = self
+            .library
+            .read_map_replacements(&format!("map/{name}.map"))
+            .unwrap_or_default();
+        let room = load_room_archive(&map, None, &replacements)?;
         let bobs = visual::scenery::load(&map).unwrap_or_else(|e| {
             eprintln!("{name}: map objects not loaded: {e}");
             visual::scenery::LoadedBobs {
@@ -411,10 +416,6 @@ impl AreaSource {
         });
         timer.mark("area: room and map objects");
         let collision = map_collision(&map, state.setup.bg_mask)?;
-        let replacements = self
-            .library
-            .read_replacements(&format!("map/{name}.map"))
-            .unwrap_or_default();
         let pax = map_pax(&map, &replacements).map(Arc::new);
         timer.mark("area: collision and map effects");
         let save_points = self.save_points(&spawns);

@@ -56,7 +56,7 @@ pub fn read_links(
     if asset_offset
         .checked_add(bytes.len())
         .is_none_or(|end| end > 32 * 1024 * 1024)
-        || replacements.len() > 64
+        || replacements.len() > 1024
     {
         return Err(invalid("texture link source/replacement bounds"));
     }
