@@ -396,25 +396,35 @@ impl AreaSource {
         let (state, spawns, location) = chosen.ok_or("area scripts did not run")?;
         timer.mark("area: area scripts");
         let programs = location.programs;
-        let (npcs, deferred, scripts, lines) =
-            self.townspeople(code, area, &state, &spawns, &types);
-        timer.mark("area: townspeople");
-        let music = self.music_change(world, area, state.setup.bgm);
-        timer.mark("area: music");
         // The map's remaster images: its textures' (and its effects').
         let replacements = self
             .library
             .read_map_replacements(&format!("map/{name}.map"))
             .unwrap_or_default();
-        let room = load_room_archive(&map, None, &replacements)?;
-        let bobs = visual::scenery::load(&map, &replacements).unwrap_or_else(|e| {
-            eprintln!("{name}: map objects not loaded: {e}");
-            visual::scenery::LoadedBobs {
-                models: Vec::new(),
-                placements: Vec::new(),
-            }
+        // The room and its map objects decode on a thread of their own while
+        // the townspeople and music load (neither reads the other).
+        let (room, bobs, npcs, deferred, scripts, lines, music) = std::thread::scope(|s| {
+            let scenery = s.spawn(|| {
+                let room = load_room_archive(&map, None, &replacements).map_err(|e| e.to_string());
+                let bobs = visual::scenery::load(&map, &replacements).unwrap_or_else(|e| {
+                    eprintln!("{name}: map objects not loaded: {e}");
+                    visual::scenery::LoadedBobs {
+                        models: Vec::new(),
+                        placements: Vec::new(),
+                    }
+                });
+                (room, bobs)
+            });
+            let (npcs, deferred, scripts, lines) =
+                self.townspeople(code, area, &state, &spawns, &types);
+            timer.mark("area: townspeople");
+            let music = self.music_change(world, area, state.setup.bgm);
+            timer.mark("area: music");
+            let (room, bobs) = scenery.join().expect("room thread");
+            (room, bobs, npcs, deferred, scripts, lines, music)
         });
-        timer.mark("area: room and map objects");
+        let room = room?;
+        timer.mark("area: room and map objects (alongside the townspeople)");
         let collision = map_collision(&map, state.setup.bg_mask)?;
         let pax = map_pax(&map, &replacements).map(Arc::new);
         timer.mark("area: collision and map effects");
