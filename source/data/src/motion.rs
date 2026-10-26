@@ -635,6 +635,50 @@ pub struct MotionSetSelection {
     pub battle: bool,
     pub has_weapon: bool,
 }
+/// The last few motion sets' decoded bytes by index, ordinal, name hash
+/// and package offset: a load reads one set many times (Sora's kit about
+/// ten), and each read decompressed the whole set. The source checks still
+/// run on every read; `release_motion_sets` drops the bytes after a load.
+type SetKey = (String, usize, [u8; 16], u64);
+static SETS: std::sync::Mutex<Vec<(SetKey, std::sync::Arc<Vec<u8>>)>> =
+    std::sync::Mutex::new(Vec::new());
+const KEPT_SETS: usize = 3;
+
+fn set_bytes<R: std::io::Read + std::io::Seek>(
+    reader: &mut R,
+    entry: &crate::HedEntry,
+    selection: &MotionSetSelection,
+) -> io::Result<std::sync::Arc<Vec<u8>>> {
+    let key: SetKey = (
+        selection.index.clone(),
+        selection.ordinal,
+        selection.name_hash,
+        entry.package_offset,
+    );
+    if let Some((_, bytes)) = SETS
+        .lock()
+        .expect("motion set cache")
+        .iter()
+        .find(|(k, _)| *k == key)
+    {
+        return Ok(bytes.clone());
+    }
+    let bytes = std::sync::Arc::new(crate::original_payload::read_original(reader, entry)?.bytes);
+    let mut sets = SETS.lock().expect("motion set cache");
+    if !sets.iter().any(|(k, _)| *k == key) {
+        if sets.len() == KEPT_SETS {
+            sets.remove(0);
+        }
+        sets.push((key, bytes.clone()));
+    }
+    Ok(bytes)
+}
+
+/// Drops the motion sets `read_motion_ids` keeps between reads.
+pub fn release_motion_sets() {
+    SETS.lock().expect("motion set cache").clear();
+}
+
 pub fn read_motion_ids(
     source: &crate::probe_source::ProbeSource,
     selection: &MotionSetSelection,
@@ -651,8 +695,8 @@ pub fn read_motion_ids(
         .get(selection.ordinal)
         .filter(|e| e.name_hash == selection.name_hash)
         .ok_or("motion source entry mismatch")?;
-    let original = crate::original_payload::read_original(&mut checked.reader, entry)?;
-    let table = crate::bar::read_bar(&original.bytes)?;
+    let original = set_bytes(&mut checked.reader, entry, selection)?;
+    let table = crate::bar::read_bar(&original)?;
     let present = |slot: usize| {
         table
             .entries
@@ -665,7 +709,6 @@ pub fn read_motion_ids(
             .ok_or("motion ID has no populated slot")?;
         let entry = &table.entries[slot];
         let anb = original
-            .bytes
             .get(entry.offset as usize..entry.offset as usize + entry.size as usize)
             .ok_or("motion slot exceeds set")?;
         result.push(read_anb(anb, slot)?);
@@ -692,8 +735,8 @@ pub fn read_motion_ids_optional(
         .get(selection.ordinal)
         .filter(|e| e.name_hash == selection.name_hash)
         .ok_or("motion source entry mismatch")?;
-    let original = crate::original_payload::read_original(&mut checked.reader, entry)?;
-    let table = crate::bar::read_bar(&original.bytes)?;
+    let original = set_bytes(&mut checked.reader, entry, selection)?;
+    let table = crate::bar::read_bar(&original)?;
     let present = |slot: usize| {
         table
             .entries
@@ -709,7 +752,6 @@ pub fn read_motion_ids_optional(
         };
         let entry = &table.entries[slot];
         let anb = original
-            .bytes
             .get(entry.offset as usize..entry.offset as usize + entry.size as usize)
             .ok_or("motion slot exceeds set")?;
         result.push(Some(read_anb(anb, slot)?));
