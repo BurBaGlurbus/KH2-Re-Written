@@ -67,6 +67,10 @@ cargo run -p main --bin KH2RW --locked -- room '<selected-install-root>' '<priva
 | Move | WASD | Left stick |
 | Walk | Hold Left Alt | Tilt the stick slightly |
 | Camera | Mouse | Right stick |
+| Recentre the camera | Middle click, Right Alt | Right stick click |
+| First-person view | N, 3 | Back / Select |
+| Menu | M, 4 | Start |
+| Command menu | Arrows, mouse wheel, mouse side buttons (left/right) | D-pad |
 | Lock on / release | R | RB |
 | Cycle locked target | | Hold RT and tilt right stick left/right |
 | Attack | Enter, left click | A |
@@ -78,6 +82,17 @@ cargo run -p main --bin KH2RW --locked -- room '<selected-install-root>' '<priva
 | Collision overlay | F1 | |
 | Debug options, summons and Scan | F3 | |
 | Leave the test | Esc | |
+
+The keyboard and mouse follow the PC version 1:1: its default bindings, or your own from the PC version's key
+configuration (`config1525.dat` under Documents\My Games\KINGDOM HEARTS HD 1.5+2.5 ReMIX, read only), and its
+mouse-look, which works while the window is active with the cursor inside it. The Camera Speed setting scales
+mouse-look (5 is the PC version's speed).
+
+**Two windows on one PC:** `--input kbm` makes a window read only the keyboard and mouse, `--input pad` (or
+`pad:2` for the second controller) only a controller, even while another window has the focus; `--input both`
+reads everything. The launcher's Multiplayer screen has the same choice (Controls). Its default, Auto, splits
+them by itself when a duel's two players are on the same PC: the host gets the keyboard and mouse and the
+joiner the controller. Each window's title and the lobby's Match page say which it reads.
 
 In the generated arena, F3 → Summon enemies → Summoned actors lets you enable
 AI and combat for ordinary Shadow, Dusk and Soldier. Other enemies currently

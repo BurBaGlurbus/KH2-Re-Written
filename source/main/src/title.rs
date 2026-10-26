@@ -311,12 +311,15 @@ fn tick(
     keys: Res<ButtonInput<KeyCode>>,
     mouse: Res<ButtonInput<MouseButton>>,
     pads: Query<(&Gamepad, Option<&Name>)>,
+    controls: Option<Res<input::Controls>>,
     mut session: ResMut<Session>,
 ) {
     let s = &mut *session;
     s.tick += 1;
     let tick = s.tick;
-    let (data, keyboard, pad_glyph) = input::read_devices(&keys, &mouse, s.wheel, &pads);
+    let default = input::Controls::default();
+    let controls = controls.as_deref().unwrap_or(&default);
+    let (data, keyboard, pad_glyph) = input::read_devices(&keys, &mouse, s.wheel, &pads, controls);
     let pad_glyph = pad_glyph.map(usize::from);
     s.wheel = 0.;
     let mut logical = controller::logical(controller::raw(&data), controller::MODE_TITLE);

@@ -67,6 +67,9 @@ pub struct Settings {
     pub player_name: Option<String>,
     #[serde(default)]
     pub last_host: Option<String>,
+    /// The duel's devices (`--input`): auto, kbm, pad or both.
+    #[serde(default)]
+    pub duel_input: Option<String>,
 }
 
 pub fn load_settings(dir: &Path) -> Settings {
@@ -1110,6 +1113,7 @@ mod tests {
             guide_seen: true,
             player_name: Some("Riku".into()),
             last_host: Some("192.168.1.20".into()),
+            duel_input: Some("pad".into()),
         };
         save_settings(&f.0, &s).unwrap();
         assert_eq!(load_settings(&f.0), s);

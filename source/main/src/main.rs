@@ -20,6 +20,7 @@ mod launcher;
 mod load_timer;
 mod model_inspector;
 mod npcs;
+mod pc_controls;
 #[cfg(feature = "perf-diag")]
 mod perf;
 mod save_files;

@@ -281,8 +281,33 @@ pub(crate) mod fighter_slots {
 
 /// Start of every fixed step: what arrived, the other player coming and
 /// going.
+/// Whether an address is this PC's own (loopback, or one of its
+/// interfaces: binding to it works).
+pub(crate) fn is_local(ip: std::net::IpAddr) -> bool {
+    ip.is_loopback() || std::net::UdpSocket::bind((ip, 0)).is_ok()
+}
+
+/// `--input auto` (the default): two players on one PC each get their own
+/// devices, the host the keyboard and mouse and the joiner a controller
+/// [rewrite choice, T256]; otherwise each reads all of them.
+fn assign_devices(controls: &mut visual::input::Controls, role: Role, peer: SocketAddr) -> bool {
+    use visual::input::{Assign, Devices};
+    if controls.wanted != Assign::Auto {
+        return false;
+    }
+    let devices = match (is_local(peer.ip()), role) {
+        (true, Role::Host) => Devices::KeyboardMouse,
+        (true, Role::Join) => Devices::Pad(None),
+        (false, _) => Devices::Both,
+    };
+    let changed = controls.devices != devices;
+    controls.devices = devices;
+    changed
+}
+
 pub(crate) fn begin(
     net: Option<ResMut<DuelNet>>,
+    mut controls: ResMut<visual::input::Controls>,
     mut game: ResMut<Game>,
     mut loadout: ResMut<duel_loadout::DuelLoadout>,
 ) {
@@ -296,6 +321,11 @@ pub(crate) fn begin(
         let tick = game.tick;
         match event {
             NetEvent::Connected(peer) => {
+                if assign_devices(&mut controls, net.role, peer.addr) {
+                    let devices = controls.devices.label();
+                    game.event(serde_json::json!({"event":"input_devices","tick":tick,
+                        "devices":devices}));
+                }
                 net.peer = Some(peer.name.clone());
                 net.status = Status::Playing;
                 net.inputs.clear();

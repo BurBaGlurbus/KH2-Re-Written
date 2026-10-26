@@ -91,6 +91,8 @@ enum Action {
     JoinAddress,
     /// Type the name the other player sees.
     EditName,
+    /// The next devices choice for duels (two windows on one PC).
+    CycleInput,
     Quit,
 }
 
@@ -338,6 +340,8 @@ impl Launcher {
                 items.extend([
                     Item::new("Join by address", Action::JoinAddress).detail(address),
                     Item::new("Name", Action::EditName).detail(name),
+                    Item::new("Controls", Action::CycleInput)
+                        .detail(input_label(self.duel_input())),
                     Item::new("Back", Action::UseFolder(b.folder.clone())),
                 ]);
                 items
@@ -844,12 +848,45 @@ fn act(l: &mut Launcher, action: Action, exit: &mut MessageWriter<AppExit>) {
             let text = l.player_name();
             l.edit(Field::Name, text);
         }
+        Action::CycleInput => {
+            let at = INPUT_CHOICES
+                .iter()
+                .position(|&c| c == l.duel_input())
+                .unwrap_or(0);
+            l.settings.duel_input = Some(INPUT_CHOICES[(at + 1) % INPUT_CHOICES.len()].into());
+            if let Err(e) = install::save_settings(&l.dir, &l.settings) {
+                eprintln!("Launcher settings not saved: {e}");
+            }
+            l.refresh();
+        }
+    }
+}
+
+/// The duel's device choices (the room's `--input`), in the order Controls
+/// cycles them.
+const INPUT_CHOICES: [&str; 4] = ["auto", "kbm", "pad", "both"];
+
+fn input_label(choice: &str) -> &'static str {
+    match choice {
+        "kbm" => "Keyboard and mouse",
+        "pad" => "Controller",
+        "both" => "Keyboard, mouse and controller",
+        _ => "Auto: on one PC, the host keyboard and the joiner a controller",
     }
 }
 
 impl Launcher {
     /// The name the other player sees: the saved one, else the Windows
     /// user name.
+    /// The duel's devices as saved (auto by default).
+    fn duel_input(&self) -> &str {
+        self.settings
+            .duel_input
+            .as_deref()
+            .filter(|c| INPUT_CHOICES.contains(c))
+            .unwrap_or("auto")
+    }
+
     fn player_name(&self) -> String {
         self.settings
             .player_name
@@ -951,6 +988,8 @@ fn duel(l: &mut Launcher, session: Vec<String>) {
         return;
     };
     let b = b.clone();
+    let mut session = session;
+    session.extend(["--input".into(), l.duel_input().to_owned()]);
     let started = install::duel_args(&l.dir, &b, &session).and_then(|args| {
         let exe = std::env::current_exe().map_err(|e| e.to_string())?;
         spawn("Multiplayer".into(), exe, args)

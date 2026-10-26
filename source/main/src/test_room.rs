@@ -1529,11 +1529,11 @@ struct Hud {
 struct CameraRig {
     camera: FollowCamera,
     previous_position: [f32; 3],
-    /// Right-drag turn not yet consumed by a tick, in manual-turn units.
-    pending_turn: f32,
+    /// Mouse motion (counts) not yet taken by a tick, and the stick's
+    /// multiplier for it (input::mouse_look).
+    mouse_counts: Vec2,
+    mouse_gain: f32,
     recenter_queued: bool,
-    /// Mouse-drag look not yet consumed by a tick (first person's pitch).
-    pending_look: f32,
     /// First person last tick, and Sora's fade ramp (`actor+0xa10`: value and
     /// step, FUN_1403b7810) with its end.
     was_first_person: bool,
@@ -6883,13 +6883,14 @@ fn read_pad(
     lobby: Option<Res<duel_lobby_room::LobbyRoom>>,
     vote: Option<Res<duel_vote::VoteRoom>>,
     duel_match: Option<Res<duel_match_room::MatchRoom>>,
+    controls: Res<input::Controls>,
     mut game: ResMut<Game>,
     mut targeting: ResMut<enemy_target::Targeting>,
 ) {
     if game.autoplay.is_some() {
         return;
     }
-    let (data, _, _) = input::read_devices(&keys, &mouse, 0., &pads);
+    let (data, _, _) = input::read_devices(&keys, &mouse, 0., &pads, &controls);
     let menu = camp.is_some_and(|c| c.menu_up())
         || game_over.is_some_and(|g| g.menu_up())
         || lobby.is_some_and(|l| l.menu_up())
@@ -8206,6 +8207,7 @@ fn simulate(
     let mut turn = 0f32;
     let mut zoom = 0f32;
     let mut right_stick = 0f32;
+    let mut mouse_pitch = 0f32;
     if game.autoplay.is_some() {
         // Unattended runs orbit 180 degrees to check Sora from the front.
         if (660..720).contains(&tick) && !game.sephiroth_tour {
@@ -8227,10 +8229,13 @@ fn simulate(
         if game.pad.pressed & 0x2_0000 != 0 {
             rig.recenter_queued = true;
         }
-        let pending = rig.pending_turn.clamp(-1., 1.);
-        if turn == 0. && pending != 0. {
-            turn = pending;
-            rig.pending_turn -= pending;
+        // Mouse-look takes the right stick for a frame it moves in
+        // (FUN_14039c180, FUN_140166100).
+        if let Some(m) = input::mouse_look(std::mem::take(&mut rig.mouse_counts), rig.mouse_gain) {
+            turn = m.turn;
+            zoom = m.height;
+            right_stick = m.turn.abs().max(m.height.abs()).min(1.);
+            mouse_pitch = m.height;
         }
     }
     let mut camera = camera_input(
@@ -8251,10 +8256,8 @@ fn simulate(
         let [_, y, magnitude] = controller::analog(game.pad_data.right);
         camera.look = y * magnitude;
     }
-    let pending_look = rig.pending_look.clamp(-1., 1.);
-    if camera.look == 0. && pending_look != 0. {
-        camera.look = pending_look;
-        rig.pending_look -= pending_look;
+    if mouse_pitch != 0. {
+        camera.look = mouse_pitch;
     }
     if rig.camera.first_person
         && !game.sora.player.dead()
@@ -10855,24 +10858,28 @@ fn first_person_fade(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn camera_control(
     motion: Res<AccumulatedMouseMotion>,
+    windows: Query<&Window, With<bevy::window::PrimaryWindow>>,
+    controls: Res<input::Controls>,
     mut rig: ResMut<CameraRig>,
     mut camera: Query<(&mut Transform, &mut Projection), CameraOnly>,
     talk: Option<Res<Talk>>,
     settings: Res<settings_room::SettingsRes>,
     game: Res<Game>,
 ) {
-    // Mouse-look turns the camera (the PC layer feeds mouse motion to the
-    // right stick; its sensitivity is unresolved): 0.1 at Camera Speed 5.
-    let speed = settings.current.camera_factor();
-    rig.pending_turn = (rig.pending_turn + motion.delta.x * speed).clamp(-30., 30.);
-    // First person's pitch takes the vertical drag (up looks up).
-    if rig.camera.first_person {
-        rig.pending_look = (rig.pending_look + motion.delta.y * speed).clamp(-30., 30.);
-    } else {
-        rig.pending_look = 0.;
+    // Mouse-look (input::mouse_look): the PC version reads the mouse while
+    // its window is active with the cursor inside (FUN_140105810), and not
+    // in an instance given a controller alone. The room's Camera Speed
+    // scales it, 5 as the PC version.
+    let inside = windows
+        .single()
+        .is_ok_and(|w| w.focused && w.cursor_position().is_some());
+    if inside && controls.devices.keyboard() {
+        rig.mouse_counts += motion.delta;
     }
+    rig.mouse_gain = controls.bindings.mouse_gain() * settings.current.camera_factor();
     // The party-animation tour frames Donald and Goofy from the follow
     // camera's side, close enough to see their motions.
     let party_view = (game.party_anim_tour && game.party.len() >= 2).then(|| {
@@ -10934,6 +10941,26 @@ fn camera_control(
             p.fov = fov;
         }
     }
+}
+
+/// The devices this instance reads in its window's title, when they are
+/// not all of them (two windows on one PC).
+fn show_devices(
+    controls: Res<input::Controls>,
+    mut windows: Query<&mut Window, With<bevy::window::PrimaryWindow>>,
+    mut base: Local<Option<String>>,
+) {
+    if !controls.is_changed() {
+        return;
+    }
+    let Ok(mut w) = windows.single_mut() else {
+        return;
+    };
+    let base = base.get_or_insert_with(|| w.title.clone());
+    w.title = match controls.devices {
+        input::Devices::Both => base.clone(),
+        d => format!("[{}] {base}", d.label()),
+    };
 }
 
 /// The skateboard's fixed step: start a ride on the room's collision, step
@@ -12039,20 +12066,28 @@ fn camp_tick(
     mut images: ResMut<Assets<Image>>,
     mut settings: ResMut<settings_room::SettingsRes>,
     debug: Res<debug_menu::DebugMenu>,
+    controls: Res<input::Controls>,
 ) {
     let Some(mut c) = camp else { return };
     let c = &mut *c;
-    let (data, keyboard, glyph) = input::read_devices(&keys, &mouse, 0., &pads);
+    let (data, keyboard, glyph) = input::read_devices(&keys, &mouse, 0., &pads, &controls);
     if keyboard {
         c.keyboard_last = true;
     } else if glyph.is_some() {
         c.keyboard_last = false;
     }
-    let g = if c.keyboard_last {
+    let mut g = if c.keyboard_last {
         0
     } else {
         glyph.map_or(c.glyph, usize::from)
     };
+    // A window given a controller alone shows a pad's glyphs from the start.
+    if g == 0
+        && let Some(f) = input::pad_family(&pads, &controls)
+    {
+        c.keyboard_last = false;
+        g = usize::from(f);
+    }
     if c.art[g].is_some() {
         c.glyph = g;
     }
@@ -13530,6 +13565,7 @@ fn run(mut args: Vec<PathBuf>) -> Result<AppExit, Box<dyn std::error::Error>> {
     let mut net_name: Option<String> = None;
     let mut net_sim = net::link::Conditions::default();
     let mut net_overlay = false;
+    let mut input_assign = input::Assign::Auto;
     let mut duel_rules = duel_rules::MatchRules::default();
     let mut ability_tour = false;
     let mut gear_tour = false;
@@ -13622,6 +13658,14 @@ fn run(mut args: Vec<PathBuf>) -> Result<AppExit, Box<dyn std::error::Error>> {
                         .ok_or("name absent")?
                         .to_owned(),
                 );
+            }
+            Some("--input") => {
+                let v = options
+                    .next()
+                    .and_then(|v| v.to_str())
+                    .ok_or("input devices absent")?;
+                input_assign =
+                    input::Assign::parse(v).ok_or("--input takes auto, kbm, pad, pad:N or both")?;
             }
             Some("--net-sim") => {
                 net_sim = duel_net::parse_conditions(
@@ -14897,9 +14941,9 @@ fn run(mut args: Vec<PathBuf>) -> Result<AppExit, Box<dyn std::error::Error>> {
             ),
         ),
         previous_position: game.sora.player.position,
-        pending_turn: 0.,
+        mouse_counts: Vec2::ZERO,
+        mouse_gain: 1.,
         recenter_queued: false,
-        pending_look: 0.,
         was_first_person: false,
         was_aiming: false,
         fade: FadeRamp::SHOWN,
@@ -15015,6 +15059,10 @@ fn run(mut args: Vec<PathBuf>) -> Result<AppExit, Box<dyn std::error::Error>> {
         );
     }
     app.insert_resource(duel_loadout);
+    // The PC version's key bindings; unattended runs keep the exe's
+    // defaults so they read the same on any PC.
+    app.insert_resource(crate::pc_controls::load(input_assign, duel_unattended));
+    app.add_systems(Update, show_devices);
     Ok(app
         .insert_resource(game)
         .insert_resource(Startup {

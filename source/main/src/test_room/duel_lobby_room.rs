@@ -121,6 +121,8 @@ pub(crate) struct LobbyRoom {
     kept_applied: bool,
     /// The buttons the help lines name (the device last used).
     prompts: duel_camp::Prompts,
+    /// The devices this window reads, when not all of them.
+    devices: Option<String>,
 }
 
 impl LobbyRoom {
@@ -372,6 +374,7 @@ fn intend(room: &mut LobbyRoom, net: &mut DuelNet, game: &mut Game, intent: Inte
 }
 
 /// One fixed step of the lobby: messages, stage changes, the camp.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn tick(
     net: Option<ResMut<DuelNet>>,
     room: Option<ResMut<LobbyRoom>>,
@@ -379,11 +382,18 @@ pub(crate) fn tick(
     mut rig: ResMut<CameraRig>,
     mut exits: MessageWriter<AppExit>,
     mut prefs: Option<ResMut<DuelPrefs>>,
+    controls: Res<visual::input::Controls>,
     mut game: ResMut<Game>,
 ) {
     let (Some(mut net), Some(mut room), Some(mut camp)) = (net, room, camp) else {
         return;
     };
+    room.devices = (controls.devices != visual::input::Devices::Both).then(|| {
+        let label = controls.devices.label();
+        let mut c = label.chars();
+        c.next()
+            .map_or(String::new(), |f| f.to_uppercase().chain(c).collect())
+    });
     // The camera behind Sora once the arena's start has reached him (the
     // joiner's comes with a snapshot).
     if let Some(before) = room.recenter {
@@ -980,6 +990,17 @@ fn pages(room: &LobbyRoom, net: &DuelNet, game: &Game, ap: i32) -> Pages {
         true,
     ));
     k.push(RowKind::Info);
+    // Two windows on one PC: what this one reads.
+    if let Some(devices) = &room.devices {
+        r.push(row(
+            "Controls",
+            vec![text(devices)],
+            0,
+            help("This window reads only these; the other window has the rest."),
+            true,
+        ));
+        k.push(RowKind::Info);
+    }
     rows.push(r);
     kinds.push(k);
     // Bans: two choices each, for both players; then shown.
