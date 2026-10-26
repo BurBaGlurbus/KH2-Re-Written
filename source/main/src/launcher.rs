@@ -70,6 +70,8 @@ enum Action {
     Multiplayer,
     /// Host a duel and wait for a player.
     HostDuel,
+    /// Join a host the LAN search found (index into the found list).
+    JoinFound(usize),
     /// Type the host's address, then join it.
     JoinAddress,
     /// Type the name the other player sees.
@@ -181,10 +183,30 @@ struct Launcher {
     paint: Option<Paint>,
     /// The field being typed into and its text so far.
     editing: Option<(Field, String)>,
+    /// The Multiplayer screen's LAN search and the hosts it found.
+    browser: Option<net::Browser>,
+    found: Vec<net::Found>,
+    /// This executable's identity (hosts with another are not joinable).
+    build: Option<[u8; 32]>,
 }
 
 impl Launcher {
     fn go(&mut self, screen: Screen) {
+        // The LAN search runs only on the Multiplayer screen.
+        if matches!(screen, Screen::Multiplayer(_)) {
+            if self.browser.is_none() {
+                let build = *self
+                    .build
+                    .get_or_insert_with(|| crate::test_room::build_identity().unwrap_or([0; 32]));
+                self.browser = net::Browser::new(net::DEFAULT_PORT, build)
+                    .inspect_err(|e| eprintln!("LAN search unavailable: {e}"))
+                    .ok();
+            }
+        } else {
+            self.browser = None;
+            self.found.clear();
+            self.editing = None;
+        }
         self.screen = screen;
         self.items = self.build_items();
         self.cursor = self
@@ -269,13 +291,38 @@ impl Launcher {
                         .clone()
                         .unwrap_or_else(|| "Type the host's IP address".into())
                 });
-                vec![
+                let mut items = vec![
                     Item::new("Host a duel", Action::HostDuel)
                         .detail("Wait for a player on this network"),
+                ];
+                for (i, host) in self.found.iter().enumerate() {
+                    let item =
+                        Item::new(format!("Join {}", host.name), Action::JoinFound(i)).tag("LAN");
+                    items.push(if !host.compatible {
+                        item.detail(format!(
+                            "{}: another version of the launcher",
+                            host.addr.ip()
+                        ))
+                        .disabled()
+                    } else if !host.open {
+                        item.detail(format!("{}: already in a duel", host.addr.ip()))
+                            .disabled()
+                    } else {
+                        item.detail(host.addr.ip().to_string())
+                    });
+                }
+                if self.found.is_empty() && self.browser.is_some() {
+                    items.push(
+                        Item::new("Looking for hosts on this network...", Action::Multiplayer)
+                            .disabled(),
+                    );
+                }
+                items.extend([
                     Item::new("Join by address", Action::JoinAddress).detail(address),
                     Item::new("Name", Action::EditName).detail(name),
                     Item::new("Back", Action::UseFolder(b.folder.clone())),
-                ]
+                ]);
+                items
             }
             Screen::Guide(_) => vec![Item::new("Continue", Action::CloseGuide)],
             Screen::Problem { retry, .. } => {
@@ -753,6 +800,13 @@ fn act(l: &mut Launcher, action: Action, exit: &mut MessageWriter<AppExit>) {
             let name = l.player_name();
             duel(l, vec!["--host".into(), "--name".into(), name]);
         }
+        Action::JoinFound(i) => {
+            if let Some(host) = l.found.get(i) {
+                let address = host.addr.to_string();
+                let name = l.player_name();
+                duel(l, vec!["--join".into(), address, "--name".into(), name]);
+            }
+        }
         Action::JoinAddress => {
             let text = l.settings.last_host.clone().unwrap_or_default();
             l.edit(Field::Address, text);
@@ -962,6 +1016,21 @@ fn checked(l: &mut Launcher, result: Result<Bound, String>, folder: &Path) {
     l.go(Screen::Tests(b));
 }
 
+/// Developer check: with `KH2RW_LAUNCHER_SHOT` naming a PNG, F12 saves a
+/// picture of the launcher there (a window capture of the GPU surface comes
+/// out black).
+fn screenshot(mut commands: Commands, keys: Res<ButtonInput<KeyCode>>) {
+    if keys.just_pressed(KeyCode::F12)
+        && let Some(path) = std::env::var_os("KH2RW_LAUNCHER_SHOT")
+    {
+        commands
+            .spawn(bevy::render::view::screenshot::Screenshot::primary_window())
+            .observe(bevy::render::view::screenshot::save_to_disk(PathBuf::from(
+                path,
+            )));
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn update(
     mut l: ResMut<Launcher>,
@@ -1105,6 +1174,20 @@ fn update(
         checked(l, result, &folder);
     }
 
+    // The LAN search: new or vanished hosts rebuild the list.
+    if let Some(browser) = l.browser.as_mut() {
+        browser.update();
+        // (When each host was last heard is not part of the rows.)
+        let rows = |f: &[net::Found]| -> Vec<_> {
+            f.iter()
+                .map(|h| (h.name.clone(), h.addr, h.compatible, h.open))
+                .collect()
+        };
+        if rows(browser.found()) != rows(&l.found) {
+            l.found = browser.found().to_vec();
+            l.refresh();
+        }
+    }
     // A field being typed into takes the keyboard.
     if type_text(l, &keys, &mut typed) {
         return;
@@ -1605,6 +1688,9 @@ pub fn main() -> std::process::ExitCode {
             mouse: None,
             paint: None,
             editing: None,
+            browser: None,
+            found: Vec::new(),
+            build: None,
         })
         .insert_resource(ClearColor(Color::BLACK))
         .insert_resource(WinitSettings::game())
@@ -1620,7 +1706,7 @@ pub fn main() -> std::process::ExitCode {
             order: 0,
             overlay: false,
         })
-        .add_systems(Update, (update, draw).chain())
+        .add_systems(Update, ((update, draw).chain(), screenshot))
         .run();
     std::process::ExitCode::SUCCESS
 }

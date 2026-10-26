@@ -88,6 +88,8 @@ mod enemy_script;
 mod enemy_target;
 mod enemy_tour;
 mod fighter;
+/// The executable's identity, which the launcher's LAN search compares.
+pub(crate) use duel_net::build_identity;
 use fighter::{Fighter, Vitals};
 mod game_over;
 mod gear;

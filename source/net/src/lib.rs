@@ -10,7 +10,7 @@ pub mod link;
 pub mod session;
 pub mod wire;
 
-pub use session::{Event, Peer, Role, Session, SessionConfig, Stats};
+pub use session::{Browser, Event, Found, Peer, Role, Session, SessionConfig, Stats};
 
 /// The UDP port a host listens on unless another is configured.
 pub const DEFAULT_PORT: u16 = 47_620;
