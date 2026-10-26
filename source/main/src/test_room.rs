@@ -73,6 +73,7 @@ pub(crate) use debug_menu::DebugMenu;
 mod deck_tour;
 mod drive_fx;
 mod drive_room;
+mod duel_hits;
 mod enemy_battle;
 mod enemy_battle_hits;
 mod enemy_battle_tour;
@@ -1091,6 +1092,11 @@ struct Game {
     rival_kit: Option<Arc<rival::RivalKit>>,
     /// `--rival-script`: a scripted rival from the first tick.
     rival_script: bool,
+    /// A duel runs (a LAN session or `--rival-script`): the pause menu,
+    /// the debug menu and game over no longer stop the field.
+    duel: bool,
+    /// The room Sora's slot (0 the host's, 1 the joiner's).
+    local_slot: u8,
     poses: HashMap<(Action, bool), usize>,
     clip_poses: Arc<Vec<ClipPoses>>,
     part_indices: Vec<Vec<u32>>,
@@ -11404,10 +11410,12 @@ fn field_running(
     game_over: Option<Res<game_over::GameOverRes>>,
     game: Res<Game>,
 ) -> bool {
-    camp.is_none_or(|c| !c.menu_up())
-        && !debug.open
-        && game_over.is_none_or(|g| g.field_runs())
-        && game.field_step
+    // A duel never pauses: the other player keeps playing.
+    game.field_step
+        && (game.duel
+            || camp.is_none_or(|c| !c.menu_up())
+                && !debug.open
+                && game_over.is_none_or(|g| g.field_runs()))
 }
 
 /// START (logical 0x2 in the field's pad mode) opens the camp
@@ -11811,7 +11819,7 @@ fn camp_tick(
             }
             game.event(serde_json::json!({"event":"camp_open","tick":tick}));
         }
-    } else if c.curtain.is_none() && c.pad.pressed & 0x2 != 0 && !game.talking {
+    } else if c.curtain.is_none() && c.pad.pressed & 0x2 != 0 && !game.talking && !game.duel {
         let (menu, s) = Camp::open(
             layout,
             camp_data(c, panels, game.items.as_ref(), &settings, &side),
@@ -13273,6 +13281,7 @@ fn run(mut args: Vec<PathBuf>) -> Result<AppExit, Box<dyn std::error::Error>> {
         poses: poses.clone(),
         clip_poses: base_clip_poses.clone(),
         target_shape: loaded.kit.target_shape,
+        body: loaded.kit.body.clone(),
         target_radius: loaded.kit.target_radius,
     });
     let spell_fx_resource =
@@ -13315,6 +13324,8 @@ fn run(mut args: Vec<PathBuf>) -> Result<AppExit, Box<dyn std::error::Error>> {
         rivals: Vec::new(),
         rival_kit: Some(rival_kit),
         rival_script,
+        duel: rival_script,
+        local_slot: 0,
         poses,
         clip_poses: base_clip_poses,
         part_indices: Vec::new(),
@@ -13985,7 +13996,7 @@ fn run(mut args: Vec<PathBuf>) -> Result<AppExit, Box<dyn std::error::Error>> {
                     // The command manager's reaction search and Triangle
                     // (FUN_1403b2340) run before Sora's update.
                     reaction_command::tick,
-                    (simulate, rival::tick).chain(),
+                    (simulate, rival::tick, duel_hits::tick).chain(),
                     summon::tick,
                     skate_tick,
                     area_tick,

@@ -15,6 +15,10 @@ pub(crate) struct RivalKit {
     pub poses: HashMap<(Action, bool), usize>,
     pub clip_poses: Arc<Vec<ClipPoses>>,
     pub target_shape: Option<object_collision::Entry>,
+    /// HIT spheres (bone, offset, radius, high). The Keyblade's attack
+    /// spheres are the room's (the battle runtime's), as both hold the
+    /// room's Keyblade.
+    pub body: Vec<(usize, Vec3, f32, bool)>,
     pub target_radius: f32,
 }
 

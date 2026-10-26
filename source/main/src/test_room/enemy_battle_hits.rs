@@ -1115,6 +1115,9 @@ pub fn retire(game: &mut Game, actors: &mut [GalleryActor], tick: u64) {
     for id in expired {
         rt.enemy.record.clear_seen(id);
         game.sora.vitals.record.clear_seen(id);
+        for r in &mut game.rivals {
+            r.fighter.vitals.record.clear_seen(id);
+        }
         for m in &mut game.party {
             m.record.clear_seen(id);
         }

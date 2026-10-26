@@ -406,6 +406,10 @@ pub fn tick(
     mut gallery: ResMut<enemy_gallery::EnemyGallery>,
 ) {
     let Some(mut res) = res else { return };
+    // A duel has no game over: a knocked-out Sora stands up again.
+    if game.duel {
+        return;
+    }
     let res = &mut *res;
     // The capture clock runs from the fall on, past the reload.
     if res.rt.is_some() || res.real > 0 {
