@@ -403,6 +403,8 @@ enum Action {
     DuelDamage,
     /// Steps the link simulator through its presets.
     CycleNetSimulator,
+    /// The host puts a test question to both players (the vote system).
+    TestVote,
     RemoveActor,
     ClearActors,
     Warp(u8, u8),
@@ -488,6 +490,7 @@ impl Action {
             Self::CycleNetSimulator => {
                 "Adds latency and loss to what this game sends. Set both games for a round trip."
             }
+            Self::TestVote => "Both players vote; different answers go to a coin flip.",
             Self::RemoveActor => "Remove this enemy from the room.",
             Self::ClearActors => "Remove every summoned enemy.",
             Self::Warp(..) => "Warp to this room.",
@@ -1173,6 +1176,11 @@ fn rows(
                         (game.duel || !game.rivals.is_empty()) && !game.net_client,
                     )
                 },
+                row(
+                    "Test vote",
+                    Action::TestVote,
+                    game.duel && !game.net_client && !game.rivals.is_empty(),
+                ),
                 row(
                     "Scripted rival Sora",
                     Action::SpawnRival,
@@ -1897,9 +1905,9 @@ fn act(
             None
         }
         Action::DuelDamage => {
-            let (lo, hi) = duel_loadout::DAMAGE_RANGE;
+            let (lo, hi) = duel_rules::DAMAGE_RANGE;
             let d = &mut game.duel_rules.damage;
-            *d = (*d + step as f32 * duel_loadout::DAMAGE_STEP).clamp(lo, hi);
+            *d = (*d + step as f32 * duel_rules::DAMAGE_STEP).clamp(lo, hi);
             Some(format!("Duel damage x{}", *d))
         }
         Action::ToggleNetOverlay => {
@@ -1915,6 +1923,11 @@ fn act(
                 "Simulated network: {}",
                 duel_net::SIMULATED[next].0
             ))
+        }
+        Action::TestVote => {
+            game.duel_test_vote = true;
+            menu.open = false;
+            None
         }
         Action::SpawnRival => {
             rival::spawn_scripted(game);

@@ -24,44 +24,6 @@ const DUEL_STOCK: u8 = 99;
 const BASE_ITEM_SLOTS: usize = 2;
 const MAX_ITEM_SLOTS: usize = 8;
 
-/// The duel's rules (the host's; the joiner shows them). Phase 3's lobby
-/// sets and votes on them; for now `--duel-damage` and the host's F3 menu.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub(crate) struct MatchRules {
-    /// What every Sora-against-Sora hit's damage is multiplied by, after
-    /// the game's own formula (attacks, magic and forms alike).
-    pub damage: f32,
-}
-
-/// The default damage rule [duel choice]. Measured with the scripted rival
-/// swinging the Kingdom Key at an idle Sora at level 99 (KH2RW_RIVAL_BENCH,
-/// T241): 0.46 hits landed a second at 2 damage, so 170 HP lasts about
-/// 185 s at x1. x3 makes that about a minute, and 30-45 s for players who
-/// land more of their combos.
-pub(crate) const DEFAULT_DAMAGE: f32 = 3.;
-/// The F3 menu's step and the range it allows.
-pub(crate) const DAMAGE_STEP: f32 = 0.5;
-pub(crate) const DAMAGE_RANGE: (f32, f32) = (0.5, 10.);
-
-impl Default for MatchRules {
-    fn default() -> Self {
-        MatchRules {
-            damage: DEFAULT_DAMAGE,
-        }
-    }
-}
-
-impl MatchRules {
-    /// A hit's damage under the rules: the formula's number times the
-    /// multiplier, rounded; a hit that did damage still does at least 1.
-    pub(crate) fn damage(&self, formula: i32) -> i32 {
-        if formula <= 0 {
-            return formula;
-        }
-        ((formula as f32 * self.damage).round() as i32).max(1)
-    }
-}
-
 /// What the duel changed, to be put back when it ends.
 pub(crate) struct Saved {
     player: Player,
@@ -288,17 +250,6 @@ pub(crate) fn restore(game: &mut Game, loadout: &mut DuelLoadout) {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn the_damage_rule_scales_and_rounds() {
-        let rules = MatchRules { damage: 2.5 };
-        assert_eq!(rules.damage(2), 5);
-        assert_eq!(rules.damage(3), 8);
-        assert_eq!(rules.damage(0), 0);
-        let low = MatchRules { damage: 0.5 };
-        assert_eq!(low.damage(1), 1, "a hit that did damage still does some");
-        assert_eq!(MatchRules { damage: 1. }.damage(7), 7);
-    }
 
     #[test]
     fn learning_fills_the_first_empty_slot_once() {

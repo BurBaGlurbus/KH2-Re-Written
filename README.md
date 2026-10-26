@@ -133,13 +133,27 @@ command goes to the host with its buttons, the host runs it, and the effects it 
 naming the effect file, so each side draws them from its own install. Esc leaves; the other side sees "Opponent
 left" (or a timeout after five seconds) and the host waits for the next player.
 
+**The lobby:** when the other player joins, a list opens over the arena (Up/Down, Decide, Back):
+
+1. The host sets the rules with Left/Right: the mode (*One KO*, *Best of 3*, *Time limit*, where the larger
+   share of HP left wins at time up), the damage multiplier and the time limit. The joiner sees them.
+2. Each player bans up to two abilities for this match (*Choose bans*, or *Done* with none). A ban takes the
+   ability away from both players; both lists stay on screen.
+3. Each player presses **Start** for the camp: *Abilities* (up to 166 AP, level 99 with every AP Boost the game
+   allows), *Equip* (any of the 24 Keyblades, each with its own stats and ability) and *Items*. The host checks
+   every build.
+4. *Ready* on both starts the match; the other player's status shows below. A rule change takes Ready back.
+
+F3 → Sora → Duel → *Test vote* (host) tries the vote both players will use for later choices: different answers
+go to a coin flip on the host that both screens show.
+
 **The duel build:** for a session both Soras fight at level 99 with every bonus level's HP, MP, Drive bars,
 item slots and abilities, the top level of every spell, Valor, Wisdom, Master and Final Form at their level cap
 (Limit Form is off), a full Drive gauge, and 99 of every consumable (Potion to Megalixir; the stat boosts, Tents
 and Drive Recoveries are left out). Nothing is read from or written to a save; the room's own build comes back
 when the session ends. Damage between the two Soras is the game's formula times the host's damage rule (×3 by
 default: `--duel-damage N` or F3 → Sora → Duel). The other Sora's HP stays on the target gauge (top right) for
-the whole duel.
+the whole duel. The lobby's Keyblade, abilities and item slots go on top of it.
 
 **Known limitations:**
 
@@ -147,7 +161,8 @@ the whole duel.
 - The other player's weapon trail is not drawn yet; Wisdom Form's shots show their effect on the host only.
 - The joiner sees its own Sora about one round trip late (one or two ticks on home Wi-Fi): there is no
   prediction yet. The host has no delay.
-- A knocked-out Sora stands up after two seconds (the test room's rule). There is no match result yet.
+- A knocked-out Sora stands up after two seconds (the test room's rule). There is no match result yet: the
+  modes are chosen in the lobby but the countdown, rounds, time limit and results are still to come.
 - LAN only: no internet play. Discovery uses a broadcast that guest networks and some routers block; join by
   address then.
 

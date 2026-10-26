@@ -5,6 +5,7 @@
 //!
 //! Only what drawing and the HUD need is sent; the host alone simulates.
 
+use super::duel_rules::MatchRules;
 use super::rival::{Command, RivalPad};
 use net::wire::{Reader, Writer};
 use player::Action;
@@ -13,6 +14,14 @@ const INPUT: u8 = 1;
 const SNAPSHOT: u8 = 2;
 const EVENTS: u8 = 3;
 const RULES: u8 = 4;
+/// The lobby (host to joiner), a joiner's lobby intent, and the host's
+/// refusal of one (duel_lobby.rs).
+pub(crate) const LOBBY: u8 = 5;
+pub(crate) const INTENT: u8 = 6;
+pub(crate) const REFUSED: u8 = 7;
+/// A vote (host to joiner) and a joiner's ballot (duel_vote.rs).
+pub(crate) const VOTE: u8 = 8;
+pub(crate) const BALLOT: u8 = 9;
 
 /// Ticks of buttons each input message repeats.
 pub(crate) const INPUT_REDUNDANCY: usize = 6;
@@ -267,21 +276,26 @@ pub(crate) fn decode_snapshot(bytes: &[u8]) -> Option<Snapshot> {
 }
 
 /// The host's match rules (reliable, on connecting and on every change).
-pub(crate) fn encode_rules(rules: &super::duel_loadout::MatchRules) -> Vec<u8> {
+pub(crate) fn encode_rules(rules: &MatchRules) -> Vec<u8> {
     let mut w = Writer::default();
     w.u8(RULES);
+    w.u8(rules.mode_code());
     w.f32(rules.damage);
+    w.u16(rules.time_limit);
     w.finish()
 }
 
-pub(crate) fn decode_rules(bytes: &[u8]) -> Option<super::duel_loadout::MatchRules> {
+pub(crate) fn decode_rules(bytes: &[u8]) -> Option<MatchRules> {
     let mut r = Reader::new(bytes);
     if r.u8()? != RULES {
         return None;
     }
-    let damage = r.f32()?;
-    (r.is_empty() && damage.is_finite() && damage > 0.)
-        .then_some(super::duel_loadout::MatchRules { damage })
+    let rules = MatchRules {
+        mode: MatchRules::mode_from(r.u8()?)?,
+        damage: r.f32()?,
+        time_limit: r.u16()?,
+    };
+    (r.is_empty() && rules.valid()).then_some(rules)
 }
 
 /// What the joiner shows of a host-side moment: sounds and sparks are
@@ -678,11 +692,15 @@ mod tests {
 
     #[test]
     fn rules_round_trip() {
-        let rules = super::super::duel_loadout::MatchRules { damage: 3.5 };
+        let rules = MatchRules {
+            mode: super::super::duel_rules::Mode::Timed,
+            damage: 3.5,
+            time_limit: 90,
+        };
         assert_eq!(decode_rules(&encode_rules(&rules)), Some(rules));
         assert_eq!(decode_rules(&[RULES]), None);
         let mut nan = encode_rules(&rules);
-        nan[1..5].copy_from_slice(&f32::NAN.to_le_bytes());
+        nan[2..6].copy_from_slice(&f32::NAN.to_le_bytes());
         assert_eq!(decode_rules(&nan), None);
     }
 

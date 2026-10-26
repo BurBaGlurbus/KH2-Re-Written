@@ -400,7 +400,7 @@ fn set_started(game: &mut Game, who: Who, tick: u64) {
 
 fn land(
     game: &mut Game,
-    rules: duel_loadout::MatchRules,
+    rules: duel_rules::MatchRules,
     kit: &rival::RivalKit,
     sstm: actor_physics::Sstm,
     facts: &[(Vec3, Vec3, u8)],

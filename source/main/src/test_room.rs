@@ -76,8 +76,12 @@ mod drive_room;
 mod duel_fx;
 mod duel_hits;
 mod duel_loadout;
+mod duel_lobby;
+mod duel_lobby_room;
 mod duel_net;
+mod duel_rules;
 mod duel_sync;
+mod duel_vote;
 mod duel_wire;
 mod enemy_battle;
 mod enemy_battle_hits;
@@ -1101,7 +1105,7 @@ struct Game {
     rival_script: bool,
     /// The duel's rules (`--duel-damage`, F3 on the host; the host's reach
     /// the joiner).
-    duel_rules: duel_loadout::MatchRules,
+    duel_rules: duel_rules::MatchRules,
     /// A duel runs (a LAN session or `--rival-script`): the pause menu,
     /// the debug menu and game over no longer stop the field.
     duel: bool,
@@ -1118,6 +1122,12 @@ struct Game {
     /// link simulator preset the debug menu chose (duel_net::SIMULATED).
     net_overlay: bool,
     net_simulated: Option<usize>,
+    /// The duel's lobby (or countdown) holds both Soras still.
+    duel_frozen: bool,
+    /// The duel's lobby lets the camp open (the builds).
+    duel_camp: bool,
+    /// F3 asked the host for a test vote.
+    duel_test_vote: bool,
     poses: HashMap<(Action, bool), usize>,
     clip_poses: Arc<Vec<ClipPoses>>,
     part_indices: Vec<Vec<u32>>,
@@ -6635,6 +6645,8 @@ fn read_pad(
     camp: Option<Res<CampRes>>,
     debug: Res<debug_menu::DebugMenu>,
     game_over: Option<Res<game_over::GameOverRes>>,
+    lobby: Option<Res<duel_lobby_room::LobbyRoom>>,
+    vote: Option<Res<duel_vote::VoteRoom>>,
     mut game: ResMut<Game>,
     mut targeting: ResMut<enemy_target::Targeting>,
 ) {
@@ -6642,7 +6654,10 @@ fn read_pad(
         return;
     }
     let (data, _, _) = input::read_devices(&keys, &mouse, 0., &pads);
-    let menu = camp.is_some_and(|c| c.menu_up()) || game_over.is_some_and(|g| g.menu_up());
+    let menu = camp.is_some_and(|c| c.menu_up())
+        || game_over.is_some_and(|g| g.menu_up())
+        || lobby.is_some_and(|l| l.menu_up())
+        || vote.is_some_and(|v| v.menu_up(usize::from(game.net_client)));
     let mode = if menu {
         controller::MODE_TITLE
     } else {
@@ -7498,14 +7513,20 @@ fn simulate(
     for (slot, t) in nearby.iter_mut().zip(&shapes) {
         *slot = Some(*t);
     }
+    // [Duel] Between matches (the lobby, the countdown) neither Sora moves.
+    let frozen = game.duel_frozen;
     let input = Input {
-        direction: direction.to_array(),
-        jump,
-        jump_up,
-        attack,
-        guard,
+        direction: if frozen {
+            [0.; 2]
+        } else {
+            direction.to_array()
+        },
+        jump: jump && !frozen,
+        jump_up: jump_up && !frozen,
+        attack: attack && !frozen,
+        guard: guard && !frozen,
         // Square held (logical 0x200).
-        guard_held: game.autoplay.is_none() && game.pad.held & 0x200 != 0,
+        guard_held: !frozen && game.autoplay.is_none() && game.pad.held & 0x200 != 0,
         target: target.map(|t| [t[0], t[2]]),
         hop_vector,
         target_reach: target.map_or(0., |t| t[3]),
@@ -7618,7 +7639,8 @@ fn simulate(
         }
         menu_item = party_items_tour::use_slot(tick).or(menu_item);
     }
-    let cast = cast.or(menu_cast);
+    let cast = cast.or(menu_cast).filter(|_| !frozen);
+    let menu_item = menu_item.filter(|_| !frozen);
     // Spells and items a form disables are refused (FUN_1403b6cb0).
     let (cast, menu_item) = match game.drive.as_ref() {
         Some(d) => (
@@ -7739,6 +7761,7 @@ fn simulate(
             // [Test] `--rival-script` on a joiner: the rival's test script
             // presses his buttons, against the host's Sora.
             if game.rival_script
+                && !frozen
                 && let Some(foe) = game.rivals.first().map(|r| r.fighter.player.position)
             {
                 game.net_pad = rival::script_pad(tick, game.sora.player.position, foe);
@@ -12055,7 +12078,11 @@ fn camp_tick(
             }
             game.event(serde_json::json!({"event":"camp_open","tick":tick}));
         }
-    } else if c.curtain.is_none() && c.pad.pressed & 0x2 != 0 && !game.talking && !game.duel {
+    } else if c.curtain.is_none()
+        && c.pad.pressed & 0x2 != 0
+        && !game.talking
+        && (!game.duel || game.duel_camp)
+    {
         let (menu, s) = Camp::open(
             layout,
             camp_data(c, panels, game.items.as_ref(), &settings, &side),
@@ -12914,7 +12941,7 @@ fn run(mut args: Vec<PathBuf>) -> Result<AppExit, Box<dyn std::error::Error>> {
     let mut net_name: Option<String> = None;
     let mut net_sim = net::link::Conditions::default();
     let mut net_overlay = false;
-    let mut duel_rules = duel_loadout::MatchRules::default();
+    let mut duel_rules = duel_rules::MatchRules::default();
     let mut ability_tour = false;
     let mut gear_tour = false;
     let mut gear_tour_quick = false;
@@ -13014,7 +13041,7 @@ fn run(mut args: Vec<PathBuf>) -> Result<AppExit, Box<dyn std::error::Error>> {
                     .and_then(|v| v.to_str())
                     .ok_or("duel damage absent")?
                     .parse::<f32>()?
-                    .clamp(duel_loadout::DAMAGE_RANGE.0, duel_loadout::DAMAGE_RANGE.1);
+                    .clamp(duel_rules::DAMAGE_RANGE.0, duel_rules::DAMAGE_RANGE.1);
             }
             Some("--bind") => {
                 net_bind = options
@@ -13638,6 +13665,9 @@ fn run(mut args: Vec<PathBuf>) -> Result<AppExit, Box<dyn std::error::Error>> {
         duel_events: Vec::new(),
         net_overlay: false,
         net_simulated: None,
+        duel_frozen: false,
+        duel_camp: false,
+        duel_test_vote: false,
         poses,
         clip_poses: base_clip_poses,
         part_indices: Vec::new(),
@@ -14273,6 +14303,8 @@ fn run(mut args: Vec<PathBuf>) -> Result<AppExit, Box<dyn std::error::Error>> {
     app.add_plugins(crate::perf::PerfPlugin { dir: perf_dir });
     if let Some(session) = duel_session {
         app.insert_resource(session);
+        app.init_resource::<duel_lobby_room::LobbyRoom>();
+        app.init_resource::<duel_vote::VoteRoom>();
     }
     app.insert_resource(duel_loadout);
     Ok(app
@@ -14363,7 +14395,13 @@ fn run(mut args: Vec<PathBuf>) -> Result<AppExit, Box<dyn std::error::Error>> {
         .add_systems(
             FixedUpdate,
             (
-                (duel_net::begin, read_pad).chain(),
+                (
+                    duel_net::begin,
+                    read_pad,
+                    duel_lobby_room::tick,
+                    duel_vote::tick,
+                )
+                    .chain(),
                 camp_tick,
                 game_over::tick,
                 command_layout::follow,

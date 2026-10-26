@@ -250,12 +250,14 @@ pub(crate) fn join_apply(net: Option<ResMut<DuelNet>>, mut game: ResMut<Game>) {
             net.snapshots.insert(s.tick, s);
         }
     }
-    while let Some(m) = net.session.receive(RELIABLE) {
+    for m in std::mem::take(&mut net.inbox) {
         if let Some((tick, events)) = duel_wire::decode_events(&m) {
             // Played with the snapshot of the tick they happened on.
             net.events.push_back((tick, events));
         } else if let Some(rules) = duel_wire::decode_rules(&m) {
             game.duel_rules = rules;
+        } else {
+            net.inbox.push(m);
         }
     }
     if net.snapshots.len() > SNAPSHOT_BACKLOG {
@@ -296,15 +298,22 @@ pub(crate) fn join_apply(net: Option<ResMut<DuelNet>>, mut game: ResMut<Game>) {
     net.shown_snapshot = Some(tick);
     let now = game.tick;
     let game = &mut *game;
-    // Every form's kit loads ahead, for the host's changes to show at once.
+    // Every form's kit loads ahead, for the host's changes to show at once;
+    // a new Keyblade (the lobby's builds) replaces the old once loaded.
     if let Some(d) = game.drive.as_mut() {
         d.preload();
     }
-    for r in &mut game.rivals {
+    drive_room::rebuild_weapons(game);
+    let mut rivals = std::mem::take(&mut game.rivals);
+    for r in &mut rivals {
         if let Some(d) = r.own.drive.as_mut() {
             d.preload();
         }
+        rival::swap(game, r);
+        drive_room::rebuild_weapons(game);
+        rival::swap(game, r);
     }
+    game.rivals = rivals;
     for s in &snapshot.fighters {
         if s.slot == fighter_slots::JOIN {
             // The form's kit first: the action names one of its motions.

@@ -23,6 +23,13 @@ const RIGHT: f32 = 590.;
 const TOP: f32 = 46.;
 const TEXT: [f32; 4] = [1.6, 1.6, 1.6, 1.];
 const WARN: [f32; 4] = [1.8, 1.3, 0.5, 1.];
+/// The lobby's list: size, line height, top, and the cursor row's colour.
+const LOBBY_SIZE: f32 = 13.;
+const LOBBY_LINE: f32 = 17.;
+const LOBBY_TOP: f32 = 70.;
+const CURSOR: [f32; 4] = [1.9, 1.6, 0.7, 1.];
+/// The vote's panel top.
+const VOTE_TOP: f32 = 290.;
 const BACKING: [f32; 4] = [0., 0., 0., 0.55];
 /// The banner ("Waiting for a player", "Opponent left"): its size and row.
 const BANNER_SIZE: f32 = 16.;
@@ -72,6 +79,9 @@ pub(crate) struct DuelNet {
     /// Joiner: snapshots by host tick, waiting to be shown.
     pub snapshots: BTreeMap<u64, duel_wire::Snapshot>,
     pub shown_snapshot: Option<u64>,
+    /// This tick's reliable messages, each taken by the system it is for
+    /// (the rest are dropped at the end of the tick).
+    pub inbox: Vec<Vec<u8>>,
     /// Joiner: the host's events by host tick, waiting for that tick's
     /// snapshot.
     pub events: VecDeque<(u64, Vec<duel_wire::DuelEvent>)>,
@@ -88,7 +98,7 @@ pub(crate) struct DuelNet {
     /// Snapshots skipped to catch up, inputs dropped as too old.
     pub skipped: u64,
     /// Host: the rules last sent to the joiner.
-    pub sent_rules: Option<duel_loadout::MatchRules>,
+    pub sent_rules: Option<duel_rules::MatchRules>,
     pub warnings: VecDeque<String>,
     since_refresh: u32,
     lines: Vec<(String, bool)>,
@@ -226,6 +236,7 @@ impl DuelNet {
             skipped: 0,
             sent_rules: None,
             events: VecDeque::new(),
+            inbox: Vec::new(),
             warnings: VecDeque::new(),
             since_refresh: 0,
             lines: Vec::new(),
@@ -275,6 +286,10 @@ pub(crate) fn begin(
 ) {
     let Some(mut net) = net else { return };
     net.session.update();
+    net.inbox.clear();
+    while let Some(m) = net.session.receive(net::RELIABLE) {
+        net.inbox.push(m);
+    }
     while let Some(event) = net.session.next_event() {
         let tick = game.tick;
         match event {
@@ -506,6 +521,9 @@ fn backing(white: usize, rect: [f32; 4]) -> (usize, Vec<data::sprite_sequence::Q
 /// the 2D layer.
 pub(crate) fn present(
     net: Option<ResMut<DuelNet>>,
+    lobby: Option<Res<duel_lobby_room::LobbyRoom>>,
+    vote: Option<Res<duel_vote::VoteRoom>>,
+    game: Res<Game>,
     hud: Option<Res<Hud>>,
     mut frame: ResMut<Ui2dFrame>,
     mut images: ResMut<Assets<Image>>,
@@ -542,6 +560,78 @@ pub(crate) fn present(
             sheet,
             field_command_menu::text_quads_sized(&encoded, [x, BANNER_Y], TEXT, &f, BANNER_SIZE),
         ));
+    }
+    // The lobby: a plain list in the middle, the cursor's row in gold.
+    let lobby_lines = lobby
+        .map(|l| duel_lobby_room::lines(&l, &net, &game))
+        .unwrap_or_default();
+    if !lobby_lines.is_empty() {
+        let width = lobby_lines
+            .iter()
+            .map(|(l, _, _)| field_command_menu::text_width(l, &f, LOBBY_SIZE))
+            .fold(0., f32::max);
+        let x = BANNER_CENTRE - width / 2.;
+        frame.draws.push(backing(
+            white,
+            [
+                x - 10.,
+                LOBBY_TOP - 6.,
+                x + width + 10.,
+                LOBBY_TOP + LOBBY_LINE * lobby_lines.len() as f32 + 4.,
+            ],
+        ));
+        let mut quads = Vec::new();
+        for (n, (line, on, warn)) in lobby_lines.iter().enumerate() {
+            let colour = if *warn {
+                WARN
+            } else if *on {
+                CURSOR
+            } else {
+                TEXT
+            };
+            quads.extend(field_command_menu::text_quads_sized(
+                line,
+                [x, LOBBY_TOP + n as f32 * LOBBY_LINE],
+                colour,
+                &f,
+                LOBBY_SIZE,
+            ));
+        }
+        frame.draws.push((sheet, quads));
+    }
+    // A vote: its own panel below the lobby's place.
+    let vote_lines: Vec<(Vec<u8>, bool)> = vote
+        .map(|v| duel_vote::lines(&v, &net, &game))
+        .unwrap_or_default()
+        .into_iter()
+        .map(|(l, on)| (pause_menu::encode_text(&l), on))
+        .collect();
+    if !vote_lines.is_empty() {
+        let width = vote_lines
+            .iter()
+            .map(|(l, _)| field_command_menu::text_width(l, &f, LOBBY_SIZE))
+            .fold(0., f32::max);
+        let x = BANNER_CENTRE - width / 2.;
+        frame.draws.push(backing(
+            white,
+            [
+                x - 10.,
+                VOTE_TOP - 6.,
+                x + width + 10.,
+                VOTE_TOP + LOBBY_LINE * vote_lines.len() as f32 + 4.,
+            ],
+        ));
+        let mut quads = Vec::new();
+        for (n, (line, on)) in vote_lines.iter().enumerate() {
+            quads.extend(field_command_menu::text_quads_sized(
+                line,
+                [x, VOTE_TOP + n as f32 * LOBBY_LINE],
+                if *on { CURSOR } else { TEXT },
+                &f,
+                LOBBY_SIZE,
+            ));
+        }
+        frame.draws.push((sheet, quads));
     }
     if !net.overlay || net.lines.is_empty() {
         return;

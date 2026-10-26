@@ -1182,11 +1182,10 @@ pub fn add_form_exp(game: &mut Game, amount: i32, sora: Option<&mut Vec<u16>>) {
     rebuild_abilities(game, Some(&snapshot));
 }
 
-/// One frame of the Drive system after the player's tick: menu requests,
-/// the change task, the form gauge's drain and the automatic revert.
-pub fn tick(game: &mut Game, abilities: Option<&[u16]>) {
+/// A rebuilt kit with the new Keyblades replaces the one on screen, once it
+/// is loaded and no form change runs (the duel's joiner calls it alone).
+pub fn rebuild_weapons(game: &mut Game) {
     let Some(d) = game.drive.as_mut() else { return };
-    // A rebuilt kit with the new Keyblades replaces the one on screen.
     if let Some(form) = d.reweapon
         && d.change.is_none()
     {
@@ -1225,6 +1224,15 @@ pub fn tick(game: &mut Game, abilities: Option<&[u16]>) {
             }
         }
     }
+}
+
+/// One frame of the Drive system after the player's tick: menu requests,
+/// the change task, the form gauge's drain and the automatic revert.
+pub fn tick(game: &mut Game, abilities: Option<&[u16]>) {
+    if game.drive.is_none() {
+        return;
+    }
+    rebuild_weapons(game);
     let Some(d) = game.drive.as_mut() else { return };
     // FUN_1403ab6f0's battle state.
     let p = game.sora.player.position;
