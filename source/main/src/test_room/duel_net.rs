@@ -81,6 +81,8 @@ pub(crate) struct DuelNet {
     /// This tick's reliable messages, each taken by the system it is for
     /// (the rest are dropped at the end of the tick).
     pub inbox: Vec<Vec<u8>>,
+    /// Frames since the link's numbers were last logged.
+    stats_frames: u32,
     /// Joiner: the host's events by host tick, waiting for that tick's
     /// snapshot.
     pub events: VecDeque<(u64, Vec<duel_wire::DuelEvent>)>,
@@ -236,6 +238,7 @@ impl DuelNet {
             sent_rules: None,
             events: VecDeque::new(),
             inbox: Vec::new(),
+            stats_frames: 0,
             warnings: VecDeque::new(),
             since_refresh: 0,
             lines: Vec::new(),
@@ -390,8 +393,21 @@ pub(crate) fn close_on_exit(mut exits: MessageReader<AppExit>, net: Option<ResMu
 }
 
 /// Rebuilds the overlay lines a few times a second.
-pub(crate) fn sample(net: Option<ResMut<DuelNet>>, game: Res<Game>) {
+pub(crate) fn sample(net: Option<ResMut<DuelNet>>, mut game: ResMut<Game>) {
     let Some(mut net) = net else { return };
+    // The link's numbers in the log every 600 frames (the duel's
+    // measurements).
+    net.stats_frames += 1;
+    if net.stats_frames >= 600 && net.session.is_connected() {
+        net.stats_frames = 0;
+        let s = net.session.stats();
+        let tick = game.tick;
+        game.event(
+            serde_json::json!({"event":"net_stats","tick":tick,"rtt_ms":s.rtt_ms,
+            "loss":s.packet_loss,"send_kbps":s.sent_bytes_per_sec / 1024.,
+            "recv_kbps":s.received_bytes_per_sec / 1024.}),
+        );
+    }
     if net.overlay != game.net_overlay {
         net.overlay = game.net_overlay;
     }

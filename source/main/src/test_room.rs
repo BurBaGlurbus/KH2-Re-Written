@@ -4897,6 +4897,8 @@ struct FrameStats {
     sum: f64,
     worst: f64,
     slow: u32,
+    /// This window's frame times (ms), for its 1% low and 99th percentile.
+    times: Vec<f64>,
 }
 
 fn frame_stats(
@@ -4925,11 +4927,20 @@ fn frame_stats(
     stats.sum += ms;
     stats.worst = stats.worst.max(ms);
     stats.slow += u32::from(ms > 20.);
+    stats.times.push(ms);
     if stats.frames == 600 {
         let mean = stats.sum / 600.;
+        // The 1% low (the slowest 1% of frames' mean, as FPS) and the 99th
+        // percentile frame time.
+        let mut sorted = std::mem::take(&mut stats.times);
+        sorted.sort_by(f64::total_cmp);
+        let slowest = &sorted[sorted.len() - sorted.len().div_ceil(100)..];
+        let low = 1e3 / (slowest.iter().sum::<f64>() / slowest.len() as f64);
+        let p99 = sorted[(sorted.len() - 1) * 99 / 100];
         game.event(
             serde_json::json!({"event":"frame_stats","tick":tick,"mean_ms":mean,
-            "worst_ms":stats.worst,"over_20ms":stats.slow}),
+            "worst_ms":stats.worst,"over_20ms":stats.slow,"fps":1e3 / mean,
+            "low_1pct_fps":low,"p99_ms":p99}),
         );
         stats.frames = 0;
         stats.sum = 0.;
@@ -14555,6 +14566,7 @@ fn run(mut args: Vec<PathBuf>) -> Result<AppExit, Box<dyn std::error::Error>> {
                 mirage_arena::tick,
                 mirage_arena::show,
                 mirage_arena::follow_sky,
+                mirage_arena::scroll,
             )
                 .chain(),
         );
@@ -14581,6 +14593,7 @@ fn run(mut args: Vec<PathBuf>) -> Result<AppExit, Box<dyn std::error::Error>> {
             sum: 0.,
             worst: 0.,
             slow: 0,
+            times: Vec::with_capacity(600),
         })
         .insert_resource(BoardModels {
             keyblades: loaded.keyblades,

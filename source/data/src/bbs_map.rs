@@ -18,7 +18,8 @@
 //!   rotation (radians, X then Y then Z), scale (3 floats each), u32 PMO
 //!   offset (0: none), u32 zero, u16 flags (bit 0: sky, drawn around the
 //!   camera), u16 id. Texture table entries are 0x20: u32 TIM2 offset,
-//!   char name[12], then UV scroll.
+//!   char name[12], then the UV scroll (two floats, texture widths a
+//!   frame at 60 a second).
 //! - PMO: "PMO\0"; u16 texture slot count at +8, u32 skeleton offset at
 //!   +0xC, u32 opaque mesh offset at +0x10, f32 scale at +0x18, u32
 //!   translucent mesh offset at +0x1C; texture slots from +0xA0 (0x20 each,
@@ -213,6 +214,8 @@ pub struct MapMesh {
 pub struct MapModel {
     pub texture_names: Vec<String>,
     pub textures: Vec<Picture>,
+    /// Each texture's UV scroll a frame (U, V).
+    pub texture_scroll: Vec<[f32; 2]>,
     pub meshes: Vec<MapMesh>,
 }
 
@@ -424,6 +427,9 @@ pub fn pmp(b: &[u8]) -> Result<MapModel> {
         let e = tex_table + i * 0x20;
         model.texture_names.push(name_at(b, e + 4, 12)?);
         model.textures.push(tim2(b, u32_at(b, e)? as usize)?);
+        model
+            .texture_scroll
+            .push([f32_at(b, e + 16)?, f32_at(b, e + 20)?]);
     }
     for i in 0..objects {
         let e = 0x20 + i * 0x30;
@@ -462,6 +468,51 @@ pub fn pmp(b: &[u8]) -> Result<MapModel> {
         }
     }
     Ok(model)
+}
+
+/// An HD image's mip chain: (width, height, RGBA) from the largest.
+pub type MipChain = Vec<(u32, u32, Vec<u8>)>;
+
+/// The largest mean RGBA difference (0-255) an HD image may have from the
+/// picture it replaces.
+const HD_MATCH_LIMIT: f32 = 120.;
+
+/// Which HD image replaces each picture. The PC remaster names its images
+/// by an order that is not the map's texture table (an archive's other
+/// pictures come first), so each picture takes the image whose mip level of
+/// its own size looks most like it (RGBA, mean difference), each image once,
+/// best pairs first [installed-build observation, T249].
+pub fn match_hd(pictures: &[Picture], hd: &[MipChain]) -> Vec<Option<usize>> {
+    let mut pairs = Vec::new();
+    for (i, p) in pictures.iter().enumerate() {
+        for (k, chain) in hd.iter().enumerate() {
+            let Some((_, _, level)) = chain
+                .iter()
+                .find(|(w, h, _)| *w == p.width && *h == p.height)
+            else {
+                continue;
+            };
+            if level.len() != p.rgba.len() || level.is_empty() {
+                continue;
+            }
+            let sum: u64 = level
+                .iter()
+                .zip(&p.rgba)
+                .map(|(&a, &b)| u64::from(a.abs_diff(b)))
+                .sum();
+            pairs.push((sum as f32 / level.len() as f32, i, k));
+        }
+    }
+    pairs.sort_by(|a, b| a.0.total_cmp(&b.0));
+    let mut out = vec![None; pictures.len()];
+    let mut used = vec![false; hd.len()];
+    for (d, i, k) in pairs {
+        if d <= HD_MATCH_LIMIT && out[i].is_none() && !used[k] {
+            out[i] = Some(k);
+            used[k] = true;
+        }
+    }
+    out
 }
 
 /// One collision face: its corners (3 or 4, on its plane) and flags.
@@ -637,6 +688,7 @@ mod tests {
         // The list ends with a zero count.
         put(&mut b, v + 60, &[0; 4]);
         put(&mut b, tex + 4, b"tex");
+        put(&mut b, tex + 16, &f(0.5));
         let tim = tim2_4bit();
         put(&mut b, tex, &0x500u32.to_le_bytes());
         put(&mut b, 0x500, &tim);
@@ -647,6 +699,7 @@ mod tests {
     fn pmp_places_its_objects_meshes_with_their_texture() {
         let m = pmp(&pmp_one_triangle()).unwrap();
         assert_eq!(m.texture_names, vec!["tex".to_string()]);
+        assert_eq!(m.texture_scroll, vec![[0.5, 0.]]);
         assert_eq!(m.meshes.len(), 1);
         let mesh = &m.meshes[0];
         assert_eq!(mesh.texture, Some(0));
@@ -658,6 +711,22 @@ mod tests {
         );
         assert_eq!(mesh.uvs[0], [0.5, 0.25]);
         assert_eq!(mesh.colors[0], [1., 1., 1., 1.]);
+    }
+
+    #[test]
+    fn hd_images_go_to_the_pictures_they_look_like() {
+        let pic = |c: u8| Picture {
+            width: 2,
+            height: 2,
+            rgba: vec![c; 16],
+        };
+        // Two 4x4 images whose 2x2 levels are 200 and 10; and an unrelated
+        // 8x2 one.
+        let chain = |c: u8| vec![(4, 4, vec![c; 64]), (2, 2, vec![c; 16])];
+        let hd = vec![chain(200), chain(10), vec![(8, 2, vec![0; 64])]];
+        assert_eq!(match_hd(&[pic(12), pic(198)], &hd), vec![Some(1), Some(0)]);
+        // Nothing alike: no replacement.
+        assert_eq!(match_hd(&[pic(255)], &[chain(0)]), vec![None]);
     }
 
     #[test]
