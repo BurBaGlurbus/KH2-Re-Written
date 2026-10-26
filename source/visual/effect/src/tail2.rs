@@ -1,8 +1,10 @@
-//! pppKeShpTailX (153) and pppKeShpTail2X (155): a tail of shape sprites
-//! strung along the part's recent path, with a fixed flip-book frame.
-//! Translated from the updates FUN_1404cc750 / FUN_1404cd550, the draws
-//! FUN_1404cc960 / FUN_1404cd760 and the creates FUN_1404cc930 /
-//! FUN_1404cd730.
+//! pppKeShpTailX (153), pppKeShpTail2 (154) and pppKeShpTail2X (155): a
+//! tail of shape sprites strung along the part's recent path, with a fixed
+//! flip-book frame. Translated from the updates FUN_1404cc750 /
+//! FUN_1404cce70 / FUN_1404cd550, the draws FUN_1404cc960 / FUN_1404cd080 /
+//! FUN_1404cd760 and the creates FUN_1404cc930 / FUN_1404cd050 /
+//! FUN_1404cd730. Tail2 is Tail2X with its world flag at key +0x23 (2X:
+//! +0x26) and its sprites drawn one by one rather than batched.
 //!
 //! Work block u0: +0 ring length (31), +1 ring head, +2 flip-book timer,
 //! +4 frame index, +6 the previous index (the frame drawn), then the ring
@@ -17,10 +19,12 @@ use crate::{Ctx, Part};
 use data::object_effect::{self, Program, i16_at};
 
 pub(crate) const TAIL_X: u32 = 153;
+pub(crate) const TAIL_2: u32 = 154;
 pub(crate) const TAIL_2X: u32 = 155;
 const RING: usize = 0x10;
 
-/// FUN_1404cc930 / FUN_1404cd730: ring length 31, head and flip-book 0.
+/// FUN_1404cc930 / FUN_1404cd050 / FUN_1404cd730: ring length 31, head and
+/// flip-book 0.
 pub(crate) fn create(p: &Program, part: &mut Part, ctx: &Ctx) {
     let o = use_val(ctx, p, 0);
     part.set_u8(o, 0x1f);
@@ -29,9 +33,13 @@ pub(crate) fn create(p: &Program, part: &mut Part, ctx: &Ctx) {
     part.set_i16(o + 6, 0);
 }
 
-/// The key byte of the world-transform flag (+0x21 / +0x26).
+/// The key byte of the world-transform flag (+0x21 / +0x23 / +0x26).
 fn world_flag(kind: u32) -> usize {
-    if kind == TAIL_X { 0x21 } else { 0x26 }
+    match kind {
+        TAIL_X => 0x21,
+        TAIL_2 => 0x23,
+        _ => 0x26,
+    }
 }
 
 fn sample(p: &Program, cursor: usize, part: &Part, ctx: &Ctx) -> Vec4 {
@@ -111,7 +119,9 @@ pub(crate) fn draw(p: &Program, cursor: usize, part: &mut Part, ctx: &mut Ctx) {
         return;
     };
     let (o, colour_var) = (use_val(ctx, p, 0), use_val(ctx, p, 1));
-    let wide = p.kind == TAIL_2X;
+    // Tail2 and Tail2X share the key layout (count +0x20, spacing +0x1c,
+    // head and tail colours +0x14 / +0x18, sizes +0xc / +0x10).
+    let wide = p.kind != TAIL_X;
     let (count_at, spacing_at) = if wide { (0x20, 0x1c) } else { (0x1c, 0x18) };
     let n = i16_at(&ctx.dpd.bytes, cursor + count_at).unwrap_or(0) as u16 as u32;
     let steps = n as i32 - 1;
@@ -212,5 +222,17 @@ pub(crate) fn draw(p: &Program, cursor: usize, part: &mut Part, ctx: &mut Ctx) {
         point = std::array::from_fn(|i| start[i] + segment[i] * t);
         along += spacing;
         reach -= spacing;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn each_tail_reads_its_own_world_flag() {
+        assert_eq!(world_flag(TAIL_X), 0x21);
+        assert_eq!(world_flag(TAIL_2), 0x23);
+        assert_eq!(world_flag(TAIL_2X), 0x26);
     }
 }
