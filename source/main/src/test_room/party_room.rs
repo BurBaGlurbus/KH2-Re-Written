@@ -2299,6 +2299,7 @@ pub fn tick(game: &mut Game, tick: u64) {
             lock,
             sora_target,
             enemies: &candidates,
+            acted: m.follower.acted(),
         };
         let was = (m.targeting.target, m.targeting.far);
         let key = m.targeting.update(m.save.style, battle, &field);

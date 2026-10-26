@@ -666,6 +666,9 @@ pub struct Follower {
     /// idle hop in progress.
     wait: Option<Wait>,
     last_action: bool,
+    /// The current action entry (obj+0xee8) is an action or an item (entry
+    /// flag bit 0 clear) rather than a wait command (0x201) or none.
+    acted: bool,
     hop: Option<Hop>,
     /// The engine's motion start the controller follows during an act.
     act_serial: Option<u64>,
@@ -762,6 +765,7 @@ impl Follower {
             personality: DONALD_PERSONALITY,
             wait: None,
             last_action: false,
+            acted: false,
             hop: None,
             act_serial: None,
             act_tail: None,
@@ -803,6 +807,12 @@ impl Follower {
     pub fn with_personality(mut self, personality: Personality) -> Self {
         self.personality = personality;
         self
+    }
+
+    /// The current action entry is an action or an item (Party Attack's
+    /// keep test drops its target then, `FUN_1401b33f0`).
+    pub fn acted(&self) -> bool {
+        self.acted
     }
 
     /// The motion id playing: an attack, or the gait (idle 0, walk 1,
@@ -1552,7 +1562,9 @@ impl Follower {
             && (scene.length)(r.motion).is_some()
         {
             // Entries with flag 2 are actions; the item entries are not.
+            // Both have flag bit 0 clear.
             self.last_action = r.item.is_none();
+            self.acted = true;
             if let Some(need) = r.item
                 && let Some(item) = self.item_pick(need, scene)
             {
@@ -1579,9 +1591,12 @@ impl Follower {
                 Wait::Follow(time)
             });
             self.last_action = false;
+            self.acted = false;
         }
+        // Nothing chosen: the entry is cleared (FUN_1401b1d40).
         if scene.target.is_none() {
             self.wait = None;
+            self.acted = false;
         }
         let holding = matches!(self.wait, Some(Wait::Hold(_)));
         if let Some(Wait::Hold(t) | Wait::Follow(t)) = self.wait.as_mut() {
