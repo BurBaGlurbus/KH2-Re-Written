@@ -217,6 +217,8 @@ pub struct Menu {
     /// menu).
     stack: Vec<Screen>,
     slots: Vec<Slot>,
+    /// Counts the slot list's rereads (after a save or a delete).
+    revision: u32,
     pub cursor: Cursor,
     events: Vec<Event>,
     /// The slot last saved or loaded in this process (FUN_1402e3980).
@@ -238,6 +240,7 @@ impl Menu {
             stack: Vec::new(),
             cursor: Cursor { slot: 0, row: 0 },
             slots,
+            revision: 0,
             events: vec![Event::Sound(Sound::Open)],
             last_slot,
         };
@@ -275,6 +278,12 @@ impl Menu {
 
     pub fn slots(&self) -> &[Slot] {
         &self.slots
+    }
+
+    /// Changes whenever the slot list is read again, so a view knows its
+    /// cards are stale.
+    pub fn revision(&self) -> u32 {
+        self.revision
     }
 
     pub fn last_slot(&self) -> Option<usize> {
@@ -611,6 +620,7 @@ impl Menu {
             Work::Delete(slot) => {
                 if backend.delete(slot) {
                     self.slots = backend.slots();
+                    self.revision += 1;
                     self.close_dialog();
                 } else {
                     self.fail(message::FAILED_DELETE);
@@ -641,6 +651,7 @@ impl Menu {
         let data = backend.capture();
         if backend.save(slot, &data) {
             self.slots = backend.slots();
+            self.revision += 1;
             self.last_slot = Some(slot);
             self.sound(Sound::Saved);
             self.events.push(Event::Saved { slot });
@@ -808,6 +819,8 @@ mod tests {
         assert_eq!(b.saved, [6]);
         assert!(m.view().dialog.is_none() && m.view().list.is_some());
         assert!(m.slots()[6].is_valid());
+        // The view learns that its cards changed.
+        assert_eq!(m.revision(), 1);
     }
 
     #[test]

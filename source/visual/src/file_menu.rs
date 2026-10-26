@@ -147,6 +147,7 @@ pub struct FileMenu {
     top_cursor: usize,
     cards: Vec<Card>,
     list_start: usize,
+    list_revision: u32,
     dialog: Vec<Id>,
     dialog_rows: Vec<Id>,
     dialog_text: Vec<Id>,
@@ -202,6 +203,7 @@ impl FileMenu {
             top_cursor: usize::MAX,
             cards: Vec::new(),
             list_start: usize::MAX,
+            list_revision: 0,
             dialog: Vec::new(),
             dialog_rows: Vec::new(),
             dialog_text: Vec::new(),
@@ -481,12 +483,15 @@ impl FileMenu {
                 self.s0.set(seq0, c.row, group, None);
             }
         }
-        // Contents once per window position and slot change.
+        // Contents once per window position, slot and slot-list change
+        // (a save or a delete rewrites a card).
         let key = start * 1000 + cursor.slot;
-        if key == self.list_start {
+        let revision = self.menu.revision();
+        if key == self.list_start && revision == self.list_revision {
             return;
         }
         self.list_start = key;
+        self.list_revision = revision;
         let seq1 = &layout.sequences[1];
         let seq2 = &layout.sequences[2];
         for i in 0..ROWS {

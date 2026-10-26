@@ -1299,6 +1299,12 @@ struct Game {
     /// presses (Triangle; decide, back or Triangle).
     talking: bool,
     rc_queued: bool,
+    /// A save point's Save was chosen: the camp opens the file menu.
+    save_menu_wanted: bool,
+    /// Files the save point's menu wrote this run, and the world and area
+    /// of the save point last used.
+    files_saved: u32,
+    save_place: Option<(u8, u8)>,
     advance_queued: bool,
     /// The reaction-command search's records and the command manager's
     /// reaction state: the slot, the held command, this tick's press
@@ -2305,6 +2311,8 @@ fn load_journal(
 /// lines (sys.bar), and the system font.
 struct CampSource {
     menu: Menu2ld,
+    /// msg/<lang>/sys.bar (the file menu's texts).
+    sys: Locator,
     entries: Vec<pause_menu::Entry>,
     font: SystemFont,
     /// "LV", "HP", "MP" and Sora's name (0xb9fc..0xb9fe, 0x851f).
@@ -3063,6 +3071,7 @@ fn load_camp_source(
         )
     })?;
     Ok(CampSource {
+        sys: m.messages.clone(),
         menu,
         entries,
         font,
@@ -11441,6 +11450,11 @@ struct CampRes {
     notice_sheets: HashMap<String, usize>,
     /// The menus' language code (`menu/<lang>/` notice and photo files).
     lang: String,
+    /// The save point's file menu (save.2ld), read the first time it opens,
+    /// its sheets and the panel's white sheet; the install it saves beside.
+    files: Option<crate::save_files::Files>,
+    files_white: usize,
+    steam_root: PathBuf,
 }
 
 /// Sheet slots of the journal's images.
@@ -11459,7 +11473,10 @@ struct JournalSheets {
 impl CampRes {
     /// A menu (camp, curtain or journal) holds the screen and the pad.
     fn menu_up(&self) -> bool {
-        self.open.is_some() || self.journal.is_some() || self.curtain.is_some()
+        self.open.is_some()
+            || self.journal.is_some()
+            || self.curtain.is_some()
+            || self.files.as_ref().is_some_and(|f| f.ui.is_some())
     }
 }
 
@@ -11777,6 +11794,8 @@ fn camp_tick(
     if game.autoplay.is_some() {
         let logical = if let Some(tour) = &game.ability_tour {
             tour.logical(game.tick)
+        } else if game.save_point_tour {
+            reaction_command::save_tour_logical(tick)
         } else if game.magic_tour || game.sephiroth_tour {
             // The magic and Sephiroth tours never open the camp.
             0
@@ -11796,6 +11815,9 @@ fn camp_tick(
     }
     // The debug menu holds the pad while it is open.
     if debug.open {
+        return;
+    }
+    if save_menu_tick(c, &mut game, &mut audio, &mut frame, &mut images) {
         return;
     }
     let mut sounds = Vec::new();
@@ -12591,6 +12613,136 @@ fn journal_data(
     }
 }
 
+/// The save point's file menu (FUN_1403a8b10 case 0x37 → FUN_1402e78e0):
+/// opened when Save is chosen, then fed the camp's pad until it closes.
+/// Returns true while it holds the pad.
+fn save_menu_tick(
+    c: &mut CampRes,
+    game: &mut Game,
+    audio: &mut Audio,
+    frame: &mut Ui2dFrame,
+    images: &mut Assets<Image>,
+) -> bool {
+    let tick = game.tick;
+    let mut sounds = Vec::new();
+    if std::mem::take(&mut game.save_menu_wanted) && !c.menu_up() {
+        if c.files.is_none()
+            && let Some(source) = c.picture_source.clone()
+        {
+            // Unattended runs save into generated files kept in memory.
+            let backend = if game.autoplay.is_some() {
+                Ok(crate::save_files::FileBackend::in_memory(
+                    crate::save_files::synthetic_container(),
+                ))
+            } else {
+                crate::save_files::FileBackend::open(&crate::launcher::data_dir(), &c.steam_root)
+            };
+            let sys = &c.source.sys;
+            match backend.and_then(|b| {
+                crate::save_files::Files::load(
+                    &source,
+                    (&sys.index, sys.ordinal, sys.name_hash),
+                    b,
+                    0,
+                )
+            }) {
+                Ok(mut f) => {
+                    for k in 0..f.menu.image_sizes.len() {
+                        if let Some(t) = f.menu.replacements[k].take() {
+                            f.sheets
+                                .push(frame.add_sheet(images, t.rgba, t.size, t.texel_scale));
+                        }
+                    }
+                    c.files_white = frame.add_sheet(images, vec![255; 4], [1, 1], 1.);
+                    c.files = Some(f);
+                }
+                Err(e) => {
+                    game.event(
+                        serde_json::json!({"event":"file_menu_unavailable","tick":tick,
+                        "error":e.to_string()}),
+                    );
+                }
+            }
+        }
+        if let Some(f) = c.files.as_mut() {
+            f.backend.set_snapshot(save_snapshot(game));
+            let menu = save::menu::Menu::new(
+                save::menu::Kind::SavePoint { world_map: false },
+                &f.backend,
+                f.last_slot,
+            );
+            f.ui = Some(visual::file_menu::FileMenu::new(
+                menu,
+                f.texts.clone(),
+                &f.menu.layout,
+                c.source.font.widths.clone(),
+            ));
+            // The menu asks for its open sound (se000 #11) itself.
+            game.event(serde_json::json!({"event":"file_menu_open","tick":tick}));
+        }
+    }
+    let Some(f) = c.files.as_mut() else {
+        return false;
+    };
+    let Some(ui) = f.ui.as_mut() else {
+        return false;
+    };
+    let pressed = crate::save_files::inputs(c.pad.pressed, c.pad.repeat);
+    let layout = &f.menu.layout;
+    for e in ui.frame(layout, &mut f.backend, &pressed) {
+        match e {
+            save::menu::Event::Sound(n) => sounds.push(n as u32),
+            save::menu::Event::Saved { slot } => {
+                f.last_slot = Some(slot);
+                game.files_saved += 1;
+                game.event(serde_json::json!({"event":"file_saved","tick":tick,"slot":slot}));
+            }
+            save::menu::Event::Closed => ui.close(layout),
+            // [Not built] The room cannot return to the title.
+            other => {
+                game.event(serde_json::json!({"event":"file_menu","tick":tick,
+                    "what":format!("{other:?}")}));
+                ui.close(layout);
+            }
+        }
+    }
+    if ui.is_finished() {
+        f.ui = None;
+        game.event(serde_json::json!({"event":"file_menu_closed","tick":tick}));
+    }
+    game.tick += 1;
+    for n in sounds {
+        game.event(serde_json::json!({"event":"sound","tick":tick,"id":n,"cause":"file menu"}));
+        let Audio { output, banks, .. } = audio;
+        if let (Some(output), Ok(Some(r))) = (output.as_ref(), banks.request(n))
+            && let Ok(mut mixer) = output.mixer.lock()
+        {
+            for layer in r.layers {
+                mixer.play(layer, n, r.volume, 1.);
+            }
+        }
+    }
+    true
+}
+
+/// What the room writes into a save: the place and the numbers a file card
+/// shows (the rest of the save image is not captured yet, issue #79).
+fn save_snapshot(game: &Game) -> save::data::SaveData {
+    use save::slots::field;
+    let mut d = save::data::SaveData::blank();
+    if let Some((world, area)) = game.save_place {
+        d.set_u8(field::WORLD, world);
+        d.set_u8(field::AREA, area);
+    }
+    let level = game.enemy.as_ref().map_or(1, |rt| rt.level);
+    d.set_u8(field::PARTY + field::RECORD_LEVEL, level);
+    d.set_u32(field::PLAY_FRAMES, game.tick as u32);
+    let difficulty = game.enemy.as_ref().map_or(1, |rt| rt.difficulty as u32);
+    d.set_u32(field::DIFFICULTY, difficulty);
+    d.seal();
+    d
+}
+
 /// FUN_1403018e0's load (here at once): the item picture the camp asks for,
 /// from the install (`itempic/item-%03d.imd`).
 fn load_wanted_picture(c: &mut CampRes, frame: &mut Ui2dFrame, images: &mut Assets<Image>) {
@@ -12747,6 +12899,41 @@ fn camp_present(
         // The keyboard or mouse was last used: key caps (pad 0).
         pad: c.glyph as u8,
     };
+    if let Some(f) = &c.files
+        && let Some(ui) = &f.ui
+    {
+        let d = ui.draw(&f.menu, &font);
+        for (image, quads) in d.art {
+            if let Some(&sheet) = f.sheets.get(image) {
+                frame.draws.push((sheet, quads));
+            }
+        }
+        for (i, (sheet, quads)) in d.sheets.into_iter().enumerate() {
+            // [Not the original's art] The message window is a plain panel
+            // (issue #80).
+            if let Some((at, [x0, y0, x1, y1])) = d.panel
+                && at == i
+            {
+                frame.draws.push((
+                    c.files_white,
+                    vec![data::sprite_sequence::Quad {
+                        corners: [[x0, y0], [x1, y0], [x0, y1], [x1, y1]],
+                        uv: [0, 0, 1, 1],
+                        colors: [[0., 0., 0., 0.8]; 4],
+                        blend: 0,
+                    }],
+                ));
+            }
+            let slot = match sheet {
+                visual::sprite_player::Sheet::Art(image) => f.sheets.get(image).copied(),
+                visual::sprite_player::Sheet::Font => Some(c.font_sheet),
+                visual::sprite_player::Sheet::Icon => Some(c.icon_sheet),
+            };
+            if let Some(slot) = slot {
+                frame.draws.push((slot, quads));
+            }
+        }
+    }
     if let Some(menu) = c.open.as_mut() {
         let art = c.art[c.glyph].or(c.art[0]).expect("camp art");
         for (sheet, mut quads) in menu.draw(&c.source.menu.layout, &font) {
@@ -13822,6 +14009,9 @@ fn run(mut args: Vec<PathBuf>) -> Result<AppExit, Box<dyn std::error::Error>> {
         party_push: Vec::new(),
         talking: false,
         rc_queued: false,
+        save_menu_wanted: false,
+        files_saved: 0,
+        save_place: None,
         reaction_commands: None,
         reaction: Default::default(),
         offers_seen: 0,
@@ -14197,6 +14387,9 @@ fn run(mut args: Vec<PathBuf>) -> Result<AppExit, Box<dyn std::error::Error>> {
             picture_sheets: HashMap::new(),
             notice_sheets: HashMap::new(),
             lang: settings.loaded_or("us"),
+            files: None,
+            files_white: 0,
+            steam_root: args[0].clone(),
         });
     }
     if let Some(src) = loaded.game_over.take() {

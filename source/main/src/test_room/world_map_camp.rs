@@ -107,6 +107,10 @@ pub(crate) fn load(
             picture_sheets: HashMap::new(),
             notice_sheets: HashMap::new(),
             lang,
+            // The world map has no save point menu here.
+            files: None,
+            files_white: 0,
+            steam_root: std::path::PathBuf::new(),
         },
         settings,
         tick: 0,

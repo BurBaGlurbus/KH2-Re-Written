@@ -33,10 +33,22 @@ const SAVE_HEAL_STEP: f32 = 1.;
 const SAVE_HEAL_AT: f32 = 2.;
 
 /// The `--save-point-tour`: Sora stands on the area's first save point from
-/// tick 20 with 1 MP (and the party at 1 HP), and presses Triangle at 240.
+/// tick 20 with 1 MP (and the party at 1 HP), and presses Triangle at 240;
+/// the file menu opens, Save, up to an empty slot, save there, back out.
 /// [Tour setup.]
-pub const SAVE_TOUR_CAPTURES: [u64; 3] = [30, 120, 245];
-pub const SAVE_TOUR_END: u64 = 300;
+pub const SAVE_TOUR_CAPTURES: [u64; 7] = [30, 120, 245, 290, 350, 410, 520];
+pub const SAVE_TOUR_END: u64 = 640;
+/// The tour's presses in the file menu (pad mode 7 logical bits).
+const SAVE_TOUR_MENU: [(u64, u64); 5] =
+    [(300, 0x4), (360, 0x10), (420, 0x4), (540, 0x8), (590, 0x8)];
+
+/// The save point tour's file menu press at `tick`.
+pub fn save_tour_logical(tick: u64) -> u64 {
+    SAVE_TOUR_MENU
+        .iter()
+        .filter(|(at, _)| *at == tick)
+        .fold(0, |acc, &(_, b)| acc | b)
+}
 /// The townspeople's and the test NPC's reaction (cmd 31 "Talk").
 const TALK_COMMAND: u16 = 0x1f;
 
@@ -327,6 +339,10 @@ pub fn tick(
     let save_points = area
         .as_deref()
         .map_or(&[][..], |a| a.current.save_points.as_slice());
+    // The place a save written here records.
+    if !save_points.is_empty() {
+        game.save_place = area.as_deref().map(|a| (a.current.world, a.current.area));
+    }
     if game.save_point_tour
         && let Some(&(at, _)) = save_points.first()
     {
@@ -341,6 +357,15 @@ pub fn tick(
         }
         if tick == 240 {
             game.rc_queued = true;
+        }
+        if tick == SAVE_TOUR_END - 1 {
+            let saved = game.files_saved;
+            let pass = saved > 0;
+            game.autoplay_failed |= !pass;
+            game.event(
+                serde_json::json!({"event":"save_point_tour_verdict","tick":tick,
+                "pass":pass,"files_saved":saved}),
+            );
         }
     }
     let mut inputs = inputs(&game, actors, talk.as_deref(), &state, menu_kind);
@@ -790,8 +815,9 @@ fn carry_out(game: &mut Game, actors: &mut [GalleryActor], c: rc::Candidate, tic
             }
         }
         // FUN_1403a8b10 case 0x37: the save point's menu (FUN_1403a5650(7),
-        // FUN_1402e4950). [Not ported] The room has no Save screen.
+        // FUN_1402e4950); the camp hosts it.
         rc::Source::Shape if c.command == SAVE_COMMAND => {
+            game.save_menu_wanted = true;
             game.event(
                 serde_json::json!({"event":"save_menu_requested","tick":tick,
                 "save_point":c.target.owner - SAVE_POINT}),
