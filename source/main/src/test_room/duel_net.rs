@@ -15,11 +15,12 @@ use std::time::Duration;
 
 /// How long a silent peer is waited for.
 const TIMEOUT: Duration = Duration::from_secs(5);
-/// Overlay text: size, line height, the top-right corner and colours.
+/// Overlay text: size, line height, the top-right corner (below the duel's
+/// HP gauge) and colours.
 const SIZE: f32 = 10.;
 const LINE: f32 = 12.;
 const RIGHT: f32 = 590.;
-const TOP: f32 = 34.;
+const TOP: f32 = 46.;
 const TEXT: [f32; 4] = [1.6, 1.6, 1.6, 1.];
 const WARN: [f32; 4] = [1.8, 1.3, 0.5, 1.];
 const BACKING: [f32; 4] = [0., 0., 0., 0.55];

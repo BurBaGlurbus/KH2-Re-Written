@@ -2,8 +2,25 @@
 //! Drive effect starts (and a spell's later effect calls) go out as events
 //! naming their effect container, and the joiner starts the same elements
 //! on the same Sora. Hit sparks and guard flashes have their own events
-//! (duel_hits); weapon trails, footstep dust and the map's own effects are
-//! each instance's own.
+//! (duel_hits); weapon trails and the map's own effects are each
+//! instance's own. The Soras' own sounds (swings, voices, cloth, footsteps,
+//! form changes) go the same way.
+
+/// The sound causes the host sends: what a Sora's motions and commands
+/// play. Effect sounds start with their effects on each side; hit sounds
+/// have their own events; menu sounds stay with the player who heard them.
+const SORA_SOUNDS: [&str; 10] = [
+    "swing",
+    "voice",
+    "move_se",
+    "footstep",
+    "spell_voice",
+    "drive_start",
+    "revert",
+    "antiform",
+    "form_level",
+    "wall_hit",
+];
 
 use super::duel_wire::{DuelEvent, FxAnchor};
 use super::*;
@@ -11,10 +28,13 @@ use data::object_effect::Pax;
 use player::magic::{Anchor, Fx};
 
 /// The name a fighter's effect container goes by on both instances:
-/// `magic:<file>`, `system`, `form:<n>`, or `weapon:<slot>` /
-/// `weapon2:<slot>` (each Sora's own Keyblade).
+/// `magic:<file>`, `system`, `form:<n>`, `weapon:<slot>` /
+/// `weapon2:<slot>` (each Sora's own Keyblade) or `map` (the ground dust).
 fn name_of(game: &Game, pax: &Arc<Pax>) -> Option<String> {
     let same = |p: &Option<Arc<Pax>>| p.as_ref().is_some_and(|p| Arc::ptr_eq(p, pax));
+    if same(&game.map_pax) {
+        return Some("map".to_string());
+    }
     let fighter = |slot: u8,
                    magic: Option<&magic_room::MagicRt>,
                    drive: Option<&drive_room::DriveRt>,
@@ -70,6 +90,7 @@ fn resolve(game: &Game, name: &str) -> Option<Arc<Pax>> {
     };
     let rivals = || game.rivals.iter();
     match kind {
+        "map" => game.map_pax.clone(),
         "magic" => magic(game.magic.as_ref())
             .or_else(|| rivals().find_map(|r| magic(r.own.magic.as_ref()))),
         "system" => system(game.drive.as_ref())
@@ -164,6 +185,23 @@ pub(crate) fn host_effects(net: Option<Res<duel_net::DuelNet>>, mut game: ResMut
         }
     }
     game.duel_events.extend(events);
+}
+
+/// Host, before the sounds play: the Soras' own sounds this tick, for the
+/// joiner.
+pub(crate) fn host_sounds(net: Option<Res<duel_net::DuelNet>>, mut game: ResMut<Game>) {
+    let Some(net) = net else { return };
+    if net.role != net::Role::Host || !net.playing() {
+        return;
+    }
+    let game = &mut *game;
+    let sounds: Vec<DuelEvent> = game
+        .sound_queue
+        .iter()
+        .filter(|(_, cause)| SORA_SOUNDS.contains(cause))
+        .map(|&(id, _)| DuelEvent::Sound(id))
+        .collect();
+    game.duel_events.extend(sounds);
 }
 
 /// Joiner: one of the host's effect events, on this instance's Soras.

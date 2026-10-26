@@ -97,6 +97,19 @@ pub(crate) struct Own {
     pub body: Vec<(usize, Vec3, f32, bool)>,
     /// The spell effects' feedback under his own keys.
     pub fx_live: HashMap<u64, magic::FxLive>,
+    /// Where his motions' sound and dust triggers were last scanned.
+    pub scans: Scans,
+}
+
+/// A Sora's frame-trigger scans (swings, voices, cloth, footsteps, dust):
+/// the action start and the frame already scanned.
+#[derive(Default)]
+pub(crate) struct Scans {
+    sound_frame: Option<(u64, u32)>,
+    voice: Option<(u64, Action, u32)>,
+    move_se: Option<(u64, Action, u32)>,
+    step: Option<(u64, Action, u32)>,
+    dust: Option<(u64, Action, u32)>,
 }
 
 pub(crate) struct Rival {
@@ -192,6 +205,7 @@ fn own_from(game: &Game, kit: &RivalKit, slot: u8) -> Own {
         blades,
         body: kit.body.clone(),
         fx_live: HashMap::new(),
+        scans: Scans::default(),
     }
 }
 
@@ -220,6 +234,13 @@ pub(crate) fn swap(game: &mut Game, rival: &mut Rival) {
     x(&mut game.weapon_pax, &mut o.weapon_pax);
     x(&mut game.weapon2_pax, &mut o.weapon2_pax);
     x(&mut game.fx_live, &mut o.fx_live);
+    x(&mut game.sound_frame, &mut o.scans.sound_frame);
+    x(&mut game.move_se_scan, &mut o.scans.move_se);
+    x(&mut game.step_scan, &mut o.scans.step);
+    x(&mut game.dust_scan, &mut o.scans.dust);
+    if let Some(v) = game.voices.as_mut() {
+        x(&mut v.scan, &mut o.scans.voice);
+    }
     if let Some(rt) = game.enemy.as_mut() {
         x(&mut rt.blade, &mut o.blades);
         x(&mut rt.sora_body, &mut o.body);
@@ -533,6 +554,19 @@ pub(crate) fn tick(mut game: ResMut<Game>) {
             let position = game.sora.player.position;
             game.event(serde_json::json!({"event":"rival_action","tick":tick,
                 "slot":rival.slot,"action":format!("{action:?}"),"position":position}));
+        }
+        // His swings, voices, cloth sounds, footsteps on his own floor and
+        // ground dust, as the room's Sora's.
+        let room_floor = match &game.world {
+            RoomWorld::Map(map) => {
+                Some(map.swap_floor_state(rival.floor.unwrap_or(area::FLOOR_NONE)))
+            }
+            RoomWorld::Triangles(_) => None,
+        };
+        super::sora_sounds(game);
+        super::sora_dust(game);
+        if let (Some(room), RoomWorld::Map(map)) = (room_floor, &game.world) {
+            map.swap_floor_state(room);
         }
         // The Drive state's own effect starts, for drive_fx on his object.
         let mut placed = Vec::new();

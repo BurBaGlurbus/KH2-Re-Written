@@ -138,16 +138,16 @@ item slots and abilities, the top level of every spell, Valor, Wisdom, Master an
 (Limit Form is off), a full Drive gauge, and 99 of every consumable (Potion to Megalixir; the stat boosts, Tents
 and Drive Recoveries are left out). Nothing is read from or written to a save; the room's own build comes back
 when the session ends. Damage between the two Soras is the game's formula times the host's damage rule (×3 by
-default: `--duel-damage N` or F3 → Sora → Duel).
+default: `--duel-damage N` or F3 → Sora → Duel). The other Sora's HP stays on the target gauge (top right) for
+the whole duel.
 
 **Known limitations:**
 
 - Limits, summons, Limit Form, Donald and Goofy, and the room's Shadow are switched off in a session.
-- The other player's weapon trail and footstep dust are not drawn yet.
+- The other player's weapon trail is not drawn yet; Wisdom Form's shots show their effect on the host only.
 - The joiner sees its own Sora about one round trip late (one or two ticks on home Wi-Fi): there is no
   prediction yet. The host has no delay.
 - A knocked-out Sora stands up after two seconds (the test room's rule). There is no match result yet.
-- The other player's Sora makes no footstep or swing sounds; hit sounds and sparks play on both sides.
 - LAN only: no internet play. Discovery uses a broadcast that guest networks and some routers block; join by
   address then.
 

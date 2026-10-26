@@ -436,6 +436,20 @@ pub fn scan_view(
     gallery: &enemy_gallery::EnemyGallery,
     state: &Targeting,
 ) -> Option<ScanView> {
+    // [Duel rule] The other Sora's HP stays on the Scan gauge for the whole
+    // duel, Scan equipped or not, down to zero at a knock-out.
+    if game.duel
+        && let Some(r) = game.rivals.first()
+    {
+        let v = &r.fighter.vitals;
+        return Some(ScanView {
+            id: TargetId::Rival(r.slot),
+            manual: false,
+            hp: v.hp.max(0),
+            max_hp: v.target.max_hp,
+            events: Vec::new(),
+        });
+    }
     let equipped = game
         .ability_source
         .items

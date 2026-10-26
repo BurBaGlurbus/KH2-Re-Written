@@ -29,11 +29,22 @@ the scripts `runs.ps1`, `duo.ps1`, `compare.py`, and the built executables).
      file (`magic:<file>`, `system`, `form:<n>`, `weapon:<slot>`), played with the snapshot of their tick
      (`test_room/duel_fx.rs`).
    - Duel rules: Valor, Wisdom, Master and Final owned, Limit Form off; every category-0 consumable in stock
-     at 99 (Potion to Megalixir); the stat boosts, Tents and Drive Recoveries left out.
+     at 99 (Potion to Megalixir). Category 1 stays out: the stat boosts (equal stats), and Tent, Drive Recovery
+     and High Drive Recovery, which the game only uses from the camp's menu (item slots take category 0 only,
+     their command field is 0, their description says so; private trace `drive-recovery-01`), and the camp
+     does not open in a duel.
    - A duel is a battle throughout for the Drive state (Antiform can come, as in the game's battles); the
      host seeds each Sora's Drive roll from the clock when a player joins, and the form it rolls reaches the
      joiner with the snapshots.
    - `--rival-script` with `--join` scripts the joiner's buttons (test only).
+4. The other Sora's own sounds: each rival runs the room Sora's frame-trigger scan (swings, battle voices,
+   cloth, footsteps on his own floor) and ground dust with his own scan state; the host sends every Sora's
+   motion and command sounds (swing, voice, move_se, footstep, spell_voice, drive_start, revert, antiform,
+   form_level, wall_hit) as events and the dust as an effect on the map's container; the joiner no longer
+   scans its own Sora from snapshot state.
+5. The opponent's HP on the HUD: in a duel the game's Scan gauge (GAUGE_ENEMY, top right) shows the other
+   Sora's HP for the whole match, Scan or not. MP and Drive have no gauge of their own in the game's HUD for
+   another fighter, so they are not shown [duel choice]. The network overlay moves below the gauge.
 
 ## Checks
 
@@ -42,7 +53,8 @@ the scripts `runs.ps1`, `duo.ps1`, `compare.py`, and the built executables).
 | `cargo fmt --all --check`, `cargo clippy --all-targets --locked -- -D warnings`, `cargo test --locked` | PASS |
 | Wire round trips for the new events and snapshot fields (`duel_wire` tests) | PASS |
 | Loopback duel, scripted joiner (`duofx2`): the joiner's Fire and Thunder cast on the host, effects drawn on the joiner (`spell_effect` records), Valor requested (host tick 803), shown on the host (963) and on the joiner (`duel_form_shown`), Valor hits land for 9 | PASS |
-| Single-player tours (talk, magic, party-hit) against local main `8b2985a` (`compare.py`) | PASS (identical) |
+| Single-player tours (talk, magic, party-hit) against local main `8b2985a` (`compare.py`), before and after the merge of `b7ddcbd` and with steps 4–5 | PASS (identical) |
+| Loopback duel (`duo34`): the joiner plays 29 forwarded Sora sounds and none of its own from snapshots; the opponent's HP gauge top right on both | PASS |
 | Two PCs on a real LAN | NOT RUN (one PC here) |
 
 ## Uncertainty
@@ -56,5 +68,5 @@ the scripts `runs.ps1`, `duo.ps1`, `compare.py`, and the built executables).
 
 ## Verdict / next
 
-In progress: steps 1–2 PASS on one PC. Next: the other Sora's footstep and swing sounds as events, the
-opponent's HP/MP/Drive on the HUD.
+PASS for phase 2 on one PC (loopback); two PCs NOT RUN; Antiform on the joiner NOT RUN. Next: phase 3, the
+lobby (host rules, bans, abilities within AP, Keyblades, item slots, ready, the vote).

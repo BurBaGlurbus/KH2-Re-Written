@@ -8056,9 +8056,12 @@ fn simulate(
             "position":position,"landed":step.landed,"motion":motion,"ptya":ptya_id,"combo":combo}),
         );
     }
-    sora_sounds(&mut game);
+    // The joiner's Sora sounds and raises dust on the host, which sends both.
+    if !game.net_client {
+        sora_sounds(&mut game);
+        sora_dust(&mut game);
+    }
     sora_vibration(&mut game);
-    sora_dust(&mut game);
     if tick.is_multiple_of(60) {
         let (position, yaw, action) = (
             game.sora.player.position,
@@ -14389,7 +14392,7 @@ fn run(mut args: Vec<PathBuf>) -> Result<AppExit, Box<dyn std::error::Error>> {
                     (duel_fx::host_effects, drive_fx::tick).chain(),
                     spell_fx::tick,
                     hud_tick,
-                    play_sounds,
+                    (duel_fx::host_sounds, play_sounds).chain(),
                     (music_tick, duel_sync::host_send).chain(),
                 )
                     .chain()
