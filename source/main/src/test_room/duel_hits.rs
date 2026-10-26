@@ -97,10 +97,43 @@ struct Landed {
     victim: Who,
     instance: u64,
     atkp: u16,
+    /// The ATKP sub-table (a spell's row) and the spell volume's key.
+    sub: u8,
+    spell: Option<u64>,
+    /// A moving volume's direction (it pushes the way it travels).
+    moving: Option<Vec3>,
     high: bool,
     contact: Vec3,
-    /// The victim's guard took it (its own guard ATKP).
+    /// The victim's guard took it (its own guard ATKP, or his Reflect).
     guarded: bool,
+    /// The victim's Reflect volume that took it.
+    barrier: Option<u64>,
+}
+
+/// The first of a Sora's guard volumes (Reflect) the points meet: the
+/// contact and the volume's key.
+fn guard_volume(
+    volumes: &[magic::Volume],
+    points: &[[f32; 3]],
+    radius: f32,
+) -> Option<(Vec3, u64)> {
+    volumes
+        .iter()
+        .filter(|v| matches!(v.role, magic::Role::Guard))
+        .find_map(|g| {
+            points.iter().find_map(|&c| {
+                combat::volume_hits_sphere(g.centre, g.radius, g.height, c, radius)
+                    .then(|| (Vec3::from_array(c), g.key))
+            })
+        })
+}
+
+/// The magic state of the Sora `who`.
+fn magic_of(game: &mut Game, who: Who) -> Option<&mut magic_room::MagicRt> {
+    match who {
+        Who::Room => game.magic.as_mut(),
+        Who::Rival(i) => game.rivals.get_mut(i)?.own.magic.as_mut(),
+    }
 }
 
 /// FUN_1403d1f40's cone: the other attack's owner within the reflect range
@@ -147,7 +180,12 @@ pub(crate) fn tick(mut game: ResMut<Game>, mut previous: Local<HashMap<(u64, usi
     let mut views = vec![room_view];
     for (i, r) in game.rivals.iter().enumerate() {
         let p = &r.fighter.player;
-        let Some(&clip) = kit.poses.get(&(p.action, p.armed)) else {
+        let o = &r.own;
+        let Some(cp) = o
+            .poses
+            .get(&(p.action, p.armed))
+            .and_then(|&clip| o.clip_poses.get(clip))
+        else {
             continue;
         };
         views.push(View {
@@ -157,12 +195,28 @@ pub(crate) fn tick(mut game: ResMut<Game>, mut previous: Local<HashMap<(u64, usi
             turn: Quat::from_rotation_y(p.yaw),
             facing: Vec3::new(p.yaw.sin(), 0., p.yaw.cos()),
             started: r.started,
-            cp: &kit.clip_poses[clip],
-            frame: p.motion_frame(&kit.clips) as usize,
-            blades: &room_blades,
-            body: &kit.body,
+            cp,
+            frame: p.motion_frame(&o.clips) as usize,
+            blades: &o.blades,
+            body: &o.body,
             alive: r.fighter.vitals.hp > 0,
         });
+    }
+    // Each Sora's spell volumes this tick (his own magic state).
+    let mut spells: Vec<Vec<magic::Volume>> = vec![
+        game.magic
+            .as_ref()
+            .map(|m| m.volumes.clone())
+            .unwrap_or_default(),
+    ];
+    for r in &game.rivals {
+        spells.push(
+            r.own
+                .magic
+                .as_ref()
+                .map(|m| m.volumes.clone())
+                .unwrap_or_default(),
+        );
     }
     let all: Vec<(Who, Vec<Window>, Vec<Sphere>)> =
         views.iter().map(|v| (v.who, windows(v), body(v))).collect();
@@ -212,15 +266,21 @@ pub(crate) fn tick(mut game: ResMut<Game>, mut previous: Local<HashMap<(u64, usi
                                 .map(|(g, _)| *g)
                         })
                     });
-                    if let Some(at) = guard_hit {
+                    // A Reflect barrier (the victim's guard volumes) takes it too.
+                    let barrier = guard_volume(&spells[v], &points, radius);
+                    if let Some(at) = guard_hit.or(barrier.map(|b| b.0)) {
                         landed.push(Landed {
                             attacker: *attacker,
                             victim: *victim,
                             instance: *instance,
                             atkp: *atkp,
+                            sub: 0,
+                            spell: None,
+                            moving: None,
                             high: true,
                             contact: at,
                             guarded: true,
+                            barrier: barrier.map(|b| b.1),
                         });
                         break;
                     }
@@ -234,13 +294,59 @@ pub(crate) fn tick(mut game: ResMut<Game>, mut previous: Local<HashMap<(u64, usi
                             victim: *victim,
                             instance: *instance,
                             atkp: *atkp,
+                            sub: 0,
+                            spell: None,
+                            moving: None,
                             high,
                             contact: b,
                             guarded: false,
+                            barrier: None,
                         });
                         break;
                     }
                 }
+            }
+        }
+    }
+    // Spell volumes (YS::ATTACK_MAGIC): the damaging ones against the other
+    // Soras' HIT spheres (one body hit per target per tick), a barrier first.
+    for (a, volumes) in spells.iter().enumerate() {
+        let attacker = views[a].who;
+        for vol in volumes
+            .iter()
+            .filter(|vol| matches!(vol.role, magic::Role::Damage))
+        {
+            ensure_attack_rows(rt, vol.atkp, vol.sub);
+            for (v, (victim, _, bodies)) in all.iter().enumerate() {
+                if a == v || !views[v].alive || landed.iter().any(|l| l.victim == *victim) {
+                    continue;
+                }
+                let points = combat::swept_volume(vol.centre, vol.previous, vol.radius, vol.height);
+                let instance = magic_room::KEY_BASE | rival::tag_key(vol.key, views[a].slot);
+                let barrier = guard_volume(&spells[v], &points, vol.radius);
+                let body_hit = points.iter().find_map(|&c| {
+                    bodies.iter().find(|(b, r, _)| {
+                        combat::volume_hits_sphere(c, vol.radius, vol.height, b.to_array(), *r)
+                    })
+                });
+                let (contact, high, guarded) = match (barrier, body_hit) {
+                    (Some((at, _)), _) => (at, true, true),
+                    (None, Some(&(b, _, high))) => (b, high, false),
+                    (None, None) => continue,
+                };
+                landed.push(Landed {
+                    attacker,
+                    victim: *victim,
+                    instance,
+                    atkp: vol.atkp,
+                    sub: vol.sub,
+                    spell: Some(vol.key),
+                    moving: vol.moving.map(Vec3::from_array),
+                    high,
+                    contact,
+                    guarded,
+                    barrier: barrier.map(|b| b.1),
+                });
             }
         }
     }
@@ -275,9 +381,13 @@ fn fighter<'a>(
     kit: &'a rival::RivalKit,
     who: Who,
 ) -> (&'a mut Fighter, &'a Clips) {
+    let _ = kit;
     match who {
         Who::Room => (&mut game.sora, &game.clips),
-        Who::Rival(i) => (&mut game.rivals[i].fighter, &kit.clips),
+        Who::Rival(i) => {
+            let r = &mut game.rivals[i];
+            (&mut r.fighter, &r.own.clips)
+        }
     }
 }
 
@@ -302,11 +412,15 @@ fn land(
     let Some(rt) = game.enemy.as_mut() else {
         return;
     };
-    let Some(rows) = rt.steps.get(&(hit.atkp, 0)).cloned() else {
+    let Some(rows) = rt.steps.get(&(hit.atkp, hit.sub)).cloned() else {
         return;
     };
     let hit_sound = rt.hit_sounds.get(&hit.atkp).copied();
-    let spark = rt.hit_effects.get(&hit.atkp).copied();
+    let spark = match hit.spell {
+        None => rt.hit_effects.get(&hit.atkp).copied(),
+        // A spell's row names its own spark.
+        Some(_) => Some((rows[0].hit_effect, rows[0].hit_effect_random)),
+    };
     // The attack's id and combo group, shared with the room's other hits.
     rt.instance_seen.insert(hit.instance, tick);
     let (aid, group) = *rt.instance_ids.entry(hit.instance).or_insert_with(|| {
@@ -318,7 +432,8 @@ fn land(
         };
         (rt.ids.allocate(), group)
     });
-    let away = ((victim_at - attacker_at) * Vec3::new(1., 0., 1.)).normalize_or(Vec3::Z);
+    let away = (hit.moving.unwrap_or(victim_at - attacker_at) * Vec3::new(1., 0., 1.))
+        .normalize_or(Vec3::Z);
     let attacker_stats = {
         let (a, _) = fighter(game, kit, hit.attacker);
         let p = &a.player;
@@ -346,13 +461,21 @@ fn land(
     }
     if hit.guarded {
         victim.vitals.record.mark(aid);
-        let recoiled = victim
-            .player
-            .guard_recoil([-away.x, -away.z], clips)
-            .is_some();
-        victim.vitals.invulnerable = 80.;
-        if recoiled {
-            set_started(game, hit.victim, tick);
+        if let Some(key) = hit.barrier {
+            // Reflect took it: the barrier counts the clash (attack_get_
+            // reflect_count, +0xb0), which its counter tiers read.
+            if let Some(m) = magic_of(game, hit.victim) {
+                *m.reflected.entry(key).or_insert(0) += 1;
+            }
+        } else {
+            let recoiled = victim
+                .player
+                .guard_recoil([-away.x, -away.z], clips)
+                .is_some();
+            victim.vitals.invulnerable = 80.;
+            if recoiled {
+                set_started(game, hit.victim, tick);
+            }
         }
         fighter(game, kit, hit.attacker).0.player.connected = true;
         game.effect_queue.push(EffectRequest::System {
@@ -418,7 +541,28 @@ fn land(
         game.sound_queue.push((id as u32, "duel_hit"));
         events.push(DuelEvent::Sound(id as u32));
     }
-    if let Some((effect, random)) = spark.filter(|s| s.0 != 0) {
+    let spell_spark = match (hit.spell, spark.filter(|s| s.0 != 0)) {
+        // A spell's spark comes from the spell's own PAX (an effect call,
+        // which reaches the joiner with the others).
+        (Some(key), Some((effect, _))) => magic_of(game, hit.attacker).map(|m| {
+            m.feedback.hit.push(key);
+            magic_room::spark(m, key, effect, hit.contact.to_array(), away.to_array())
+        }),
+        (Some(key), None) => {
+            if let Some(m) = magic_of(game, hit.attacker) {
+                m.feedback.hit.push(key);
+            }
+            Some(None)
+        }
+        (None, _) => None,
+    };
+    if let Some(calls) = spell_spark {
+        let mut calls = calls.unwrap_or_default();
+        if hit.attacker != Who::Room {
+            rival::retag_calls(&mut calls, attacker_slot);
+        }
+        game.fx_calls.extend(calls);
+    } else if let Some((effect, random)) = spark.filter(|s| s.0 != 0) {
         let own = (hit.instance >> 5) & 3 == 2;
         game.effect_queue.push(EffectRequest::Hit {
             effect,

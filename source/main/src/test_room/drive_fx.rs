@@ -47,6 +47,8 @@ pub enum Anchor {
     /// A Wisdom bullet (by key): the element takes its position and
     /// direction every tick (`effect_set_pos` / `effect_set_dir`).
     Bullet(u64),
+    /// The duel's other Sora's own object, by slot (as `Sora` for him).
+    Rival(u8),
 }
 
 /// An instance's world matrix at `at` turned to `dir` (scene coordinates),
@@ -102,6 +104,8 @@ struct Running {
     instance: Instance,
     dpd: Arc<Dpd>,
     bind: Option<Bind>,
+    /// The duel's other Sora whose object a bound element follows.
+    rival: Option<u8>,
     owner: u8,
     /// The element, when it follows the room enemy's object.
     enemy_element: Option<object_effect::Element>,
@@ -177,9 +181,9 @@ impl DriveFx {
 
 /// Sora this frame: his scene-space object matrix, the bone matrices, and
 /// each weapon slot's grip matrix and blade tip (model space).
-struct SoraPose<'a> {
+struct SoraPose {
     root: Mat4,
-    bones: Option<&'a HashMap<usize, Mat4>>,
+    bones: Option<HashMap<usize, Mat4>>,
     slots: [Option<(Mat4, Vec3)>; 2],
     /// Bone codes 0x4001 / 0x4009 (FUN_1403b50f0): the centres of Sora's
     /// first type-1 and type-9 collision entries, above his origin.
@@ -187,7 +191,20 @@ struct SoraPose<'a> {
     heal_lift: f32,
 }
 
-fn sora_pose(game: &Game) -> SoraPose<'_> {
+/// Each rival's pose (his state swapped in for a moment).
+fn rival_poses(game: &mut Game) -> Vec<(u8, SoraPose)> {
+    let mut out = Vec::new();
+    let mut rivals = std::mem::take(&mut game.rivals);
+    for r in &mut rivals {
+        super::rival::swap(game, r);
+        out.push((r.slot, sora_pose(game)));
+        super::rival::swap(game, r);
+    }
+    game.rivals = rivals;
+    out
+}
+
+fn sora_pose(game: &Game) -> SoraPose {
     let p = game.sora.player.position;
     let root = Mat4::from_rotation_translation(
         Quat::from_rotation_y(game.sora.player.yaw),
@@ -198,7 +215,9 @@ fn sora_pose(game: &Game) -> SoraPose<'_> {
         .get(&(game.sora.player.action, game.sora.player.armed));
     let frame = game.sora.player.motion_frame(&game.clips) as usize;
     let cp = clip.and_then(|&c| game.clip_poses.get(c));
-    let bones = cp.and_then(|c| c.body.get(frame.min(c.body.len().saturating_sub(1))));
+    let bones = cp
+        .and_then(|c| c.body.get(frame.min(c.body.len().saturating_sub(1))))
+        .cloned();
     // FUN_1403b5450's slot matrix and the blade length along it: the hand
     // joint holding the weapon, and the weapon vertex farthest from it [I].
     let slot = |grips: &[Mat4], verts: &[Vec<Vec3>]| -> Option<(Mat4, Vec3)> {
@@ -260,7 +279,7 @@ fn bound_world(pose: &SoraPose, bind: &Bind) -> Mat {
         0x4001 => root * Mat4::from_translation(Vec3::new(0., pose.body_lift, 0.)),
         0x4009 => root * Mat4::from_translation(Vec3::new(0., pose.heal_lift, 0.)),
         b if !(0..0x4000).contains(&b) => root,
-        b => match pose.bones.and_then(|m| m.get(&(b as usize))) {
+        b => match pose.bones.as_ref().and_then(|m| m.get(&(b as usize))) {
             Some(m) => root * *m * flip,
             None => root,
         },
@@ -344,6 +363,7 @@ pub fn tick(
             .retain(|r| !(r.group.is_some() && group.is_none_or(|g| r.group == Some(g))));
     }
     let pose = sora_pose(&game);
+    let rival_poses = rival_poses(&mut game);
     let mut sounds = Vec::new();
     let mut log = Vec::new();
     let tick = game.tick;
@@ -382,14 +402,25 @@ pub fn tick(
         let mut enemy_element = None;
         let mut actor_element = None;
         let mut bullet = None;
+        let mut rival = None;
         let (bind, world) = match anchor {
-            Anchor::Sora => {
+            Anchor::Sora | Anchor::Rival(_) => {
+                let pose = match anchor {
+                    Anchor::Rival(slot) => {
+                        rival = Some(slot);
+                        match rival_poses.iter().find(|p| p.0 == slot) {
+                            Some((_, p)) => p,
+                            None => continue,
+                        }
+                    }
+                    _ => &pose,
+                };
                 let bind = (element.flags & 1 != 0).then_some(Bind {
                     bone: element.bone,
                     local,
                 });
                 let world = match &bind {
-                    Some(b) => bound_world(&pose, b),
+                    Some(b) => bound_world(pose, b),
                     None => ::effect::math::mul(&to_game(pose.root), &local),
                 };
                 (bind, world)
@@ -480,6 +511,7 @@ pub fn tick(
                 instance,
                 dpd,
                 bind,
+                rival,
                 spark,
                 owner: req.owner,
                 enemy_element,
@@ -516,7 +548,13 @@ pub fn tick(
     let mut unsupported = Vec::new();
     for r in fx.running.iter_mut() {
         if let Some(b) = &r.bind {
-            r.instance.world = bound_world(&pose, b);
+            let own = match r.rival {
+                Some(slot) => rival_poses.iter().find(|p| p.0 == slot).map(|p| &p.1),
+                None => Some(&pose),
+            };
+            if let Some(own) = own {
+                r.instance.world = bound_world(own, b);
+            }
         }
         if let Some((id, element)) = &r.actor_element
             && let Some(&(position, yaw)) = game.actor_poses.get(id)

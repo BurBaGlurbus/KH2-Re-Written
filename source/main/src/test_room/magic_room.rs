@@ -22,6 +22,7 @@ pub const MEMBER_NAMES: u16 = 0xf000;
 const SE_ERROR: u32 = 5;
 
 /// 03system and 00battle data of the six spells.
+#[derive(Clone)]
 pub struct MagicSource {
     pub records: Vec<magic::Record>,
     pub rows: Vec<magic::Row>,

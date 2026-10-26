@@ -12,10 +12,12 @@ use std::collections::BTreeMap;
 
 /// The level both players fight at.
 pub(crate) const DUEL_LEVEL: u8 = 99;
-/// Consumables in stock for a duel, and the order they fill Sora's item
-/// slots: Potion, Hi-Potion, Mega-Potion, Ether, Mega-Ether, Elixir,
-/// Megalixir [duel choice: the healing items 1..=7 of the item table].
-const DUEL_ITEMS: [u16; 7] = [1, 2, 5, 3, 6, 4, 7];
+/// The order the healing items fill Sora's item slots: Potion, Hi-Potion,
+/// Mega-Potion, Ether, Mega-Ether, Elixir, Megalixir [duel choice until
+/// the lobby lets each player choose]. Every consumable of the item table
+/// (category 0) is in stock; the boosts, Tents and Drive Recoveries
+/// (category 1) are not [duel choice: no stat boosts in a match].
+const SLOT_ORDER: [u16; 7] = [1, 2, 5, 3, 6, 4, 7];
 const DUEL_STOCK: u8 = 99;
 /// Item slots before any bonus level adds one [duel choice: the room's
 /// two], and the most Sora holds.
@@ -171,6 +173,17 @@ pub(crate) fn apply(
     // owned), with what each level teaches Sora.
     let mut form_levels = Vec::new();
     if let Some(d) = game.drive.as_mut() {
+        // [Duel rule] Valor, Wisdom, Master and Final are owned; Limit Form
+        // is off with the limits and summons (Anti Form stays the game's).
+        for f in [
+            player::forms::VALOR,
+            player::forms::WISDOM,
+            player::forms::MASTER,
+            player::forms::FINAL,
+        ] {
+            d.forms.owned[f as usize] = true;
+        }
+        d.forms.owned[player::forms::LIMIT as usize] = false;
         let src = Arc::clone(&d.src);
         for f in 1..=5u8 {
             if !d.forms.owned.get(f as usize).copied().unwrap_or(false) {
@@ -197,13 +210,28 @@ pub(crate) fn apply(
     let v = &mut game.sora.vitals;
     v.hp = v.target.max_hp;
     v.ko_ticks = 0;
-    // Items: a stock of every healing item and the slots filled in order.
+    // Items: every consumable in stock and the slots filled in order.
+    let mut stocked = Vec::new();
     if let Some(it) = game.items.as_mut() {
         let slots = (BASE_ITEM_SLOTS + item_slots).min(MAX_ITEM_SLOTS);
-        for id in DUEL_ITEMS {
+        stocked = it
+            .src
+            .items
+            .iter()
+            .filter(|(_, info)| info.kind == 0)
+            .map(|(&id, _)| id)
+            .collect();
+        stocked.sort_unstable();
+        it.stock.clear();
+        for &id in &stocked {
             it.stock.insert(id, DUEL_STOCK);
         }
-        it.slots = DUEL_ITEMS.iter().copied().cycle().take(slots).collect();
+        let order: Vec<u16> = SLOT_ORDER
+            .iter()
+            .copied()
+            .filter(|id| stocked.contains(id))
+            .collect();
+        it.slots = order.iter().copied().cycle().take(slots).collect();
         it.originals = it.slots.clone();
     }
     let v = &game.sora.vitals;
@@ -212,7 +240,7 @@ pub(crate) fn apply(
         "strength":v.attacker.strength,"magic":v.attacker.magic,"defense":v.target.defense,
         "max_hp":v.target.max_hp,"max_mp":game.sora.player.mp.max,
         "drive_max":game.sora.player.drive.max,"bonuses":bonuses,"form_levels":form_levels,
-        "item_slots":game.items.as_ref().map(|i| i.slots.len())}),
+        "item_slots":game.items.as_ref().map(|i| i.slots.len()),"stocked":stocked}),
     )
 }
 

@@ -114,7 +114,8 @@ private networks (your home Wi-Fi), or the other player cannot reach you.
 | `--name NAME` | The name the other player sees |
 | `--net-sim LATENCY,JITTER,LOSS` | Add latency (ms), jitter (ms) and loss (%) to what this instance sends |
 | `--net-overlay` | Show the network overlay |
-| `--rival-script` | No network: a second Sora run by a test script, to try the duel alone |
+| `--duel-damage N` | Host: multiply Sora-against-Sora damage by N (0.5 to 10, default 3) |
+| `--rival-script` | No network: a second Sora run by a test script, to try the duel alone. With `--join`: the script presses the joiner's buttons (attacks, Fire, Thunder, a Potion, Valor Form) |
 
 In the room, F3 → Sora has *Network overlay* (ping, loss, data rates, buffered snapshots and warnings, top
 right), *Simulated network* (Off, Wi-Fi, Busy Wi-Fi, Bad link) and, outside a session, *Scripted rival Sora*.
@@ -127,13 +128,22 @@ on both.
 **How it works:** the host runs the game for both Soras on the fixed 60 Hz tick. The joiner sends its buttons
 every tick (repeating the last six, so a lost packet costs nothing) and draws the host's snapshots two ticks
 behind to ride out jitter. Hit sounds, sparks, guard clashes and knock-outs reach the joiner as reliable events
-and play there; nothing cosmetic is streamed. Esc leaves; the other side sees "Opponent left" (or a timeout after
-five seconds) and the host waits for the next player.
+and play there; nothing cosmetic is streamed. Spells, items and Drive forms work the same way: the joiner's
+command goes to the host with its buttons, the host runs it, and the effects it starts reach the joiner as events
+naming the effect file, so each side draws them from its own install. Esc leaves; the other side sees "Opponent
+left" (or a timeout after five seconds) and the host waits for the next player.
+
+**The duel build:** for a session both Soras fight at level 99 with every bonus level's HP, MP, Drive bars,
+item slots and abilities, the top level of every spell, Valor, Wisdom, Master and Final Form at their level cap
+(Limit Form is off), a full Drive gauge, and 99 of every consumable (Potion to Megalixir; the stat boosts, Tents
+and Drive Recoveries are left out). Nothing is read from or written to a save; the room's own build comes back
+when the session ends. Damage between the two Soras is the game's formula times the host's damage rule (×3 by
+default: `--duel-damage N` or F3 → Sora → Duel).
 
 **Known limitations:**
 
-- Only movement, jumping, guarding and the Attack command are shared. Magic, items, Drive forms, limits,
-  summons, Donald and Goofy, and the room's Shadow are switched off in a session.
+- Limits, summons, Limit Form, Donald and Goofy, and the room's Shadow are switched off in a session.
+- The other player's weapon trail and footstep dust are not drawn yet.
 - The joiner sees its own Sora about one round trip late (one or two ticks on home Wi-Fi): there is no
   prediction yet. The host has no delay.
 - A knocked-out Sora stands up after two seconds (the test room's rule). There is no match result yet.

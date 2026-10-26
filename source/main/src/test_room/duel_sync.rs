@@ -6,7 +6,7 @@
 
 use super::duel_net::{DuelNet, fighter_slots, warn};
 use super::duel_wire::{self, DuelEvent, FighterState, Snapshot};
-use super::rival::RivalPad;
+use super::rival::{Command, RivalPad};
 use super::*;
 use net::{RELIABLE, Role, UNRELIABLE};
 
@@ -22,6 +22,11 @@ fn merge(older: RivalPad, newer: RivalPad) -> RivalPad {
         jump: older.jump || newer.jump,
         attack: older.attack || newer.attack,
         guard: older.guard || newer.guard,
+        // A menu command is never dropped either.
+        command: match newer.command {
+            Command::None => older.command,
+            c => c,
+        },
         ..newer
     }
 }
@@ -33,6 +38,7 @@ fn held(pad: RivalPad) -> RivalPad {
         jump: false,
         attack: false,
         guard: false,
+        command: Command::None,
         ..pad
     }
 }
@@ -101,7 +107,13 @@ pub(crate) fn host_take_inputs(net: Option<ResMut<DuelNet>>, mut game: ResMut<Ga
 /// Ticks without new buttons or snapshots before the overlay warns.
 const LATE_WARNING: u32 = 30;
 
-fn state_of(slot: u8, player: &Player, vitals: &Vitals, started: u64) -> FighterState {
+fn state_of(
+    slot: u8,
+    (player, vitals): (&Player, &Vitals),
+    started: u64,
+    drive: Option<&drive_room::DriveRt>,
+    items: Option<&item_room::ItemRt>,
+) -> FighterState {
     FighterState {
         slot,
         position: player.position,
@@ -121,6 +133,8 @@ fn state_of(slot: u8, player: &Player, vitals: &Vitals, started: u64) -> Fighter
             player.drive.bars,
         ],
         invulnerable: vitals.invulnerable,
+        form: drive.map_or(0, |d| d.shown),
+        items: items.map(|i| i.slots.clone()).unwrap_or_default(),
     }
 }
 
@@ -139,15 +153,20 @@ pub(crate) fn host_send(net: Option<ResMut<DuelNet>>, mut game: ResMut<Game>) {
     }
     let mut fighters = vec![state_of(
         fighter_slots::HOST,
-        &game.sora.player,
-        &game.sora.vitals,
+        (&game.sora.player, &game.sora.vitals),
         game.action_started,
+        game.drive.as_ref(),
+        game.items.as_ref(),
     )];
-    fighters.extend(
-        game.rivals
-            .iter()
-            .map(|r| state_of(r.slot, &r.fighter.player, &r.fighter.vitals, r.started)),
-    );
+    fighters.extend(game.rivals.iter().map(|r| {
+        state_of(
+            r.slot,
+            (&r.fighter.player, &r.fighter.vitals),
+            r.started,
+            r.own.drive.as_ref(),
+            r.own.items.as_ref(),
+        )
+    }));
     let snapshot = Snapshot {
         tick: game.tick,
         fighters,
@@ -214,6 +233,7 @@ fn play_event(game: &mut Game, event: &DuelEvent) {
             let tick = game.tick;
             game.event(serde_json::json!({"event":"duel_stood_up","tick":tick,"slot":slot}));
         }
+        DuelEvent::Spell { .. } | DuelEvent::DriveFx { .. } => duel_fx::play(game, event),
     }
 }
 
@@ -231,10 +251,9 @@ pub(crate) fn join_apply(net: Option<ResMut<DuelNet>>, mut game: ResMut<Game>) {
         }
     }
     while let Some(m) = net.session.receive(RELIABLE) {
-        if let Some((_, events)) = duel_wire::decode_events(&m) {
-            for e in &events {
-                play_event(&mut game, e);
-            }
+        if let Some((tick, events)) = duel_wire::decode_events(&m) {
+            // Played with the snapshot of the tick they happened on.
+            net.events.push_back((tick, events));
         } else if let Some(rules) = duel_wire::decode_rules(&m) {
             game.duel_rules = rules;
         }
@@ -263,22 +282,68 @@ pub(crate) fn join_apply(net: Option<ResMut<DuelNet>>, mut game: ResMut<Game>) {
                 format!("Tick {tick}: no snapshot from the host for half a second"),
             );
         }
+        // Without snapshots the events still come, a little late.
+        if net.stale_run >= LATE_WARNING {
+            for (_, events) in std::mem::take(&mut net.events) {
+                for e in &events {
+                    play_event(&mut game, e);
+                }
+            }
+        }
         return;
     };
     net.stale_run = 0;
     net.shown_snapshot = Some(tick);
     let now = game.tick;
     let game = &mut *game;
+    // Every form's kit loads ahead, for the host's changes to show at once.
+    if let Some(d) = game.drive.as_mut() {
+        d.preload();
+    }
+    for r in &mut game.rivals {
+        if let Some(d) = r.own.drive.as_mut() {
+            d.preload();
+        }
+    }
     for s in &snapshot.fighters {
         if s.slot == fighter_slots::JOIN {
+            // The form's kit first: the action names one of its motions.
+            show_form(game, s.slot, s.form);
+            if let Some(it) = game.items.as_mut() {
+                it.slots.clone_from(&s.items);
+            }
             if apply_state(s, &mut game.sora.player, &mut game.sora.vitals) {
                 game.action_started = now;
             }
-        } else if let Some(r) = game.rivals.iter_mut().find(|r| r.slot == s.slot)
-            && apply_state(s, &mut r.fighter.player, &mut r.fighter.vitals)
-        {
-            r.started = now;
+        } else if let Some(i) = game.rivals.iter().position(|r| r.slot == s.slot) {
+            let mut r = game.rivals.swap_remove(i);
+            rival::swap(game, &mut r);
+            show_form(game, s.slot, s.form);
+            rival::swap(game, &mut r);
+            if apply_state(s, &mut r.fighter.player, &mut r.fighter.vitals) {
+                r.started = now;
+            }
+            game.rivals.insert(i, r);
         }
+    }
+    while net.events.front().is_some_and(|(t, _)| *t <= tick) {
+        let (_, events) = net.events.pop_front().unwrap();
+        for e in &events {
+            play_event(game, e);
+        }
+    }
+}
+
+/// The form the host's snapshot names, on the Sora swapped in; the change
+/// goes in the log.
+fn show_form(game: &mut Game, slot: u8, form: u8) {
+    let before = game.drive.as_ref().map(|d| d.shown);
+    drive_room::show_form(game, form);
+    let after = game.drive.as_ref().map(|d| d.shown);
+    if after != before {
+        let tick = game.tick;
+        game.event(serde_json::json!({"event":"duel_form_shown","tick":tick,
+            "slot":slot,"form":after}));
     }
 }
 
@@ -340,8 +405,10 @@ mod tests {
             attack: true,
             guard: true,
             guard_held: true,
+            command: Command::Cast(1),
         };
         let h = held(p);
+        assert_eq!(h.command, Command::None);
         assert_eq!(h.direction, p.direction);
         assert!(h.jump_held && h.guard_held);
         assert!(!h.jump && !h.attack && !h.guard);

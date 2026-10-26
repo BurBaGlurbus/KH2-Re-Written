@@ -14,6 +14,9 @@ const ITEM_FX: u64 = 1 << 55;
 /// One consumable's 03system record fields.
 #[derive(Clone, Copy, Debug)]
 pub struct ItemInfo {
+    /// +2: the category (0 a consumable, 1 a boost, Tent or Drive
+    /// Recovery).
+    pub kind: u8,
     /// +4: the amount, in percent of max HP / MP.
     pub amount: u16,
     /// +0x10: the command that uses it.
@@ -22,6 +25,7 @@ pub struct ItemInfo {
     pub effect: u16,
 }
 
+#[derive(Clone)]
 pub struct ItemSource {
     pub items: HashMap<u16, ItemInfo>,
     /// Every item's treasure box style (record byte +0x16).
@@ -38,6 +42,7 @@ pub fn load(system: &[u8]) -> Result<ItemSource, Box<dyn std::error::Error>> {
             (
                 r.id,
                 ItemInfo {
+                    kind: r.kind,
                     amount: r.amount,
                     command: r.command,
                     effect: r.weapon_stats,

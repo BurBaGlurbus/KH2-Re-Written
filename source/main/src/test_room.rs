@@ -73,6 +73,7 @@ pub(crate) use debug_menu::DebugMenu;
 mod deck_tour;
 mod drive_fx;
 mod drive_room;
+mod duel_fx;
 mod duel_hits;
 mod duel_loadout;
 mod duel_net;
@@ -7649,15 +7650,27 @@ fn simulate(
             "params":gallery.target_params.is_some(),
             "enemy":enemy_state}));
     }
-    if let Some(t) = cast
-        && !talking
-    {
-        magic_room::request(&mut game, t, tick);
-    }
-    if let Some(slot) = menu_item
-        && !talking
-    {
-        item_room::request(&mut game, slot, tick);
+    // The joiner's commands go to the host with his buttons.
+    let mut net_command = rival::Command::None;
+    if game.net_client {
+        if let Some(t) = cast.filter(|_| !talking) {
+            net_command = rival::Command::Cast(t);
+        } else if let Some(slot) = menu_item.filter(|_| !talking) {
+            net_command = rival::Command::Item(slot as u8);
+        } else if let Some(form) = game.drive.as_mut().and_then(|d| d.request.take()) {
+            net_command = rival::Command::Drive(form);
+        }
+    } else {
+        if let Some(t) = cast
+            && !talking
+        {
+            magic_room::request(&mut game, t, tick);
+        }
+        if let Some(slot) = menu_item
+            && !talking
+        {
+            item_room::request(&mut game, slot, tick);
+        }
     }
     // A party limit asked for from the second deck starts here
     // (FUN_1403d8b40); while it runs its scene moves Sora.
@@ -7709,6 +7722,14 @@ fn simulate(
             // The joiner's Sora is the host's to move: his buttons go to
             // the host (duel_sync), and the host's snapshots place him.
             game.net_pad = rival::RivalPad::of(&input);
+            game.net_pad.command = net_command;
+            // [Test] `--rival-script` on a joiner: the rival's test script
+            // presses his buttons, against the host's Sora.
+            if game.rival_script
+                && let Some(foe) = game.rivals.first().map(|r| r.fighter.player.position)
+            {
+                game.net_pad = rival::script_pad(tick, game.sora.player.position, foe);
+            }
             player::Step::default()
         } else {
             let Game {
@@ -14114,12 +14135,9 @@ fn run(mut args: Vec<PathBuf>) -> Result<AppExit, Box<dyn std::error::Error>> {
             game.local_slot = duel_net::local_slot(setup.role);
             game.net_client = setup.role == net::Role::Join;
             game.net_overlay = setup.overlay;
-            // [Duel, Phase 1] Only movement, guard and the Attack command
-            // are shared: the commands, forms and party that would need
-            // more of the game replicated are off, and so is the Shadow.
-            game.magic = None;
-            game.items = None;
-            game.drive = None;
+            // [Duel rule] Sora alone: magic, items and Drive forms are the
+            // host's to run for both (duel_sync); the second deck's limits,
+            // the summons, the party and the Shadow are off.
             game.second_deck = None;
             game.summons = None;
             game.party.clear();
@@ -14355,7 +14373,7 @@ fn run(mut args: Vec<PathBuf>) -> Result<AppExit, Box<dyn std::error::Error>> {
                     field_npc_tick,
                     talk_tick,
                     effects_tick,
-                    drive_fx::tick,
+                    (duel_fx::host_effects, drive_fx::tick).chain(),
                     spell_fx::tick,
                     hud_tick,
                     play_sounds,

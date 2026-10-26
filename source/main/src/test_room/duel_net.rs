@@ -71,6 +71,9 @@ pub(crate) struct DuelNet {
     /// Joiner: snapshots by host tick, waiting to be shown.
     pub snapshots: BTreeMap<u64, duel_wire::Snapshot>,
     pub shown_snapshot: Option<u64>,
+    /// Joiner: the host's events by host tick, waiting for that tick's
+    /// snapshot.
+    pub events: VecDeque<(u64, Vec<duel_wire::DuelEvent>)>,
     /// Ticks the host had no new buttons for (late input) and ticks the
     /// joiner had no new snapshot for; reset each overlay refresh.
     pub starved: u32,
@@ -221,6 +224,7 @@ impl DuelNet {
             preset: setup.conditions.is_clear().then_some(0),
             skipped: 0,
             sent_rules: None,
+            events: VecDeque::new(),
             warnings: VecDeque::new(),
             since_refresh: 0,
             lines: Vec::new(),
@@ -280,9 +284,26 @@ pub(crate) fn begin(
                 net.used_input = None;
                 net.snapshots.clear();
                 net.shown_snapshot = None;
+                net.events.clear();
                 net.sent_rules = None;
                 let slot = remote_slot(net.role);
                 rival::spawn_remote(&mut game, slot);
+                // The host's Drive rolls (Antiform) start from the clock, a
+                // different sequence each session; each Sora draws his own.
+                if net.role == Role::Host {
+                    let clock = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map_or(1, |d| d.subsec_nanos() ^ d.as_secs() as u32);
+                    let g = &mut *game;
+                    let drives = g
+                        .drive
+                        .as_mut()
+                        .into_iter()
+                        .chain(g.rivals.iter_mut().filter_map(|r| r.own.drive.as_mut()));
+                    for (k, d) in drives.enumerate() {
+                        d.seed = clock.wrapping_add(k as u32 * 0x9e37_79b9) | 1;
+                    }
+                }
                 game.event(serde_json::json!({"event":"net_connected","tick":tick,
                     "peer":peer.name,"address":peer.addr.to_string()}));
             }

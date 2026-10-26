@@ -5,7 +5,7 @@
 //!
 //! Only what drawing and the HUD need is sent; the host alone simulates.
 
-use super::rival::RivalPad;
+use super::rival::{Command, RivalPad};
 use net::wire::{Reader, Writer};
 use player::Action;
 
@@ -79,6 +79,14 @@ fn put_pad(w: &mut Writer, pad: &RivalPad) {
         | u8::from(pad.guard) << 3
         | u8::from(pad.guard_held) << 4;
     w.u8(bits);
+    let (tag, arg) = match pad.command {
+        Command::None => (0, 0),
+        Command::Cast(t) => (1, t),
+        Command::Item(s) => (2, s),
+        Command::Drive(f) => (3, f),
+    };
+    w.u8(tag);
+    w.u8(arg);
 }
 
 fn get_pad(r: &mut Reader) -> Option<RivalPad> {
@@ -87,6 +95,14 @@ fn get_pad(r: &mut Reader) -> Option<RivalPad> {
         return None;
     }
     let bits = r.u8()?;
+    let (tag, arg) = (r.u8()?, r.u8()?);
+    let command = match tag {
+        0 => Command::None,
+        1 => Command::Cast(arg),
+        2 => Command::Item(arg),
+        3 => Command::Drive(arg),
+        _ => return None,
+    };
     Some(RivalPad {
         direction,
         jump: bits & 1 != 0,
@@ -94,6 +110,7 @@ fn get_pad(r: &mut Reader) -> Option<RivalPad> {
         attack: bits & 4 != 0,
         guard: bits & 8 != 0,
         guard_held: bits & 16 != 0,
+        command,
     })
 }
 
@@ -128,7 +145,7 @@ pub(crate) fn decode_input(bytes: &[u8]) -> Option<Vec<(u32, RivalPad)>> {
 }
 
 /// One Sora as the other instance draws him.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub(crate) struct FighterState {
     pub slot: u8,
     pub position: [f32; 3],
@@ -144,7 +161,14 @@ pub(crate) struct FighterState {
     pub mp: [i32; 2],
     pub drive: [u8; 4],
     pub invulnerable: f32,
+    /// The Drive form his model shows (0 = none).
+    pub form: u8,
+    /// His item slots (0 = used up).
+    pub items: Vec<u16>,
 }
+
+/// The most item slots a snapshot carries.
+pub(crate) const MAX_ITEM_SLOTS: usize = 8;
 
 /// The host's picture of one tick.
 #[derive(Clone, Debug, PartialEq)]
@@ -177,6 +201,12 @@ pub(crate) fn encode_snapshot(s: &Snapshot) -> Vec<u8> {
         w.i32(f.mp[1]);
         w.bytes(&f.drive);
         w.f32(f.invulnerable);
+        w.u8(f.form);
+        let items = &f.items[..f.items.len().min(MAX_ITEM_SLOTS)];
+        w.u8(items.len() as u8);
+        for &id in items {
+            w.u16(id);
+        }
     }
     w.finish()
 }
@@ -206,6 +236,12 @@ pub(crate) fn decode_snapshot(bytes: &[u8]) -> Option<Snapshot> {
         let mp = [r.i32()?, r.i32()?];
         let drive = r.array()?;
         let invulnerable = r.f32()?;
+        let form = r.u8()?;
+        let count = r.u8()? as usize;
+        if count > MAX_ITEM_SLOTS {
+            return None;
+        }
+        let items = (0..count).map(|_| r.u16()).collect::<Option<Vec<_>>>()?;
         if !position.iter().chain([&yaw, &blend]).all(|v| v.is_finite()) {
             return None;
         }
@@ -223,6 +259,8 @@ pub(crate) fn decode_snapshot(bytes: &[u8]) -> Option<Snapshot> {
             mp,
             drive,
             invulnerable,
+            form,
+            items,
         });
     }
     r.is_empty().then_some(Snapshot { tick, fighters })
@@ -267,6 +305,118 @@ pub(crate) enum DuelEvent {
     KnockOut(u8),
     /// A knocked-out Sora stood up again (slot).
     StoodUp(u8),
+    /// A spell or item effect call (the spell scripts' `pax_start` and
+    /// `effect_*`), on the effect container by name; a bound start names the
+    /// Sora by slot (`Anchor::Rival`).
+    Spell {
+        pax: Option<String>,
+        fx: player::magic::Fx,
+    },
+    /// A Drive or object effect element started on a Sora (by slot) or at a
+    /// place.
+    DriveFx {
+        pax: String,
+        id: u16,
+        owner: u8,
+        anchor: FxAnchor,
+    },
+}
+
+/// Where a forwarded Drive effect starts.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) enum FxAnchor {
+    Slot(u8),
+    World { at: [f32; 3], pitch: f32, yaw: f32 },
+}
+
+fn put_vec(w: &mut Writer, v: [f32; 3]) {
+    for x in v {
+        w.f32(x);
+    }
+}
+
+fn get_vec(r: &mut Reader) -> Option<[f32; 3]> {
+    let v = [r.f32()?, r.f32()?, r.f32()?];
+    v.iter().all(|x| x.is_finite()).then_some(v)
+}
+
+fn put_fx(w: &mut Writer, fx: &player::magic::Fx) {
+    use player::magic::{Anchor, Fx};
+    match fx {
+        Fx::Start { key, id, bound, at } => {
+            w.u8(0);
+            w.u64(*key);
+            w.u16(*id);
+            w.u8(match bound {
+                Some(Anchor::Rival(slot)) => *slot,
+                _ => u8::MAX,
+            });
+            match at {
+                Some(v) => {
+                    w.u8(1);
+                    put_vec(w, *v);
+                }
+                None => w.u8(0),
+            }
+        }
+        Fx::Pos(key, v) => {
+            w.u8(1);
+            w.u64(*key);
+            put_vec(w, *v);
+        }
+        Fx::Dir(key, v) => {
+            w.u8(2);
+            w.u64(*key);
+            put_vec(w, *v);
+        }
+        Fx::Scale(key, s) => {
+            w.u8(3);
+            w.u64(*key);
+            w.f32(*s);
+        }
+        Fx::Fade(key, f) => {
+            w.u8(4);
+            w.u64(*key);
+            w.f32(*f);
+        }
+        Fx::Kill(key) => {
+            w.u8(5);
+            w.u64(*key);
+        }
+        Fx::LoopEnd(key) => {
+            w.u8(6);
+            w.u64(*key);
+        }
+    }
+}
+
+fn get_fx(r: &mut Reader) -> Option<player::magic::Fx> {
+    use player::magic::{Anchor, Fx};
+    let tag = r.u8()?;
+    let key = r.u64()?;
+    Some(match tag {
+        0 => {
+            let id = r.u16()?;
+            let slot = r.u8()?;
+            let at = match r.u8()? {
+                0 => None,
+                _ => Some(get_vec(r)?),
+            };
+            Fx::Start {
+                key,
+                id,
+                bound: (slot != u8::MAX).then_some(Anchor::Rival(slot)),
+                at,
+            }
+        }
+        1 => Fx::Pos(key, get_vec(r)?),
+        2 => Fx::Dir(key, get_vec(r)?),
+        3 => Fx::Scale(key, r.f32()?),
+        4 => Fx::Fade(key, r.f32()?),
+        5 => Fx::Kill(key),
+        6 => Fx::LoopEnd(key),
+        _ => return None,
+    })
 }
 
 pub(crate) fn encode_events(tick: u64, events: &[DuelEvent]) -> Vec<u8> {
@@ -309,6 +459,34 @@ pub(crate) fn encode_events(tick: u64, events: &[DuelEvent]) -> Vec<u8> {
                     w.f32(*v);
                 }
             }
+            DuelEvent::Spell { pax, fx } => {
+                w.u8(5);
+                w.text(pax.as_deref().unwrap_or(""), 255);
+                put_fx(&mut w, fx);
+            }
+            DuelEvent::DriveFx {
+                pax,
+                id,
+                owner,
+                anchor,
+            } => {
+                w.u8(6);
+                w.text(pax, 255);
+                w.u16(*id);
+                w.u8(*owner);
+                match anchor {
+                    FxAnchor::Slot(slot) => {
+                        w.u8(0);
+                        w.u8(*slot);
+                    }
+                    FxAnchor::World { at, pitch, yaw } => {
+                        w.u8(1);
+                        put_vec(&mut w, *at);
+                        w.f32(*pitch);
+                        w.f32(*yaw);
+                    }
+                }
+            }
         }
     }
     w.finish()
@@ -344,6 +522,36 @@ pub(crate) fn decode_events(bytes: &[u8]) -> Option<(u64, Vec<DuelEvent>)> {
             }
             2 => DuelEvent::KnockOut(r.u8()?),
             3 => DuelEvent::StoodUp(r.u8()?),
+            5 => {
+                let pax = r.text(255)?;
+                DuelEvent::Spell {
+                    pax: (!pax.is_empty()).then_some(pax),
+                    fx: get_fx(&mut r)?,
+                }
+            }
+            6 => {
+                let pax = r.text(255)?;
+                let id = r.u16()?;
+                let owner = r.u8()?;
+                let anchor = match r.u8()? {
+                    0 => FxAnchor::Slot(r.u8()?),
+                    1 => {
+                        let at = get_vec(&mut r)?;
+                        let (pitch, yaw) = (r.f32()?, r.f32()?);
+                        if !(pitch.is_finite() && yaw.is_finite()) {
+                            return None;
+                        }
+                        FxAnchor::World { at, pitch, yaw }
+                    }
+                    _ => return None,
+                };
+                DuelEvent::DriveFx {
+                    pax,
+                    id,
+                    owner,
+                    anchor,
+                }
+            }
             4 => {
                 let at = [r.f32()?, r.f32()?, r.f32()?];
                 if !at.iter().all(|v| v.is_finite()) {
@@ -369,6 +577,12 @@ mod tests {
             attack: n & 4 != 0,
             guard: n & 8 != 0,
             guard_held: n & 16 != 0,
+            command: match n % 4 {
+                0 => Command::None,
+                1 => Command::Cast(n),
+                2 => Command::Item(n),
+                _ => Command::Drive(n % 7),
+            },
         }
     }
 
@@ -432,6 +646,8 @@ mod tests {
                     mp: [80, 100],
                     drive: [0, 40, 3, 3],
                     invulnerable: 0.,
+                    form: 1,
+                    items: vec![1, 0, 5],
                 },
                 FighterState {
                     slot: 1,
@@ -447,6 +663,8 @@ mod tests {
                     mp: [0, 100],
                     drive: [0; 4],
                     invulnerable: 80.,
+                    form: 0,
+                    items: Vec::new(),
                 },
             ],
         };
@@ -482,6 +700,39 @@ mod tests {
             DuelEvent::KnockOut(1),
             DuelEvent::StoodUp(0),
             DuelEvent::Guard([4., 5., 6.]),
+            DuelEvent::Spell {
+                pax: Some("magic/FIRE_3.mag".into()),
+                fx: player::magic::Fx::Start {
+                    key: 1 << 60 | 5,
+                    id: 12,
+                    bound: Some(player::magic::Anchor::Rival(1)),
+                    at: Some([1., 2., 3.]),
+                },
+            },
+            DuelEvent::Spell {
+                pax: None,
+                fx: player::magic::Fx::Dir(9, [0., 1., 0.]),
+            },
+            DuelEvent::Spell {
+                pax: None,
+                fx: player::magic::Fx::Fade(9, 15.),
+            },
+            DuelEvent::DriveFx {
+                pax: "form:1".into(),
+                id: 3,
+                owner: 1,
+                anchor: FxAnchor::Slot(0),
+            },
+            DuelEvent::DriveFx {
+                pax: "system".into(),
+                id: 11,
+                owner: 0xff,
+                anchor: FxAnchor::World {
+                    at: [1., 0., 2.],
+                    pitch: 0.5,
+                    yaw: -1.,
+                },
+            },
         ];
         assert_eq!(
             decode_events(&encode_events(99, &events)),

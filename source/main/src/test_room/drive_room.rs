@@ -555,6 +555,10 @@ pub struct DriveRt {
 
 impl DriveRt {
     pub fn new(src: FormSources, source: Arc<ProbeSource>, enemy_character: u16) -> Self {
+        Self::with_shared(Arc::new(src), source, enemy_character)
+    }
+
+    fn with_shared(src: Arc<FormSources>, source: Arc<ProbeSource>, enemy_character: u16) -> Self {
         let mut forms = Forms::default();
         for &(f, ref list) in &src.starting {
             if let Some(r) = forms.record_mut(f) {
@@ -567,7 +571,7 @@ impl DriveRt {
             forms.obtain(f, KINGDOM_KEY);
         }
         DriveRt {
-            src: Arc::new(src),
+            src,
             source,
             forms,
             form: 0,
@@ -612,6 +616,39 @@ impl DriveRt {
             previous_shown: 0,
             bullet_serial: 0,
         }
+    }
+
+    /// A second Sora's drive state (the duel's rival): the same tables and
+    /// form records, kits of its own (loaded as it needs them).
+    pub fn sibling(&self) -> Self {
+        let mut d = DriveRt::with_shared(
+            Arc::clone(&self.src),
+            Arc::clone(&self.source),
+            self.enemy_character,
+        );
+        d.forms = self.forms.clone();
+        d.main_weapon = self.main_weapon;
+        d.party = self.party;
+        d.paxes = self.paxes.clone();
+        d.script_events = self.script_events.clone();
+        d
+    }
+
+    /// Starts building the next form kit not ready yet (one at a time), so
+    /// a duel's form changes never wait on a load. Returns whether every
+    /// owned form is ready.
+    pub fn preload(&mut self) -> bool {
+        let mut log = Vec::new();
+        for f in 1..=forms::ANTI {
+            if f != forms::ANTI && !self.forms.owned.get(f as usize).copied().unwrap_or(false) {
+                continue;
+            }
+            match self.loaded(f, &mut log) {
+                Ok(true) => continue,
+                _ => return false,
+            }
+        }
+        true
     }
 
     /// The afterimage's previous-frame weight, while it is on.
@@ -1057,6 +1094,29 @@ fn finish_change(game: &mut Game, abilities: Option<&[u16]>) -> Result<(), Strin
     Ok(())
 }
 
+/// The duel's joiner: shows the form the host's snapshot names (its kit
+/// once loaded, the model with it), without the change's own steps (the
+/// host ran those). Returns false while the kit still loads.
+pub fn show_form(game: &mut Game, form: u8) -> bool {
+    let Some(d) = game.drive.as_mut() else {
+        return true;
+    };
+    d.form = form;
+    d.active = form != 0;
+    if d.shown == form {
+        return true;
+    }
+    let mut log = Vec::new();
+    if !matches!(d.loaded(form, &mut log), Ok(true)) && form != 0 {
+        return false;
+    }
+    if swap_kit(game, form).is_err() {
+        return false;
+    }
+    game.sora.player.shoot = form == forms::WISDOM;
+    true
+}
+
 /// FUN_1404014a0 with the active form's record linked: Sora's support
 /// abilities, then the form's 24 slots.
 pub fn rebuild_abilities(game: &mut Game, sora: Option<&[u16]>) {
@@ -1168,13 +1228,16 @@ pub fn tick(game: &mut Game, abilities: Option<&[u16]>) {
     let Some(d) = game.drive.as_mut() else { return };
     // FUN_1403ab6f0's battle state.
     let p = game.sora.player.position;
-    let target = game.enemy.as_ref().is_some_and(|rt| {
-        let e = rt.enemy.position;
-        !matches!(
-            rt.enemy.current_act(),
-            Some(shadow::ActKind::Leave | shadow::ActKind::Dead)
-        ) && ((e[0] - p[0]).powi(2) + (e[2] - p[2]).powi(2)).sqrt() < BATTLE_DISTANCE
-    });
+    // [Duel rule] A duel is a battle throughout (Antiform can come, a form
+    // in Antiform cannot revert).
+    let target = game.duel
+        || game.enemy.as_ref().is_some_and(|rt| {
+            let e = rt.enemy.position;
+            !matches!(
+                rt.enemy.current_act(),
+                Some(shadow::ActKind::Leave | shadow::ActKind::Dead)
+            ) && ((e[0] - p[0]).powi(2) + (e[2] - p[2]).powi(2)).sqrt() < BATTLE_DISTANCE
+        });
     d.battle.update(target);
     // The party slots (FUN_1403c3270): Donald and Goofy when in the room;
     // a member the form took is unavailable.

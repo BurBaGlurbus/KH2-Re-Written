@@ -135,7 +135,7 @@ pub fn candidates(game: &Game, gallery: &enemy_gallery::EnemyGallery) -> Vec<Can
             out.push(Candidate {
                 key: TargetId::Rival(r.slot),
                 shape: player::ptya::Target {
-                    centre: rival::target_centre(kit, &r.fighter.player),
+                    centre: rival::rival_centre(r),
                     radius: kit.target_radius,
                     height: kit.target_radius,
                 },
@@ -312,9 +312,8 @@ pub fn camera_anchor(
 
 /// A rival Sora's TARGET centre, while he is there.
 fn rival_centre(game: &Game, slot: u8) -> Option<[f32; 3]> {
-    let kit = game.rival_kit.as_ref()?;
     let r = game.rivals.iter().find(|r| r.slot == slot)?;
-    Some(rival::target_centre(kit, &r.fighter.player))
+    Some(rival::rival_centre(r))
 }
 
 /// The dynamic camera-collision spheres of the gallery's live actors
