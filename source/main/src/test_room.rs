@@ -261,7 +261,7 @@ fn no_programs() -> [i16; 3] {
     [-1; 3]
 }
 
-#[derive(Deserialize)]
+#[derive(Clone, Deserialize)]
 struct RoomMusic {
     field: Locator,
     battle: Locator,
@@ -3253,6 +3253,50 @@ fn load(
         .ok_or("SSTM record truncated")?;
     timer.mark("objects and room start");
     let battle = read_archive(source, &config.battle)?;
+    // The camp, journal and music decode on a thread of their own while the
+    // rest loads: they need only the archives and their locators.
+    let background = {
+        let (source, battle, system) = (source.clone(), battle.clone(), system.clone());
+        let (camp_l, journal_l) = (config.camp.clone(), config.journal.clone());
+        let (menu, music_l) = (config.menu.clone(), config.music.clone());
+        std::thread::spawn(move || -> Result<_, String> {
+            let fail = |e: Box<dyn std::error::Error>| e.to_string();
+            let camp = match (&camp_l, &menu) {
+                (Some(l), Some(m)) => {
+                    Some(load_camp_source(&source, l, m, &battle, &system).map_err(fail)?)
+                }
+                _ => None,
+            };
+            let journal = match (&journal_l, &menu, &camp) {
+                (Some(j), Some(m), Some(_)) => {
+                    Some(load_journal(&source, j, &m.messages, &system).map_err(fail)?)
+                }
+                _ => None,
+            };
+            let music = match &music_l {
+                Some(m) => Some([
+                    sound::load_bank(
+                        &source,
+                        &m.field.index,
+                        m.field.ordinal,
+                        m.field.name_hash,
+                        None,
+                    )
+                    .map_err(fail)?,
+                    sound::load_bank(
+                        &source,
+                        &m.battle.index,
+                        m.battle.ordinal,
+                        m.battle.name_hash,
+                        None,
+                    )
+                    .map_err(fail)?,
+                ]),
+                None => None,
+            };
+            Ok((camp, journal, music))
+        })
+    };
     let ability_source = {
         let rates = sstm_bytes
             .get(sstm_offset as usize..)
@@ -3849,34 +3893,8 @@ fn load(
         None => None,
     };
     timer.mark("effect sources");
-    let camp = match (&config.camp, &config.menu) {
-        (Some(l), Some(m)) => Some(load_camp_source(source, l, m, &battle, &system)?),
-        _ => None,
-    };
-    let journal = match (&config.journal, &config.menu, &camp) {
-        (Some(j), Some(m), Some(_)) => Some(load_journal(source, j, &m.messages, &system)?),
-        _ => None,
-    };
-    timer.mark("camp and journal");
-    let music = match &config.music {
-        Some(m) => Some([
-            sound::load_bank(
-                source,
-                &m.field.index,
-                m.field.ordinal,
-                m.field.name_hash,
-                None,
-            )?,
-            sound::load_bank(
-                source,
-                &m.battle.index,
-                m.battle.ordinal,
-                m.battle.name_hash,
-                None,
-            )?,
-        ]),
-        None => None,
-    };
+    let (camp, journal, music) = background.join().expect("camp and music thread")?;
+    timer.mark("camp, journal and music (on their own thread)");
     let magic_src = magic_src.map(|mut m| {
         m.target_lift = sora_target_lift;
         m.body_lift = sora_body_lift;
