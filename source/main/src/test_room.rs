@@ -1109,8 +1109,10 @@ struct Game {
     /// What the host's tick did that the joiner shows itself: sounds,
     /// sparks, knock-outs (sent and cleared by duel_sync).
     duel_events: Vec<duel_wire::DuelEvent>,
-    /// The network overlay (F3 > Sora > Display, `--net-overlay`).
+    /// The network overlay (F3 > Sora > Display, `--net-overlay`) and the
+    /// link simulator preset the debug menu chose (duel_net::SIMULATED).
     net_overlay: bool,
+    net_simulated: Option<usize>,
     poses: HashMap<(Action, bool), usize>,
     clip_poses: Arc<Vec<ClipPoses>>,
     part_indices: Vec<Vec<u32>>,
@@ -13403,6 +13405,7 @@ fn run(mut args: Vec<PathBuf>) -> Result<AppExit, Box<dyn std::error::Error>> {
         net_pad: rival::RivalPad::default(),
         duel_events: Vec::new(),
         net_overlay: false,
+        net_simulated: None,
         poses,
         clip_poses: base_clip_poses,
         part_indices: Vec::new(),

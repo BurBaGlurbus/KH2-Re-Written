@@ -81,13 +81,25 @@ pub(crate) fn host_take_inputs(net: Option<ResMut<DuelNet>>, mut game: ResMut<Ga
             }
             net.used_input = Some(tick);
             rival.pad = pad;
+            net.starve_run = 0;
         }
         None => {
             rival.pad = held(last);
             net.starved += 1;
+            net.starve_run += 1;
+            if net.starve_run == LATE_WARNING {
+                let tick = game.tick;
+                warn(
+                    &mut net,
+                    format!("Tick {tick}: no buttons from the other player for half a second"),
+                );
+            }
         }
     }
 }
+
+/// Ticks without new buttons or snapshots before the overlay warns.
+const LATE_WARNING: u32 = 30;
 
 fn state_of(slot: u8, player: &Player, vitals: &Vitals, started: u64) -> FighterState {
     FighterState {
@@ -235,8 +247,17 @@ pub(crate) fn join_apply(net: Option<ResMut<DuelNet>>, mut game: ResMut<Game>) {
         || (net.shown_snapshot.is_none() && !net.snapshots.is_empty());
     let Some((tick, snapshot)) = due.then(|| net.snapshots.pop_first()).flatten() else {
         net.stale += 1;
+        net.stale_run += 1;
+        if net.stale_run == LATE_WARNING {
+            let tick = game.tick;
+            warn(
+                &mut net,
+                format!("Tick {tick}: no snapshot from the host for half a second"),
+            );
+        }
         return;
     };
+    net.stale_run = 0;
     net.shown_snapshot = Some(tick);
     let now = game.tick;
     let game = &mut *game;

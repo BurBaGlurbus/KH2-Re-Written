@@ -75,6 +75,12 @@ pub(crate) struct DuelNet {
     /// joiner had no new snapshot for; reset each overlay refresh.
     pub starved: u32,
     pub stale: u32,
+    /// Ticks in a row without them (the overlay warns at half a second).
+    pub starve_run: u32,
+    pub stale_run: u32,
+    /// The link simulator's preset (`SIMULATED`), or None for the one
+    /// `--net-sim` gave.
+    pub preset: Option<usize>,
     /// Snapshots skipped to catch up, inputs dropped as too old.
     pub skipped: u64,
     pub warnings: VecDeque<String>,
@@ -100,6 +106,43 @@ pub(crate) fn default_name() -> String {
         .filter(|n| !n.is_empty())
         .unwrap_or_else(|| "Player".into())
 }
+
+/// The F3 menu's link simulator presets: name and conditions (what this
+/// instance sends; choose the same on both for a round trip).
+pub(crate) const SIMULATED: [(&str, Conditions); 4] = [
+    (
+        "Off",
+        Conditions {
+            latency_ms: 0,
+            jitter_ms: 0,
+            loss_percent: 0.,
+        },
+    ),
+    (
+        "Wi-Fi",
+        Conditions {
+            latency_ms: 15,
+            jitter_ms: 5,
+            loss_percent: 0.5,
+        },
+    ),
+    (
+        "Busy Wi-Fi",
+        Conditions {
+            latency_ms: 50,
+            jitter_ms: 20,
+            loss_percent: 3.,
+        },
+    ),
+    (
+        "Bad link",
+        Conditions {
+            latency_ms: 120,
+            jitter_ms: 40,
+            loss_percent: 10.,
+        },
+    ),
+];
 
 /// `HOST[:PORT]` (the default port when none is given).
 pub(crate) fn parse_address(text: &str) -> Result<SocketAddr, String> {
@@ -171,6 +214,9 @@ impl DuelNet {
             shown_snapshot: None,
             starved: 0,
             stale: 0,
+            starve_run: 0,
+            stale_run: 0,
+            preset: setup.conditions.is_clear().then_some(0),
             skipped: 0,
             warnings: VecDeque::new(),
             since_refresh: 0,
@@ -301,6 +347,15 @@ pub(crate) fn sample(net: Option<ResMut<DuelNet>>, game: Res<Game>) {
     let Some(mut net) = net else { return };
     if net.overlay != game.net_overlay {
         net.overlay = game.net_overlay;
+    }
+    // F3 > Sora > Display > Simulated network.
+    if let Some(preset) = game.net_simulated
+        && net.preset != Some(preset)
+        && let Some(&(name, conditions)) = SIMULATED.get(preset)
+    {
+        net.preset = Some(preset);
+        net.session.set_conditions(conditions);
+        net.warn(format!("Simulated network: {name}"));
     }
     net.since_refresh += 1;
     if net.since_refresh < 15 && !net.lines.is_empty() {

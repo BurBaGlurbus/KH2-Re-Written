@@ -399,6 +399,8 @@ enum Action {
     SpawnRival,
     RemoveRival,
     ToggleNetOverlay,
+    /// Steps the link simulator through its presets.
+    CycleNetSimulator,
     RemoveActor,
     ClearActors,
     Warp(u8, u8),
@@ -474,6 +476,9 @@ impl Action {
             Self::SpawnRival => "A second Sora, run by a test script, to try the duel alone.",
             Self::RemoveRival => "Remove the scripted second Sora.",
             Self::ToggleNetOverlay => "Ping, loss, data rates and warnings at the top right.",
+            Self::CycleNetSimulator => {
+                "Adds latency and loss to what this game sends. Set both games for a round trip."
+            }
             Self::RemoveActor => "Remove this enemy from the room.",
             Self::ClearActors => "Remove every summoned enemy.",
             Self::Warp(..) => "Warp to this room.",
@@ -1141,6 +1146,14 @@ fn rows(
                 Row {
                     value: on_off(game.net_overlay),
                     ..row("Network overlay", Action::ToggleNetOverlay, game.duel)
+                },
+                Row {
+                    value: text(
+                        game.net_simulated
+                            .and_then(|p| duel_net::SIMULATED.get(p))
+                            .map_or("Off", |s| s.0),
+                    ),
+                    ..row("Simulated network", Action::CycleNetSimulator, game.duel)
                 },
                 section("Duel"),
                 row(
@@ -1869,6 +1882,16 @@ fn act(
         Action::ToggleNetOverlay => {
             game.net_overlay = !game.net_overlay;
             None
+        }
+        Action::CycleNetSimulator => {
+            let next = game
+                .net_simulated
+                .map_or(1, |p| (p + 1) % duel_net::SIMULATED.len());
+            game.net_simulated = Some(next);
+            Some(format!(
+                "Simulated network: {}",
+                duel_net::SIMULATED[next].0
+            ))
         }
         Action::SpawnRival => {
             rival::spawn_scripted(game);
