@@ -117,6 +117,7 @@ private networks (your home Wi-Fi), or the other player cannot reach you.
 | `--duel-damage N` | Host: multiply the damage of attacks (hits on Strength) by N (0.5 to 10, default 3) |
 | `--duel-magic-damage N` | Host: multiply the damage of magic (spells, Reflect's counter, form magic) by N (0.5 to 10, default 1.5) |
 | `--duel-hit-cap PCT` | Host: no single hit takes more than PCT % of max HP (20, 25, 30, 35, 40, 50, 60, 75; 100 for none; default 40) |
+| `--duel-arena mirage\|room` | Host: fight in the Mirage Arena (default) or the test room's arena |
 | `--rival-script` | No network: a second Sora run by a test script, to try the duel alone. With `--join`: the script presses the joiner's buttons (attacks, Fire, Thunder, a Potion, Valor Form) |
 
 In the room, F3 → Sora has *Network overlay* (ping, loss, data rates, buffered snapshots and warnings, top
@@ -150,9 +151,16 @@ player is shows on each page):
    every build; a refusal shows on the help line.
 4. *Ready* on both starts the match. A rule change takes Ready back.
 
-**The arena:** the match is fought in the test room's arena. Both Soras start on a line through the room's
-own start, 600 units apart, facing each other, with the camera behind each player's Sora. There are no
-enemies, no talk and no exits during a duel.
+**The arena:** by default the match is fought in the **Mirage Arena** from Birth by Sleep Final Mix, read
+from your own install (the same Steam collection holds both games): its round stage, its sky and its walls,
+scaled to KH2's size. The host can pick the test room's arena on the lobby's Match page instead. Both players
+need Birth by Sleep in their install for the Mirage Arena; if either install cannot show it, the duel stays in
+the test room's arena and the lobby says why. The first time, reading Birth by Sleep's package checks it in
+full, which takes about twenty seconds in the background. Both Soras start 600 units apart, facing each
+other, with the camera behind each player's Sora. There are no enemies, no talk and no exits during a duel.
+
+**The music:** while you are in the duel's arena (the lobby, the countdown and the fight) one of the game's
+battle themes plays, a new one each match and the same on both PCs; it fades out at the result.
 
 **The match:** a short shot of both Soras, then 3, 2, 1 and GO on both screens at the same moment; nobody
 moves before GO. A knock-out ends a round (a knocked-out Sora stays down). *One KO* is one round; *Best of 3*

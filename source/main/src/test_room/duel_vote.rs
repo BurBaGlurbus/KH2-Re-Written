@@ -288,8 +288,8 @@ pub(crate) fn tick(
     // The pause menu: the vote's choices, its state on the help line.
     game.duel_vote_up = room.vote.is_some();
     // [Test] `--duel-shots`: the coin as it spins.
-    if room.decided_at.is_some_and(|at| game.tick == at + 60) {
-        duel_camp::shot(game, 0);
+    if let Some(at) = room.decided_at.filter(|&at| game.tick == at + 60) {
+        duel_camp::shot(game, (4, at, 0));
     }
     let mut picked = None;
     if let Some(c) = camp.as_deref_mut() {

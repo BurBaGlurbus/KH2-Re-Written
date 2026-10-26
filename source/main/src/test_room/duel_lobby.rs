@@ -57,6 +57,9 @@ pub(crate) enum Intent {
     Ready(bool),
     /// Where the player now is (`SECTION_*`).
     Section(u8),
+    /// Whether the player's install can show the Mirage Arena (the host
+    /// keeps the duel in the test room's arena when either cannot).
+    Arena(bool),
 }
 
 /// What the duel allows, from the installed tables.
@@ -220,6 +223,8 @@ impl Lobby {
                 }
                 s.section = section;
             }
+            // The lobby room keeps it (it outlives a match's lobby).
+            Intent::Arena(_) => {}
         }
         self.advance();
         Ok(())
@@ -356,6 +361,10 @@ pub(crate) fn encode_intent(kind: u8, intent: &Intent) -> Vec<u8> {
             w.u8(3);
             w.u8(*section);
         }
+        Intent::Arena(ok) => {
+            w.u8(4);
+            w.u8(u8::from(*ok));
+        }
     }
     w.finish()
 }
@@ -370,6 +379,7 @@ pub(crate) fn decode_intent(kind: u8, bytes: &[u8]) -> Option<Intent> {
         1 => Intent::Loadout(get_loadout(&mut r)?),
         2 => Intent::Ready(r.u8()? != 0),
         3 => Intent::Section(r.u8()?),
+        4 => Intent::Arena(r.u8()? != 0),
         _ => return None,
     };
     r.is_empty().then_some(intent)

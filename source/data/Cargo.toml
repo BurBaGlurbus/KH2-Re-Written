@@ -106,3 +106,8 @@ bench = false
 name = "room_probe"
 test = false
 bench = false
+
+[[bin]]
+name = "bbs_probe"
+test = false
+bench = false

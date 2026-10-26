@@ -54,7 +54,7 @@ fn digest_bytes(hex: &str) -> Option<[u8; 32]> {
 }
 
 impl SourceReader {
-    fn new(file: File, len: u64, chunks: &[String]) -> std::io::Result<Self> {
+    pub(crate) fn new(file: File, len: u64, chunks: &[String]) -> std::io::Result<Self> {
         let expected = chunks
             .iter()
             .map(|h| {

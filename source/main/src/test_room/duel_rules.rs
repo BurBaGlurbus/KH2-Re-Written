@@ -90,6 +90,8 @@ pub(crate) struct MatchRules {
     pub hit_cap: u8,
     /// Seconds, for the timed mode.
     pub time_limit: u16,
+    /// The arena (a row of `duel_arena::ARENAS`).
+    pub arena: u8,
 }
 
 impl Default for MatchRules {
@@ -100,6 +102,7 @@ impl Default for MatchRules {
             magic: DEFAULT_MAGIC,
             hit_cap: DEFAULT_HIT_CAP,
             time_limit: DEFAULT_TIME,
+            arena: 0,
         }
     }
 }
@@ -158,6 +161,12 @@ impl MatchRules {
         self.hit_cap = HIT_CAPS[(at + step).rem_euclid(n) as usize];
     }
 
+    /// The next (or previous) arena.
+    pub(crate) fn cycle_arena(&mut self, step: i32) {
+        let n = super::duel_arena::ARENAS.len() as i32;
+        self.arena = (i32::from(self.arena) + step).rem_euclid(n) as u8;
+    }
+
     /// The next (or previous) time limit in the table.
     pub(crate) fn cycle_time(&mut self, step: i32) {
         let at = TIME_LIMITS
@@ -175,6 +184,7 @@ impl MatchRules {
         in_range(self.damage)
             && in_range(self.magic)
             && HIT_CAPS.contains(&self.hit_cap)
+            && usize::from(self.arena) < super::duel_arena::ARENAS.len()
             && TIME_LIMITS.contains(&self.time_limit)
     }
 

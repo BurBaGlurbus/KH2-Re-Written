@@ -82,6 +82,7 @@ mod duel_lobby;
 mod duel_lobby_room;
 mod duel_match;
 mod duel_match_room;
+mod duel_music;
 mod duel_net;
 mod duel_rules;
 mod duel_sync;
@@ -98,6 +99,7 @@ mod enemy_script;
 mod enemy_target;
 mod enemy_tour;
 mod fighter;
+mod mirage_arena;
 /// The executable's identity, which the launcher's LAN search compares.
 pub(crate) use duel_net::build_identity;
 use fighter::{Fighter, Vitals};
@@ -937,6 +939,11 @@ struct SceneRoot(Entity);
 #[derive(Component)]
 pub(crate) struct RoomPart;
 
+/// The generated test arena's floor and walls (hidden while the duel is in
+/// the Mirage Arena).
+#[derive(Component)]
+pub(crate) struct ArenaFloor;
+
 /// A scrolling chunk's UV animation (UVSC record, draw-01 §7).
 #[derive(Component)]
 pub(crate) struct UvScroll {
@@ -1150,12 +1157,17 @@ struct Game {
     duel_camp: Option<duel_camp::Request>,
     /// A vote is open: the other duel screens give it the camp.
     duel_vote_up: bool,
+    /// Whether this install can show the duel's Mirage Arena.
+    mirage: mirage_arena::Avail,
+    /// The duel's music holds the music voices (the room's waits).
+    duel_music: bool,
     /// [Test] The duel's unattended script: menu keys (mode 7) for the
     /// camp this tick.
     duel_camp_press: u64,
     /// [Test] `--duel-shots`: the duel's screens add captures of
-    /// themselves.
+    /// themselves, once per moment.
     duel_shots: bool,
+    duel_shot_keys: std::collections::HashSet<(u8, u64, u64)>,
     /// A match is running: a knocked-out Sora stays down for the round.
     duel_match: bool,
     /// Damage dealt and hits landed this match, by the attacker's slot.
@@ -1561,6 +1573,14 @@ impl CameraCollision {
                 .iter()
                 .map(|t| t.map(|p| to_world(p.to_array())))
                 .collect(),
+        }
+    }
+
+    /// Plain triangles in game world coordinates (another game's map).
+    fn from_triangles(triangles: Vec<[[f32; 3]; 3]>) -> Self {
+        Self {
+            worlds: Vec::new(),
+            triangles,
         }
     }
 
@@ -5960,6 +5980,7 @@ fn setup(
         let texture = rgba_image(w, h, rgba, &mut images);
         commands.spawn((
             ChildOf(world),
+            ArenaFloor,
             Mesh3d(meshes.add(mesh(arena.positions, arena.uvs, arena.colors))),
             MeshMaterial3d(materials.add_fogged(StandardMaterial {
                 base_color: Color::WHITE,
@@ -12939,6 +12960,10 @@ fn music_tick(music: Option<ResMut<MusicRes>>, mut game: ResMut<Game>, audio: Re
         }
     }
     let Some(output) = &audio.output else { return };
+    // The duel's music has the voices (duel_music.rs).
+    if game.duel_music {
+        return;
+    }
     // Room entry: the field track at full level, no fade.
     if !m.started
         && let Some(field) = &m.clips[0]
@@ -13063,6 +13088,7 @@ fn run(mut args: Vec<PathBuf>) -> Result<AppExit, Box<dyn std::error::Error>> {
     let mut duel_bench = false;
     let mut duel_magic = false;
     let mut duel_shots = false;
+    let mut duel_no_mirage = false;
     let mut duel_idle = false;
     // The LAN duel (duel_net.rs): host or join, the port, the name shown
     // to the other player, the link simulator and the overlay.
@@ -13135,6 +13161,7 @@ fn run(mut args: Vec<PathBuf>) -> Result<AppExit, Box<dyn std::error::Error>> {
             Some("--duel-bench") => duel_bench = true,
             Some("--duel-magic") => duel_magic = true,
             Some("--duel-shots") => duel_shots = true,
+            Some("--duel-no-mirage") => duel_no_mirage = true,
             Some("--duel-idle") => duel_idle = true,
             Some("--host") => net_host = true,
             Some("--join") => {
@@ -13201,6 +13228,13 @@ fn run(mut args: Vec<PathBuf>) -> Result<AppExit, Box<dyn std::error::Error>> {
                     .into());
                 }
                 duel_rules.hit_cap = cap;
+            }
+            Some("--duel-arena") => {
+                let name = options
+                    .next()
+                    .and_then(|v| v.to_str())
+                    .ok_or("duel arena absent")?;
+                duel_rules.arena = duel_arena::named(name).ok_or("duel arena: mirage or room")?;
             }
             Some("--duel-mode") => {
                 let name = options
@@ -13841,7 +13875,7 @@ fn run(mut args: Vec<PathBuf>) -> Result<AppExit, Box<dyn std::error::Error>> {
         duel_magic,
         duel_idle,
         room_start: (loaded.spawn.to_array(), loaded.yaw),
-        duel_arena: 0,
+        duel_arena: duel_arena::TEST_ROOM,
         duel_rules,
         duel: rival_script,
         local_slot: 0,
@@ -13855,8 +13889,17 @@ fn run(mut args: Vec<PathBuf>) -> Result<AppExit, Box<dyn std::error::Error>> {
         duel_open_camp: false,
         duel_camp: None,
         duel_vote_up: false,
+        // [Test] `--duel-no-mirage`: this install acts as one without
+        // Birth by Sleep.
+        mirage: if duel_no_mirage {
+            mirage_arena::Avail::Missing("left out for a test (--duel-no-mirage)".into())
+        } else {
+            mirage_arena::Avail::Unknown
+        },
+        duel_music: false,
         duel_camp_press: 0,
         duel_shots,
+        duel_shot_keys: std::collections::HashSet::new(),
         duel_match: false,
         duel_dealt: [0; 2],
         duel_landed: [0; 2],
@@ -14499,6 +14542,22 @@ fn run(mut args: Vec<PathBuf>) -> Result<AppExit, Box<dyn std::error::Error>> {
         app.init_resource::<duel_lobby_room::LobbyRoom>();
         app.init_resource::<duel_vote::VoteRoom>();
         app.init_resource::<duel_match_room::MatchRoom>();
+        app.init_resource::<duel_music::DuelMusic>();
+        // The Birth by Sleep arena reads the install's BBS package, bound
+        // by a manifest kept beside the KH2 one.
+        app.insert_resource(mirage_arena::MirageArena::new(
+            args[0].clone(),
+            data::bbs_source::manifest_beside(&args[1]),
+        ));
+        app.add_systems(
+            Update,
+            (
+                mirage_arena::tick,
+                mirage_arena::show,
+                mirage_arena::follow_sky,
+            )
+                .chain(),
+        );
     }
     app.insert_resource(duel_loadout);
     Ok(app
@@ -14595,6 +14654,7 @@ fn run(mut args: Vec<PathBuf>) -> Result<AppExit, Box<dyn std::error::Error>> {
                     duel_lobby_room::tick,
                     duel_vote::tick,
                     duel_match_room::tick,
+                    duel_music::tick.run_if(resource_exists::<duel_music::DuelMusic>),
                 )
                     .chain(),
                 camp_tick,

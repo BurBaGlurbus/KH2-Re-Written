@@ -26,6 +26,8 @@ pub(crate) const BALLOT: u8 = 9;
 /// (duel_match_room.rs).
 pub(crate) const MATCH: u8 = 10;
 pub(crate) const REMATCH: u8 = 11;
+/// The host's pick of the match's music (duel_music.rs).
+pub(crate) const MUSIC: u8 = 12;
 
 /// Ticks of buttons each input message repeats.
 pub(crate) const INPUT_REDUNDANCY: usize = 6;
@@ -288,6 +290,7 @@ pub(crate) fn encode_rules(rules: &MatchRules) -> Vec<u8> {
     w.f32(rules.magic);
     w.u8(rules.hit_cap);
     w.u16(rules.time_limit);
+    w.u8(rules.arena);
     w.finish()
 }
 
@@ -302,6 +305,7 @@ pub(crate) fn decode_rules(bytes: &[u8]) -> Option<MatchRules> {
         magic: r.f32()?,
         hit_cap: r.u8()?,
         time_limit: r.u16()?,
+        arena: r.u8()?,
     };
     (r.is_empty() && rules.valid()).then_some(rules)
 }
@@ -706,6 +710,7 @@ mod tests {
             magic: 1.5,
             hit_cap: 50,
             time_limit: 90,
+            arena: 1,
         };
         assert_eq!(decode_rules(&encode_rules(&rules)), Some(rules));
         assert_eq!(decode_rules(&[RULES]), None);

@@ -118,13 +118,14 @@ pub(crate) fn hold<'a>(
     None
 }
 
-/// [Test] `--duel-shots`: a capture `delay` ticks from now (the screens
-/// ask for theirs at the moments worth a look).
-pub(crate) fn shot(game: &mut Game, delay: u64) {
-    if !game.duel_shots || game.autoplay.is_none() {
+/// [Test] `--duel-shots`: a capture now (the screens ask for theirs at the
+/// moments worth a look), once per `key`: a capture holds the clock, and
+/// a joiner's view of the host's clock can stand still meanwhile.
+pub(crate) fn shot(game: &mut Game, key: (u8, u64, u64)) {
+    if !game.duel_shots || game.autoplay.is_none() || !game.duel_shot_keys.insert(key) {
         return;
     }
-    let at = game.tick + delay;
+    let at = game.tick;
     let from = game.captures_taken.min(game.captures.len());
     let i = from + game.captures[from..].partition_point(|&c| c <= at);
     game.captures.insert(i, at);

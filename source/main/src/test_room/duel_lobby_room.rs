@@ -49,6 +49,7 @@ struct SavedCamp {
 /// What a duel row does when Left / Right steps it.
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum RowKind {
+    Arena,
     Mode,
     Damage,
     Magic,
@@ -96,6 +97,11 @@ pub(crate) struct LobbyRoom {
     recenter: Option<[f32; 3]>,
     /// The section the other player was told.
     section_sent: Option<u8>,
+    /// Host: whether the joiner's install can show the Mirage Arena (None:
+    /// not told yet).
+    peer_mirage: Option<bool>,
+    /// Joiner: this install's answer was sent.
+    mirage_sent: bool,
 }
 
 impl LobbyRoom {
@@ -237,6 +243,45 @@ fn prepare_builds(room: &mut LobbyRoom, game: &mut Game, camp: &mut CampRes) {
     camp.source.numbers.ap = room.limits.ap_max - i32::from(game.gear.ap);
     if let Some(rt) = game.enemy.as_mut() {
         rt.numbers_dirty = true;
+    }
+}
+
+/// Host: why the Mirage Arena cannot be the duel's arena (an install
+/// cannot show it), if it cannot.
+fn mirage_refused(room: &LobbyRoom, net: &DuelNet, game: &Game) -> Option<String> {
+    if usize::from(game.duel_rules.arena) != duel_arena::MIRAGE {
+        return None;
+    }
+    let them = net.peer.as_deref().unwrap_or("The other player");
+    match (&game.mirage, room.peer_mirage) {
+        (mirage_arena::Avail::Missing(_), _) => {
+            Some("This install has no Birth by Sleep: the Test room it is.".into())
+        }
+        (_, Some(false)) => Some(format!(
+            "{them}'s install has no Birth by Sleep: the Test room it is."
+        )),
+        _ => None,
+    }
+}
+
+/// Both installs must show the same arena: the joiner tells the host
+/// whether it can show the Mirage Arena; the host keeps the duel in the
+/// test room's arena when either cannot.
+fn mirage_check(room: &mut LobbyRoom, net: &mut DuelNet, game: &mut Game) {
+    if net.role == Role::Join {
+        if !room.mirage_sent && game.mirage != mirage_arena::Avail::Unknown {
+            room.mirage_sent = true;
+            let ok = game.mirage == mirage_arena::Avail::Ready;
+            intend(room, net, game, Intent::Arena(ok));
+        }
+        return;
+    }
+    if let Some(why) = mirage_refused(room, net, game) {
+        game.duel_rules.arena = duel_arena::TEST_ROOM as u8;
+        room.lobby.rules_changed();
+        let tick = game.tick;
+        game.event(serde_json::json!({"event":"duel_arena_fallback","tick":tick,"why":why}));
+        room.note = Some((why, tick));
     }
 }
 
@@ -389,6 +434,10 @@ pub(crate) fn tick(
                 let Some(intent) = duel_lobby::decode_intent(INTENT, &m) else {
                     continue;
                 };
+                if let Intent::Arena(ok) = intent {
+                    room.peer_mirage = Some(ok);
+                    continue;
+                }
                 let limits = room.limits.clone();
                 if let Err(why) = room.lobby.apply(1, intent, &limits) {
                     let mut w = net::wire::Writer::default();
@@ -413,6 +462,7 @@ pub(crate) fn tick(
             _ => net.inbox.push(m),
         }
     }
+    mirage_check(room, net, game);
     // Stage changes.
     let key = (room.lobby.match_no, room.lobby.stage);
     if room.prepared != Some(key) {
@@ -593,6 +643,14 @@ fn step(
         RowKind::Damage => game.duel_rules.step_damage(s),
         RowKind::Magic => game.duel_rules.step_magic(s),
         RowKind::HitCap => game.duel_rules.cycle_cap(s),
+        RowKind::Arena => {
+            game.duel_rules.cycle_arena(s);
+            if let Some(why) = mirage_refused(room, net, game) {
+                game.duel_rules.arena = duel_arena::TEST_ROOM as u8;
+                room.note = Some((why, game.tick));
+                game.sound_queue.push((SE_ERROR, "lobby"));
+            }
+        }
         RowKind::Time => game.duel_rules.cycle_time(s),
         RowKind::Ban(i) => {
             let n = room.limits.ban_pool().len() + 1;
@@ -770,7 +828,20 @@ fn pages(room: &LobbyRoom, net: &DuelNet, game: &Game, ap: i32) -> Pages {
             !host,
         ),
     ];
+    r.insert(
+        0,
+        row(
+            "Arena",
+            duel_arena::ARENAS.iter().map(|a| text(a.name)).collect(),
+            usize::from(rules.arena),
+            help(&format!(
+                "Where the match is fought. The Mirage Arena needs Birth by Sleep in both installs.{by_host}"
+            )),
+            !host,
+        ),
+    );
     let mut k = vec![
+        RowKind::Arena,
         RowKind::Mode,
         RowKind::Damage,
         RowKind::Magic,
@@ -948,7 +1019,12 @@ fn script(room: &mut LobbyRoom, net: &mut DuelNet, camp: &mut CampRes, game: &mu
             (room.lobby.stage, room.stage_ticks),
             (Stage::Bans, 20 | 80) | (Stage::Loadout, 70)
         ) {
-            duel_camp::shot(game, 0);
+            let key = (
+                1,
+                u64::from(room.lobby.match_no),
+                room.lobby.stage as u64 * 1000 + room.stage_ticks,
+            );
+            duel_camp::shot(game, key);
         }
     }
     match room.lobby.stage {

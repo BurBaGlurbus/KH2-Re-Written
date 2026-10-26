@@ -264,7 +264,7 @@ pub(crate) fn tick(
             (Phase::Countdown, 100) | (Phase::Fight, 20)
         )
     {
-        duel_camp::shot(game, 0);
+        duel_camp::shot(game, (2, m.since, now.saturating_sub(m.since)));
     }
     let fov = rig.camera.vertical_fov();
     game.duel_camera = shot(room.m.as_ref(), seat, now, game, fov);
@@ -325,7 +325,7 @@ pub(crate) fn tick(
         }
         if game.duel_shots {
             if t == 40 || t == 150 {
-                duel_camp::shot(game, 0);
+                duel_camp::shot(game, (3, m.since, t));
             }
             let on = camp.as_deref().and_then(|c| c.open.as_ref()).filter(|o| {
                 o.data

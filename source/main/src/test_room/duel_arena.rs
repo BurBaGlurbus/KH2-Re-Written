@@ -19,18 +19,43 @@ pub(crate) enum Bounds {
 /// One arena.
 pub(crate) struct Arena {
     pub name: &'static str,
+    /// The command-line name (`--duel-arena`).
+    pub key: &'static str,
     /// Each Sora's distance from the centre.
     pub spacing: f32,
     pub bounds: Bounds,
+    /// The arena's own centre and heading; None: the room's start.
+    pub centre: Option<([f32; 3], f32)>,
 }
 
-/// The arenas [duel choice: the test room's arena, the room the launcher's
-/// duel opens; no enemies, talk or exits in a duel].
-pub(crate) const ARENAS: [Arena; 1] = [Arena {
-    name: "Test room",
-    spacing: 300.,
-    bounds: Bounds::Collision,
-}];
+/// The arenas, the host's choice in the lobby [duel choice: no enemies,
+/// talk or exits in a duel]. Mirage Arena is Birth by Sleep's arena stage
+/// (mirage_arena.rs): its floor stands at y 10 (0.1 m), its wall ring at a
+/// radius of about 2160, so the starts 600 apart are well inside.
+pub(crate) const ARENAS: [Arena; 2] = [
+    Arena {
+        name: "Mirage Arena",
+        key: "mirage",
+        spacing: 300.,
+        bounds: Bounds::Collision,
+        centre: Some(([0., 10., 0.], 0.)),
+    },
+    Arena {
+        name: "Test room",
+        key: "room",
+        spacing: 300.,
+        bounds: Bounds::Collision,
+        centre: None,
+    },
+];
+/// The rows by name.
+pub(crate) const MIRAGE: usize = 0;
+pub(crate) const TEST_ROOM: usize = 1;
+
+/// An arena's row by its command-line name.
+pub(crate) fn named(key: &str) -> Option<u8> {
+    ARENAS.iter().position(|a| a.key == key).map(|i| i as u8)
+}
 
 /// The x/z extent the arena's bounds give in this room, if known.
 fn extent(arena: &Arena, world: &RoomWorld) -> Option<[f32; 4]> {
@@ -71,8 +96,10 @@ pub(crate) fn starts(arena: &Arena, centre: [f32; 3], yaw: f32) -> [([f32; 3], f
 /// Host: both Soras to the arena's starts, standing (their builds, gauges
 /// and forms stay; the motion starts over).
 pub(crate) fn place(game: &mut Game) {
-    let arena = ARENAS.get(game.duel_arena).unwrap_or(&ARENAS[0]);
-    let (centre, yaw) = game.room_start;
+    // The arena this instance shows (the Mirage Arena once loaded and
+    // chosen, else the room's).
+    let arena = ARENAS.get(game.duel_arena).unwrap_or(&ARENAS[TEST_ROOM]);
+    let (centre, yaw) = arena.centre.unwrap_or(game.room_start);
     let starts = starts(arena, centre, yaw);
     let tick = game.tick;
     for (seat, (at, facing)) in starts.into_iter().enumerate() {
@@ -107,14 +134,19 @@ mod tests {
     #[test]
     fn a_rectangle_holds_the_starts() {
         let e = [-500., -1000., 500., 0.];
-        let [(a, _), (b, _)] = starts(&ARENAS[0], [0., 0., -600.], 0.);
+        let [(a, _), (b, _)] = starts(&ARENAS[TEST_ROOM], [0., 0., -600.], 0.);
         assert!(inside(&e, a) && inside(&e, b));
         assert!(!inside(&e, [600., 0., -10.]));
         let rect = Arena {
             name: "test",
+            key: "test",
             spacing: 1.,
             bounds: Bounds::Rect(e),
+            centre: None,
         };
+        assert_eq!(named("mirage"), Some(MIRAGE as u8));
+        assert_eq!(named("room"), Some(TEST_ROOM as u8));
+        assert_eq!(named("hall"), None);
         assert!(matches!(rect.bounds, Bounds::Rect(_)));
     }
 
