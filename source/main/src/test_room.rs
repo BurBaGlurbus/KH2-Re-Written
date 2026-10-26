@@ -3501,6 +3501,69 @@ fn load(
         _ => party_limit::LimitSource::default(),
     };
     timer.mark("limits");
+    // Donald's and Goofy's limit motions, for their motion tables. The
+    // party (rooms with a fight to join) loads on a thread of its own while
+    // Sora's kit and the rest decode.
+    let mut member_limit_motions: HashMap<u8, Vec<_>> =
+        [2u8, 3].map(|c| (c, limit_source.motions(c))).into();
+    let party_thread = config.enemy.as_ref().map(|_| {
+        let jobs: Vec<_> = party_names()
+            .into_iter()
+            .filter_map(|name| {
+                // The personality of the object's character id
+                // (FUN_1401b06e0).
+                let Some(member) = objects
+                    .iter()
+                    .find(|o| o.model_name == name.as_bytes())
+                    .and_then(|o| player::party_roster::by_character(o.character as u8))
+                else {
+                    eprintln!("party member {name}: no friend personality");
+                    return None;
+                };
+                let motions = member_limit_motions
+                    .remove(&member.character)
+                    .unwrap_or_default();
+                Some((name, member, motions))
+            })
+            .collect();
+        let source = source.clone();
+        let (system, battle, objects) = (system.clone(), battle.clone(), objects.clone());
+        std::thread::spawn(move || {
+            // The members load on their own threads, each with its own
+            // library; the results keep the roster order.
+            let (source, system, objects) = (&source, &system, &objects);
+            let lvup = bar_entry(&battle, b"lvup").unwrap_or(&[]);
+            let plrp = bar_entry(&battle, b"plrp").unwrap_or(&[]);
+            std::thread::scope(|s| -> Vec<Result<_, String>> {
+                let threads: Vec<_> = jobs
+                    .into_iter()
+                    .map(|(name, member, motions)| {
+                        s.spawn(move || {
+                            let mut library = data::path_lookup::Library::open(source)
+                                .map_err(|e| format!("party member {name}: {e}"))?;
+                            party_room::load(
+                                source,
+                                &mut library,
+                                system,
+                                lvup,
+                                plrp,
+                                objects,
+                                name,
+                                member,
+                                motions,
+                            )
+                            .map(|k| (k, member))
+                            .map_err(|e| format!("party member {name}: {e}"))
+                        })
+                    })
+                    .collect();
+                threads
+                    .into_iter()
+                    .map(|t| t.join().expect("party member thread"))
+                    .collect()
+            })
+        })
+    });
     let kit = character_kit::load_kit(
         source,
         character_kit::KitInputs {
@@ -3539,9 +3602,6 @@ fn load(
         },
     )?;
     timer.mark("Sora's kit");
-    // Donald's and Goofy's limit motions, for their motion tables.
-    let mut member_limit_motions: HashMap<u8, Vec<_>> =
-        [2u8, 3].map(|c| (c, limit_source.motions(c))).into();
     let sora_body = kit.body.clone();
     let (sora_target_radius, sora_target_lift) = (kit.target_radius, kit.target_lift);
     let (sora_body_lift, sora_heal_lift) = (kit.body_lift, kit.heal_lift);
@@ -4085,61 +4145,9 @@ fn load(
         })
         .unwrap_or_default();
     timer.mark("music and the rest");
-    let party = match config.enemy {
-        // The party stands in rooms with a fight to join.
-        Some(_) => {
-            let lvup = bar_entry(&battle, b"lvup").unwrap_or(&[]);
-            let plrp = bar_entry(&battle, b"plrp").unwrap_or(&[]);
-            let jobs: Vec<_> = party_names()
-                .into_iter()
-                .filter_map(|name| {
-                    // The personality of the object's character id
-                    // (FUN_1401b06e0).
-                    let Some(member) = objects
-                        .iter()
-                        .find(|o| o.model_name == name.as_bytes())
-                        .and_then(|o| player::party_roster::by_character(o.character as u8))
-                    else {
-                        eprintln!("party member {name}: no friend personality");
-                        return None;
-                    };
-                    let motions = member_limit_motions
-                        .remove(&member.character)
-                        .unwrap_or_default();
-                    Some((name, member, motions))
-                })
-                .collect();
-            // The members load on their own threads, each with its own
-            // library; the results keep the roster order.
-            let (system, objects) = (&system, &objects);
-            let loaded: Vec<Result<_, String>> = std::thread::scope(|s| {
-                let threads: Vec<_> = jobs
-                    .into_iter()
-                    .map(|(name, member, motions)| {
-                        s.spawn(move || {
-                            let mut library = data::path_lookup::Library::open(source)
-                                .map_err(|e| format!("party member {name}: {e}"))?;
-                            party_room::load(
-                                source,
-                                &mut library,
-                                system,
-                                lvup,
-                                plrp,
-                                objects,
-                                name,
-                                member,
-                                motions,
-                            )
-                            .map(|k| (k, member))
-                            .map_err(|e| format!("party member {name}: {e}"))
-                        })
-                    })
-                    .collect();
-                threads
-                    .into_iter()
-                    .map(|t| t.join().expect("party member thread"))
-                    .collect()
-            });
+    let party = match party_thread {
+        Some(thread) => {
+            let loaded = thread.join().expect("party thread");
             let mut kinds = Vec::new();
             if let Ok(mut library) = data::path_lookup::Library::open(source) {
                 for result in loaded {
