@@ -20,7 +20,19 @@ pub struct Checks {
     scan_hidden: bool,
     scan_locked: bool,
     lock_released: bool,
+    /// The lock before the tour's cycle press, and whether the press moved
+    /// it to another actor while it stayed locked.
+    before_cycle: Option<enemy_target::TargetId>,
+    cycled: bool,
 }
+
+/// The lock is engaged at 150 and toggled off at 180; the cycle presses
+/// land between: right, then left if right found no other actor.
+const CYCLE: u64 = 165;
+const CYCLE_AGAIN: u64 = 170;
+/// Logical bits of the cycle presses (`enemy_target::cycle_direction`).
+const CYCLE_LEFT: u64 = 1 << 36;
+const CYCLE_RIGHT: u64 = 1 << 37;
 
 pub fn tick(
     mut game: ResMut<Game>,
@@ -28,6 +40,7 @@ pub fn tick(
     mut debug: ResMut<debug_menu::DebugMenu>,
     mut camp: Option<ResMut<CampRes>>,
     mut checks: ResMut<Checks>,
+    mut targeting: ResMut<enemy_target::Targeting>,
 ) {
     if !game.enemy_battle_tour {
         return;
@@ -73,6 +86,32 @@ pub fn tick(
     }
     if [150, 180].contains(&tick) {
         game.lock_queued = true;
+    }
+    // Switching the lock between the actors (cycle right).
+    if tick == CYCLE {
+        checks.before_cycle = targeting.holder.target;
+        targeting.queue_cycle(CYCLE_RIGHT);
+        game.cycle_queued = true;
+    }
+    if tick == CYCLE_AGAIN && !checks.cycled {
+        targeting.queue_cycle(CYCLE_LEFT);
+        game.cycle_queued = true;
+    }
+    if [CYCLE + 1, CYCLE_AGAIN + 1].contains(&tick) {
+        let locked = game.target_locked;
+        game.event(
+            serde_json::json!({"event":"enemy_combat_tour_cycle","tick":tick,
+            "target":format!("{:?}",targeting.holder.target),"locked":locked,
+            "limitation":targeting.limitation}),
+        );
+    }
+    if (CYCLE + 1..180).contains(&tick)
+        && game.target_locked
+        && targeting.holder.target.is_some()
+        && checks.before_cycle.is_some()
+        && targeting.holder.target != checks.before_cycle
+    {
+        checks.cycled = true;
     }
     if [80, 140].contains(&tick) {
         let enabled = tick == 140;
@@ -142,7 +181,8 @@ pub fn tick(
             && game.enemy_outgoing_hits > 0
             && checks.scan_hidden
             && checks.scan_locked
-            && checks.lock_released;
+            && checks.lock_released
+            && checks.cycled;
         game.autoplay_failed |= !pass;
         let incoming = game.enemy_incoming_hits;
         let outgoing = game.enemy_outgoing_hits;
@@ -150,7 +190,7 @@ pub fn tick(
             "tick":tick,"pass":pass,"positive_damage_to_player":incoming,
             "positive_damage_to_enemies":outgoing,
             "scan_hidden":checks.scan_hidden,"scan_locked":checks.scan_locked,
-            "lock_released":checks.lock_released,
+            "lock_released":checks.lock_released,"lock_cycled":checks.cycled,
             "boundary":"three ordinary actors in an authored debug arena",
             "installed_comparison":"NOT RUN"}));
         debug.show_enemy_actors();
