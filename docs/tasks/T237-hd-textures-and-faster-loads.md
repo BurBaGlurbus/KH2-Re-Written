@@ -61,13 +61,26 @@ Frame rate is unchanged within this PC's noise: field play 221.7 → 205.5 FPS i
 with the same build, averaged 171 and 131. The camp menu's 282 → 259 FPS in the room is inside that
 spread; it was not traced further.
 
+### After the comparison (`2a7b2a9`–`3e470b0`)
+
+Measured against the build before each change, three alternating runs each (single runs on this PC
+vary by up to a factor of two, so only consistent shifts are claimed):
+- Party limit files read from the start of the load: room decode 2.7–3.9 s → 2.5–2.8 s.
+- Townsperson kinds load on several threads: Twilight Town's door change 0.69–0.71 s → 0.51–0.55 s.
+- Model HD replacements decode on several threads (admitted in order, first error in order wins): the
+  models stage about 100 ms shorter (Sora's six HD images took about 170 ms one after another).
+- Motion sets decoded once per load (the last three kept, released after the room's load; the source
+  checks still run on every read): Sora's kit 0.85–0.90 s → 0.61–0.70 s; room decode about 2.3–2.5 s.
+- Tried and left out: spell effect files and limit files on further threads. Each stage left the main
+  path, but the decode total did not move: the kit's own work is the critical path now.
+
 ## Checks
 
 | Check | Result |
 | --- | --- |
 | `cargo fmt --all --check` | PASS |
 | `cargo clippy --workspace --all-targets --features main/skate3 --locked -- -D warnings` | PASS |
-| `cargo test --workspace --features main/skate3 --locked` (1,062 tests; new: HD-or-original binding, region placement, map replacement bound) | PASS |
+| `cargo test --workspace --features main/skate3 --locked` (1,063 tests; new: HD-or-original binding, region placement, map replacement bound, ordered parallel replacement decode) | PASS (`frame_limit::the_app_holds_the_cap` failed once with the PC under heavy load, then passed alone and in the full run) |
 | `cargo build --release -p main --bin KH2RW --features skate3,perf-diag --locked` | PASS |
 | Captures: Twilight Town map, map objects, arena, world map, an event, with HD | PASS: textures in place, nothing shifted; the map's stone and floor are cleaner |
 | Gameplay events, unattended room run, after each load change | PASS, identical (`event_diff.py`) |
@@ -102,5 +115,6 @@ spread; it was not traced further.
 ## Verdict / next
 
 PASS for the measured load and memory work and for the HD texture paths checked in captures; PARTIAL for
-HD fidelity (not compared with the installed game). Next: the remaining main-path load stages (Sora's kit
-0.6 s, party limits 0.5 s, HUD 0.2 s), and a frame-for-frame HD comparison with the installed game.
+HD fidelity (not compared with the installed game). Next: Sora's kit (0.6 s, its own clip evaluation),
+Bevy's first-frame pipeline compiles (about 0.2 s), and a frame-for-frame HD comparison with the
+installed game.
