@@ -110,6 +110,7 @@ pub(crate) fn load(
             // The world map has no save point menu here.
             files: None,
             steam_root: std::path::PathBuf::new(),
+            ability_marks: HashMap::new(),
         },
         settings,
         tick: 0,

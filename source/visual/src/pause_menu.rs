@@ -807,6 +807,17 @@ impl Camp {
                 let new = self.new_stock_items();
                 (!new.is_empty()).then(|| new.iter().all(|i| self.data.items.seen.contains(i)))
             }
+            // Abilities: any member's new ability, dim once all are seen.
+            1 => {
+                let marks: Vec<bool> = self
+                    .data
+                    .abilities
+                    .members
+                    .iter()
+                    .filter_map(abilities::MemberAbilities::any_badge)
+                    .collect();
+                (!marks.is_empty()).then(|| marks.iter().all(|&s| s))
+            }
             _ => None,
         }
     }

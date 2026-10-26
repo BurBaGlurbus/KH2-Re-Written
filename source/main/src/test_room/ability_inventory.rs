@@ -29,8 +29,7 @@ impl Tour {
             slots: inventory.slots.clone(),
             ap_max: inventory.ap,
             weapon_ability: 0,
-            form_weapon_abilities: Vec::new(),
-            frequency: Vec::new(),
+            ..Default::default()
         };
         let entries = pause_menu::abilities::entries(table, &member);
         let mut inputs = vec![(40, 2), (100, 0x20), (140, 4), (200, 4)];

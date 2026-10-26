@@ -11454,7 +11454,29 @@ struct CampRes {
     /// with its sheets; the install it saves beside.
     files: Option<crate::save_files::Files>,
     steam_root: PathBuf,
+    /// Each character's obtained-order ability list and seen bits
+    /// (save+0x4278 / +0x41f8 for Sora, +0x4318 / +0x4204 for the party),
+    /// by character id (Sora 1).
+    ability_marks: HashMap<u8, (Vec<u16>, Vec<bool>)>,
 }
+
+/// FUN_140368ed0 at the camp's start for one member: its order list and
+/// seen bits from the room, the new marks of this camp.
+fn with_marks(
+    c: &CampRes,
+    character: u8,
+    mut m: pause_menu::abilities::MemberAbilities,
+) -> pause_menu::abilities::MemberAbilities {
+    let cap = if character == SORA_CHARACTER { 80 } else { 48 };
+    let (mut order, mut seen) = c.ability_marks.get(&character).cloned().unwrap_or_default();
+    m.new = pause_menu::abilities::new_marks(&mut order, &mut seen, &m.slots, cap);
+    m.order = order;
+    m.seen = seen;
+    m
+}
+
+/// Sora's character id (FUN_1403e60c0 maps Roxas 0xe to it too).
+const SORA_CHARACTER: u8 = 1;
 
 /// Sheet slots of the journal's images.
 #[derive(Default)]
@@ -11971,6 +11993,18 @@ fn camp_tick(
             game.config_flags = c.config_flags;
             c.stock = menu.data.items.counts.clone();
             c.seen = menu.data.items.seen.clone();
+            // The obtained-order lists and seen bits stay with each
+            // character (a Party swap reorders the camp's pages).
+            for (i, a) in menu.data.abilities.members.iter().enumerate() {
+                let character = match i {
+                    0 => SORA_CHARACTER,
+                    _ => menu.data.items.equipment.get(i).map_or(0, |e| e.character),
+                };
+                if character != 0 {
+                    c.ability_marks
+                        .insert(character, (a.order.clone(), a.seen.clone()));
+                }
+            }
             c.shortcuts = menu.data.customize.shortcuts;
             if let Some(e) = menu.data.items.equipment.first() {
                 c.equipment = e.clone();
@@ -12282,13 +12316,17 @@ fn member_pages(
         &equipment,
         None,
     );
-    let abilities = pause_menu::abilities::MemberAbilities {
-        slots: s.abilities.to_vec(),
-        ap_max: totals.ap,
-        weapon_ability,
-        form_weapon_abilities: Vec::new(),
-        frequency: s.frequency.to_vec(),
-    };
+    let abilities = with_marks(
+        c,
+        m.character,
+        pause_menu::abilities::MemberAbilities {
+            slots: s.abilities.to_vec(),
+            ap_max: totals.ap,
+            weapon_ability,
+            frequency: s.frequency.to_vec(),
+            ..Default::default()
+        },
+    );
     let used = pause_menu::abilities::used(&pause_menu::abilities::entries(
         &c.source.items.table,
         &abilities,
@@ -12404,13 +12442,17 @@ fn camp_data(
     n.magic += i32::from(gear.magic);
     n.defense += i32::from(gear.defense);
     n.ap += i32::from(gear.ap);
-    let sora_abilities = pause_menu::abilities::MemberAbilities {
-        slots: c.ability_slots.clone(),
-        ap_max: n.ap,
-        weapon_ability: c.source.weapon_ability,
-        form_weapon_abilities: form_abilities.clone(),
-        frequency: Vec::new(),
-    };
+    let sora_abilities = with_marks(
+        c,
+        SORA_CHARACTER,
+        pause_menu::abilities::MemberAbilities {
+            slots: c.ability_slots.clone(),
+            ap_max: n.ap,
+            weapon_ability: c.source.weapon_ability,
+            form_weapon_abilities: form_abilities.clone(),
+            ..Default::default()
+        },
+    );
     let ap_used = pause_menu::abilities::used(&pause_menu::abilities::entries(
         &c.source.items.table,
         &sora_abilities,
@@ -14372,6 +14414,7 @@ fn run(mut args: Vec<PathBuf>) -> Result<AppExit, Box<dyn std::error::Error>> {
             lang: settings.loaded_or("us"),
             files: None,
             steam_root: args[0].clone(),
+            ability_marks: HashMap::new(),
         });
     }
     if let Some(src) = loaded.game_over.take() {
