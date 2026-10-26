@@ -56,5 +56,5 @@ its `--autoplay-savepoint` capture.
 - Not compared with the installed game.
 
 Verdict: PARTIAL for #139 and #79: the field save point opens a working Save menu that writes
-the rewrite's own file; the full state capture, the glow and the window art remain.
+the rewrite's own file; the full state capture and the window art remain (the glow is T252).
 Next: capture the live state into the save image (#79).
