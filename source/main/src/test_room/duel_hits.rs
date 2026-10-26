@@ -108,6 +108,8 @@ struct Landed {
     guarded: bool,
     /// The victim's Reflect volume that took it.
     barrier: Option<u64>,
+    /// A spell volume's centre (a Magnet draws toward it).
+    centre: Option<Vec3>,
 }
 
 /// The first of a Sora's guard volumes (Reflect) the points meet: the
@@ -220,6 +222,13 @@ pub(crate) fn tick(mut game: ResMut<Game>, mut previous: Local<HashMap<(u64, usi
     }
     let all: Vec<(Who, Vec<Window>, Vec<Sphere>)> =
         views.iter().map(|v| (v.who, windows(v), body(v))).collect();
+    // Each Sora's hit record, by index(): an attack whose id the victim's
+    // record already holds is refused in land(), so it must not take the
+    // victim's one landing this tick (a Magnet's long-lived volume would
+    // hide every other spell and swing until it ends).
+    let records: Vec<combat::HitRecord> = std::iter::once(game.sora.vitals.record.clone())
+        .chain(game.rivals.iter().map(|r| r.fighter.vitals.record.clone()))
+        .collect();
     let mut landed: Vec<Landed> = Vec::new();
     let mut seen = HashMap::new();
     for (a, (attacker, wins, _)) in all.iter().enumerate() {
@@ -234,6 +243,13 @@ pub(crate) fn tick(mut game: ResMut<Game>, mut previous: Local<HashMap<(u64, usi
             }
             for (v, (victim, guards, bodies)) in all.iter().enumerate() {
                 if a == v || !views[v].alive || landed.iter().any(|l| l.victim == *victim) {
+                    continue;
+                }
+                if rt
+                    .instance_ids
+                    .get(instance)
+                    .is_some_and(|&(aid, _)| records[index(*victim)].has(aid))
+                {
                     continue;
                 }
                 for (i, &(centre, radius)) in spheres.iter().enumerate() {
@@ -281,6 +297,7 @@ pub(crate) fn tick(mut game: ResMut<Game>, mut previous: Local<HashMap<(u64, usi
                             contact: at,
                             guarded: true,
                             barrier: barrier.map(|b| b.1),
+                            centre: None,
                         });
                         break;
                     }
@@ -301,6 +318,7 @@ pub(crate) fn tick(mut game: ResMut<Game>, mut previous: Local<HashMap<(u64, usi
                             contact: b,
                             guarded: false,
                             barrier: None,
+                            centre: None,
                         });
                         break;
                     }
@@ -323,6 +341,13 @@ pub(crate) fn tick(mut game: ResMut<Game>, mut previous: Local<HashMap<(u64, usi
             rt.instance_seen.insert(instance, simulated(tick));
             for (v, (victim, _, bodies)) in all.iter().enumerate() {
                 if a == v || !views[v].alive || landed.iter().any(|l| l.victim == *victim) {
+                    continue;
+                }
+                if rt
+                    .instance_ids
+                    .get(&instance)
+                    .is_some_and(|&(aid, _)| records[index(*victim)].has(aid))
+                {
                     continue;
                 }
                 let points = combat::swept_volume(vol.centre, vol.previous, vol.radius, vol.height);
@@ -349,6 +374,7 @@ pub(crate) fn tick(mut game: ResMut<Game>, mut previous: Local<HashMap<(u64, usi
                     contact,
                     guarded,
                     barrier: barrier.map(|b| b.1),
+                    centre: Some(Vec3::from_array(vol.centre)),
                 });
             }
         }
@@ -561,6 +587,11 @@ fn land(
     };
     // The game's formula, then the duel's damage rule.
     let formula = combat::damage_with(&attacker_stats, &attack, &victim.vitals.target, &state);
+    let stats = [
+        attacker_stats.strength,
+        attacker_stats.magic,
+        victim.vitals.target.defense,
+    ];
     let damage = rules.damage(formula);
     let damage_motion = (10..=39).contains(&victim.player.motion_id(clips));
     let veto = combat::sora_veto(ab.has(127), ab.has(128), victim.vitals.hp, 0, damage_motion);
@@ -568,12 +599,34 @@ fn land(
     let before = victim.vitals.hp;
     victim.vitals.hp = combat::apply_damage(victim.vitals.hp, 0, max, damage, veto);
     let taken = (before - victim.vitals.hp).max(0) as u32;
-    let reaction = player::Hit {
-        reaction: attack.reaction,
-        original: attack.reaction,
-        direction: [away.x, away.z],
-        high: hit.high,
-        knockback: attack.knockback,
+    let reaction = match hit.centre {
+        // [Duel rule] A Magnet holds an enemy at a radius around the spell
+        // (reaction 5, the Magnet hold); the player's reactions have no
+        // case for it (FUN_1403d2fe0), so a Sora would only take the
+        // damage. In a duel he flinches and slides toward the Magnet,
+        // stopping at its hold radius (KB1..KB2's middle): the knock
+        // speed decays by KNOCK_DECAY a tick, so it covers speed / (1 -
+        // decay).
+        Some(centre) if combat::reaction_class(attack.reaction) == 5 => {
+            let to = (centre - victim_at) * Vec3::new(1., 0., 1.);
+            let hold = (f32::from(attack.knockback[0]) + f32::from(attack.knockback[1])) * 0.5;
+            let speed = (to.length() - hold).max(0.) * (1. - actor_physics::KNOCK_DECAY);
+            let toward = to.normalize_or(-away);
+            player::Hit {
+                reaction: 3,
+                original: 3,
+                direction: [toward.x, toward.z],
+                high: hit.high,
+                knockback: [speed.round() as i16, 0],
+            }
+        }
+        _ => player::Hit {
+            reaction: attack.reaction,
+            original: attack.reaction,
+            direction: [away.x, away.z],
+            high: hit.high,
+            knockback: attack.knockback,
+        },
     };
     let mut started = victim.player.react(&reaction, &sstm, clips).is_some();
     let hp = victim.vitals.hp;
@@ -642,7 +695,8 @@ fn land(
         serde_json::json!({"event":"duel_hit","tick":tick,"attacker":attacker_slot,
         "victim":victim_slot,"atkp":hit.atkp,"step":row,"formula":formula,"damage":damage,"hp":hp,
         "combo":attacker_combo,"reaction":attack.reaction,"spell":hit.spell.is_some(),
-        "aid":aid,"group":group,"interval":rows[row].interval,"instance":hit.instance}),
+        "aid":aid,"group":group,"interval":rows[row].interval,"instance":hit.instance,
+        "stats":stats,"power":attack.power}),
     );
 }
 

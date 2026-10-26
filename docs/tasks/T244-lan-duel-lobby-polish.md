@@ -9,7 +9,7 @@ Prerequisites: T243. Build identity: worktree `KH2FinalRewrite-lan`, branch `fea
 Rust 1.99.0 Windows MSVC, dev profile. Source: the selected Steam KH2FM build, validated at each run; the
 install was only read.
 
-Private evidence: `C:\Users\ANIMA\kh2-lan-out\` (run logs and captures `lobbyui3-*` … `lobbyui5-*`) and the
+Private evidence: `%USERPROFILE%\kh2-lan-out\` (run logs and captures `lobbyui3-*` … `lobbyui5-*`) and the
 trace `%LOCALAPPDATA%/KH2FinalRewrite/research/playable-room-20261008/victory-pose-01/`.
 
 ## What changed

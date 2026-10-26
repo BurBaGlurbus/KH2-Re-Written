@@ -8,7 +8,7 @@ roadmap's (an addition outside the original game; no fidelity claim). Prerequisi
 worktree `KH2FinalRewrite-lan`, branch `feature/lan-duel`; package 0.1.2, Rust 1.99.0 Windows MSVC, dev
 profile. Source: the selected Steam KH2FM build, validated at each run; the install was only read.
 
-Private evidence: `C:\Users\ANIMA\kh2-lan-out\` (run logs `lobby3-*.jsonl`, their captures) and the traces
+Private evidence: `%USERPROFILE%\kh2-lan-out\` (run logs `lobby3-*.jsonl`, their captures) and the traces
 `%LOCALAPPDATA%/KH2FinalRewrite/research/playable-room-20261008/ap-max-01/` (AP) and `drive-recovery-01/`.
 
 ## What changed

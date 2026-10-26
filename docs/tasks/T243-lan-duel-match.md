@@ -8,7 +8,7 @@ for the one still there, the game's own sounds for the countdown and the victory
 `KH2FinalRewrite-lan`, branch `feature/lan-duel`; package 0.1.2, Rust 1.99.0 Windows MSVC, dev profile.
 Source: the selected Steam KH2FM build, validated at each run; the install was only read.
 
-Private evidence: `C:\Users\ANIMA\kh2-lan-out\` (run logs `match1-*` … `match4-*`, their captures) and the
+Private evidence: `%USERPROFILE%\kh2-lan-out\` (run logs `match1-*` … `match4-*`, their captures) and the
 trace `%LOCALAPPDATA%/KH2FinalRewrite/research/playable-room-20261008/duel-cues-01/`.
 
 ## What changed

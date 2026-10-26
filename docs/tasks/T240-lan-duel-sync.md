@@ -8,7 +8,7 @@ fidelity claim). Prerequisites: T236 (fixed 60 Hz tick, frame-rate independence)
 Windows MSVC, dev profile. Source: the selected Steam KH2FM build, validated at each run; the install was only
 read. The number T240 was taken to stay clear of IDs other sessions may use on `main` meanwhile.
 
-Private evidence: `C:\Users\ANIMA\kh2-lan-out\` (run logs, captures, the comparison script `compare.py`, the
+Private evidence: `%USERPROFILE%\kh2-lan-out\` (run logs, captures, the comparison script `compare.py`, the
 run scripts `runs.ps1`, `duo.ps1`, `leave.ps1`, `launcher-shot.ps1`, and the built executables of each step).
 
 ## What changed

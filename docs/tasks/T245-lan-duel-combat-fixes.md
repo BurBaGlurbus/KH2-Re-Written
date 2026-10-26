@@ -6,7 +6,8 @@ Gate: none of the roadmap's (an addition outside the original game; no fidelity 
 Build identity: worktree `KH2FinalRewrite-lan`, branch `feature/lan-duel`; package 0.1.2, Rust 1.99.0 Windows
 MSVC, dev profile. Source: the selected Steam KH2FM build, validated at each run; the install was only read.
 
-Private evidence: `C:\Users\ANIMA\kh2-lan-out\` (bench logs `combo1-*` … `combo7j-*`, `combo7h-*`).
+Private evidence: `%USERPROFILE%\kh2-lan-out\` (bench logs `combo1-*` … `combo7j-*`, `combo7h-*`,
+`magic1-*` … `magic12b-*`, `mag1*`; `magic_table.py` tabulates them).
 
 ## Combos
 
@@ -48,6 +49,53 @@ finisher 129):
 moves or guards; with players missing, guarding and moving that is in the 30–60 s range, so the default stays
 ×3 [duel choice].
 
+## Magic
+
+Found with a bench that casts each spell in turn from one side or both (`--duel-magic`, `--duel-idle`; each cast
+is logged with the spell levels and MP before and after, `duel_cast`):
+
+1. **No spell could be cast after the lobby.** The duel's item set (`duel_loadout.rs`) replaced the battle stock
+   with the consumables, which dropped the spell items (the element items, whose counts are the spell levels).
+   The camp shows the battle stock and, when it closes, writes the spell levels back from it (`camp_tick`).
+   Once the lobby's build menu closed, every spell was at level 0 and every cast was refused without a sound.
+   This is the "magic doesn't work at all". Fix: the duel's stock keeps the element items at the duel's
+   levels, and the lobby's builds put the duel's stock in the battle stock as well.
+2. **A Magnet hid every other hit.** The duel lets one attack land on a Sora per tick. A Magnet's volume
+   (radius 800, about 200 ticks) touches its victim every tick, so it took that landing each tick even though
+   the victim's record refuses it again. Fire, Blizzard, Thunder and swings that met him meanwhile were dropped.
+   Fix: an attack whose id the victim's record already holds gives the landing up.
+3. **Magnet only damaged.** The player's reactions have no case for the Magnet's hold (reaction 5,
+   FUN_1403d2fe0). [Duel rule] A Sora a Magnet hits flinches and slides toward it, stopping at its hold radius
+   (the middle of KB1 and KB2). The Magnet forms on its target, so in practice he is already inside and only
+   flinches.
+4. Bench only: the unattended script's own casts took the bench's turns, and the room's two test blows (ticks
+   1500 and 1700) knocked the caster down. Neither applies in a duel now.
+
+Results at ×3: each side on Kingdom Key, the duel's spell levels (level 3: Firaga … Reflega; the duel gives the
+top level only, so Fire, Fira and the like cannot be cast in a match). Runs `mag1h` (host casts, joiner idle),
+`mag1j` (the reverse) and `mag1b` (both cast, then an item and Valor), with `magic9h` … `magic12b` before them:
+
+| Spell | Host → joiner | Joiner → host | MP | Damage a cast (×3) |
+| --- | --- | --- | --- | --- |
+| Firaga | fixed | fixed | 12 | 24 (5 hits) |
+| Blizzaga | fixed | fixed | 15 | 24 |
+| Thundaga | fixed | fixed | 18 | 48 (2 bolts) |
+| Magnega | fixed (flinch; [duel rule] pull) | fixed | 30 | 6 |
+| Reflega | fixed: blocks the other's spell and counters (33–48) | fixed | 10 | the counter only |
+| Curaga | fixed: full heal (host 116 → 170, joiner 34 → 170) | fixed | all that is left | — |
+| Item (Potion) | works (+68 HP) | works | — | — |
+| Valor Form | works (3 bars), shown on the joiner | works, shown on the joiner | — | — |
+
+The spells' effects reach the joiner (44–72 `spell_effect` records a run). A cast is refused while the caster
+is in a hurt motion, as in the game. Curaga uses all the MP left and starts the MP charge (3000 ticks at the
+base rate, the game's), so the bench casts it last.
+
+Balance, not changed: the formula is power × (stat − defence). At level 99 Sora's Defence is 53 and his Magic
+55 with Kingdom Key, a difference of 2. A Keyblade with Magic +6 makes it 8, four times the damage: the lobby
+script's Keyblade (Magic 61) does 90 a Thundaga bolt, 180 a cast, a knock-out from full HP. Physical attacks
+scale with Strength the same way. This is the game's own formula, not a fault, so the ×3 default stays; a
+separate spell multiplier or a lower damage rule is the owner's decision.
+
 ## Checks
 
 | Check | Result |
@@ -55,8 +103,11 @@ moves or guards; with players missing, guarding and moving that is in the 30–6
 | `cargo fmt`, `clippy -D warnings`, `cargo test` (1,089 passed) | PASS |
 | Single-player tours (talk, magic, party-hit) against a build of `5d7a960` | PASS (identical) |
 | Bench, joiner → idle host and host → idle joiner (`combo7j`, `combo7h`): full strings land, no refused contact, one hit per step | PASS |
+| Magic bench, host → idle joiner, joiner → idle host, both casting (`mag1h`, `mag1j`, `mag1b`): every spell accepted, MP spent, hits, Reflect, Cure, items, Valor on both screens | PASS |
+| Tours after the magic fix (`mag1-*` against `main5d-*`): talk, magic identical; party-hit identical but for the exit tick (6840/6841, known) | PASS |
 | Two PCs, players at the keys | NOT RUN |
 
 ## Verdict / next
 
-Combos PASS on one PC. Next: magic, every spell from both sides.
+Combos PASS and magic PASS on one PC (loopback, unattended). Two PCs NOT RUN. Next: the menus in the pause
+menu's look (T246).

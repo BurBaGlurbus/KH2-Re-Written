@@ -194,6 +194,13 @@ pub(crate) fn apply(
         for &id in &stocked {
             it.stock.insert(id, DUEL_STOCK);
         }
+        // The spells are owned as element items in the stock (their counts
+        // are the levels): the camp writes the levels back from them.
+        if let Some(m) = game.magic.as_ref() {
+            for (t, &item) in ELEMENT_ITEMS.iter().enumerate() {
+                it.stock.insert(item, m.levels[t]);
+            }
+        }
         let order: Vec<u16> = SLOT_ORDER
             .iter()
             .copied()

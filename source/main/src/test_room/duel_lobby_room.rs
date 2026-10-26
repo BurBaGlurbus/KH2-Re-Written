@@ -263,6 +263,11 @@ fn prepare_builds(room: &mut LobbyRoom, game: &mut Game, camp: &mut CampRes) {
             stock.insert(*item, m.levels[t]);
         }
     }
+    // The battle's stock too: the camp shows it and writes it back on
+    // close, and the spell levels follow its element items.
+    if let Some(it) = game.items.as_mut() {
+        it.stock.clone_from(&stock);
+    }
     camp.stock = stock;
     camp.source.numbers.ap = room.limits.ap_max - i32::from(game.gear.ap);
     if let Some(rt) = game.enemy.as_mut() {
@@ -521,8 +526,9 @@ pub(crate) fn tick(
 }
 
 /// [Test] Unattended runs: the joiner bans the pool's first ability and
-/// takes the table's last Keyblade, the host skips; both ready up a second
-/// into the builds.
+/// takes the table's last Keyblade (both keep the room's in the magic
+/// bench, for equal spells), the host skips; both ready up a second into
+/// the builds.
 fn script(room: &mut LobbyRoom, net: &mut DuelNet, game: &mut Game) {
     let seat = &room.lobby.seats[room.seat];
     match room.lobby.stage {
@@ -534,7 +540,7 @@ fn script(room: &mut LobbyRoom, net: &mut DuelNet, game: &mut Game) {
             };
             intend(room, net, game, Intent::Ban(bans));
         }
-        Stage::Loadout if room.stage_ticks == 30 && room.seat == 1 => {
+        Stage::Loadout if room.stage_ticks == 30 && room.seat == 1 && !game.duel_magic => {
             if let Some(&k) = room.limits.keyblades.last() {
                 let mut build = build_of(game);
                 build.keyblade = k;

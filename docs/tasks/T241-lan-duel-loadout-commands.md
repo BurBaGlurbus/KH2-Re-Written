@@ -7,7 +7,7 @@ game; no fidelity claim). Prerequisites: T240. Build identity: worktree `KH2Fina
 `feature/lan-duel`; package 0.1.2, Rust 1.99.0 Windows MSVC, dev profile. Source: the selected Steam KH2FM
 build, validated at each run; the install was only read.
 
-Private evidence: `C:\Users\ANIMA\kh2-lan-out\` (run logs `duofx2-*.jsonl`, `p2s2c-*.jsonl`, their captures,
+Private evidence: `%USERPROFILE%\kh2-lan-out\` (run logs `duofx2-*.jsonl`, `p2s2c-*.jsonl`, their captures,
 the scripts `runs.ps1`, `duo.ps1`, `compare.py`, and the built executables).
 
 ## What changed

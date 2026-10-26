@@ -369,18 +369,32 @@ pub(crate) fn script_pad(tick: u64, me: [f32; 3], toward: [f32; 3]) -> RivalPad 
     pad
 }
 
-/// The spells the magic bench casts, in turn.
-const BENCH_SPELLS: [u8; 6] = [
-    magic::FIRE,
-    magic::BLIZZARD,
-    magic::THUNDER,
-    magic::CURE,
-    magic::MAGNET,
-    magic::REFLECT,
+/// What the magic bench does, in turn: the five spells that cost MP twice
+/// (176 of the duel's 180), the first item slot, Cure (all the MP that is
+/// left), then Valor Form.
+const BENCH_COMMANDS: [Command; 13] = [
+    Command::Cast(magic::FIRE),
+    Command::Cast(magic::BLIZZARD),
+    Command::Cast(magic::THUNDER),
+    Command::Cast(magic::MAGNET),
+    Command::Cast(magic::REFLECT),
+    Command::Cast(magic::FIRE),
+    Command::Cast(magic::BLIZZARD),
+    Command::Cast(magic::THUNDER),
+    Command::Cast(magic::MAGNET),
+    Command::Cast(magic::REFLECT),
+    Command::Item(0),
+    Command::Cast(magic::CURE),
+    Command::Drive(player::forms::VALOR),
 ];
+/// Ticks between the bench's casts (a cast and its recovery fit).
+const BENCH_GAP: u64 = 200;
+/// The bench's first cast (after the lobby and the countdown).
+const BENCH_START: u64 = 1000;
 
-/// [Test] `--duel-magic`: come within 250 of the other Sora and cast the
-/// next spell every 150 ticks (`offset` staggers the two players).
+/// [Test] `--duel-magic`: come within 250 of the other Sora and take the
+/// next bench command every BENCH_GAP ticks, once through the list
+/// (`offset` staggers the two players).
 pub(crate) fn magic_pad(tick: u64, offset: u64, me: [f32; 3], toward: [f32; 3]) -> RivalPad {
     let d = Vec2::new(toward[0] - me[0], toward[2] - me[2]);
     let t = tick + offset;
@@ -390,10 +404,12 @@ pub(crate) fn magic_pad(tick: u64, offset: u64, me: [f32; 3], toward: [f32; 3]) 
         } else {
             [0., 0.]
         },
-        command: if t.is_multiple_of(150) {
-            Command::Cast(BENCH_SPELLS[(t / 150) as usize % BENCH_SPELLS.len()])
-        } else {
-            Command::None
+        command: match t.checked_sub(BENCH_START) {
+            Some(n) if n.is_multiple_of(BENCH_GAP) => BENCH_COMMANDS
+                .get((n / BENCH_GAP) as usize)
+                .copied()
+                .unwrap_or_default(),
+            _ => Command::None,
         },
         ..RivalPad::default()
     }
@@ -546,8 +562,9 @@ pub(crate) fn tick(mut game: ResMut<Game>) {
                 let mp = game.sora.player.mp.cur;
                 let ok = magic_room::request(game, t, tick);
                 let after = game.sora.player.mp.cur;
+                let levels = game.magic.as_ref().map(|m| m.levels);
                 game.event(serde_json::json!({"event":"duel_cast","tick":tick,
-                    "slot":rival.slot,"magic":t,"ok":ok,"mp":[mp, after]}));
+                    "slot":rival.slot,"magic":t,"ok":ok,"mp":[mp, after],"levels":levels}));
             }
             Command::Item(slot) => item_room::request(game, slot as usize, tick),
             Command::Drive(form) => {

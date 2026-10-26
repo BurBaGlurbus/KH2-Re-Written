@@ -7687,12 +7687,24 @@ fn simulate(
         }
         menu_item = party_items_tour::use_slot(tick).or(menu_item);
     }
-    // [Test] `--duel-magic` on the host: the bench's spell.
-    let bench_cast = match bench.map(|p| p.command) {
-        Some(rival::Command::Cast(t)) => Some(t),
-        _ => None,
+    // [Test] `--duel-magic` on the host: the bench's spells, item and
+    // Drive, and no others (the unattended script's would take their turns).
+    let (cast, menu_item) = if game.duel_magic {
+        match bench.map(|p| p.command) {
+            Some(rival::Command::Cast(t)) => (Some(t), None),
+            Some(rival::Command::Item(slot)) => (None, Some(slot as usize)),
+            Some(rival::Command::Drive(form)) => {
+                if let Some(d) = game.drive.as_mut().filter(|_| !frozen) {
+                    d.request = Some(form);
+                }
+                (None, None)
+            }
+            _ => (None, None),
+        }
+    } else {
+        (cast.or(menu_cast), menu_item)
     };
-    let cast = cast.or(menu_cast).or(bench_cast).filter(|_| !frozen);
+    let cast = cast.filter(|_| !frozen);
     let menu_item = menu_item.filter(|_| !frozen);
     // Spells and items a form disables are refused (FUN_1403b6cb0).
     let (cast, menu_item) = match game.drive.as_ref() {
@@ -7756,8 +7768,9 @@ fn simulate(
             let ok = magic_room::request(&mut game, t, tick);
             if game.duel {
                 let (slot, after) = (game.local_slot, game.sora.player.mp.cur);
+                let levels = game.magic.as_ref().map(|m| m.levels);
                 game.event(serde_json::json!({"event":"duel_cast","tick":tick,
-                    "slot":slot,"magic":t,"ok":ok,"mp":[mp, after]}));
+                    "slot":slot,"magic":t,"ok":ok,"mp":[mp, after],"levels":levels}));
             }
         }
         if let Some(slot) = menu_item
@@ -7825,7 +7838,7 @@ fn simulate(
             {
                 let me = game.sora.player.position;
                 game.net_pad = if game.duel_magic {
-                    rival::magic_pad(tick, 75, me, foe)
+                    rival::magic_pad(tick, 100, me, foe)
                 } else if game.duel_bench {
                     rival::bench_pad(tick, me, foe)
                 } else {
@@ -9758,14 +9771,18 @@ fn combat_tick(game: &mut Game, tick: u64) {
         magic_shift,
         wall,
         party,
+        duel,
         ..
     } = game;
     let Some(rt) = enemy.as_mut() else { return };
+    // The unattended run's test blows (not in a duel: the other Sora's
+    // hits are the test there).
     let debug_blow = std::mem::take(debug_blow)
         || (autoplay.is_some()
             && !*enemy_battle_tour
             && !*sephiroth_tour
             && !*magic_tour
+            && !*duel
             && AUTOPLAY_BLOWS.contains(&tick));
     let act_at_start = rt.enemy.current_act();
     let place = if *magic_tour {
