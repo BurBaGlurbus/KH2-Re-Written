@@ -821,10 +821,10 @@ pub(super) fn start_change(game: &mut Game, form: u8) {
     if form == d.form {
         return;
     }
-    let airborne = game.player.in_air();
+    let airborne = game.sora.player.in_air();
     if form != 0 {
         if game.clips.drive.is_some() {
-            game.player.start_drive();
+            game.sora.player.start_drive();
             game.action_started = game.tick;
         }
         d.start_load(form);
@@ -863,7 +863,7 @@ fn execute(game: &mut Game, requested: u8) {
     let final_cost = src.command(forms::FINAL).map_or(5, |c| c.cost);
     let ctx = forms::RollContext {
         disabled: false,
-        abilities: &game.player.abilities,
+        abilities: &game.sora.player.abilities,
         area_anti: 1,
         battle: d.battle.on,
         anti_party: forms::party_requirement(forms::ANTI, &members, 1.),
@@ -872,11 +872,11 @@ fn execute(game: &mut Game, requested: u8) {
         // The room has no story progress (flag 0x4842 clear).
         final_story: false,
         final_cost,
-        level: game.player.drive.level,
+        level: game.sora.player.drive.level,
     };
     let rolled = d.forms.roll(requested, &ctx, &src.fmlv, &mut d.seed);
     let cost = src.command(rolled.form).map_or(0, |c| c.cost);
-    game.player.drive.pay(cost);
+    game.sora.player.drive.pay(cost);
     let tick = game.tick;
     game.event(
         serde_json::json!({"event":"drive","tick":tick,"requested":requested,
@@ -983,8 +983,8 @@ fn finish_change(game: &mut Game, abilities: Option<&[u16]>) -> Result<(), Strin
         .ok_or("no change")?;
     let f = change.target;
     swap_kit(game, f)?;
-    let airborne = change.airborne && game.player.in_air();
-    let action = game.player.arrive(f, airborne, &game.clips);
+    let airborne = change.airborne && game.sora.player.in_air();
+    let action = game.sora.player.arrive(f, airborne, &game.clips);
     game.action_started = game.tick;
     let _ = action;
     let d = game.drive.as_mut().ok_or("no drive state")?;
@@ -1013,23 +1013,28 @@ fn finish_change(game: &mut Game, abilities: Option<&[u16]>) -> Result<(), Strin
         let level = d.forms.record(f).map_or(1, |r| r.level);
         // FUN_1403c17c0: HP and MP to full, an MP charge cancelled, the
         // form's bars.
-        game.player.mp.cur = game.player.mp.max;
-        game.player.mp.remaining = 0.;
-        game.player.mp.total = 0.;
-        game.player.mp_charging = false;
-        game.player.drive.enter_form(f, level);
-        if let Some(rt) = game.enemy.as_mut() {
-            rt.sora_hp = rt.sora_target.max_hp;
+        game.sora.player.mp.cur = game.sora.player.mp.max;
+        game.sora.player.mp.remaining = 0.;
+        game.sora.player.mp.total = 0.;
+        game.sora.player.mp_charging = false;
+        game.sora.player.drive.enter_form(f, level);
+        if game.enemy.is_some() {
+            let v = &mut game.sora.vitals;
+            v.hp = v.target.max_hp;
         }
     } else {
         d.active = false;
-        game.player.drive.leave_form();
+        game.sora.player.drive.leave_form();
         // FUN_140400440: the absorbed members come back around Sora.
         let stored = std::mem::take(&mut d.stored);
         let (mut seed, mut sector) = (d.seed, d.sector);
         for (i, _) in stored {
-            let spot =
-                forms::return_spot(&game.world, game.player.position, &mut seed, &mut sector);
+            let spot = forms::return_spot(
+                &game.world,
+                game.sora.player.position,
+                &mut seed,
+                &mut sector,
+            );
             if let Some(m) = game.party.get_mut(i) {
                 m.stored = false;
                 m.follower.position = spot.0;
@@ -1041,10 +1046,10 @@ fn finish_change(game: &mut Game, abilities: Option<&[u16]>) -> Result<(), Strin
             (d.seed, d.sector) = (seed, sector);
         }
     }
-    game.player.shoot = f == forms::WISDOM;
+    game.sora.player.shoot = f == forms::WISDOM;
     rebuild_abilities(game, abilities);
     let tick = game.tick;
-    let gauge = game.player.drive;
+    let gauge = game.sora.player.drive;
     game.event(
         serde_json::json!({"event":"form_change","tick":tick,"form":f,
         "bars":gauge.bars,"time":gauge.time,"drive_level":gauge.level}),
@@ -1065,7 +1070,7 @@ pub fn rebuild_abilities(game: &mut Game, sora: Option<&[u16]>) {
         .filter(|d| d.active)
         .and_then(|d| d.forms.record(d.form))
         .copied();
-    game.player.abilities =
+    game.sora.player.abilities =
         game.ability_source
             .build_with_form(&game.ability_slots, &game.equipment, form.as_ref());
     // FUN_1403c1d90 rebuilds the stat totals and the abilities together.
@@ -1162,7 +1167,7 @@ pub fn tick(game: &mut Game, abilities: Option<&[u16]>) {
     }
     let Some(d) = game.drive.as_mut() else { return };
     // FUN_1403ab6f0's battle state.
-    let p = game.player.position;
+    let p = game.sora.player.position;
     let target = game.enemy.as_ref().is_some_and(|rt| {
         let e = rt.enemy.position;
         !matches!(
@@ -1189,7 +1194,7 @@ pub fn tick(game: &mut Game, abilities: Option<&[u16]>) {
     // The magic tour casts in a form (`--magic-form`).
     if game.magic_tour && game.magic_form != 0 {
         match game.tick {
-            5 => game.player.drive.refill(),
+            5 => game.sora.player.drive.refill(),
             10 => d.request = Some(game.magic_form),
             _ => {}
         }
@@ -1201,9 +1206,9 @@ pub fn tick(game: &mut Game, abilities: Option<&[u16]>) {
     {
         use player::limit_form::{INFINITY, STRIKE_RAID};
         match game.tick {
-            7480 => game.player.drive.refill(),
+            7480 => game.sora.player.drive.refill(),
             7490 => d.request = Some(forms::LIMIT),
-            7695 | 8055 => game.player.mp.cur = game.player.mp.max,
+            7695 | 8055 => game.sora.player.mp.cur = game.sora.player.mp.max,
             7700 => d.limit_request = Some(INFINITY),
             8060 => d.limit_request = Some(STRIKE_RAID),
             _ => {}
@@ -1212,16 +1217,16 @@ pub fn tick(game: &mut Game, abilities: Option<&[u16]>) {
     if game.limit_form_tour {
         let tick = game.tick;
         if super::limit_form_tour::place(tick) {
-            game.player.mp.cur = game.player.mp.max;
-            game.player.mp_charging = false;
+            game.sora.player.mp.cur = game.sora.player.mp.max;
+            game.sora.player.mp_charging = false;
             // [Tour setup] The form's time topped up too: the counter
             // window's fight drains it.
-            game.player.drive.time = game.player.drive.max_time;
+            game.sora.player.drive.time = game.sora.player.drive.max_time;
             // [Tour setup] In front of the Shadow, facing it.
             if let Some(rt) = game.enemy.as_ref() {
                 let e = rt.enemy.position;
-                game.player.position = [e[0], e[1], e[2] + super::limit_form_tour::STAND_OFF];
-                game.player.yaw = std::f32::consts::PI;
+                game.sora.player.position = [e[0], e[1], e[2] + super::limit_form_tour::STAND_OFF];
+                game.sora.player.yaw = std::f32::consts::PI;
             }
         }
         // [Tour setup] The Shadow fights in the counter window only, Sora
@@ -1234,8 +1239,8 @@ pub fn tick(game: &mut Game, abilities: Option<&[u16]>) {
             && let Some(rt) = game.enemy.as_ref()
         {
             let e = rt.enemy.position;
-            game.player.position = [e[0], e[1], e[2] + super::limit_form_tour::CLOSE];
-            game.player.yaw = std::f32::consts::PI;
+            game.sora.player.position = [e[0], e[1], e[2] + super::limit_form_tour::CLOSE];
+            game.sora.player.yaw = std::f32::consts::PI;
         }
         if let Some(cmd) = super::limit_form_tour::limit(tick) {
             d.limit_request = Some(cmd);
@@ -1258,7 +1263,7 @@ pub fn tick(game: &mut Game, abilities: Option<&[u16]>) {
             if d.revert_usable() {
                 start_change(game, 0);
             }
-        } else if d.selectable(f, &game.player.drive) {
+        } else if d.selectable(f, &game.sora.player.drive) {
             execute(game, f);
         }
     }
@@ -1284,9 +1289,10 @@ pub fn tick(game: &mut Game, abilities: Option<&[u16]>) {
         }
         // FUN_14040ce00: HP and MP +6 a frame until the swap.
         if target != 0 {
-            game.player.mp.cur = (game.player.mp.cur + 6).min(game.player.mp.max);
-            if let Some(rt) = game.enemy.as_mut() {
-                rt.sora_hp = (rt.sora_hp + 6).min(rt.sora_target.max_hp);
+            game.sora.player.mp.cur = (game.sora.player.mp.cur + 6).min(game.sora.player.mp.max);
+            if game.enemy.is_some() {
+                let v = &mut game.sora.vitals;
+                v.hp = (v.hp + 6).min(v.target.max_hp);
             }
         }
         // FUN_14040d000 waits for motion 0x34 only while a party member is
@@ -1301,7 +1307,9 @@ pub fn tick(game: &mut Game, abilities: Option<&[u16]>) {
             game.party.iter().any(|m| !m.stored)
         };
         match ready {
-            Ok(true) if target == 0 || !party_present || game.player.drive_done(&game.clips) => {
+            Ok(true)
+                if target == 0 || !party_present || game.sora.player.drive_done(&game.clips) =>
+            {
                 if target != 0
                     && let Some(d) = game.drive.as_mut()
                 {
@@ -1335,7 +1343,9 @@ pub fn tick(game: &mut Game, abilities: Option<&[u16]>) {
                         }
                     }
                 }
-                game.player.arrive(0, game.player.in_air(), &game.clips);
+                game.sora
+                    .player
+                    .arrive(0, game.sora.player.in_air(), &game.clips);
             }
         }
         return;
@@ -1346,12 +1356,15 @@ pub fn tick(game: &mut Game, abilities: Option<&[u16]>) {
     // FUN_1403a92c0: the form gauge drains every frame.
     let (battle, boost, summon) = (
         d.battle.on,
-        game.player.abilities.form_boost,
-        game.player.abilities.summon_boost,
+        game.sora.player.abilities.form_boost,
+        game.sora.player.abilities.summon_boost,
     );
-    game.player.drive.drain_frame(battle, boost, summon);
+    game.sora.player.drive.drain_frame(battle, boost, summon);
     // FUN_140404a40: at time 0, revert once the Revert command could run.
-    if game.player.drive.time <= 0. && !game.player.dead() && game.player.can_command(&game.clips) {
+    if game.sora.player.drive.time <= 0.
+        && !game.sora.player.dead()
+        && game.sora.player.can_command(&game.clips)
+    {
         start_change(game, 0);
     }
 }
@@ -1364,7 +1377,7 @@ pub fn menu_row(game: &Game) -> Option<(Vec<u8>, usize, bool)> {
         let colour = if d.revert_usable() { 0 } else { 5 };
         Some((d.src.revert_label.clone(), colour, false))
     } else {
-        let any = d.menu(&game.player.drive).iter().any(|m| m.2 < 4);
+        let any = d.menu(&game.sora.player.drive).iter().any(|m| m.2 < 4);
         let colour = if d.forms.owned[1..6].iter().any(|&o| o) {
             if any { 0 } else { 1 }
         } else {
@@ -1397,8 +1410,8 @@ pub fn present(
 ) {
     let Some(form) = game.drive.as_mut().and_then(|d| d.respawn.take()) else {
         // The second Keyblade follows slot 1's joint.
-        let clip = game.poses[&(game.player.action, game.player.armed)];
-        let frame = game.player.motion_frame(&game.clips) as usize;
+        let clip = game.poses[&(game.sora.player.action, game.sora.player.armed)];
+        let frame = game.sora.player.motion_frame(&game.clips) as usize;
         let cp = &game.clip_poses[clip];
         let hands = &cp.weapon2;
         if let Some(pose) = cp
@@ -1419,7 +1432,7 @@ pub fn present(
             if let Some(m) = hands.get(frame.min(hands.len().saturating_sub(1))) {
                 *t = Transform::from_matrix(*m);
             }
-            *v = if game.player.armed && !hands.is_empty() {
+            *v = if game.sora.player.armed && !hands.is_empty() {
                 Visibility::Inherited
             } else {
                 Visibility::Hidden
@@ -1548,7 +1561,7 @@ pub fn shots(game: &mut Game) {
     let tip = super::drive_fx::blade_tip(game, 0);
     let Game {
         drive,
-        player,
+        sora: Fighter { player, .. },
         clips,
         magic,
         enemy,
@@ -1662,10 +1675,10 @@ const PARTY_FADE: u32 = 16;
 /// trigger frame passed this tick starts that element of the shown kit's
 /// PAX, bound to him.
 pub fn motion_effects(game: &mut Game) {
-    let key = (game.action_started, game.player.action);
-    let frame = game.player.frame;
-    let clip = game.player.clip(&game.clips).clone();
-    let dash = game.player.quick_run_effect.take();
+    let key = (game.action_started, game.sora.player.action);
+    let frame = game.sora.player.frame;
+    let clip = game.sora.player.clip(&game.clips).clone();
+    let dash = game.sora.player.quick_run_effect.take();
     let Some(d) = game.drive.as_mut() else { return };
     let from = match d.fx_scan {
         Some((s, a, f)) if (s, a) == key => Some(f),
@@ -1715,9 +1728,13 @@ pub fn limit_tick(game: &mut Game) {
         return;
     }
     let cost = d.src.commands.get(&cmd).map_or(0, |r| r.cost);
-    let colour =
-        player::limit_form::colour(cost, false, game.player.mp.cur, game.player.mp_charging);
-    if colour >= 4 || !game.player.can_command(&game.clips) {
+    let colour = player::limit_form::colour(
+        cost,
+        false,
+        game.sora.player.mp.cur,
+        game.sora.player.mp_charging,
+    );
+    if colour >= 4 || !game.sora.player.can_command(&game.clips) {
         return;
     }
     let tick = game.tick;
@@ -1771,7 +1788,7 @@ pub fn thrown_keyblade(
     let dir = match *last {
         Some((p, d)) if p.distance_squared(at) < 1e-4 => d,
         Some((p, _)) => (at - p).normalize_or(Vec3::Z),
-        None => Vec3::new(game.player.yaw.sin(), 0., game.player.yaw.cos()),
+        None => Vec3::new(game.sora.player.yaw.sin(), 0., game.sora.player.yaw.cos()),
     };
     *last = Some((at, dir));
     // The program's own turn when it set one, else along the travel.

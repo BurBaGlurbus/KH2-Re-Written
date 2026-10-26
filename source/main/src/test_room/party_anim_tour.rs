@@ -95,8 +95,8 @@ pub fn drive(game: &mut Game, tick: u64) {
             rt.enabled = false;
         }
     }
-    let sora = Vec3::from_array(game.player.position);
-    let forward = Vec3::new(game.player.yaw.sin(), 0., game.player.yaw.cos());
+    let sora = Vec3::from_array(game.sora.player.position);
+    let forward = Vec3::new(game.sora.player.yaw.sin(), 0., game.sora.player.yaw.cos());
     if tick == ENEMY_ON
         && let Some(rt) = game.enemy.as_mut()
     {

@@ -173,8 +173,8 @@ pub const END: u64 = 12000;
 /// Stages a member 220 ahead of Sora and to one side, facing him, where
 /// the camera sees it whichever way it looks.
 fn stage(game: &mut Game, member: usize, enemy: Option<bool>) {
-    let sora = Vec3::from_array(game.player.position);
-    let (s, c) = game.player.yaw.sin_cos();
+    let sora = Vec3::from_array(game.sora.player.position);
+    let (s, c) = game.sora.player.yaw.sin_cos();
     let side = if member == DONALD { -1. } else { 1. };
     let at = sora + Vec3::new(s, 0., c) * 220. + Vec3::new(c, 0., -s) * 110. * side;
     let yaw = (sora.x - at.x).atan2(sora.z - at.z);
@@ -272,8 +272,8 @@ pub fn drive(game: &mut Game, tick: u64) {
         return;
     };
     let index = state.case;
-    let sora = Vec3::from_array(game.player.position);
-    let forward = Vec3::new(game.player.yaw.sin(), 0., game.player.yaw.cos());
+    let sora = Vec3::from_array(game.sora.player.position);
+    let forward = Vec3::new(game.sora.player.yaw.sin(), 0., game.sora.player.yaw.cos());
     let mut done = false;
     match case {
         Case::Enemy(on) => {
@@ -458,7 +458,8 @@ pub fn drive(game: &mut Game, tick: u64) {
                 if let Some(rt) = game.enemy.as_mut() {
                     rt.enabled = true;
                     if matches!(what, Low::SoraHp) {
-                        rt.sora_hp = rt.sora_target.max_hp / 5;
+                        let v = &mut game.sora.vitals;
+                        v.hp = v.target.max_hp / 5;
                     }
                 }
                 if let Some(m) = game.party.get_mut(member) {
@@ -606,7 +607,8 @@ pub fn drive(game: &mut Game, tick: u64) {
         // Back to full HP and MP, the Shadow away again.
         if let Some(rt) = game.enemy.as_mut() {
             rt.enabled = false;
-            rt.sora_hp = rt.sora_target.max_hp;
+            let v = &mut game.sora.vitals;
+            v.hp = v.target.max_hp;
         }
         for m in game.party.iter_mut() {
             m.hp = m.max_hp;

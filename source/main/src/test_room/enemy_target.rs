@@ -80,15 +80,17 @@ pub struct Selection {
 
 pub fn player_targetcentre(game: &Game) -> Option<[f32; 3]> {
     let Some(shape) = game.player_target_shape.as_ref() else {
-        return Some(game.player.position);
+        return Some(game.sora.player.position);
     };
     let bone = usize::try_from(shape.bone).ok()?;
     let matrix = if bone == 0x4000 {
         Mat4::IDENTITY
     } else {
-        let index = *game.poses.get(&(game.player.action, game.player.armed))?;
+        let index = *game
+            .poses
+            .get(&(game.sora.player.action, game.sora.player.armed))?;
         let clip = game.clip_poses.get(index)?;
-        let frame = game.player.motion_frame(&game.clips) as usize;
+        let frame = game.sora.player.motion_frame(&game.clips) as usize;
         *clip
             .body
             .get(frame.min(clip.body.len().saturating_sub(1)))?
@@ -96,8 +98,8 @@ pub fn player_targetcentre(game: &Game) -> Option<[f32; 3]> {
     };
     let offset = Vec3::from_array(shape.position.map(|value| value as f32));
     let local = matrix.transform_point3(offset) + Vec3::Y * shape.position_height as f32;
-    let centre =
-        Vec3::from_array(game.player.position) + Quat::from_rotation_y(game.player.yaw) * local;
+    let centre = Vec3::from_array(game.sora.player.position)
+        + Quat::from_rotation_y(game.sora.player.yaw) * local;
     centre.is_finite().then(|| centre.to_array())
 }
 
@@ -208,8 +210,8 @@ pub fn select(
         }
         state.holder.update(
             params,
-            game.player.position,
-            [game.player.yaw.sin(), game.player.yaw.cos()],
+            game.sora.player.position,
+            [game.sora.player.yaw.sin(), game.sora.player.yaw.cos()],
             &candidates,
             manual,
             dt,
@@ -249,8 +251,8 @@ pub fn acquire(
     if let Some(params) = &gallery.target_params {
         state.holder.acquire(
             params,
-            game.player.position,
-            [game.player.yaw.sin(), game.player.yaw.cos()],
+            game.sora.player.position,
+            [game.sora.player.yaw.sin(), game.sora.player.yaw.cos()],
             &candidates,
         );
         state.holder.hold(params);
@@ -409,7 +411,7 @@ pub fn scan_view(
         .items
         .get(&SCAN_ITEM)
         .is_some_and(|&(bit, _)| bit == SCAN_BIT)
-        && game.player.abilities.has(SCAN_BIT);
+        && game.sora.player.abilities.has(SCAN_BIT);
     if !equipped {
         return None;
     }

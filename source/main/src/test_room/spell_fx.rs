@@ -132,16 +132,16 @@ struct MemberFrame {
 
 impl Frames {
     fn of(game: &Game) -> Frames {
-        let p = game.player.position;
+        let p = game.sora.player.position;
         let root = Mat4::from_rotation_translation(
-            Quat::from_rotation_y(game.player.yaw),
+            Quat::from_rotation_y(game.sora.player.yaw),
             Vec3::from_array(p),
         );
         let clip = game
             .poses
-            .get(&(game.player.action, game.player.armed))
+            .get(&(game.sora.player.action, game.sora.player.armed))
             .and_then(|&c| game.clip_poses.get(c));
-        let frame = game.player.motion_frame(&game.clips) as usize;
+        let frame = game.sora.player.motion_frame(&game.clips) as usize;
         let hand = clip.and_then(|c| c.weapon.get(frame.min(c.weapon.len().saturating_sub(1))));
         let bones = clip
             .and_then(|c| c.body.get(frame.min(c.body.len().saturating_sub(1))))

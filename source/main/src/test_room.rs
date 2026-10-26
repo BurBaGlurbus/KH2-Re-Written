@@ -83,6 +83,8 @@ mod enemy_motion_fx;
 mod enemy_script;
 mod enemy_target;
 mod enemy_tour;
+mod fighter;
+use fighter::{Fighter, Vitals};
 mod game_over;
 mod gear;
 mod gear_tour;
@@ -1080,7 +1082,8 @@ struct Game {
     player_push_shapes: Vec<object_collision::Entry>,
     clips: Clips,
     world: RoomWorld,
-    player: Player,
+    /// The room's own Sora.
+    sora: fighter::Fighter,
     poses: HashMap<(Action, bool), usize>,
     clip_poses: Vec<ClipPoses>,
     part_indices: Vec<Vec<u32>>,
@@ -2660,18 +2663,13 @@ struct EnemyRuntime {
     steps: HashMap<(u16, u8), Vec<data::battle_tables::Attack>>,
     /// The ATKP table, for spell rows by sub-table.
     atkp: Vec<u8>,
-    sora: combat::AttackerStats,
     enemy: Shadow,
     rng: ScriptRandom,
     claws: HashMap<u8, Vec<(usize, Vec3, f32)>>,
     shadow_attacker: combat::AttackerStats,
-    sora_target: combat::TargetStats,
     sora_body: Vec<(usize, Vec3, f32, bool)>,
     /// Summed TARGET radii for aerial hops (FUN_1403d7520).
     target_reach: f32,
-    /// Sora's hit record (obj+0xc98): the claws' hit-once mask and the
-    /// 30-tick group lock of a player-type object.
-    sora_record: combat::HitRecord,
     /// Attack ids and combo groups of live attack instances.
     ids: combat::AttackIds,
     instance_ids: HashMap<u64, (u8, i32)>,
@@ -2679,16 +2677,12 @@ struct EnemyRuntime {
     next_group: i32,
     difficulty: combat::Difficulty,
     claw_previous: HashMap<(u64, usize), Vec3>,
-    /// Sora's HP and KO timer (test room refills after a KO).
-    sora_hp: i32,
-    ko_ticks: u32,
     /// The kill's EXP inputs, przt record and Sora's LVUP rows.
     exp_rule: (u16, u16),
     prize: data::battle_tables::Prize,
     sora_levels: Vec<data::battle_tables::PlayerLevel>,
-    /// Sora's level, EXP, munny, the prizes in the world, and whether the
-    /// enemy was dead last tick.
-    level: u8,
+    /// Sora's EXP, munny, the prizes in the world, and whether the enemy
+    /// was dead last tick (his level is `Game::sora.vitals`).
     exp_total: u32,
     munny: u32,
     orbs: Vec<player::enemy_prizes::Orb>,
@@ -2716,8 +2710,6 @@ struct EnemyRuntime {
     hit_effects: HashMap<u16, (u8, u8)>,
     /// Full ATKP rows (Keyblade, guard and claws) for the clash rules.
     rows: HashMap<u16, data::battle_tables::Attack>,
-    /// Sora's invulnerability after a guard (+0xd70), in ticks.
-    sora_invulnerable: f32,
     /// Motion serial and tick already scanned for sound triggers.
     sound_tick: Option<(u32, u32)>,
     /// The claw spheres of this tick, for the party members' hit tests
@@ -4680,10 +4672,13 @@ fn frame_stats(
 /// so at frame rates under 60 a tick could read a pose two or more ticks
 /// old; kept here, every tick reads its predecessor's, as at 60 FPS.
 fn keep_weapon_pose(mut game: ResMut<Game>) {
-    let Some(&clip) = game.poses.get(&(game.player.action, game.player.armed)) else {
+    let Some(&clip) = game
+        .poses
+        .get(&(game.sora.player.action, game.sora.player.armed))
+    else {
         return;
     };
-    let frame = game.player.motion_frame(&game.clips) as usize;
+    let frame = game.sora.player.motion_frame(&game.clips) as usize;
     let weapon_frames = &game.clip_poses[clip].weapon_frames;
     if let Some(pose) = weapon_frames.get(frame.min(weapon_frames.len().saturating_sub(1)))
         && *pose != game.weapon_display
@@ -4787,13 +4782,17 @@ fn area_transition(
     game.step_bank = step_room_bank(&game.step_info, next.world, next.area);
     game.ambient = room_ambient(&game.step_info, next.world, next.area);
     let (position, yaw) = next.player;
-    game.player = Player::new(position.to_array(), yaw);
+    game.sora.player = Player::new(position.to_array(), yaw);
     rig.collision = CameraCollision::new(&room);
     rig.camera = FollowCamera::new(
         follow_camera::OUTDOOR,
-        &camera_input(&game.player, game.player.position, game.params.run_speed),
+        &camera_input(
+            &game.sora.player,
+            game.sora.player.position,
+            game.params.run_speed,
+        ),
     );
-    rig.previous_position = game.player.position;
+    rig.previous_position = game.sora.player.position;
     game.event(
         serde_json::json!({"event":"area_load","world":world,"area":number,
         "worker_ms":worker_ms,"main_decode_ms":decoded.as_secs_f64() * 1e3,
@@ -5004,9 +5003,9 @@ fn field_npc_tick(
         && game.tick == 30
         && let Some(n) = current.npcs.iter().find(|n| n.alive)
     {
-        game.player.position = [n.position.x + 30., n.position.y, n.position.z];
+        game.sora.player.position = [n.position.x + 30., n.position.y, n.position.z];
     }
-    let sora = Vec3::from_array(game.player.position);
+    let sora = Vec3::from_array(game.sora.player.position);
     let talking = talk.active.is_some();
     if *was_talking
         && !talking
@@ -5189,8 +5188,8 @@ fn field_npc_tick(
             "sora_to":at.to_array()}),
         );
     }
-    game.player.position[0] = at.x;
-    game.player.position[2] = at.z;
+    game.sora.player.position[0] = at.x;
+    game.sora.player.position[2] = at.z;
     for e in events {
         game.event(e);
     }
@@ -5765,7 +5764,7 @@ fn setup(
         .spawn((
             SoraRoot,
             ChildOf(world),
-            Transform::from_translation(Vec3::from_array(game.player.position)),
+            Transform::from_translation(Vec3::from_array(game.sora.player.position)),
             Visibility::default(),
         ))
         .id();
@@ -6604,7 +6603,10 @@ fn simulate(
             magic_tour::jump(tick, game.magic_shift),
             magic_tour::attack(tick, game.magic_shift)
                 || game.limit_form_tour
-                    && limit_form_tour::attack(tick, game.player.action == Action::GuardRecoil),
+                    && limit_form_tour::attack(
+                        tick,
+                        game.sora.player.action == Action::GuardRecoil,
+                    ),
         )
     } else if let Some(tour) = &game.ability_tour {
         (
@@ -6669,7 +6671,7 @@ fn simulate(
         .filter(|a| a.explore && game.autoplay.is_some())
     {
         Some(a) if a.pending.is_none() && a.transition.is_none() => {
-            let p = game.player.position;
+            let p = game.sora.player.position;
             match area::exit_target(&a.current.state, a.previous, [p[0], p[2]]) {
                 Some(d) => (Vec2::from_array(d), Vec2::Y),
                 None => (direction, stick),
@@ -6691,16 +6693,16 @@ fn simulate(
     // The limit tour: full MP before each limit, and Trinity Limit.
     if game.limit_tour {
         if limit_tour::refill(tick) {
-            game.player.mp.cur = game.player.mp.max;
-            game.player.mp.remaining = 0.;
-            game.player.mp.total = 0.;
-            game.player.mp_charging = false;
+            game.sora.player.mp.cur = game.sora.player.mp.max;
+            game.sora.player.mp.remaining = 0.;
+            game.sora.player.mp.total = 0.;
+            game.sora.player.mp_charging = false;
             // [Tour setup] Sora stands STAND_OFF units in front of the
             // Shadow, facing it, as a player would walk up before a limit.
             if let Some(rt) = game.enemy.as_ref() {
                 let e = rt.enemy.position;
-                game.player.position = [e[0], e[1], e[2] + limit_tour::STAND_OFF];
-                game.player.yaw = std::f32::consts::PI;
+                game.sora.player.position = [e[0], e[1], e[2] + limit_tour::STAND_OFF];
+                game.sora.player.yaw = std::f32::consts::PI;
             }
         }
         if tick == 1
@@ -6709,7 +6711,7 @@ fn simulate(
                 .as_ref()
                 .and_then(|d| d.ability_bits.get(&limit_tour::TRINITY_ABILITY))
         {
-            game.player.abilities.set(bit);
+            game.sora.player.abilities.set(bit);
         }
     }
     // The deck and summon tours own the summon charms.
@@ -6733,7 +6735,7 @@ fn simulate(
         // Magic row colour (command-01 section 0.6: 5 without spells, 1
         // when every entry is unusable) and the open submenu's rows.
         if let Some(mg) = game.magic.as_ref() {
-            let list = mg.menu_list(&game.player.mp);
+            let list = mg.menu_list(&game.sora.player.mp);
             if let Some(row) = m.menu.items.get_mut(1) {
                 row.colour = if list.is_empty() {
                     5
@@ -6753,7 +6755,7 @@ fn simulate(
         }
         // Items row: 5 without items, 1 when every row is unusable.
         if let Some(it) = game.items.as_ref() {
-            let list = it.menu_list(game.player.in_air());
+            let list = it.menu_list(game.sora.player.in_air());
             if let Some(row) = m.menu.items.get_mut(2) {
                 row.colour = if list.is_empty() {
                     5
@@ -6809,7 +6811,7 @@ fn simulate(
             if let (Some(sub), Some(d)) = (m.menu.sub.as_mut(), game.drive.as_ref())
                 && sub.kind == 3
             {
-                for (item, (_, _, c)) in sub.items.iter_mut().zip(d.menu(&game.player.drive)) {
+                for (item, (_, _, c)) in sub.items.iter_mut().zip(d.menu(&game.sora.player.drive)) {
                     item.colour = c;
                 }
             }
@@ -7026,7 +7028,7 @@ fn simulate(
         match decision {
             // Limit Form: the Magic slot is "Limit" (0x2c3, submenu 12).
             Decision::Open(1) if game.drive.as_ref().is_some_and(|d| d.limit_form()) => {
-                let (mp, charging) = (game.player.mp.cur, game.player.mp_charging);
+                let (mp, charging) = (game.sora.player.mp.cur, game.sora.player.mp_charging);
                 if let Some(d) = game.drive.as_ref() {
                     let items = d
                         .limit_rows(mp, charging)
@@ -7048,7 +7050,7 @@ fn simulate(
                 }
             }
             Decision::Open(1) => {
-                let mp = game.player.mp;
+                let mp = game.sora.player.mp;
                 if let Some(mg) = game.magic.as_mut() {
                     let list = mg.menu_list(&mp);
                     let items = list
@@ -7067,7 +7069,7 @@ fn simulate(
                 }
             }
             Decision::Open(2) => {
-                let air = game.player.in_air();
+                let air = game.sora.player.in_air();
                 let g = &mut *game;
                 let (items, magic) = (&mut g.items, &g.magic);
                 if let (Some(it), Some(mg)) = (items.as_mut(), magic.as_ref()) {
@@ -7143,7 +7145,7 @@ fn simulate(
             }
             // Backing out of the list returns to the Magic list.
             Decision::Closed if game.cure_pick.take().is_some() => {
-                let mp = game.player.mp;
+                let mp = game.sora.player.mp;
                 if let Some(mg) = game.magic.as_mut() {
                     let list = mg.menu_list(&mp);
                     let items = list
@@ -7162,7 +7164,7 @@ fn simulate(
                 }
             }
             Decision::Open(3) => {
-                let gauge = game.player.drive;
+                let gauge = game.sora.player.drive;
                 if let Some(d) = game.drive.as_mut() {
                     let list = d.menu(&gauge);
                     let items = list
@@ -7210,7 +7212,7 @@ fn simulate(
                 Some(shadow::ActKind::ClawL | shadow::ActKind::ClawR | shadow::ActKind::ClawF)
             )
         });
-        let guarding = matches!(game.player.action, Action::Guard | Action::GuardRecoil);
+        let guarding = matches!(game.sora.player.action, Action::Guard | Action::GuardRecoil);
         !game.magic_tour && !game.sephiroth_tour && AUTOPLAY_GUARDS.contains(&tick)
             || game.limit_form_tour && limit_form_tour::guard(tick, claw, guarding)
     } else {
@@ -7256,11 +7258,11 @@ fn simulate(
     // FUN_1403d7520: the hop's vector is the target's TARGET point minus
     // Sora's own (his TARGET shape's point, not his feet).
     let hop_vector = selected.target.map(|s| {
-        let p = enemy_target::player_targetcentre(&game).unwrap_or(game.player.position);
+        let p = enemy_target::player_targetcentre(&game).unwrap_or(game.sora.player.position);
         [s.centre[0] - p[0], s.centre[1] - p[1], s.centre[2] - p[2]]
     });
     let target = selected.target.map(|s| {
-        let p = game.player.position;
+        let p = game.sora.player.position;
         [
             s.centre[0] - p[0],
             s.centre[1] - p[1],
@@ -7333,8 +7335,16 @@ fn simulate(
     if game.magic_tour {
         // The Magic Lock-On probes switch the ability the tick before.
         match magic_tour::lock_on(tick, game.magic_shift) {
-            Some(true) => game.player.abilities.set(abilities::bit::MAGIC_LOCK_ON),
-            Some(false) => game.player.abilities.clear(abilities::bit::MAGIC_LOCK_ON),
+            Some(true) => game
+                .sora
+                .player
+                .abilities
+                .set(abilities::bit::MAGIC_LOCK_ON),
+            Some(false) => game
+                .sora
+                .player
+                .abilities
+                .clear(abilities::bit::MAGIC_LOCK_ON),
             None => {}
         }
         cast = magic_tour::cast(tick, game.magic_shift);
@@ -7408,7 +7418,11 @@ fn simulate(
             t,
             magic::FIRE | magic::BLIZZARD | magic::THUNDER | magic::MAGNET
         )
-        && game.player.abilities.has(abilities::bit::MAGIC_LOCK_ON)
+        && game
+            .sora
+            .player
+            .abilities
+            .has(abilities::bit::MAGIC_LOCK_ON)
         && game.selected_target.is_none()
     {
         let chosen = enemy_target::acquire(&game, &gallery, &mut targeting);
@@ -7489,13 +7503,13 @@ fn simulate(
             player::Step::default()
         } else {
             let Game {
-                player,
+                sora,
                 params,
                 clips,
                 world,
                 ..
             } = &mut *game;
-            player.tick(&input, params, clips, world)
+            sora.player.tick(&input, params, clips, world)
         }
     };
     if game.map_fx_pending
@@ -7520,8 +7534,8 @@ fn simulate(
         let moving = (direction.length() > 0.).then(|| direction.normalize().to_array());
         let running = stick.length() >= WALK_THRESHOLD;
         let probe = area::probe(
-            Vec3::from_array(game.player.position),
-            game.player.yaw,
+            Vec3::from_array(game.sora.player.position),
+            game.sora.player.yaw,
             moving,
             running,
         );
@@ -7656,7 +7670,11 @@ fn simulate(
             rig.pending_turn -= pending;
         }
     }
-    let mut camera = camera_input(&game.player, rig.previous_position, game.params.run_speed);
+    let mut camera = camera_input(
+        &game.sora.player,
+        rig.previous_position,
+        game.params.run_speed,
+    );
     // First person (camera mode 1, Select): FUN_140165110 enters on the press,
     // FUN_140165e30 reads the right stick's up/down bits (0xc0000) for the
     // pitch and R3 to level it, and the idle states (FUN_1403a70a0,
@@ -7665,7 +7683,7 @@ fn simulate(
     camera.select = game.pad.pressed & 0x40_0000 != 0;
     camera.reset_pitch = game.pad.pressed & 0x2_0000 != 0;
     camera.head_lift = game.params.head_height;
-    camera.first_person_ok = first_person_allowed(&game.player, &game.clips);
+    camera.first_person_ok = first_person_allowed(&game.sora.player, &game.clips);
     if game.autoplay.is_none() && game.pad.held & 0xc_0000 != 0 {
         let [_, y, magnitude] = controller::analog(game.pad_data.right);
         camera.look = y * magnitude;
@@ -7675,7 +7693,10 @@ fn simulate(
         camera.look = pending_look;
         rig.pending_look -= pending_look;
     }
-    if rig.camera.first_person && !game.player.dead() && game.player.can_command(&game.clips) {
+    if rig.camera.first_person
+        && !game.sora.player.dead()
+        && game.sora.player.can_command(&game.clips)
+    {
         let held = game.pad.held;
         let mut amount =
             (held & 0x20_0000 != 0) as i32 as f32 - (held & 0x10_0000 != 0) as i32 as f32;
@@ -7683,8 +7704,9 @@ fn simulate(
             amount = turn.clamp(-1., 1.);
         }
         // A turn to the right lowers the scene yaw.
-        game.player.yaw -= amount * follow_camera::MANUAL_TURN;
-        camera.player_forward = to_world([game.player.yaw.sin(), 0., game.player.yaw.cos()]);
+        game.sora.player.yaw -= amount * follow_camera::MANUAL_TURN;
+        camera.player_forward =
+            to_world([game.sora.player.yaw.sin(), 0., game.sora.player.yaw.cos()]);
     }
     camera.stick = [stick.x, -stick.y];
     camera.magnitude = stick.length().min(1.);
@@ -7758,11 +7780,11 @@ fn simulate(
         rig.was_aiming = rig.camera.aiming;
     }
     rig.fade.tick();
-    rig.previous_position = game.player.position;
+    rig.previous_position = game.sora.player.position;
     game.tick += 1;
     if let Some(action) = step.started {
-        let position = game.player.position;
-        let armed = game.player.armed;
+        let position = game.sora.player.position;
+        let armed = game.sora.player.armed;
         game.action_started = game.tick;
         // A command Sora asked for (the manager's request): it ends a held
         // reaction command (FUN_1403a89a0).
@@ -7777,12 +7799,12 @@ fn simulate(
         ) {
             game.reaction.request_made = true;
         }
-        let motion = game.player.motion_id(&game.clips);
+        let motion = game.sora.player.motion_id(&game.clips);
         let ptya_id = match action {
             Action::Attack(i) | Action::AirAttack(i) => Some(game.clips.records[i].id),
             _ => None,
         };
-        let combo = [game.player.combo.step, game.player.combo.finish];
+        let combo = [game.sora.player.combo.step, game.sora.player.combo.finish];
         game.event(
             serde_json::json!({"event":"action","tick":tick,"action":format!("{action:?}"),"armed":armed,
             "position":position,"landed":step.landed,"motion":motion,"ptya":ptya_id,"combo":combo}),
@@ -7792,7 +7814,11 @@ fn simulate(
     sora_vibration(&mut game);
     sora_dust(&mut game);
     if tick.is_multiple_of(60) {
-        let (position, yaw, action) = (game.player.position, game.player.yaw, game.player.action);
+        let (position, yaw, action) = (
+            game.sora.player.position,
+            game.sora.player.yaw,
+            game.sora.player.action,
+        );
         let enemy = game.enemy.as_ref().map(|e| {
             serde_json::json!({"position":e.enemy.position,"yaw":e.enemy.yaw,
                 "hp":e.enemy.hp,"act":format!("{:?}", e.enemy.current_act()),"motion":e.enemy.motion})
@@ -8405,7 +8431,7 @@ fn talk_tick(mut game: ResMut<Game>, talk: Option<ResMut<Talk>>) {
         talk.tick = talk.loop_start;
     }
     talk.dissolve = talk.dissolve.saturating_sub(1);
-    let sora = Vec3::from_array(game.player.position);
+    let sora = Vec3::from_array(game.sora.player.position);
     if talk.active.is_none() && rc {
         // FUN_140401410 → FUN_140400f90: lock Sora, snap the NPC to face
         // him, cross-dissolve to the talk camera.
@@ -8425,10 +8451,10 @@ fn talk_tick(mut game: ResMut<Game>, talk: Option<ResMut<Talk>>) {
         let v = talk.position - sora;
         let want = v.x.atan2(v.z);
         let step = game.params.turn_speed;
-        let delta = (want - game.player.yaw + std::f32::consts::PI)
+        let delta = (want - game.sora.player.yaw + std::f32::consts::PI)
             .rem_euclid(std::f32::consts::TAU)
             - std::f32::consts::PI;
-        game.player.yaw += delta.clamp(-step, step);
+        game.sora.player.yaw += delta.clamp(-step, step);
         loop {
             let Some(op) = talk.script.get(i).cloned() else {
                 // End: restore facing, camera (with a dissolve) and control.
@@ -8569,14 +8595,15 @@ fn vibration_library(battle: &[u8]) -> Option<player::vibration::Library> {
 /// Frame trigger 31 on Sora's motion starts a wave, and the callback
 /// (FUN_14019b1d0) turns the running one into this tick's motor bytes.
 fn sora_vibration(game: &mut Game) {
-    let key = (game.action_started, game.player.action);
-    let frame = game.player.motion_frame(&game.clips);
+    let key = (game.action_started, game.sora.player.action);
+    let frame = game.sora.player.motion_frame(&game.clips);
     let from = match game.vibration_scan {
         Some((s, a, f)) if (s, a) == key && f <= frame => Some(f),
         _ => None,
     };
     game.vibration_scan = Some((key.0, key.1, frame));
     let due: Vec<u8> = game
+        .sora
         .player
         .clip(&game.clips)
         .vibrations
@@ -8624,8 +8651,8 @@ fn rumble_output(
 }
 
 fn sora_sounds(game: &mut Game) {
-    let clip = game.poses[&(game.player.action, game.player.armed)];
-    let frame = game.player.motion_frame(&game.clips);
+    let clip = game.poses[&(game.sora.player.action, game.sora.player.armed)];
+    let frame = game.sora.player.motion_frame(&game.clips);
     let started = game.action_started;
     let from = match game.sound_frame {
         Some((s, f)) if s == started && f <= frame => Some(f),
@@ -8643,9 +8670,9 @@ fn sora_sounds(game: &mut Game) {
         .drive
         .as_ref()
         .is_some_and(|d| d.active && d.form == player::forms::ANTI);
-    let clip = game.player.clip(&game.clips).clone();
-    let raw = game.player.frame;
-    let key = (started, game.player.action);
+    let clip = game.sora.player.clip(&game.clips).clone();
+    let raw = game.sora.player.frame;
+    let key = (started, game.sora.player.action);
     if let Some(v) = game.voices.as_mut() {
         let from = match v.scan {
             Some((s, a, f)) if (s, a) == key && f <= raw => Some(f),
@@ -8666,7 +8693,7 @@ fn sora_sounds(game: &mut Game) {
     // Frame trigger 8 on Sora's own motion: cloth, jump and item-use sounds.
     // The looped frame, so a walking or running cycle plays its triggers
     // again each time it wraps (a wrap clears the scan, as for swings).
-    let looped = game.player.motion_frame(&game.clips);
+    let looped = game.sora.player.motion_frame(&game.clips);
     let from = match game.move_se_scan {
         Some((s, a, f)) if (s, a) == key && f <= looped => Some(f),
         _ => None,
@@ -8709,8 +8736,8 @@ fn dust_ground_bit(ground: u8) -> u8 {
 /// Frame trigger 19 (FUN_140424c60): the map's category element for this
 /// ground and foot starts at the foot, turned along Sora's heading.
 fn sora_dust(game: &mut Game) {
-    let key = (game.action_started, game.player.action);
-    let looped = game.player.motion_frame(&game.clips);
+    let key = (game.action_started, game.sora.player.action);
+    let looped = game.sora.player.motion_frame(&game.clips);
     let from = match game.dust_scan {
         Some((s, a, f)) if (s, a) == key && f <= looped => Some(f),
         _ => None,
@@ -8723,7 +8750,7 @@ fn sora_dust(game: &mut Game) {
     if bit == 0 {
         return;
     }
-    let clip = game.player.clip(&game.clips).clone();
+    let clip = game.sora.player.clip(&game.clips).clone();
     for &(at, p0) in &clip.dust {
         if !(0..32).contains(&p0) || !from.is_none_or(|f| at > f) || at > looped {
             continue;
@@ -8732,7 +8759,7 @@ fn sora_dust(game: &mut Game) {
         let Some(element) = pax.by_category(mask) else {
             continue;
         };
-        let heading = to_world([game.player.yaw.sin(), 0., game.player.yaw.cos()]);
+        let heading = to_world([game.sora.player.yaw.sin(), 0., game.sora.player.yaw.cos()]);
         game.fx_queue.push(drive_fx::Placed {
             req: drive_fx::FxRequest {
                 pax: pax.clone(),
@@ -8740,7 +8767,7 @@ fn sora_dust(game: &mut Game) {
                 owner: 0xfb,
             },
             anchor: drive_fx::Anchor::World {
-                at: Vec3::from_array(game.player.position),
+                at: Vec3::from_array(game.sora.player.position),
                 pitch: 0.,
                 yaw: heading[0].atan2(heading[2]),
             },
@@ -8854,7 +8881,7 @@ fn hud_tick(
     // (FUN_1403c2020), F12 lets the missing party count as present.
     if game.autoplay.is_none() && game.drive.is_some() {
         if keys.just_pressed(KeyCode::F11) {
-            game.player.drive.refill();
+            game.sora.player.drive.refill();
         }
         if keys.just_pressed(KeyCode::F12)
             && let Some(d) = game.drive.as_mut()
@@ -8868,13 +8895,14 @@ fn hud_tick(
     }
     let Some(mut hud) = hud else { return };
     let mut s = hud.stats;
-    if let Some(rt) = game.enemy.as_mut() {
+    if game.enemy.is_some() {
         // Combat drives HP; F6 refills it.
+        let v = &mut game.sora.vitals;
         if keys.just_pressed(KeyCode::F6) {
-            rt.sora_hp = rt.sora_target.max_hp;
+            v.hp = v.target.max_hp;
         }
-        s.hp = rt.sora_hp;
-        s.max_hp = rt.sora_target.max_hp;
+        s.hp = v.hp;
+        s.max_hp = v.target.max_hp;
     } else if game.autoplay.is_some() {
         match game.tick {
             420 => s.hp = s.max_hp * 7 / 10,
@@ -8890,22 +8918,22 @@ fn hud_tick(
             s.hp = (s.hp + 2).min(s.max_hp);
         }
         if keys.just_pressed(KeyCode::F7) {
-            game.player.mp.add(-10);
+            game.sora.player.mp.add(-10);
         }
         if keys.just_pressed(KeyCode::F8) {
-            game.player.mp.add(10);
+            game.sora.player.mp.add(10);
         }
         if keys.just_pressed(KeyCode::F9) {
-            game.player.drive.add(10);
+            game.sora.player.drive.add(10);
         }
     }
     // MP is Sora's (casts spend it, MP Charge refills it).
-    s.mp = game.player.mp.cur;
-    s.max_mp = game.player.mp.max;
-    let mp = game.player.mp;
+    s.mp = game.sora.player.mp.cur;
+    s.max_mp = game.sora.player.mp.max;
+    let mp = game.sora.player.mp;
     s.mp_charge = mp.charging().then_some((mp.remaining, mp.total));
     // The Drive gauge is Sora's (hits, damage and orbs fill it).
-    let drive = game.player.drive;
+    let drive = game.sora.player.drive;
     (s.drive, s.drive_level, s.drive_max) = (drive.partial, drive.level, drive.max);
     s.drive_mode = drive.mode;
     (s.form_bars, s.form_time, s.form_max_time) = (drive.bars, drive.time, drive.max_time);
@@ -9366,7 +9394,7 @@ fn enemy_targets(rt: &EnemyRuntime) -> Vec<player::ptya::Target> {
 
 fn combat_tick(game: &mut Game, tick: u64) {
     let Game {
-        player,
+        sora: Fighter { player, vitals, .. },
         clips,
         clip_poses,
         poses,
@@ -9598,7 +9626,7 @@ fn combat_tick(game: &mut Game, tick: u64) {
     }
     // The enemy's record advances once a tick (FUN_1403cf4b0), like Sora's.
     let in_damage_motion = (10..=39).contains(&player.motion_id(clips));
-    rt.sora_record.tick(1., in_damage_motion);
+    vitals.record.tick(1., in_damage_motion);
     rt.enemy.record.tick(1., false);
     if let Some((instance, ..)) = &hit {
         // The volume hit an actor: it no longer tests the map (wall_hit.rs).
@@ -9628,7 +9656,7 @@ fn combat_tick(game: &mut Game, tick: u64) {
         let attack = params_of(&rows[row]);
         // The attacker's ability terms (FUN_1403c12f0).
         let ab = &player.abilities;
-        rt.sora.mods = combat::AttackerMods {
+        vitals.attacker.mods = combat::AttackerMods {
             player_type: true,
             mp_charging: player.mp_charging,
             berserk_strength: ab.berserk_strength as i32,
@@ -9645,10 +9673,13 @@ fn combat_tick(game: &mut Game, tick: u64) {
         };
         if !counted {
             // Recorded but not counted: no damage and no reaction.
-        } else if let Some(damage) =
-            rt.enemy
-                .hit(dir.to_array(), high, &attack, &rt.sora, rt.difficulty)
-        {
+        } else if let Some(damage) = rt.enemy.hit(
+            dir.to_array(),
+            high,
+            &attack,
+            &vitals.attacker,
+            rt.difficulty,
+        ) {
             // FUN_140411300: the Shadow remembers who hit it last.
             rt.last_attacker = party_room::Attacker::Sora;
             // FUN_1403d12c0: the attacker's obj+0x120 bit 25, which lets
@@ -9801,7 +9832,7 @@ fn combat_tick(game: &mut Game, tick: u64) {
                 };
                 (rt.ids.allocate(), group)
             });
-            let sora_has = rt.sora_record.has(aid);
+            let sora_has = vitals.record.has(aid);
             let group_id = rt.instance_ids[&instance].1;
             for (i, &(b, offset, radius)) in rt.claws.get(&group).into_iter().flatten().enumerate()
             {
@@ -9866,7 +9897,7 @@ fn combat_tick(game: &mut Game, tick: u64) {
             *m.reflected.entry(k).or_insert(0) += 1;
         }
         if let Some(&(aid, _)) = rt.instance_ids.get(&instance) {
-            rt.sora_record.mark(aid);
+            vitals.record.mark(aid);
         }
         // FUN_1403d61d0 first sets obj+0x120 bit 25 ("connected").
         player.connected = true;
@@ -9891,7 +9922,7 @@ fn combat_tick(game: &mut Game, tick: u64) {
             {
                 *action_started = tick;
             }
-            rt.sora_invulnerable = 80.;
+            vitals.invulnerable = 80.;
             "guard"
         } else {
             // Bounce (motion 41 + slide 50) is not loaded in this room.
@@ -9915,8 +9946,8 @@ fn combat_tick(game: &mut Game, tick: u64) {
             let _ = std::io::Write::write_all(file, b"\n");
         }
     }
-    rt.sora_invulnerable = (rt.sora_invulnerable - 1.).max(0.);
-    if debug_blow && rt.sora_hp > 0 {
+    vitals.invulnerable = (vitals.invulnerable - 1.).max(0.);
+    if debug_blow && vitals.hp > 0 {
         // Reaction 4 with KB1 and KB2 both 0 (the SSTM blow), away from
         // the enemy; no damage.
         let d = ((sora_at - enemy_at) * Vec3::new(1., 0., 1.)).normalize_or(Vec3::Z);
@@ -9940,15 +9971,15 @@ fn combat_tick(game: &mut Game, tick: u64) {
     }
     // Aerial Recovery's range 27 (obj+0x18c bit 22) takes no damage.
     if player.range_invulnerable(clips) || cheats.invincible {
-        rt.sora_invulnerable = rt.sora_invulnerable.max(1.);
+        vitals.invulnerable = vitals.invulnerable.max(1.);
     }
     if let Some((instance, atkp, _, _)) = sora_hit
-        && rt.sora_invulnerable > 0.
+        && vitals.invulnerable > 0.
     {
         // FUN_1403d65a0: no damage while +0xd70 runs (the hit is still
         // recorded).
         if let Some(&(aid, group)) = rt.instance_ids.get(&instance) {
-            rt.sora_record.hit(aid, group, false, |_| (0, 0));
+            vitals.record.hit(aid, group, false, |_| (0, 0));
         }
         let record = serde_json::json!({"event":"sora_hit_invulnerable","tick":tick,"atkp":atkp});
         if let Some(file) = log.as_mut() {
@@ -9958,12 +9989,12 @@ fn combat_tick(game: &mut Game, tick: u64) {
     } else if let Some((instance, atkp, high, (claw_at, body_at, body_radius))) = sora_hit
         && let Some(rows) = rt.steps.get(&(atkp, 0))
         && let Some(&(aid, group)) = rt.instance_ids.get(&instance)
-        && rt.sora_hp > 0
+        && vitals.hp > 0
     {
         // FUN_1403cf600 on Sora's record (obj+0xc98): a player-type object
         // locks out other attack groups for 30 ticks.
         let cure = matches!(rows[0].kind, 5 | 6);
-        let (counted, row) = rt.sora_record.hit(aid, group, cure, |count| {
+        let (counted, row) = vitals.record.hit(aid, group, cure, |count| {
             let r = data::battle_tables::step_index(rows, count);
             (r, rows[r].interval)
         });
@@ -9992,7 +10023,7 @@ fn combat_tick(game: &mut Game, tick: u64) {
         }
         let ab = &player.abilities;
         let state = combat::TargetState {
-            hp: rt.sora_hp,
+            hp: vitals.hp,
             player_type: true,
             defender: ab.defender as i32,
             damage_control: ab.damage_control,
@@ -10003,19 +10034,14 @@ fn combat_tick(game: &mut Game, tick: u64) {
             *hero_hit_tick = Some(tick);
         }
         let damage = if counted {
-            combat::damage_with(&rt.shadow_attacker, &attack, &rt.sora_target, &state)
+            combat::damage_with(&rt.shadow_attacker, &attack, &vitals.target, &state)
         } else {
             0
         };
         // FUN_1403d6670: Second Chance (ability 127) and Once More (128).
-        let veto = combat::sora_veto(ab.has(127), ab.has(128), rt.sora_hp, 0, in_damage_motion);
-        rt.sora_hp = combat::apply_damage(
-            rt.sora_hp,
-            0,
-            rt.sora_target.max_hp,
-            damage,
-            veto && counted,
-        );
+        let veto = combat::sora_veto(ab.has(127), ab.has(128), vitals.hp, 0, in_damage_motion);
+        vitals.hp =
+            combat::apply_damage(vitals.hp, 0, vitals.target.max_hp, damage, veto && counted);
 
         let d = (sora_at - enemy_at) * Vec3::new(1., 0., 1.);
         let dir = d.normalize_or(Vec3::Z);
@@ -10040,37 +10066,37 @@ fn combat_tick(game: &mut Game, tick: u64) {
         let damage_drive = player.abilities.damage_drive;
         player
             .drive
-            .damaged(damage, rt.sora_target.max_hp, damage_drive);
+            .damaged(damage, vitals.target.max_hp, damage_drive);
         // MP Rage (FUN_1403d5e50): damage taken outside MP Charge gives
         // MP by its share of max HP × the ability's value.
         if damage > 0 && !player.mp.charging() && player.abilities.mp_rage > 0. {
             let gain =
-                (damage as f32 / rt.sora_target.max_hp as f32 * player.abilities.mp_rage) as i32;
+                (damage as f32 / vitals.target.max_hp as f32 * player.abilities.mp_rage) as i32;
             if gain > 0 {
                 player.mp.add(gain);
             }
         }
         // FUN_140404d60: HP 0 plays DEAD.
-        if rt.sora_hp == 0 && player.die(clips).is_some() {
+        if vitals.hp == 0 && player.die(clips).is_some() {
             *action_started = tick;
         }
         let record = serde_json::json!({"event":"sora_hit","tick":tick,"atkp":atkp,"damage":damage,
-            "counted":counted,"step":row,"sora_hp":rt.sora_hp,"reaction":format!("{started:?}")});
+            "counted":counted,"step":row,"sora_hp":vitals.hp,"reaction":format!("{started:?}")});
         if let Some(file) = log.as_mut() {
             let _ = serde_json::to_writer(&mut *file, &record);
             let _ = std::io::Write::write_all(file, b"\n");
         }
     }
-    if rt.sora_hp == 0 {
-        rt.ko_ticks += 1;
-        if rt.ko_ticks >= 120 {
+    if vitals.hp == 0 {
+        vitals.ko_ticks += 1;
+        if vitals.ko_ticks >= 120 {
             // [test-room] No game-over flow: stand up with full HP.
-            rt.sora_hp = rt.sora_target.max_hp;
-            rt.ko_ticks = 0;
+            vitals.hp = vitals.target.max_hp;
+            vitals.ko_ticks = 0;
         }
     }
     // Healed while dead (the camp, a Cure): FUN_1403c3c30 stands him up.
-    if player.dead() && rt.sora_hp > 0 {
+    if player.dead() && vitals.hp > 0 {
         player.revive();
         *action_started = tick;
     }
@@ -10344,12 +10370,12 @@ fn skate_tick(
     }
     if skate.wants_start() {
         let triangles = game.world.skate_triangles();
-        let position = Vec3::from_array(game.player.position);
-        skate.start(&triangles, position, game.player.yaw);
+        let position = Vec3::from_array(game.sora.player.position);
+        skate.start(&triangles, position, game.sora.player.yaw);
     }
     if let Some(ride) = skate.step() {
-        game.player.position = ride.position.to_array();
-        game.player.yaw = ride.yaw;
+        game.sora.player.position = ride.position.to_array();
+        game.sora.player.yaw = ride.yaw;
     }
 }
 
@@ -10711,7 +10737,7 @@ fn present(
     mut meshes: ResMut<Assets<Mesh>>,
     mut shown_target: Local<ShownTarget>,
 ) {
-    let action = game.player.action;
+    let action = game.sora.player.action;
     let started = game.action_started;
     let previous = game.shown_action;
     if game.shown_action != Some((action, started)) {
@@ -10721,8 +10747,8 @@ fn present(
         }
         game.shown_action = Some((action, started));
     }
-    let frame = game.player.motion_frame(&game.clips) as usize;
-    let clip = game.poses[&(action, game.player.armed)];
+    let frame = game.sora.player.motion_frame(&game.clips) as usize;
+    let clip = game.poses[&(action, game.sora.player.armed)];
     let skin = game.clip_poses[clip].skin.clone();
     let target_joints = game.clip_poses[clip].rootless_joints(frame);
     // The skinned target is kept while the kit, clip and frame stay (the
@@ -10766,7 +10792,7 @@ fn present(
             fixed.overstep_fraction()
         };
         let elapsed = (game.tick - start) as f32 + overstep;
-        let blend = game.player.blend;
+        let blend = game.sora.player.blend;
         let weight = if blend > 2. {
             ((elapsed + 3.) / blend).clamp(0., 1.)
         } else {
@@ -10821,7 +10847,7 @@ fn present(
     if let Ok((mut transform, mut visibility)) = hands.single_mut() {
         *transform = hand;
         // The Keyblade is drawn only in battle mode.
-        *visibility = if game.player.armed {
+        *visibility = if game.sora.player.armed {
             Visibility::Inherited
         } else {
             Visibility::Hidden
@@ -10834,7 +10860,7 @@ fn present(
         visual::room::set_positions(&mut meshes, &handle.0, positions);
     }
     if let Some((from, jump, from_frame)) = switched {
-        let (tick, blend) = (game.tick, game.player.blend);
+        let (tick, blend) = (game.tick, game.sora.player.blend);
         game.event(serde_json::json!({"event":"pose_switch","tick":tick,"from":from,
             "to":format!("{action:?}"),"jump":jump,"blend":blend,"from_frame":from_frame,"frame":frame}));
     }
@@ -10847,7 +10873,7 @@ fn present(
             .map(|(a, b)| a.distance(*b))
             .fold(0f32, f32::max);
         if jump > POSE_JUMP_LOG {
-            let (tick, frame, blend) = (game.tick, frame, game.player.blend);
+            let (tick, frame, blend) = (game.tick, frame, game.sora.player.blend);
             game.event(
                 serde_json::json!({"event":"pose_jump","tick":tick,"action":format!("{action:?}"),
                 "frame":frame,"jump":jump,"blend":blend}),
@@ -10868,8 +10894,8 @@ fn present(
         }
     }
     if let Ok(mut root) = roots.single_mut() {
-        root.translation = Vec3::from_array(game.player.position);
-        root.rotation = Quat::from_rotation_y(game.player.yaw);
+        root.translation = Vec3::from_array(game.sora.player.position);
+        root.rotation = Quat::from_rotation_y(game.sora.player.yaw);
         // Stitch's limit draws Sora in camera space (FUN_1403cbfc0 with
         // Stitch's second matrix).
         if let Some((at, turn)) = summon::sora_camera_pose(&game) {
@@ -10930,7 +10956,7 @@ fn finish(
         time.pause();
         let index = game.captures_taken;
         let path = dir.join(format!("test-room-{index:02}.png"));
-        let action = format!("{:?}", game.player.action);
+        let action = format!("{:?}", game.sora.player.action);
         let tick = game.tick;
         commands.spawn(Screenshot::primary_window()).observe(
             move |event: On<ScreenshotCaptured>,
@@ -11012,11 +11038,11 @@ fn finish(
         let expected = game
             .ability_source
             .build(&tour.expected_slots, &game.equipment);
-        let pass = game.player.abilities == expected;
+        let pass = game.sora.player.abilities == expected;
         game.autoplay_failed |= !pass;
         let verdict = serde_json::json!({"event":"ability_tour_verdict","pass":pass,
-            "growth":game.player.abilities.growth,"ground_combo":game.player.abilities.ground_combo,
-            "air_combo":game.player.abilities.air_combo,"finishers":game.player.abilities.finishers});
+            "growth":game.sora.player.abilities.growth,"ground_combo":game.sora.player.abilities.ground_combo,
+            "air_combo":game.sora.player.abilities.air_combo,"finishers":game.sora.player.abilities.finishers});
         game.event(verdict);
     }
     if autoplay_done && game.exit_code.is_none() && game.party_camp_tour {
@@ -11418,17 +11444,19 @@ fn camp_tick(
     };
     // Level-ups change the Status numbers and teach abilities.
     let gear = game.gear;
-    if let Some(rt) = game.enemy.as_mut()
+    let g = &mut *game;
+    if let Some(rt) = g.enemy.as_mut()
         && rt.numbers_dirty
     {
         rt.numbers_dirty = false;
-        if let Some(row) = rt.sora_levels.get(rt.level as usize - 1) {
+        let v = &g.sora.vitals;
+        if let Some(row) = rt.sora_levels.get(v.level as usize - 1) {
             let n = &mut c.source.numbers;
-            n.level = rt.level;
+            n.level = v.level;
             n.next_exp = row.exp.saturating_sub(rt.exp_total);
-            n.strength = rt.sora.strength - i32::from(gear.strength);
-            n.magic = rt.sora.magic - i32::from(gear.magic);
-            n.defense = rt.sora_target.defense - i32::from(gear.defense);
+            n.strength = v.attacker.strength - i32::from(gear.strength);
+            n.magic = v.attacker.magic - i32::from(gear.magic);
+            n.defense = v.target.defense - i32::from(gear.defense);
         }
         for id in rt.learned.drain(..) {
             if !c.ability_slots.iter().any(|&s| s & 0x7fff == id)
@@ -11468,17 +11496,17 @@ fn camp_tick(
     // Test-room values: no munny, level 1, the room's HP/MP; the clock is
     // the room's frame count.
     let (hp, max_hp, mp, max_mp) = match (&game.enemy, &hud) {
-        (Some(rt), Some(_)) => (
-            rt.sora_hp,
-            rt.sora_target.max_hp,
-            game.player.mp.cur,
-            game.player.mp.max,
+        (Some(_), Some(_)) => (
+            game.sora.vitals.hp,
+            game.sora.vitals.target.max_hp,
+            game.sora.player.mp.cur,
+            game.sora.player.mp.max,
         ),
         (None, Some(h)) => (
             h.stats.hp,
             h.stats.max_hp,
-            game.player.mp.cur,
-            game.player.mp.max,
+            game.sora.player.mp.cur,
+            game.sora.player.mp.max,
         ),
         _ => (1, 1, 0, 1),
     };
@@ -11657,10 +11685,10 @@ fn camp_tick(
             // In a Drive form the form's own slots are linked as well.
             let slots = c.ability_slots.clone();
             drive_room::rebuild_abilities(&mut game, Some(&slots));
-            let equipped = serde_json::json!({"event":"equipped_abilities","growth":game.player.abilities.growth,
-                "ground_combo":game.player.abilities.ground_combo,"air_combo":game.player.abilities.air_combo,
-                "finishers":game.player.abilities.finishers,"combo_boost":game.player.abilities.combo_boost,
-                "air_combo_boost":game.player.abilities.air_combo_boost,"reaction_boost":game.player.abilities.reaction_boost});
+            let equipped = serde_json::json!({"event":"equipped_abilities","growth":game.sora.player.abilities.growth,
+                "ground_combo":game.sora.player.abilities.ground_combo,"air_combo":game.sora.player.abilities.air_combo,
+                "finishers":game.sora.player.abilities.finishers,"combo_boost":game.sora.player.abilities.combo_boost,
+                "air_combo_boost":game.sora.player.abilities.air_combo_boost,"reaction_boost":game.sora.player.abilities.reaction_boost});
             game.event(equipped);
             // Owned spell levels (the element items), the shortcut slots
             // and the MP-charge toggles follow the camp.
@@ -11713,17 +11741,17 @@ fn camp_tick(
             }
             // Items used in the camp change the room's HP / MP.
             if let Some(sora) = menu.data.panels.members.first() {
-                if let Some(rt) = game.enemy.as_mut() {
-                    rt.sora_hp = sora.hp;
+                if game.enemy.is_some() {
+                    game.sora.vitals.hp = sora.hp;
                 }
                 if let Some(h) = hud.as_mut() {
                     h.stats.hp = sora.hp;
                 }
                 // Items used in the camp restore MP through the charge
                 // rules (FUN_1403c0890).
-                let delta = sora.mp - game.player.mp.cur;
+                let delta = sora.mp - game.sora.player.mp.cur;
                 if delta != 0 {
-                    game.player.mp.add(delta);
+                    game.sora.player.mp.add(delta);
                 }
             }
             let kind = menu.journal;
@@ -12527,7 +12555,7 @@ fn music_tick(music: Option<ResMut<MusicRes>>, mut game: ResMut<Game>, audio: Re
         return;
     }
     // FUN_1403ab6f0: the target state and its hysteresis.
-    let p = game.player.position;
+    let p = game.sora.player.position;
     let target = game.enemy.as_ref().is_some_and(|rt| {
         let e = rt.enemy.position;
         !matches!(
@@ -13264,7 +13292,7 @@ fn run(mut args: Vec<PathBuf>) -> Result<AppExit, Box<dyn std::error::Error>> {
         params: loaded.params,
         clips: loaded.kit.clips,
         world: loaded.world,
-        player,
+        sora: fighter::Fighter::new(player),
         poses,
         clip_poses: loaded.kit.clip_poses,
         part_indices: Vec::new(),
@@ -13491,11 +13519,11 @@ fn run(mut args: Vec<PathBuf>) -> Result<AppExit, Box<dyn std::error::Error>> {
         if let Some(p) = loaded.kit.pax.take() {
             d.paxes.insert(0, Arc::new(p));
         }
-        game.player.drive.max = drive_room::ROOM_DRIVE_MAX;
+        game.sora.player.drive.max = drive_room::ROOM_DRIVE_MAX;
         // Test-room choice: the gauge starts full (FUN_1403c2020), so every
         // owned form can be tried at once; unattended runs keep it empty.
         if game.autoplay.is_none() {
-            game.player.drive.refill();
+            game.sora.player.drive.refill();
         }
         game.event(serde_json::json!({"event":"drive_forms","form_objects":d.src.form_objects,
             "commands":d.src.form_command,"owned":d.forms.owned,
@@ -13677,6 +13705,12 @@ fn run(mut args: Vec<PathBuf>) -> Result<AppExit, Box<dyn std::error::Error>> {
             "claw_windows":e.clips.0.iter().filter(|(_, c)| !c.windows.is_empty()).map(|(s, c)| (s.to_string(), c.windows.clone())).collect::<HashMap<_, _>>(),
             "sora_hit_spheres":e.sora_body.len(),"target_reach":e.target_reach,"sora_target":format!("{:?}", e.sora_target),"shadow_attacker":format!("{:?}", e.shadow_attacker)}));
         enemy_model = Some(e.model);
+        game.sora.vitals = fighter::Vitals {
+            attacker: e.sora,
+            target: e.sora_target,
+            hp: e.sora_target.max_hp,
+            ..fighter::Vitals::default()
+        };
         game.enemy = Some(EnemyRuntime {
             sora_target_radius: e.sora_target_radius,
             enabled: !game.enemy_battle_tour && !game.sephiroth,
@@ -13697,29 +13731,23 @@ fn run(mut args: Vec<PathBuf>) -> Result<AppExit, Box<dyn std::error::Error>> {
             steps: e.steps,
             atkp: e.atkp,
             difficulty: e.difficulty,
-            sora: e.sora,
             enemy,
             rng: ScriptRandom::default(),
             claws: e.claws,
             shadow_attacker: e.shadow_attacker,
-            sora_target: e.sora_target,
             sora_body: e.sora_body,
             target_reach: e.target_reach,
             claws_now: Vec::new(),
             last_attacker: party_room::Attacker::Sora,
             hits_landed: 0,
-            sora_record: combat::HitRecord::new(true),
             ids: combat::AttackIds::default(),
             instance_ids: HashMap::new(),
             instance_seen: HashMap::new(),
             next_group: 0x100,
             claw_previous: HashMap::new(),
-            sora_hp: e.sora_target.max_hp,
-            ko_ticks: 0,
             exp_rule: e.exp,
             prize: e.prize,
             sora_levels: e.sora_levels,
-            level: 1,
             exp_total: 0,
             munny: 0,
             orbs: Vec::new(),
@@ -13737,7 +13765,6 @@ fn run(mut args: Vec<PathBuf>) -> Result<AppExit, Box<dyn std::error::Error>> {
             hit_sounds: e.hit_sounds,
             hit_effects: e.hit_effects,
             rows: e.rows,
-            sora_invulnerable: 0.,
             sound_tick: None,
         });
         // The combat numbers start without the equipment's share: add it.
@@ -13747,9 +13774,13 @@ fn run(mut args: Vec<PathBuf>) -> Result<AppExit, Box<dyn std::error::Error>> {
     let rig = CameraRig {
         camera: FollowCamera::new(
             follow_camera::OUTDOOR,
-            &camera_input(&game.player, game.player.position, game.params.run_speed),
+            &camera_input(
+                &game.sora.player,
+                game.sora.player.position,
+                game.params.run_speed,
+            ),
         ),
-        previous_position: game.player.position,
+        previous_position: game.sora.player.position,
         pending_turn: 0.,
         recenter_queued: false,
         pending_look: 0.,

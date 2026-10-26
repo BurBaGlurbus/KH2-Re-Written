@@ -113,14 +113,14 @@ pub fn play_on_sora(
 ) {
     for &(slot, blend) in captures {
         let started = capture_clip(object, slot)
-            .is_some_and(|clip| game.player.capture_motion(clip, blend, &game.clips));
+            .is_some_and(|clip| game.sora.player.capture_motion(clip, blend, &game.clips));
         let tick = game.tick;
         game.event(serde_json::json!({"event":"boss_capture","tick":tick,
             "object":object,"slot":slot,"blend":blend,"played":started}));
     }
     for &(motion, blend) in pushed {
         if let Ok(m) = u16::try_from(motion) {
-            game.player.queue_motion(m, blend);
+            game.sora.player.queue_motion(m, blend);
         }
     }
 }
@@ -172,8 +172,8 @@ pub fn requests(game: &mut Game, actors: &mut [enemy_gallery::GalleryActor]) {
         for (fall, land) in falls {
             let tick = game.tick;
             let played = (fall, land) == (4, 5) && {
-                let Game { player, clips, .. } = game;
-                player.play_motion(4, 0., clips)
+                let Game { sora, clips, .. } = game;
+                sora.player.play_motion(4, 0., clips)
             };
             if played {
                 game.action_started = tick;
@@ -183,7 +183,8 @@ pub fn requests(game: &mut Game, actors: &mut [enemy_gallery::GalleryActor]) {
         }
         for f in mpdrive {
             // FUN_1403d4a20: `f` times Sora's PRTY +0x1c.
-            game.player
+            game.sora
+                .player
                 .mp
                 .start_charge(f * player::magic::CHARGE_LENGTH);
             let tick = game.tick;
@@ -221,7 +222,7 @@ pub fn requests(game: &mut Game, actors: &mut [enemy_gallery::GalleryActor]) {
         if let Some(enemy_battle::Brain::Script(a)) = actor.battle.as_ref().map(|b| &b.brain) {
             let p = enemy::world::vacuum_pull(
                 a.vacuums(),
-                game.player.position,
+                game.sora.player.position,
                 0,
                 game.sora_weight,
                 1.,
@@ -243,7 +244,7 @@ pub fn requests(game: &mut Game, actors: &mut [enemy_gallery::GalleryActor]) {
             }
         }
     }
-    game.player.push = pull;
+    game.sora.player.push = pull;
     game.party_push = party;
     // The lights' scene tint (FUN_1403f7040), over every actor's pool.
     let mut tint = [0x80u32; 3];
@@ -310,7 +311,7 @@ pub fn map_tint(
 pub fn watch_anchor(game: &Game, gallery: &enemy_gallery::EnemyGallery) -> Option<[f32; 3]> {
     match game.camera_watch? {
         Watch::Sora => {
-            let p = game.player.position;
+            let p = game.sora.player.position;
             Some([p[0], p[1] + SORA_OBJ[2], p[2]])
         }
         Watch::Actor(id) => {
@@ -337,25 +338,27 @@ pub fn watch_anchor(game: &Game, gallery: &enemy_gallery::EnemyGallery) -> Optio
 /// [0, max] and 0 is his death.
 pub fn sora_hp_change(game: &mut Game, delta: i32) {
     let tick = game.tick;
-    let Some(rt) = game.enemy.as_mut() else {
+    if game.enemy.is_none() {
         return;
-    };
-    let max = rt.sora_target.max_hp;
+    }
+    let max = game.sora.vitals.target.max_hp;
     if delta < 0 {
         let loss = -delta;
-        game.player
+        game.sora
+            .player
             .drive
-            .damaged(loss, max, game.player.abilities.damage_drive);
-        if !game.player.mp.charging() && game.player.abilities.mp_rage > 0. {
-            let gain = (loss as f32 / max as f32 * game.player.abilities.mp_rage) as i32;
+            .damaged(loss, max, game.sora.player.abilities.damage_drive);
+        if !game.sora.player.mp.charging() && game.sora.player.abilities.mp_rage > 0. {
+            let gain = (loss as f32 / max as f32 * game.sora.player.abilities.mp_rage) as i32;
             if gain > 0 {
-                game.player.mp.add(gain);
+                game.sora.player.mp.add(gain);
             }
         }
     }
-    rt.sora_hp = (rt.sora_hp + delta).clamp(0, max);
-    let hp = rt.sora_hp;
-    if hp == 0 && game.player.die(&game.clips).is_some() {
+    let vitals = &mut game.sora.vitals;
+    vitals.hp = (vitals.hp + delta).clamp(0, max);
+    let hp = vitals.hp;
+    if hp == 0 && game.sora.player.die(&game.clips).is_some() {
         game.action_started = tick;
     }
     game.event(serde_json::json!({"event":"boss_sora_hp","tick":tick,"delta":delta,"hp":hp}));
@@ -633,7 +636,10 @@ pub fn mission_tick(
     // speed (frame time).
     let speed = game.game_speed;
     let step = crate::cutscene::EVENT_FPS / crate::cutscene::TICK_HZ as f32 * speed;
-    let sora = (game.player.yaw, Vec3::from_array(game.player.position));
+    let sora = (
+        game.sora.player.yaw,
+        Vec3::from_array(game.sora.player.position),
+    );
     let boss = gallery
         .actors
         .iter()
@@ -765,9 +771,9 @@ fn dead_boss(game: &mut Game) {
     if bonus != 0
         && let Some(bons) = game.drive.as_ref().map(|d| d.src.growth.bons.clone())
     {
-        let Game { enemy, player, .. } = game;
+        let Game { enemy, sora, .. } = game;
         if let Some(rt) = enemy.as_mut() {
-            let _ = level_growth::apply_bonus(rt, player, &bons, bonus);
+            let _ = level_growth::apply_bonus(rt, sora, &bons, bonus);
         }
     }
     let tick = game.tick;

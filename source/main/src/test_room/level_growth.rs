@@ -139,7 +139,7 @@ fn character_index(id: u8) -> u8 {
 /// bonus was new.
 pub fn apply_bonus(
     rt: &mut EnemyRuntime,
-    player: &mut Player,
+    sora: &mut Fighter,
     bons: &[u8],
     id: u8,
 ) -> Result<bool, std::io::Error> {
@@ -150,6 +150,7 @@ pub fn apply_bonus(
     rt.bonus_taken.push(id);
     let count = rt.bonus_taken.len() as u8;
     let critical = rt.difficulty == combat::Difficulty::Critical;
+    let Fighter { player, vitals, .. } = sora;
     for row in rows {
         // The party's HP and MP gains halve on Critical (FUN_1403edf90).
         let halve = critical && matches!(row.character, 1..=3 | 14);
@@ -159,8 +160,8 @@ pub fn apply_bonus(
             (row.hp, row.mp)
         };
         if row.character == 1 {
-            rt.sora_target.max_hp += hp as i32;
-            rt.sora_hp = (rt.sora_hp + hp as i32).min(rt.sora_target.max_hp);
+            vitals.target.max_hp += hp as i32;
+            vitals.hp = (vitals.hp + hp as i32).min(vitals.target.max_hp);
             player.mp.max += mp as i32;
             player.mp.cur = (player.mp.cur + mp as i32).min(player.mp.max);
             player.drive.max = (player.drive.max + row.drive).min(MAX_DRIVE);
@@ -204,7 +205,7 @@ pub fn tour(game: &mut Game) {
     let tick = game.tick;
     let Game {
         enemy,
-        player,
+        sora,
         drive,
         log,
         ..
@@ -212,18 +213,19 @@ pub fn tour(game: &mut Game) {
     let Some(rt) = enemy.as_mut() else { return };
     if tick == 100 {
         let exp = rt.sora_levels.get(6).map_or(0, |r| r.exp);
-        prize_room::grant_exp(rt, exp, log, tick);
+        prize_room::grant_exp(rt, &mut sora.vitals, exp, log, tick);
     }
     if tick == 420
         && let Some(d) = drive.as_ref()
     {
         let bons = d.src.growth.bons.clone();
         for id in [3, 51] {
-            let taken = apply_bonus(rt, player, &bons, id).unwrap_or(false);
+            let taken = apply_bonus(rt, sora, &bons, id).unwrap_or(false);
+            let Fighter { player, vitals, .. } = &*sora;
             prize_room::log_event(
                 log,
                 serde_json::json!({"event":"bonus_level","tick":tick,"id":id,"taken":taken,
-                "max_hp":rt.sora_target.max_hp,"hp":rt.sora_hp,"max_mp":player.mp.max,
+                "max_hp":vitals.target.max_hp,"hp":vitals.hp,"max_mp":player.mp.max,
                 "mp":player.mp.cur,"drive_max":player.drive.max,"learned":rt.learned}),
             );
         }

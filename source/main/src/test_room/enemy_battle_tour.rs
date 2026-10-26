@@ -42,7 +42,7 @@ pub fn tick(
             if let Some(entry) = gallery.catalog.entries.iter().position(|e| {
                 e.model_name == model.as_str() && e.model_available && e.motions_available
             }) {
-                let at = Vec3::from_array(game.player.position) + offset;
+                let at = Vec3::from_array(game.sora.player.position) + offset;
                 gallery.queue_summon(entry, at, std::f32::consts::PI);
                 game.event(serde_json::json!({"event":"enemy_combat_tour_summon",
                     "tick":tick,"model":model,"debug_position":at.to_array(),
@@ -106,7 +106,7 @@ pub fn tick(
             .collect::<Vec<_>>();
         let incoming = game.enemy_incoming_hits;
         let outgoing = game.enemy_outgoing_hits;
-        let scan_enabled = game.player.abilities.has(enemy_target::SCAN_BIT);
+        let scan_enabled = game.sora.player.abilities.has(enemy_target::SCAN_BIT);
         let locked = game.target_locked;
         let target = game.selected_target;
         match tick {

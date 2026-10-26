@@ -134,18 +134,21 @@ pub fn category(effect: u8, material: u32) -> u64 {
 
 /// One frame: Sora's Keyblade volumes test the map, a hit plays and recoils.
 pub fn tick(game: &mut Game, tick: u64) {
-    if game.player.dead() {
+    if game.sora.player.dead() {
         return;
     }
-    let Some(&clip) = game.poses.get(&(game.player.action, game.player.armed)) else {
+    let Some(&clip) = game
+        .poses
+        .get(&(game.sora.player.action, game.sora.player.armed))
+    else {
         return;
     };
     let Some(cp) = game.clip_poses.get(clip) else {
         return;
     };
-    let frame = game.player.motion_frame(&game.clips) as usize;
-    let at = Vec3::from_array(game.player.position);
-    let turn = Quat::from_rotation_y(game.player.yaw);
+    let frame = game.sora.player.motion_frame(&game.clips) as usize;
+    let at = Vec3::from_array(game.sora.player.position);
+    let turn = Quat::from_rotation_y(game.sora.player.yaw);
     let mut found = None;
     let mut seen = Vec::new();
     for (hand, (blade, weapon, hits)) in [
@@ -201,7 +204,7 @@ pub fn tick(game: &mut Game, tick: u64) {
         });
     }
     game.sound_queue.push((CLANK_SOUND, "wall_hit"));
-    let recoil = game.player.wall_recoil(&game.wall.sstm, &game.clips);
+    let recoil = game.sora.player.wall_recoil(&game.wall.sstm, &game.clips);
     if recoil.is_some() {
         game.action_started = tick;
     }

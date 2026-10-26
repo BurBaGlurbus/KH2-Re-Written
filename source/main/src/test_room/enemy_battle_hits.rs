@@ -1,7 +1,7 @@
 //! Contact bridge for admitted gallery brains and the existing player battle
 //! context. The legacy battle step advances the shared player hit record first.
 use super::{
-    EffectRequest, Game, abilities, enemy_combat::WorldShape, enemy_gallery::GalleryActor,
+    EffectRequest, Fighter, Game, abilities, enemy_combat::WorldShape, enemy_gallery::GalleryActor,
     ensure_attack_rows, magic_room, params_of, party_room,
 };
 use bevy::prelude::*;
@@ -101,7 +101,7 @@ fn event(log: &mut Option<std::fs::File>, value: serde_json::Value) {
 
 pub fn tick(game: &mut Game, actors: &mut [GalleryActor], tick: u64) {
     let Game {
-        player,
+        sora: Fighter { player, vitals, .. },
         clips,
         clip_poses,
         poses,
@@ -278,7 +278,7 @@ pub fn tick(game: &mut Game, actors: &mut [GalleryActor], tick: u64) {
         }
     }
     let ab = &player.abilities;
-    rt.sora.mods = combat::AttackerMods {
+    vitals.attacker.mods = combat::AttackerMods {
         player_type: true,
         mp_charging: player.mp_charging,
         berserk_strength: ab.berserk_strength as i32,
@@ -331,7 +331,7 @@ pub fn tick(game: &mut Game, actors: &mut [GalleryActor], tick: u64) {
             });
         }
         if battle.contacts.defeat_reward(battle.brain.hp()) {
-            let low = rt.sora_hp * 2 <= rt.sora_target.max_hp;
+            let low = vitals.hp * 2 <= vitals.target.max_hp;
             let exp = player::enemy_prizes::kill_exp(
                 battle.assets.exp.0,
                 battle.assets.exp.1,
@@ -340,7 +340,7 @@ pub fn tick(game: &mut Game, actors: &mut [GalleryActor], tick: u64) {
             );
             // FUN_1403ed110: No Experience (bit 116) takes the kill's EXP.
             if !player.abilities.has(player::abilities::bit::NO_EXPERIENCE) {
-                super::prize_room::grant_exp(rt, exp, log, tick);
+                super::prize_room::grant_exp(rt, vitals, exp, log, tick);
             }
             if let Some(d) = drive.as_mut()
                 && d.active
@@ -463,7 +463,7 @@ pub fn tick(game: &mut Game, actors: &mut [GalleryActor], tick: u64) {
                     direction.to_array(),
                     target.high,
                     &attack,
-                    v.stats.as_ref().unwrap_or(&rt.sora),
+                    v.stats.as_ref().unwrap_or(&vitals.attacker),
                     rt.difficulty,
                     super::enemy_battle::HitRecordInfo {
                         param_id: v.atkp,
@@ -621,7 +621,7 @@ pub fn tick(game: &mut Game, actors: &mut [GalleryActor], tick: u64) {
                         direction: direction.to_array(),
                         high: false,
                         attack: &attack,
-                        attacker: v.stats.as_ref().unwrap_or(&rt.sora),
+                        attacker: v.stats.as_ref().unwrap_or(&vitals.attacker),
                         difficulty: rt.difficulty,
                         param_id: u32::from(v.atkp),
                         revenge: rows[row].revenge,
@@ -766,7 +766,7 @@ pub fn tick(game: &mut Game, actors: &mut [GalleryActor], tick: u64) {
                     only: None,
                 });
             }
-            if rt.sora_record.has(ids.0) {
+            if vitals.record.has(ids.0) {
                 continue;
             }
             let mut blocked = false;
@@ -799,7 +799,7 @@ pub fn tick(game: &mut Game, actors: &mut [GalleryActor], tick: u64) {
                             ) {
                                 continue;
                             }
-                            rt.sora_record.mark(ids.0);
+                            vitals.record.mark(ids.0);
                             player.connected = true;
                             reflected = true;
                             if let Some(slot) = cand.script_slot {
@@ -827,7 +827,7 @@ pub fn tick(game: &mut Game, actors: &mut [GalleryActor], tick: u64) {
                                 if player.guard_recoil([toward.x, toward.z], clips).is_some() {
                                     *action_started = tick;
                                 }
-                                rt.sora_invulnerable = 80.;
+                                vitals.invulnerable = 80.;
                             } else {
                                 effect_queue.push(EffectRequest::System {
                                     id: 13,
@@ -932,12 +932,12 @@ pub fn tick(game: &mut Game, actors: &mut [GalleryActor], tick: u64) {
             }
             // DAT_142a11400 bit 1 (a won mission) keeps Sora unhurt too
             // (FUN_1403d65a0).
-            if rt.sora_invulnerable > 0.
+            if vitals.invulnerable > 0.
                 || player.range_invulnerable(clips)
                 || cheats.invincible
                 || *battle_won
             {
-                rt.sora_record.hit(aid, group, false, |_| (0, 0));
+                vitals.record.hit(aid, group, false, |_| (0, 0));
                 event(
                     log,
                     serde_json::json!({"event":"gallery_sora_hit_invulnerable","tick":tick,"actor":actor.id,"atkp":atkp}),
@@ -948,11 +948,12 @@ pub fn tick(game: &mut Game, actors: &mut [GalleryActor], tick: u64) {
                 }
                 continue;
             }
-            if rt.sora_hp <= 0 {
+            if vitals.hp <= 0 {
                 continue;
             }
             let (counted, row) =
-                rt.sora_record
+                vitals
+                    .record
                     .hit(aid, group, matches!(rows[0].kind, 5 | 6), |count| {
                         let index = battle_tables::step_index(&rows, count);
                         (index, rows[index].interval)
@@ -960,7 +961,7 @@ pub fn tick(game: &mut Game, actors: &mut [GalleryActor], tick: u64) {
             let attack = params_of(&rows[row]);
             let ab = &player.abilities;
             let state = combat::TargetState {
-                hp: rt.sora_hp,
+                hp: vitals.hp,
                 player_type: true,
                 defender: ab.defender as i32,
                 damage_control: ab.damage_control,
@@ -968,20 +969,15 @@ pub fn tick(game: &mut Game, actors: &mut [GalleryActor], tick: u64) {
                 difficulty: rt.difficulty,
             };
             let damage = if counted {
-                combat::damage_with(&battle.assets.attacker, &attack, &rt.sora_target, &state)
+                combat::damage_with(&battle.assets.attacker, &attack, &vitals.target, &state)
             } else {
                 0
             };
-            let veto = combat::sora_veto(ab.has(127), ab.has(128), rt.sora_hp, 0, damage_motion);
-            let hp_before = rt.sora_hp;
-            rt.sora_hp = combat::apply_damage(
-                rt.sora_hp,
-                0,
-                rt.sora_target.max_hp,
-                damage,
-                veto && counted,
-            );
-            if rt.sora_hp < hp_before {
+            let veto = combat::sora_veto(ab.has(127), ab.has(128), vitals.hp, 0, damage_motion);
+            let hp_before = vitals.hp;
+            vitals.hp =
+                combat::apply_damage(vitals.hp, 0, vitals.target.max_hp, damage, veto && counted);
+            if vitals.hp < hp_before {
                 *enemy_incoming_hits += 1;
             }
             let direction = ((sora_at - at) * Vec3::new(1., 0., 1.)).normalize_or(Vec3::Z);
@@ -997,10 +993,10 @@ pub fn tick(game: &mut Game, actors: &mut [GalleryActor], tick: u64) {
             }
             player
                 .drive
-                .damaged(damage, rt.sora_target.max_hp, player.abilities.damage_drive);
+                .damaged(damage, vitals.target.max_hp, player.abilities.damage_drive);
             if damage > 0 && !player.mp.charging() && player.abilities.mp_rage > 0. {
-                let gain = (damage as f32 / rt.sora_target.max_hp as f32 * player.abilities.mp_rage)
-                    as i32;
+                let gain =
+                    (damage as f32 / vitals.target.max_hp as f32 * player.abilities.mp_rage) as i32;
                 if gain > 0 {
                     player.mp.add(gain);
                 }
@@ -1024,12 +1020,12 @@ pub fn tick(game: &mut Game, actors: &mut [GalleryActor], tick: u64) {
                     direction,
                 });
             }
-            if rt.sora_hp == 0 && player.die(clips).is_some() {
+            if vitals.hp == 0 && player.die(clips).is_some() {
                 *action_started = tick;
             }
             event(
                 log,
-                serde_json::json!({"event":"gallery_sora_hit","tick":tick,"actor":actor.id,"atkp":atkp,"damage":damage,"counted":counted,"hp":rt.sora_hp,"step":row}),
+                serde_json::json!({"event":"gallery_sora_hit","tick":tick,"actor":actor.id,"atkp":atkp,"damage":damage,"counted":counted,"hp":vitals.hp,"step":row}),
             );
             // FUN_1403d1730 ends with the owner's vt+0xe0 (OBJ_ATTACK).
             if !direct {
@@ -1118,7 +1114,7 @@ pub fn retire(game: &mut Game, actors: &mut [GalleryActor], tick: u64) {
     expired.dedup();
     for id in expired {
         rt.enemy.record.clear_seen(id);
-        rt.sora_record.clear_seen(id);
+        game.sora.vitals.record.clear_seen(id);
         for m in &mut game.party {
             m.record.clear_seen(id);
         }

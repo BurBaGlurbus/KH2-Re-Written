@@ -1086,7 +1086,10 @@ fn rows(
     let battle = game.enemy.as_ref();
     match page {
         Page::Home(HomeTab::Sora) => {
-            let level = battle.map(|b| (b.level, (b.level as usize) < b.sora_levels.len()));
+            let level = battle.map(|b| {
+                let level = game.sora.vitals.level;
+                (level, (level as usize) < b.sora_levels.len())
+            });
             let drive = game.drive.as_ref();
             let form = drive
                 .filter(|d| d.active)
@@ -1114,7 +1117,7 @@ fn rows(
                     ..row("Invincible", Action::ToggleInvincible, battle.is_some())
                 },
                 Row {
-                    value: on_off(game.player.abilities.has(enemy_target::SCAN_BIT)),
+                    value: on_off(game.sora.player.abilities.has(enemy_target::SCAN_BIT)),
                     ..row(
                         "Scan",
                         Action::ToggleScan,
@@ -1618,7 +1621,7 @@ fn act(
     match action {
         Action::Info | Action::Section => None,
         Action::ToggleScan => {
-            let enabled = !game.player.abilities.has(enemy_target::SCAN_BIT);
+            let enabled = !game.sora.player.abilities.has(enemy_target::SCAN_BIT);
             Some(match enemy_target::set_scan(game, camp, enabled) {
                 Ok(()) => format!("Scan {}", if enabled { "on" } else { "off" }),
                 Err(e) => e,
@@ -1654,50 +1657,51 @@ fn act(
             }
         }
         Action::Restore => {
-            if let Some(battle) = game.enemy.as_mut() {
-                battle.sora_hp = battle.sora_target.max_hp;
-                battle.ko_ticks = 0;
+            if game.enemy.is_some() {
+                let vitals = &mut game.sora.vitals;
+                vitals.hp = vitals.target.max_hp;
+                vitals.ko_ticks = 0;
             } else if let Some(hud) = hud {
                 hud.stats.hp = hud.stats.max_hp;
             }
-            let mp = &mut game.player.mp;
+            let mp = &mut game.sora.player.mp;
             (mp.cur, mp.remaining, mp.total) = (mp.max, 0., 0.);
-            game.player.mp_charging = false;
+            game.sora.player.mp_charging = false;
             // In a form the gauge is the form's timer; leave it running.
             if game.drive.as_ref().is_none_or(|d| !d.active) {
-                game.player.drive.refill();
+                game.sora.player.drive.refill();
             }
             Some("HP, MP and Drive restored".into())
         }
         Action::KnockOut => {
             // Sora's HP reaches 0: the DEAD motion and the game over.
             let Game {
-                player,
-                clips,
-                enemy,
-                ..
+                sora, clips, enemy, ..
             } = game;
-            enemy.as_mut()?.sora_hp = 0;
-            player.die(clips);
+            enemy.as_ref()?;
+            sora.vitals.hp = 0;
+            sora.player.die(clips);
             menu.open = false;
             None
         }
         Action::LevelUp => {
             let tick = game.tick;
-            let Game { enemy, log, .. } = game;
+            let Game {
+                enemy, sora, log, ..
+            } = game;
             let battle = enemy.as_mut()?;
-            let next = battle.sora_levels.get(battle.level as usize - 1)?.exp;
+            let next = battle.sora_levels.get(sora.vitals.level as usize - 1)?.exp;
             let need = next.saturating_sub(battle.exp_total).max(1);
-            prize_room::grant_exp(battle, need, log, tick);
-            Some(format!("Level {}", battle.level))
+            prize_room::grant_exp(battle, &mut sora.vitals, need, log, tick);
+            Some(format!("Level {}", sora.vitals.level))
         }
         Action::BonusLevel => {
             // A battle's bonus level (FUN_1403edca0): the next one Sora has
             // a row in.
             let id = next_bonus(game)?;
             let bonus_table = game.drive.as_ref()?.src.growth.bons.clone();
-            let Game { enemy, player, .. } = game;
-            super::level_growth::apply_bonus(enemy.as_mut()?, player, &bonus_table, id).ok()?;
+            let Game { enemy, sora, .. } = game;
+            super::level_growth::apply_bonus(enemy.as_mut()?, sora, &bonus_table, id).ok()?;
             Some(format!("Bonus level {id}"))
         }
         Action::ToggleInvincible => {
@@ -1752,7 +1756,7 @@ fn act(
                 return None;
             }
             // A full gauge gives the form its full time.
-            game.player.drive.refill();
+            game.sora.player.drive.refill();
             drive_room::start_change(game, form);
             menu.open = false;
             None
@@ -1768,8 +1772,8 @@ fn act(
             Some("Growth level changed. Equip it in Abilities".into())
         }
         Action::Summon(entry) => {
-            let from = Vec3::from_array(game.player.position);
-            let yaw = game.player.yaw;
+            let from = Vec3::from_array(game.sora.player.position);
+            let yaw = game.sora.player.yaw;
             let at = from + Quat::from_rotation_y(yaw) * Vec3::new(0., 0., 350.);
             gallery.queue_summon(entry, at, yaw + std::f32::consts::PI);
             menu.open = false;

@@ -189,9 +189,10 @@ pub fn start(game: &mut Game, command: u16, tick: u64) -> Result<(), String> {
         .and_then(|d| d.commands.get(&command))
         .map_or(0, |c| c.cost);
     // FUN_140405440: Sora's call motion, then the payment (FUN_1403c2780).
-    game.player
+    game.sora
+        .player
         .play_motion(CALL_MOTION, CALL_BLEND, &game.clips);
-    game.player.drive.pay(cost);
+    game.sora.player.drive.pay(cost);
     // FUN_1403e6fa0: Donald and Goofy go.
     let mut stored = Vec::new();
     for (i, m) in game.party.iter_mut().enumerate() {
@@ -366,8 +367,8 @@ fn sora_sys(game: &Game) -> enemy::sysobj::Sysobj {
     sora.model = 1;
     sora.team = super::enemy_script::SORA_TEAM as i32;
     sora.entry_part = 1;
-    sora.position = game.player.position;
-    sora.yaw = game.player.yaw;
+    sora.position = game.sora.player.position;
+    sora.yaw = game.sora.player.yaw;
     sora
 }
 
@@ -385,8 +386,8 @@ pub fn sora_in_limit(game: &mut Game) -> bool {
         return false;
     };
     let held = (
-        game.player.position,
-        game.player.yaw,
+        game.sora.player.position,
+        game.sora.player.yaw,
         a.brain.player_capture(),
     );
     let p = match a.brain.limit_player() {
@@ -408,14 +409,14 @@ pub fn sora_in_limit(game: &mut Game) -> bool {
         Some((clip, c.length.saturating_sub(c.remaining)))
     });
     let (position, yaw) = (p.0, p.1);
-    game.player.position = position;
-    game.player.yaw = yaw;
+    game.sora.player.position = position;
+    game.sora.player.yaw = yaw;
     match captured {
         Some((clip, frame)) => {
-            game.player.action = player::Action::Scripted(clip);
-            game.player.frame = frame;
+            game.sora.player.action = player::Action::Scripted(clip);
+            game.sora.player.frame = frame;
         }
-        None => game.player.action = player::Action::Idle,
+        None => game.sora.player.action = player::Action::Idle,
     }
     true
 }
@@ -577,7 +578,7 @@ pub fn dismiss(game: &mut Game, tick: u64) {
     if let Some(a) = s.actor.as_mut() {
         a.brain.start_act(b"leave");
     }
-    game.player.drive.mode = player::drive::mode::DRIVE;
+    game.sora.player.drive.mode = player::drive::mode::DRIVE;
     game.event(serde_json::json!({"event":"summon_dismiss","tick":tick}));
 }
 
@@ -633,7 +634,7 @@ pub fn tick(mut game: ResMut<Game>, gallery: Res<EnemyGallery>, rig: Res<super::
         if let Some(k) = super::summon_tour::request(tick)
             && let Some(row) = game.summons.as_ref().and_then(|s| s.rows.get(k)).copied()
         {
-            game.player.drive.level = game.player.drive.max;
+            game.sora.player.drive.level = game.sora.player.drive.max;
             game.summon_request = Some(row.command);
         }
         if super::summon_tour::dismiss(tick) {
@@ -662,12 +663,12 @@ pub fn tick(mut game: ResMut<Game>, gallery: Res<EnemyGallery>, rig: Res<super::
                     s.holds_sora = false;
                     // FUN_1403c2740: summon mode; Sora's appear motion when
                     // the event is skipped.
-                    game.player.drive.enter_summon(LEVEL);
+                    game.sora.player.drive.enter_summon(LEVEL);
                     if s.appear {
                         s.state = state::APPEARING;
                     } else {
-                        game.player.play_motion(APPEAR_MOTION, 0., &game.clips);
-                        game.player.queue_motion(0, 0.);
+                        game.sora.player.play_motion(APPEAR_MOTION, 0., &game.clips);
+                        game.sora.player.queue_motion(0, 0.);
                     }
                     let at = s.actor.as_ref().map(|a| a.position().to_array());
                     game.event(serde_json::json!({"event":"summon_appear","tick":tick,
@@ -683,18 +684,18 @@ pub fn tick(mut game: ResMut<Game>, gallery: Res<EnemyGallery>, rig: Res<super::
         }
     }
     if let Some(a) = s.actor.as_mut() {
-        a.brain.player_yaw = game.player.yaw;
-        let velocity = a.sora_velocity(game.player.position);
+        a.brain.player_yaw = game.sora.player.yaw;
+        let velocity = a.sora_velocity(game.sora.player.position);
         a.brain.facts = super::enemy_script::HostFacts {
             battle: super::second_deck::battle(game),
-            drive_time: game.player.drive.time,
+            drive_time: game.sora.player.drive.time,
             // FUN_1403de460 sets DAT_1409acdd7 for Peter Pan (0x132).
             tink: s.command == 0x132,
             player_hp: game
                 .enemy
                 .as_ref()
-                .map(|rt| (rt.sora_hp, rt.sora_target.max_hp)),
-            player_mp: Some((game.player.mp.cur, game.player.mp.max)),
+                .map(|_| (game.sora.vitals.hp, game.sora.vitals.target.max_hp)),
+            player_mp: Some((game.sora.player.mp.cur, game.sora.player.mp.max)),
             player_velocity: velocity,
             stick: game.summon_stick,
             // [I] The projection's scale (+0x40) read as the follow
@@ -714,7 +715,7 @@ pub fn tick(mut game: ResMut<Game>, gallery: Res<EnemyGallery>, rig: Res<super::
         // Sora's attacks notify the friends (FUN_1401b56e0 mode 1); each
         // attack step is a new +0x180 [I: one per Attack/AirAttack action
         // change; it aims at the room's enemy while one is there].
-        let action = game.player.action;
+        let action = game.sora.player.action;
         let attacking = matches!(
             action,
             player::Action::Attack(_) | player::Action::AirAttack(_)
@@ -728,7 +729,7 @@ pub fn tick(mut game: ResMut<Game>, gallery: Res<EnemyGallery>, rig: Res<super::
         a.brain
             .age_player_notify(attacking.then_some(a.attack_serial));
         // [I] A drop in Sora's HP while the room's enemy is there is its hit.
-        let hp = game.enemy.as_ref().map(|rt| rt.sora_hp);
+        let hp = game.enemy.as_ref().map(|_| game.sora.vitals.hp);
         if let (Some(now), Some(before)) = (hp, a.sora_hp)
             && now < before
             && enemy.is_some()
@@ -749,7 +750,8 @@ pub fn tick(mut game: ResMut<Game>, gallery: Res<EnemyGallery>, rig: Res<super::
             .filter(|(k, _)| **k >> 56 == 1)
             .map(|(&k, &l)| (k, l))
             .collect();
-        a.brain.tick(&game.world, game.player.position, &mut a.rng);
+        a.brain
+            .tick(&game.world, game.sora.player.position, &mut a.rng);
         play_effects(game, a);
         // [I] The event lasts while the summon's act is `appear`
         // (FUN_1403de610 waits on DAT_142a11478).
@@ -764,7 +766,7 @@ pub fn tick(mut game: ResMut<Game>, gallery: Res<EnemyGallery>, rig: Res<super::
         // FUN_1403c2040: Stitch's MP special fills Sora's MP and ends a
         // charge.
         for _ in 0..std::mem::take(&mut a.brain.mp_refills) {
-            game.player.mp = player::magic::Mp::new(game.player.mp.max);
+            game.sora.player.mp = player::magic::Mp::new(game.sora.player.mp.max);
         }
         // Stitch is drawn in camera space (FUN_1401cad30, FUN_1403cbfc0):
         // his screen point at depth 1024, scaled by 0.503644, in front of
@@ -885,10 +887,10 @@ pub fn tick(mut game: ResMut<Game>, gallery: Res<EnemyGallery>, rig: Res<super::
                 "target":a.brain.friend_state().map(|f| f.4),
                 "screen":a.brain.stitch_screen(),
                 "sora_motion":a.brain.limit_player().map(|p| (p.motion.slot, p.capture.map(|c| (c.motion, c.remaining)))),
-                "sora_action":format!("{:?}", game.player.action),
+                "sora_action":format!("{:?}", game.sora.player.action),
                 "eye":super::from_world(rig.camera.eye).to_array(),
                 "look":super::from_world(rig.camera.look_at).to_array(),
-                "sora":game.player.position}),
+                "sora":game.sora.player.position}),
             );
         }
         land_swings(game, a, tick);
@@ -908,7 +910,7 @@ pub fn tick(mut game: ResMut<Game>, gallery: Res<EnemyGallery>, rig: Res<super::
         }
         if tick.is_multiple_of(30) {
             let (motion, act) = (a.brain.motion(), a.brain.description());
-            let time = game.player.drive.time;
+            let time = game.sora.player.drive.time;
             let missing: Vec<String> = a
                 .brain
                 .missing_traps()
@@ -919,7 +921,7 @@ pub fn tick(mut game: ResMut<Game>, gallery: Res<EnemyGallery>, rig: Res<super::
                 serde_json::json!({"event":"summon_tick","tick":tick,"state":s.state,
                 "position":a.brain.position(),"motion":motion,"act":act,"time":time,
                 "missing":missing,"fade":a.brain.fade().0,"friend":a.brain.friend_state(),
-                "control":a.brain.motion_flags(),"sora":game.player.position,
+                "control":a.brain.motion_flags(),"sora":game.sora.player.position,
                 "limit":a.brain.limit_state().map(|l| (l.time, l.exec_rc, l.pending)),"offers":a.brain.offers}),
             );
         }
@@ -929,10 +931,10 @@ pub fn tick(mut game: ResMut<Game>, gallery: Res<EnemyGallery>, rig: Res<super::
     if s.state == state::OUT && s.actor.is_some() {
         let (battle, boost) = (
             super::second_deck::battle(game),
-            game.player.abilities.summon_boost,
+            game.sora.player.abilities.summon_boost,
         );
-        game.player.drive.drain_frame(battle, 1., boost);
-        if game.player.drive.time <= 0. && game.player.can_command(&game.clips) {
+        game.sora.player.drive.drain_frame(battle, 1., boost);
+        if game.sora.player.drive.time <= 0. && game.sora.player.can_command(&game.clips) {
             game.summon = Some(s);
             dismiss(game, tick);
             s = game.summon.take().expect("summon kept");
@@ -1010,16 +1012,16 @@ fn spawn(game: &mut Game, s: &Summoned, gallery: &EnemyGallery) -> Result<Actor,
     // The `appear` event starts the summon at Sora's position
     // (FUN_1403b5b40); the skip places it (FUN_1403f3fa0).
     let at = if s.appear {
-        game.player.position
+        game.sora.player.position
     } else {
         placement(
             &game.world,
-            game.player.position,
+            game.sora.player.position,
             &mut rng,
             &mut game.summon_octant,
         )
     };
-    let yaw = (game.player.position[0] - at[0]).atan2(game.player.position[2] - at[2]);
+    let yaw = (game.sora.player.position[0] - at[0]).atan2(game.sora.player.position[2] - at[2]);
     // [I] A summon takes no damage in this room; its HP is nominal.
     let stats = combat::TargetStats::enemy(100, 10000, 0, [100; 7], 100, 1);
     let mut brain = ScriptBrain::load(
@@ -1071,7 +1073,7 @@ fn spawn(game: &mut Game, s: &Summoned, gallery: &EnemyGallery) -> Result<Actor,
     if std::env::var_os("KH2_SUMMON_TRACE").is_some() {
         brain.trace();
     }
-    brain.player_yaw = game.player.yaw;
+    brain.player_yaw = game.sora.player.yaw;
     brain.set_spawner(Box::new(Spawner::new(source.clone(), &objects)));
     brain.fx.drawn = true;
     brain.fx.anchor = Some(player::magic::Anchor::Summon);
@@ -1267,7 +1269,7 @@ fn land_attacks(game: &mut Game, a: &mut Actor, tick: u64) {
         };
         let yaw = a.brain.yaw();
         let facing = bevy::math::Vec3::new(yaw.sin(), 0., yaw.cos());
-        let stats = rt.sora;
+        let stats = game.sora.vitals.attacker;
         let landed = super::party_room::land_volume(
             rt,
             usize::MAX,
@@ -1368,7 +1370,7 @@ fn land_swings(game: &mut Game, a: &mut Actor, tick: u64) {
                 moving: None,
                 role: player::magic::Role::Damage,
             };
-            let stats = rt.sora;
+            let stats = game.sora.vitals.attacker;
             let landed = super::party_room::land_volume(
                 rt,
                 usize::MAX,
@@ -1398,8 +1400,8 @@ fn finish(game: &mut Game, s: Summoned, tick: u64) {
             m.stored = false;
         }
     }
-    if game.player.drive.mode == player::drive::mode::SUMMON {
-        game.player.drive.mode = player::drive::mode::DRIVE;
+    if game.sora.player.drive.mode == player::drive::mode::SUMMON {
+        game.sora.player.drive.mode = player::drive::mode::DRIVE;
     }
     game.event(serde_json::json!({"event":"summon_end","tick":tick,"command":s.command}));
 }

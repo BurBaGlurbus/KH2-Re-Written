@@ -188,13 +188,15 @@ struct SoraPose<'a> {
 }
 
 fn sora_pose(game: &Game) -> SoraPose<'_> {
-    let p = game.player.position;
+    let p = game.sora.player.position;
     let root = Mat4::from_rotation_translation(
-        Quat::from_rotation_y(game.player.yaw),
+        Quat::from_rotation_y(game.sora.player.yaw),
         Vec3::from_array(p),
     );
-    let clip = game.poses.get(&(game.player.action, game.player.armed));
-    let frame = game.player.motion_frame(&game.clips) as usize;
+    let clip = game
+        .poses
+        .get(&(game.sora.player.action, game.sora.player.armed));
+    let frame = game.sora.player.motion_frame(&game.clips) as usize;
     let cp = clip.and_then(|&c| game.clip_poses.get(c));
     let bones = cp.and_then(|c| c.body.get(frame.min(c.body.len().saturating_sub(1))));
     // FUN_1403b5450's slot matrix and the blade length along it: the hand

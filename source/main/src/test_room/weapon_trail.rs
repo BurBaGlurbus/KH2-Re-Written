@@ -26,15 +26,17 @@ fn slot_poses(cp: &ClipPoses, slot: usize) -> (&[Mat4], &[Mat4], &[Vec<Vec3>]) {
 /// The two points of `bone` on weapon slot `slot`'s blade in engine world
 /// space for this tick, or `None` without a weapon pose.
 pub fn points(game: &Game, bone: &BonePos, slot: usize) -> Option<[[f32; 3]; 2]> {
-    let clip = *game.poses.get(&(game.player.action, game.player.armed))?;
+    let clip = *game
+        .poses
+        .get(&(game.sora.player.action, game.sora.player.armed))?;
     let cp = game.clip_poses.get(clip)?;
-    let frame = game.player.motion_frame(&game.clips) as usize;
+    let frame = game.sora.player.motion_frame(&game.clips) as usize;
     let (blades, hands, _) = slot_poses(cp, slot);
     let blade = blades.get(frame.min(blades.len().checked_sub(1)?))?;
     let hand = hands.get(frame.min(hands.len().checked_sub(1)?))?;
     let length = game.trail_length[slot]?;
-    let at = Vec3::from_array(game.player.position);
-    let turn = Quat::from_rotation_y(game.player.yaw);
+    let at = Vec3::from_array(game.sora.player.position);
+    let turn = Quat::from_rotation_y(game.sora.player.yaw);
     let to_scene = |ratio: f32| {
         let p = at + turn * (*hand * *blade).transform_point3(Vec3::X * length * ratio);
         to_world(p.to_array())
@@ -45,7 +47,9 @@ pub fn points(game: &Game, bone: &BonePos, slot: usize) -> Option<[[f32; 3]; 2]>
 /// The blade bone's length: the mesh extent along the bone's x axis divided
 /// by the trail element's far ratio (3.7 for the Keyblades).
 fn calibrate(game: &Game, far_ratio: f32, slot: usize) -> Option<f32> {
-    let clip = *game.poses.get(&(game.player.action, game.player.armed))?;
+    let clip = *game
+        .poses
+        .get(&(game.sora.player.action, game.sora.player.armed))?;
     let cp = game.clip_poses.get(clip)?;
     let (blades, _, frames) = slot_poses(cp, slot);
     let blade = blades.first()?;
@@ -110,13 +114,16 @@ pub fn tick(game: &mut Game, pax: Option<&Arc<Pax>>, slot: usize) {
 
 /// Whether the slot's weapon motion holds range 12 at this frame.
 fn window_open(game: &Game, slot: usize) -> bool {
-    if slot == 0 && !game.player.armed {
+    if slot == 0 && !game.sora.player.armed {
         return false;
     }
-    let Some(&clip) = game.poses.get(&(game.player.action, game.player.armed)) else {
+    let Some(&clip) = game
+        .poses
+        .get(&(game.sora.player.action, game.sora.player.armed))
+    else {
         return false;
     };
-    let frame = game.player.motion_frame(&game.clips);
+    let frame = game.sora.player.motion_frame(&game.clips);
     let cp = &game.clip_poses[clip];
     let windows = if slot == 0 { &cp.trails } else { &cp.trails2 };
     windows

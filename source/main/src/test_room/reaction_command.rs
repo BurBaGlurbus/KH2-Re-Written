@@ -278,9 +278,9 @@ impl rc::Env for World<'_> {
 /// of capture 253, Stitch's 527 to the 600 of his).
 fn sora_actor(game: &Game) -> rc::Actor {
     rc::Actor {
-        no_control: game.player.no_control(&game.clips),
-        state: game.player.reaction_state(&game.clips),
-        window: game.player.can_command(&game.clips),
+        no_control: game.sora.player.no_control(&game.clips),
+        state: game.sora.player.reaction_state(&game.clips),
+        window: game.sora.player.can_command(&game.clips),
         ..Default::default()
     }
 }
@@ -313,7 +313,7 @@ pub fn tick(
     // from the KO handlers, e.g. FUN_140404d60 at Sora's vt+0xb0). A talk
     // does not end it (FUN_1403a8b10 case 0x1f and FUN_140401410 leave
     // +0xdd8 alone).
-    if state.hold.is_some() && (state.request_made || game.player.dead()) {
+    if state.hold.is_some() && (state.request_made || game.sora.player.dead()) {
         state.hold = None;
     }
     state.request_made = false;
@@ -331,10 +331,10 @@ pub fn tick(
         && let Some(&(at, _)) = save_points.first()
     {
         if tick >= 20 {
-            game.player.position = (at + Vec3::Z * 20.).to_array();
+            game.sora.player.position = (at + Vec3::Z * 20.).to_array();
         }
         if tick == 20 {
-            game.player.mp.cur = 1;
+            game.sora.player.mp.cur = 1;
             for m in &mut game.party {
                 m.hp = 1;
             }
@@ -361,7 +361,7 @@ pub fn tick(
         commands: &commands,
         actors,
         modes: exec_modes(&game, &commands),
-        abilities: &game.player.abilities,
+        abilities: &game.sora.player.abilities,
         stock: game.items.as_ref().map(|i| &i.stock),
     };
     let offer = rc::search(&world, &inputs, &mut state.seed);
@@ -447,8 +447,8 @@ pub fn tick(
             // [Run log] Why a shown command was not taken.
             let action = format!(
                 "{:?} frame {}",
-                game.player.action,
-                game.player.motion_frame(&game.clips)
+                game.sora.player.action,
+                game.sora.player.motion_frame(&game.clips)
             );
             game.event(serde_json::json!({"event":"reaction_ignored","tick":tick,
                 "command":shown.map(|c| c.command),"mode":shown.map(|c| c.mode),
@@ -577,16 +577,16 @@ fn inputs(
         };
         shapes.extend(shape);
     }
-    let p = Vec3::from_array(game.player.position);
+    let p = Vec3::from_array(game.sora.player.position);
     let drive = game.drive.as_ref();
     let battle = game.enemy.is_some() || second_deck::battle(game);
     let sora = rc::Sora {
         centre: (p + Vec3::Y * SORA_OBJ[2]).to_array(),
         radius: SORA_OBJ[0],
         height: SORA_OBJ[1],
-        yaw: game.player.yaw,
+        yaw: game.sora.player.yaw,
         battle,
-        no_control: game.player.no_control(&game.clips),
+        no_control: game.sora.player.no_control(&game.clips),
         state: sora_actor(game).state,
         form: drive.filter(|d| d.active).map_or(0, |d| d.form),
         // FUN_1403b6a10 refuses everything for +0xde0 == 0xc, a state the
@@ -602,7 +602,11 @@ fn inputs(
         hold: state.hold,
         // Range 25 of Sora's motion (+0x18c bit 20, +0x638) with the
         // partner (+0x2b0).
-        partner: game.player.partner_command(&game.clips).zip(state.captor),
+        partner: game
+            .sora
+            .player
+            .partner_command(&game.clips)
+            .zip(state.captor),
         no_shapes: game.party_limit.is_some(),
         ..Default::default()
     };
@@ -655,9 +659,9 @@ fn auto(game: &Game, menu_kind: Option<u8>) -> rc::Auto {
     let hp = game
         .enemy
         .as_ref()
-        .map(|rt| (rt.sora_hp, rt.sora_target.max_hp));
+        .map(|_| (game.sora.vitals.hp, game.sora.vitals.target.max_hp));
     let members: Vec<_> = game.party.iter().filter(|m| !m.stored).collect();
-    let sora = Vec3::from_array(game.player.position);
+    let sora = Vec3::from_array(game.sora.player.position);
     // FUN_1403e7950: the limits the deck lists usable whose members carry
     // Auto Limit and stand within 500 of Sora. The room's members carry no
     // ability record: their Auto Limit counts as equipped [test-room choice,
@@ -692,13 +696,13 @@ fn auto(game: &Game, menu_kind: Option<u8>) -> rc::Auto {
         menu_kind,
         blocked: false,
         status: hp.is_some(),
-        auto_summon: game.player.abilities.has(56),
+        auto_summon: game.sora.player.abilities.has(56),
         member_down: members.iter().any(|m| m.hp <= 0),
         hp_low: hp.is_some_and(|(cur, max)| cur <= max / 4),
         // FUN_1403e75d0: Sora up, no party limit, in battle, no MP charge.
         limit_ready: game.party_limit.is_none()
             && second_deck::battle(game)
-            && !game.player.mp_charging
+            && !game.sora.player.mp_charging
             && hp.is_some_and(|(cur, _)| cur > 0),
         limits,
     }
@@ -712,7 +716,7 @@ fn exec_modes(game: &Game, commands: &Commands) -> HashMap<u16, u8> {
     if let Some(d) = game.drive.as_ref() {
         for (&id, row) in &commands.rows {
             if row.exec == 4 && (1..6).contains(&row.argument) {
-                let ok = d.selectable(row.argument as u8, &game.player.drive);
+                let ok = d.selectable(row.argument as u8, &game.sora.player.drive);
                 modes.insert(id, if ok { 0 } else { rc::MODE_DIM });
             }
         }
@@ -757,7 +761,7 @@ fn tour_press(game: &Game, shown: Option<rc::Candidate>, tick: u64) -> bool {
             game.sephiroth_tour
                 && super::sephiroth::tour_reaction(
                     tick,
-                    game.player.action.airborne(),
+                    game.sora.player.action.airborne(),
                     game.offers_seen,
                 )
         }
@@ -783,8 +787,8 @@ fn carry_out(game: &mut Game, actors: &mut [GalleryActor], c: rc::Candidate, tic
             {
                 // FUN_1403b5fa0: trigger 11 on the target's script.
                 battle.brain.command(c.command);
-                let action = format!("{:?}", game.player.action);
-                let frame = game.player.frame;
+                let action = format!("{:?}", game.sora.player.action);
+                let frame = game.sora.player.frame;
                 game.event(serde_json::json!({"event":"reaction_executed","tick":tick,
                     "command":c.command,"owner":c.target.owner,"sora_action":action,"sora_frame":frame}));
             }
@@ -842,7 +846,7 @@ pub fn marker(game: &Game) -> Option<(u32, usize, [f32; 3])> {
         .find(|(t, _)| *t == target)
         .map(|(_, at)| *at)
         .unwrap_or_else(|| {
-            let p = Vec3::from_array(game.player.position);
+            let p = Vec3::from_array(game.sora.player.position);
             (p + Vec3::Y * SORA_OBJ[2]).to_array()
         });
     Some((serial, usize::from(group), at))
@@ -887,13 +891,14 @@ fn save_heal(game: &mut Game, timer: &mut f32) {
     let hp_full = game
         .enemy
         .as_ref()
-        .is_none_or(|rt| rt.sora_hp >= rt.sora_target.max_hp);
-    let mp = &game.player.mp;
+        .is_none_or(|_| game.sora.vitals.hp >= game.sora.vitals.target.max_hp);
+    let mp = &game.sora.player.mp;
     if !(hp_full && !mp.charging() && mp.cur >= mp.max) {
-        if let Some(rt) = game.enemy.as_mut() {
-            rt.sora_hp = (rt.sora_hp + 1).min(rt.sora_target.max_hp);
+        if game.enemy.is_some() {
+            let v = &mut game.sora.vitals;
+            v.hp = (v.hp + 1).min(v.target.max_hp);
         }
-        game.player.mp.add(1);
+        game.sora.player.mp.add(1);
         healed += 1;
     }
     for m in &mut game.party {
@@ -911,8 +916,8 @@ fn save_heal(game: &mut Game, timer: &mut f32) {
     }
     if healed > 0 {
         let tick = game.tick;
-        let hp = game.enemy.as_ref().map(|rt| rt.sora_hp);
-        let mp = game.player.mp.cur;
+        let hp = game.enemy.as_ref().map(|_| game.sora.vitals.hp);
+        let mp = game.sora.player.mp.cur;
         game.event(serde_json::json!({"event":"save_heal","tick":tick,"sora_hp":hp,"sora_mp":mp}));
     }
 }

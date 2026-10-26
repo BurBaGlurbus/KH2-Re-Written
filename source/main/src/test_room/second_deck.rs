@@ -427,7 +427,7 @@ pub fn room(game: &Game, world: Option<u8>) -> Room {
     let sora_bits = sd
         .sora_limit_bits()
         .into_iter()
-        .filter(|&b| game.player.abilities.has(b))
+        .filter(|&b| game.sora.player.abilities.has(b))
         .collect();
     let mut commands = vec![SUMMON, PARTY, LIMIT, DISMISS];
     commands.extend(sd.summons.iter().map(|s| s.command));
@@ -439,12 +439,12 @@ pub fn room(game: &Game, world: Option<u8>) -> Room {
         .collect();
     Room {
         members,
-        airborne: game.player.in_air(),
+        airborne: game.sora.player.in_air(),
         battle: battle(game),
-        mp: game.player.mp.cur,
-        charging: game.player.mp_charging,
+        mp: game.sora.player.mp.cur,
+        charging: game.sora.player.mp_charging,
         limit_running: game.drive.as_ref().is_some_and(|d| d.limit_running),
-        drive_level: game.player.drive.level,
+        drive_level: game.sora.player.drive.level,
         in_form: game.drive.as_ref().is_some_and(|d| d.active),
         world,
         charms,
