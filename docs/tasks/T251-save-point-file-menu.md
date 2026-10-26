@@ -51,10 +51,10 @@ its `--autoplay-savepoint` capture.
   `save-20261016/save-spec.md` §4-5).
 - Title Screen and World Map answers close the menu and are only logged: the room cannot go back
   to the title or jump to the world map.
-- The message window is still the plain panel (#80). The save point's glow came in T252.
+- The message window art came in T253 and the save point's glow in T252.
 - Only the card's fields are captured; loading such a save restores nothing yet (#79).
 - Not compared with the installed game.
 
 Verdict: PARTIAL for #139 and #79: the field save point opens a working Save menu that writes
-the rewrite's own file; the full state capture and the window art remain (the glow is T252).
+the rewrite's own file; the full state capture remains (the glow is T252, the window art T253).
 Next: capture the live state into the save image (#79).
