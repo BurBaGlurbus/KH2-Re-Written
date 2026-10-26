@@ -427,6 +427,10 @@ impl SparkRing {
 const SPARK_FADE: f32 = 4.;
 /// The effect owner id of an enemy attack's hit spark.
 const ENEMY_HIT_OWNER: u8 = 0xf9;
+/// Sora's key in the object sound banks (the PLAYER objentry id 0x236) and
+/// in the victim hit counters.
+const PLAYER_OBJECT: u32 = 0x236;
+const PLAYER_VICTIM: u64 = u64::MAX;
 
 /// Running effect instances and the quads they drew this tick.
 #[derive(Resource)]
@@ -3156,7 +3160,11 @@ type ReadEffects = (EffectSources, Vec<(u32, Option<Vec<u8>>, Option<Vec<u8>>)>)
 
 /// The configured effect containers (with their remaster pages) and the
 /// battle enemies' object effects and sound banks.
-fn read_effect_sources(source: &ProbeSource, e: &EffectConfig) -> Result<ReadEffects, String> {
+fn read_effect_sources(
+    source: &ProbeSource,
+    e: &EffectConfig,
+    player: &str,
+) -> Result<ReadEffects, String> {
     use visual::effects::{load_atlas, load_pax};
     // Each enemy object's own sound bank (the `se/obj/seNNN` asset of its
     // archive): registered under its header number, which is the thousand
@@ -3164,7 +3172,10 @@ fn read_effect_sources(source: &ProbeSource, e: &EffectConfig) -> Result<ReadEff
     let mut enemy_bank_bytes = Vec::new();
     let mut register = |key: u32, index: &str, ordinal: usize, hash: [u8; 16]| {
         let bank = sound::object_bank(source, index, ordinal, hash);
-        let voice = (key != 0)
+        if key == PLAYER_OBJECT && bank.is_none() {
+            eprintln!("Sora's object archive carries no se/obj bank");
+        }
+        let voice = (key != 0 && key != PLAYER_OBJECT)
             .then(|| sound::object_voice_bank(source, index, ordinal, hash))
             .flatten();
         enemy_bank_bytes.push((key, bank, voice));
@@ -3173,6 +3184,11 @@ fn read_effect_sources(source: &ProbeSource, e: &EffectConfig) -> Result<ReadEff
         register(0, &l.index, l.ordinal, l.name_hash);
     }
     if let Ok(library) = data::path_lookup::Library::open(source) {
+        // Sora's own object archive: the bank his victim sound plays from.
+        match library.find(&format!("obj/{player}.a.us")) {
+            Some(f) => register(PLAYER_OBJECT, f.index, f.ordinal, f.name_hash),
+            None => eprintln!("obj/{player}.a.us is not installed"),
+        }
         for &(id, name) in &enemy_battle::SUPPORTED {
             if let Some(f) = library.find(&format!("obj/{name}.a.us")) {
                 register(id, f.index, f.ordinal, f.name_hash);
@@ -3364,8 +3380,8 @@ fn load(
         })
     });
     let effects_job = config.effects.clone().map(|e| {
-        let source = source.clone();
-        std::thread::spawn(move || read_effect_sources(&source, &e))
+        let (source, player) = (source.clone(), config.player_object_name.clone());
+        std::thread::spawn(move || read_effect_sources(&source, &e, &player))
     });
     // The camp, journal and music decode on a thread of their own while the
     // rest loads: they need only the archives and their locators.
@@ -4039,6 +4055,9 @@ fn load(
                 if let Some(bytes) = bank
                     && let Ok(number) = banks.insert(bytes)
                 {
+                    if key == PLAYER_OBJECT {
+                        eprintln!("Sora's object sound bank: {number}");
+                    }
                     sources.enemy_banks.insert(key, number);
                 }
                 if let Some(bytes) = voice
@@ -10268,6 +10287,14 @@ fn combat_tick(game: &mut Game, tick: u64) {
             && id >= 0
         {
             sound_queue.push((id as u32, "sora_hit"));
+        }
+        // Sora's own victim sound (FUN_140410d60), from his object's bank.
+        if counted {
+            effect_queue.push(EffectRequest::VictimSound {
+                object: PLAYER_OBJECT,
+                reaction: rows[row].reaction,
+                key: PLAYER_VICTIM,
+            });
         }
         // The claw's spark on Sora's hit shape, from the Shadow's own
         // effects (FUN_1403d1b40; a sphere here, so height = radius).
