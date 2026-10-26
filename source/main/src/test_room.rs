@@ -3146,6 +3146,43 @@ fn player_params(
     Ok((params, prty_index, prty_offset))
 }
 
+/// A world, its footstep table and its step banks' bytes by bank number.
+type Footsteps = (
+    u8,
+    visual::footsteps::WorldInfo,
+    Vec<(u16, Result<Vec<u8>, String>)>,
+);
+
+/// A world's footstep table (its 12soundinfo row) and every Sora step and
+/// ambient bank it names (se<bank>.win32.scd), read but not registered.
+fn read_footsteps(source: &ProbeSource, world: u8) -> Option<Footsteps> {
+    let code = ::area::progress::WORLDS.get(world as usize)?;
+    let mut library = data::path_lookup::Library::open(source).ok()?;
+    let bytes = library.read("12soundinfo.bar").ok()?;
+    let table = data::bar::read_bar(&bytes).ok()?;
+    let entry = table
+        .entries
+        .iter()
+        .find(|e| e.name_bytes[..2] == *code.as_bytes())?;
+    let start = entry.offset as usize;
+    let info = visual::footsteps::WorldInfo::read(
+        bytes.get(start..start.checked_add(entry.size as usize)?)?,
+    )?;
+    let read = info
+        .sora_banks()
+        .into_iter()
+        .chain(info.ambient_banks())
+        .map(|bank| {
+            // An ambient bank is a long stream bank, past the 32 MiB default.
+            let bytes = library
+                .read_limited(&format!("se/se{bank:03}.win32.scd"), SOUND_BANK_LIMIT)
+                .map_err(|e| e.to_string());
+            (bank, bytes)
+        })
+        .collect();
+    Some((world, info, read))
+}
+
 fn load(
     source: &Arc<ProbeSource>,
     config_path: &Path,
@@ -3208,8 +3245,10 @@ fn load(
         return Err("weapon joint outside the actor skeleton".into());
     }
     let mut area_load: Option<(AreaSource, LoadedArea)> = None;
-    // An area decodes on a worker thread while Sora's kit loads below.
+    // An area decodes on a worker thread while Sora's kit loads below, and
+    // its world's footstep banks on another.
     let mut area_job = None;
+    let mut footsteps_job = None;
     let (room, arena_mesh) = match (&config.arena, &config.room_selection) {
         (Some(a), _) => {
             let a = a.expanded()?;
@@ -3221,6 +3260,10 @@ fn load(
             Some(a) => {
                 let world = ::area::progress::world_index(&a.world).ok_or("unknown world code")?;
                 let story: Vec<(u32, u32)> = a.story.iter().map(|r| (r[0], r[1])).collect();
+                footsteps_job = Some({
+                    let source = Arc::clone(source);
+                    std::thread::spawn(move || read_footsteps(&source, world))
+                });
                 let source = Arc::clone(source);
                 let (number, entrance, programs) = (a.area, a.entrance, a.programs);
                 area_job = Some(std::thread::Builder::new().name("area load".into()).spawn(
@@ -3865,34 +3908,24 @@ fn load(
         })
         .and_then(|bytes| banks.insert(bytes).ok())
         .and_then(|bank| drive_room::Voices::read(bar_entry(&battle, b"vtbl").ok()?, bank));
-    // Footsteps: the world's 12soundinfo rows and every Sora step bank
-    // they name (se<bank>.win32.scd).
-    let step_info = area_load.as_ref().and_then(|(_, a)| {
-        let code = ::area::progress::WORLDS.get(a.world as usize)?;
-        let mut library = data::path_lookup::Library::open(source).ok()?;
-        let bytes = library.read("12soundinfo.bar").ok()?;
-        let table = data::bar::read_bar(&bytes).ok()?;
-        let entry = table
-            .entries
-            .iter()
-            .find(|e| e.name_bytes[..2] == *code.as_bytes())?;
-        let start = entry.offset as usize;
-        let info = visual::footsteps::WorldInfo::read(
-            bytes.get(start..start.checked_add(entry.size as usize)?)?,
-        )?;
-        for bank in info.sora_banks().into_iter().chain(info.ambient_banks()) {
-            // An ambient bank is a long stream bank, past the 32 MiB default.
-            match library.read_limited(&format!("se/se{bank:03}.win32.scd"), SOUND_BANK_LIMIT) {
-                Ok(bank_bytes) => {
-                    if let Err(error) = banks.insert(bank_bytes) {
-                        eprintln!("Sound bank {bank} not registered: {error}");
+    // Footsteps: the world's step banks, read on their own thread since
+    // the start (`read_footsteps`), registered here.
+    let step_info = footsteps_job
+        .and_then(|job| job.join().ok().flatten())
+        .filter(|_| area_load.is_some())
+        .map(|(world, info, read)| {
+            for (bank, bytes) in read {
+                match bytes {
+                    Ok(bank_bytes) => {
+                        if let Err(error) = banks.insert(bank_bytes) {
+                            eprintln!("Sound bank {bank} not registered: {error}");
+                        }
                     }
+                    Err(error) => eprintln!("Sound bank {bank} not read: {error}"),
                 }
-                Err(error) => eprintln!("Sound bank {bank} not read: {error}"),
             }
-        }
-        Some((a.world, info))
-    });
+            (world, info)
+        });
     timer.mark("voices and footsteps");
     let npc = match &config.npc {
         Some(n) => Some(load_npc(source, base, &config, n)?),
