@@ -31,6 +31,11 @@ pub(crate) struct Loadout {
     pub items: Vec<u16>,
 }
 
+/// Where a player is in the lobby (the other player sees it).
+pub(crate) const SECTION_LIST: u8 = 0;
+pub(crate) const SECTION_BANS: u8 = 1;
+pub(crate) const SECTION_CAMP: u8 = 2;
+
 /// One player's place in the lobby.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct Seat {
@@ -38,6 +43,8 @@ pub(crate) struct Seat {
     pub bans_done: bool,
     pub loadout: Option<Loadout>,
     pub ready: bool,
+    /// The lobby's list, the ban picker or the camp.
+    pub section: u8,
 }
 
 /// What a player asks of the lobby.
@@ -48,6 +55,8 @@ pub(crate) enum Intent {
     /// The player's build (it un-readies them).
     Loadout(Loadout),
     Ready(bool),
+    /// Where the player now is (`SECTION_*`).
+    Section(u8),
 }
 
 /// What the duel allows, from the installed tables.
@@ -205,6 +214,12 @@ impl Lobby {
                 }
                 s.ready = ready;
             }
+            Intent::Section(section) => {
+                if section > SECTION_CAMP {
+                    return Err("no such section".into());
+                }
+                s.section = section;
+            }
         }
         self.advance();
         Ok(())
@@ -277,6 +292,7 @@ pub(crate) fn encode_lobby(kind: u8, lobby: &Lobby) -> Vec<u8> {
     for s in &lobby.seats {
         put_list(&mut w, &s.bans);
         w.u8(u8::from(s.bans_done) | u8::from(s.ready) << 1);
+        w.u8(s.section);
         match &s.loadout {
             Some(l) => {
                 w.u8(1);
@@ -306,6 +322,7 @@ pub(crate) fn decode_lobby(kind: u8, bytes: &[u8]) -> Option<Lobby> {
         let flags = r.u8()?;
         s.bans_done = flags & 1 != 0;
         s.ready = flags & 2 != 0;
+        s.section = r.u8()?;
         s.loadout = match r.u8()? {
             0 => None,
             _ => Some(get_loadout(&mut r)?),
@@ -335,6 +352,10 @@ pub(crate) fn encode_intent(kind: u8, intent: &Intent) -> Vec<u8> {
             w.u8(2);
             w.u8(u8::from(*ready));
         }
+        Intent::Section(section) => {
+            w.u8(3);
+            w.u8(*section);
+        }
     }
     w.finish()
 }
@@ -348,6 +369,7 @@ pub(crate) fn decode_intent(kind: u8, bytes: &[u8]) -> Option<Intent> {
         0 => Intent::Ban(get_list(&mut r, MAX_BANS)?),
         1 => Intent::Loadout(get_loadout(&mut r)?),
         2 => Intent::Ready(r.u8()? != 0),
+        3 => Intent::Section(r.u8()?),
         _ => return None,
     };
     r.is_empty().then_some(intent)
@@ -491,6 +513,7 @@ mod tests {
                     bans_done: true,
                     loadout: Some(build(vec![0x81a2, 0x1a2])),
                     ready: true,
+                    section: SECTION_CAMP,
                 },
                 Seat::default(),
             ],
@@ -504,6 +527,7 @@ mod tests {
             Intent::Ban(vec![0x52]),
             Intent::Loadout(build(vec![0x81a2])),
             Intent::Ready(true),
+            Intent::Section(SECTION_BANS),
         ] {
             assert_eq!(decode_intent(6, &encode_intent(6, &intent)), Some(intent));
         }

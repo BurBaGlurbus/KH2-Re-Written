@@ -24,9 +24,11 @@ const TOP: f32 = 46.;
 const TEXT: [f32; 4] = [1.6, 1.6, 1.6, 1.];
 const WARN: [f32; 4] = [1.8, 1.3, 0.5, 1.];
 /// The lobby's list: size, line height, top, and the cursor row's colour.
-const LOBBY_SIZE: f32 = 13.;
-const LOBBY_LINE: f32 = 17.;
-const LOBBY_TOP: f32 = 70.;
+const LOBBY_SIZE: f32 = 12.;
+const LOBBY_LINE: f32 = 15.;
+const LOBBY_TOP: f32 = 24.;
+/// The panel's left edge (top left, clear of the overlay and the list).
+const LOBBY_LEFT: f32 = -20.;
 const CURSOR: [f32; 4] = [1.9, 1.6, 0.7, 1.];
 /// The vote's panel top.
 const VOTE_TOP: f32 = 290.;
@@ -505,13 +507,23 @@ fn sheets(
 }
 
 fn backing(white: usize, rect: [f32; 4]) -> (usize, Vec<data::sprite_sequence::Quad>) {
+    faded_backing(white, rect, 1.)
+}
+
+/// The backing at an opacity (the lobby's fade).
+fn faded_backing(
+    white: usize,
+    rect: [f32; 4],
+    alpha: f32,
+) -> (usize, Vec<data::sprite_sequence::Quad>) {
     let [x0, y0, x1, y1] = rect;
+    let c = [BACKING[0], BACKING[1], BACKING[2], BACKING[3] * alpha];
     (
         white,
         vec![data::sprite_sequence::Quad {
             corners: [[x0, y0], [x1, y0], [x0, y1], [x1, y1]],
             uv: [0, 0, 1, 1],
-            colors: [BACKING; 4],
+            colors: [c; 4],
             blend: 0,
         }],
     )
@@ -565,7 +577,9 @@ pub(crate) fn present(
             field_command_menu::text_quads_sized(&encoded, [x, BANNER_Y], TEXT, &f, BANNER_SIZE),
         ));
     }
-    // The lobby: a plain list in the middle, the cursor's row in gold.
+    // The lobby's panel at the top left, the cursor's row in gold; it fades
+    // in with each stage.
+    let fade = lobby.as_ref().map_or(1., |l| l.fade());
     let lobby_lines = lobby
         .map(|l| duel_lobby_room::lines(&l, &net, &game))
         .unwrap_or_default();
@@ -574,8 +588,8 @@ pub(crate) fn present(
             .iter()
             .map(|(l, _, _)| field_command_menu::text_width(l, &f, LOBBY_SIZE))
             .fold(0., f32::max);
-        let x = BANNER_CENTRE - width / 2.;
-        frame.draws.push(backing(
+        let x = LOBBY_LEFT;
+        frame.draws.push(faded_backing(
             white,
             [
                 x - 10.,
@@ -583,16 +597,18 @@ pub(crate) fn present(
                 x + width + 10.,
                 LOBBY_TOP + LOBBY_LINE * lobby_lines.len() as f32 + 4.,
             ],
+            fade,
         ));
         let mut quads = Vec::new();
         for (n, (line, on, warn)) in lobby_lines.iter().enumerate() {
-            let colour = if *warn {
+            let [r, g, b, a] = if *warn {
                 WARN
             } else if *on {
                 CURSOR
             } else {
                 TEXT
             };
+            let colour = [r, g, b, a * fade];
             quads.extend(field_command_menu::text_quads_sized(
                 line,
                 [x, LOBBY_TOP + n as f32 * LOBBY_LINE],

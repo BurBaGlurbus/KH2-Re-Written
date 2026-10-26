@@ -133,15 +133,18 @@ command goes to the host with its buttons, the host runs it, and the effects it 
 naming the effect file, so each side draws them from its own install. Esc leaves; the other side sees "Opponent
 left" (or a timeout after five seconds) and the host waits for the next player.
 
-**The lobby:** when the other player joins, a list opens over the arena (Up/Down, Decide, Back):
+**The lobby:** when the other player joins, the game's own menu list opens over the arena (Up/Down, Decide,
+Back, Left/Right on a value); the panel at the top left shows both players' bans, where the other player is
+(choosing bans, in the camp, ready), your AP against the limit and your Keyblade's numbers:
 
 1. The host sets the rules with Left/Right: the mode (*One KO*, *Best of 3*, *Time limit*, where the larger
    share of HP left wins at time up), the damage multiplier and the time limit. The joiner sees them.
 2. Each player bans up to two abilities for this match (*Choose bans*, or *Done* with none). A ban takes the
    ability away from both players; both lists stay on screen.
-3. Each player presses **Start** for the camp: *Abilities* (up to 166 AP, level 99 with every AP Boost the game
-   allows), *Equip* (any of the 24 Keyblades, each with its own stats and ability) and *Items*. The host checks
-   every build.
+3. Each player picks a Keyblade on its row with Left/Right (any of the 24, each with its own stats and ability;
+   the camera turns to your Sora holding it), then *Abilities and items* (or **Start**) opens the camp:
+   *Abilities* (up to 166 AP, level 99 with every AP Boost the game allows), *Equip* and *Items*. The host
+   checks every build; a refusal says why in orange.
 4. *Ready* on both starts the match; the other player's status shows below. A rule change takes Ready back.
 
 **The arena:** the match is fought in the test room's arena. Both Soras start on a line through the room's
@@ -154,7 +157,9 @@ goes until someone wins two (the round and score show at the top); *Time limit* 
 up the larger share of HP left wins. Between rounds both Soras are refilled and put back at the start. At the
 end each screen shows VICTORY, DEFEAT or DRAW with how it was decided, the rounds, the match time, the damage
 dealt and the hits landed; the winner's camera pushes in, the loser's rises behind his Sora. *Rematch* on both
-goes back to the lobby (new bans, the builds where they were); *Leave* closes the game. If the other player
+goes back to the lobby (new bans, the builds where they were); *Leave* closes the duel, and the launcher comes
+back on its Multiplayer screen. If the other player leaves in the lobby or the camp, the camp closes without
+keeping the duel's build and the room's own comes back. If the other player
 leaves during a match, it is your win. From a command line the host can set `--duel-mode stock|best3|time` and
 `--duel-time 60|90|120|180|300`.
 

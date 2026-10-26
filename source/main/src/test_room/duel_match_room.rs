@@ -252,7 +252,9 @@ pub(crate) fn tick(
     game.duel_match = room.m.is_some();
     game.duel_frozen = lobby.up || room.m.is_some_and(|m| !m.fighting());
     sounds(room, seat, now, game);
-    game.duel_camera = shot(room.m.as_ref(), seat, now, game, rig.camera.vertical_fov());
+    let fov = rig.camera.vertical_fov();
+    game.duel_camera =
+        shot(room.m.as_ref(), seat, now, game, fov).or_else(|| lobby.preview(game, fov));
     // The result screen: Rematch or Leave.
     let Some(m) = room.m.as_mut() else { return };
     if m.phase != Phase::Over {
@@ -260,7 +262,7 @@ pub(crate) fn tick(
     }
     let pressed = if game.autoplay.is_some() {
         // [Test] Unattended: both ask for a rematch two seconds in.
-        if now.saturating_sub(m.since) >= 120 && !m.rematch[seat] {
+        if playing && now.saturating_sub(m.since) >= 120 && !m.rematch[seat] {
             DECIDE
         } else {
             0
@@ -275,7 +277,8 @@ pub(crate) fn tick(
     if pressed & DECIDE != 0 {
         game.sound_queue.push((SE_GO, "result"));
         if room.cursor == 1 || !playing {
-            // Leave: the game closes (the launcher stays); the other player
+            // Leave: the duel closes and the launcher comes back on its
+            // Multiplayer screen; the other player
             // sees "left".
             exits.write(AppExit::Success);
         } else {
@@ -536,7 +539,9 @@ pub(crate) fn labels(room: &MatchRoom, net: &DuelNet, game: &Game) -> Vec<Label>
                 None => ("DRAW", WHITE),
             };
             let k = (t as f32 / 30.).min(1.);
-            out.push(label(title, [256., 120.], 44. + 16. * (1. - k), colour));
+            // The title above, the numbers and choices below: the shot of
+            // the Sora shows between them.
+            out.push(label(title, [256., 64.], 44. + 16. * (1. - k), colour));
             let why = match (m.why, m.winner) {
                 (Some(Why::Left), _) => format!("{them} left the duel"),
                 (Some(Why::Time), _) => "Time up: the larger share of HP left".to_string(),
@@ -562,11 +567,11 @@ pub(crate) fn labels(room: &MatchRoom, net: &DuelNet, game: &Game) -> Vec<Label>
                 m.hits[1 - seat]
             ));
             for (i, r) in rows.iter().enumerate() {
-                let mut l = label(r, [256., 165. + 17. * i as f32], 13., WHITE);
+                let mut l = label(r, [256., 292. + 16. * i as f32], 13., WHITE);
                 l.backed = true;
                 out.push(l);
             }
-            let y = 175. + 17. * rows.len() as f32;
+            let y = 300. + 16. * rows.len() as f32;
             if matches!(net.status, Status::Playing) {
                 let want = if m.rematch[seat] {
                     "Rematch: waiting"

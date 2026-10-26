@@ -1147,6 +1147,10 @@ fn update(
         if let (true, true, Some(room)) = (status.success(), new_game, room) {
             // New Game on the title continues straight into the test room.
             launch(l, &Action::Run(room), b);
+        } else if status.success() && name == "Multiplayer" {
+            // A duel left from its result screen (or closed) comes back to
+            // Multiplayer: the hosts on the network, Host, Join.
+            l.go(Screen::Multiplayer(b));
         } else if status.success() {
             let cursor = l.cursor;
             l.go(Screen::Tests(b));

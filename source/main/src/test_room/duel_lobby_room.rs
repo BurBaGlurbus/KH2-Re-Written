@@ -1,15 +1,19 @@
 //! The duel's lobby in the room: the host keeps the lobby (duel_lobby.rs)
 //! and sends it on every change; the joiner sends its choices and shows
-//! what comes back. On screen it is a plain list in the system font over
-//! the arena, with the menus' se000 sounds; the builds are made in the
-//! game's own camp (Start), over the duel's inventory with the match's
-//! banned abilities taken out. Both Soras stand still until the match.
+//! what comes back. On screen the rows are the game's pause list (its
+//! boxes, glove, light and sounds), with a status panel above in the
+//! system font: both players' bans, where the other player is, the AP
+//! against the limit and the Keyblade's numbers. The builds are made in the
+//! game's own camp (Start, or the list's row), over the duel's inventory
+//! with the match's banned abilities taken out. Both Soras stand still
+//! until the match.
 
 use super::duel_lobby::{self, Intent, Limits, Loadout, Lobby, MAX_BANS, Stage};
 use super::duel_net::{DuelNet, Status, fighter_slots};
 use super::duel_wire::{INTENT, LOBBY, REFUSED};
 use super::*;
 use net::{RELIABLE, Role};
+use visual::pause_definition::Menu as List;
 
 /// se000: cursor, decide, open, cancel, refused.
 const SE_MOVE: u32 = 1;
@@ -90,12 +94,49 @@ pub(crate) struct LobbyRoom {
     /// The match put the Soras at the arena's starts: the camera turns
     /// behind this player's Sora once it is there (where it stood before).
     recenter: Option<[f32; 3]>,
+    /// The game's list and the rows it was built with.
+    list: Option<List>,
+    list_rows: Vec<Row>,
+    /// This player is in the camp; the section the other player was told.
+    in_camp: bool,
+    section_sent: Option<u8>,
 }
 
 impl LobbyRoom {
     /// The lobby holds the pad (its list is up and no camp is open).
     pub(crate) fn menu_up(&self) -> bool {
         self.up
+    }
+
+    /// The status panel's opacity: it fades in over a quarter second each
+    /// time a stage opens (from its ticks, the same at any frame rate).
+    pub(crate) fn fade(&self) -> f32 {
+        (self.stage_ticks as f32 / 15.).min(1.)
+    }
+
+    /// While the Keyblade row is chosen, the camera looks at this player's
+    /// Sora from the front, the new Keyblade in his hand.
+    pub(crate) fn preview(&self, game: &Game, fov: f32) -> Option<boss::OverlayView> {
+        if !self.up || self.in_camp || self.bans.is_some() {
+            return None;
+        }
+        if self.list_rows.get(self.cursor) != Some(&Row::Keyblade) {
+            return None;
+        }
+        let p = &game.sora.player;
+        let at = Vec3::from_array(p.position);
+        let forward = Vec3::new(p.yaw.sin(), 0., p.yaw.cos());
+        let right = Vec3::new(forward.z, 0., -forward.x);
+        let chest = at + Vec3::Y * 95.;
+        // Seen from the front, Sora's left is the screen's right: aiming
+        // there puts him left of the list.
+        Some(boss::OverlayView {
+            eye: chest + forward * 230. - right * 40. + Vec3::Y * 10.,
+            target: chest - right * 95.,
+            roll: 0.,
+            fov,
+            collision: true,
+        })
     }
 }
 
@@ -296,6 +337,7 @@ pub(crate) fn tick(
     camp: Option<ResMut<CampRes>>,
     vote: Option<Res<duel_vote::VoteRoom>>,
     mut rig: ResMut<CameraRig>,
+    art: Option<Res<game_over::GameOverRes>>,
     mut game: ResMut<Game>,
 ) {
     let (Some(mut net), Some(mut room), Some(mut camp)) = (net, room, camp) else {
@@ -315,8 +357,12 @@ pub(crate) fn tick(
     let playing = matches!(net.status, Status::Playing);
     if !playing {
         if room.active {
-            // The session ended: the camp and the field are the room's
-            // again.
+            // The session ended (the other player left, even mid-menu): an
+            // open camp closes without writing the duel's build back, and
+            // the camp and the field are the room's again.
+            camp.open = None;
+            camp.journal = None;
+            camp.curtain = None;
             restore_camp(room, camp);
             *room = LobbyRoom {
                 names: std::mem::take(&mut room.names),
@@ -418,6 +464,15 @@ pub(crate) fn tick(
         }
     }
     room.stage_ticks += 1;
+    // [Duel choice] While the builds are made both Soras stand armed, so
+    // the Keyblade each picks is in his hand (the host's state; the joiner
+    // sees it in the snapshots).
+    if net.role == Role::Host && room.up && room.lobby.stage == Stage::Loadout {
+        game.sora.player.armed = true;
+        for r in &mut game.rivals {
+            r.fighter.player.armed = true;
+        }
+    }
     game.duel_frozen = room.up;
     game.duel_camp = room.up && room.lobby.stage == Stage::Loadout;
     // A build made in the camp goes to the host.
@@ -428,18 +483,33 @@ pub(crate) fn tick(
             intend(room, net, game, Intent::Loadout(build));
         }
     }
+    // Where this player is, for the other's screen.
+    room.in_camp = camp.menu_up();
+    let section = if room.in_camp {
+        duel_lobby::SECTION_CAMP
+    } else if room.bans.is_some() {
+        duel_lobby::SECTION_BANS
+    } else {
+        duel_lobby::SECTION_LIST
+    };
+    if room.up && room.section_sent != Some(section) {
+        room.section_sent = Some(section);
+        intend(room, net, game, Intent::Section(section));
+    }
     let voting = vote.is_some_and(|v| v.menu_up(room.seat));
-    if room.up && !camp.menu_up() && !voting {
-        if game.autoplay.is_some() {
+    if room.up && !room.in_camp && !voting {
+        let pad = if game.autoplay.is_some() {
             script(room, net, game);
+            (0, 0)
         } else {
-            let (pressed, repeat) = (game.pad.pressed, game.pad.repeat);
-            input(
-                room,
-                net,
-                game,
-                pressed | repeat & (UP | DOWN | LEFT | RIGHT),
-            );
+            (game.pad.pressed, game.pad.repeat)
+        };
+        if room.bans.is_some() {
+            ban_input(room, net, game, pad.0 | pad.1 & (UP | DOWN));
+        } else if let Some(art) = art.as_deref() {
+            list_input(room, net, game, art, pad);
+        } else {
+            plain_input(room, net, game, pad.0 | pad.1 & (UP | DOWN | LEFT | RIGHT));
         }
     }
     // Host: the lobby to the joiner on every change.
@@ -479,12 +549,14 @@ fn script(room: &mut LobbyRoom, net: &mut DuelNet, game: &mut Game) {
 }
 
 /// The main list's rows for this player.
-#[derive(Clone, Copy, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 enum Row {
     Mode,
     Damage,
     Time,
     Bans,
+    Keyblade,
+    Customize,
     Ready,
 }
 
@@ -498,97 +570,107 @@ fn rows(room: &LobbyRoom, rules: &duel_rules::MatchRules, host: bool) -> Vec<Row
     }
     match room.lobby.stage {
         Stage::Bans if !room.lobby.seats[room.seat].bans_done => out.push(Row::Bans),
-        Stage::Loadout => out.push(Row::Ready),
+        Stage::Loadout => out.extend([Row::Keyblade, Row::Customize, Row::Ready]),
         _ => {}
     }
     out
 }
 
-fn input(room: &mut LobbyRoom, net: &mut DuelNet, game: &mut Game, pressed: u64) {
-    if pressed == 0 {
-        return;
+/// A row's text in the list (game text for the Keyblade's name).
+fn row_text(room: &LobbyRoom, game: &Game, row: Row) -> Vec<u8> {
+    let rules = &game.duel_rules;
+    match row {
+        Row::Mode => text(&format!("Mode: {}", rules.info().name)),
+        Row::Damage => text(&format!("Damage: x{}", rules.damage)),
+        Row::Time => text(&format!(
+            "Time limit: {}",
+            duel_rules::clock(u32::from(rules.time_limit) * 60)
+        )),
+        Row::Bans => text("Choose bans"),
+        // The name alone fits the box; the panel says it is the Keyblade.
+        Row::Keyblade => name(room, game.equipment.weapon),
+        Row::Customize => text("Abilities and items"),
+        Row::Ready => text(if room.lobby.seats[room.seat].ready {
+            "Ready!"
+        } else {
+            "Ready"
+        }),
     }
-    let host = net.role == Role::Host;
-    if let Some(p) = room.bans.as_mut() {
-        // The ban picker: row 0 is Done, then the pool.
-        let pool = room.limits.ban_pool();
-        let n = pool.len() + 1;
-        if pressed & UP != 0 {
-            p.cursor = (p.cursor + n - 1) % n;
-            game.sound_queue.push((SE_MOVE, "lobby"));
-        } else if pressed & DOWN != 0 {
-            p.cursor = (p.cursor + 1) % n;
-            game.sound_queue.push((SE_MOVE, "lobby"));
-        } else if pressed & BACK != 0 {
-            room.bans = None;
-            game.sound_queue.push((SE_CANCEL, "lobby"));
-            return;
-        } else if pressed & DECIDE != 0 {
-            if p.cursor == 0 {
-                let picks = p.picks.clone();
-                room.bans = None;
-                game.sound_queue.push((SE_DECIDE, "lobby"));
-                intend(room, net, game, Intent::Ban(picks));
-                return;
-            }
-            let id = pool[p.cursor - 1];
-            if let Some(i) = p.picks.iter().position(|&b| b == id) {
-                p.picks.remove(i);
-                game.sound_queue.push((SE_CANCEL, "lobby"));
-            } else if p.picks.len() < MAX_BANS {
-                p.picks.push(id);
-                game.sound_queue.push((SE_DECIDE, "lobby"));
-            } else {
-                game.sound_queue.push((SE_ERROR, "lobby"));
-            }
-        }
-        if p.cursor < p.scroll {
-            p.scroll = p.cursor;
-        } else if p.cursor >= p.scroll + BAN_ROWS {
-            p.scroll = p.cursor + 1 - BAN_ROWS;
-        }
+}
+
+/// An item's name in game text (a number when the table has none).
+fn name(room: &LobbyRoom, id: u16) -> Vec<u8> {
+    room.names
+        .get(&id)
+        .cloned()
+        .unwrap_or_else(|| text(&format!("? {id}")))
+}
+
+/// The ban picker's input: row 0 is Done, then the pool.
+fn ban_input(room: &mut LobbyRoom, net: &mut DuelNet, game: &mut Game, pressed: u64) {
+    let Some(p) = room.bans.as_mut() else {
         return;
-    }
-    let list = rows(room, &game.duel_rules, host);
-    if list.is_empty() {
-        return;
-    }
-    room.cursor = room.cursor.min(list.len() - 1);
-    if pressed & UP != 0 {
-        room.cursor = (room.cursor + list.len() - 1) % list.len();
-        game.sound_queue.push((SE_MOVE, "lobby"));
-        return;
-    }
-    if pressed & DOWN != 0 {
-        room.cursor = (room.cursor + 1) % list.len();
-        game.sound_queue.push((SE_MOVE, "lobby"));
-        return;
-    }
-    let step = if pressed & RIGHT != 0 {
-        1
-    } else if pressed & LEFT != 0 {
-        -1
-    } else {
-        0
     };
-    let row = list[room.cursor];
+    let pool = room.limits.ban_pool();
+    let n = pool.len() + 1;
+    if pressed & UP != 0 {
+        p.cursor = (p.cursor + n - 1) % n;
+        game.sound_queue.push((SE_MOVE, "lobby"));
+    } else if pressed & DOWN != 0 {
+        p.cursor = (p.cursor + 1) % n;
+        game.sound_queue.push((SE_MOVE, "lobby"));
+    } else if pressed & BACK != 0 {
+        room.bans = None;
+        game.sound_queue.push((SE_CANCEL, "lobby"));
+        return;
+    } else if pressed & DECIDE != 0 {
+        if p.cursor == 0 {
+            let picks = p.picks.clone();
+            room.bans = None;
+            game.sound_queue.push((SE_DECIDE, "lobby"));
+            intend(room, net, game, Intent::Ban(picks));
+            return;
+        }
+        let id = pool[p.cursor - 1];
+        if let Some(i) = p.picks.iter().position(|&b| b == id) {
+            p.picks.remove(i);
+            game.sound_queue.push((SE_CANCEL, "lobby"));
+        } else if p.picks.len() < MAX_BANS {
+            p.picks.push(id);
+            game.sound_queue.push((SE_DECIDE, "lobby"));
+        } else {
+            game.sound_queue.push((SE_ERROR, "lobby"));
+            room.note = Some((format!("At most {MAX_BANS} bans"), game.tick));
+        }
+    }
+    if p.cursor < p.scroll {
+        p.scroll = p.cursor;
+    } else if p.cursor >= p.scroll + BAN_ROWS {
+        p.scroll = p.cursor + 1 - BAN_ROWS;
+    }
+}
+
+/// Left or Right on a row: the host's rules, this player's Keyblade.
+fn step_row(room: &mut LobbyRoom, game: &mut Game, row: Row, step: i32) {
     let rules_before = game.duel_rules;
     match row {
-        Row::Mode if step != 0 => game.duel_rules.cycle_mode(step),
-        Row::Damage if step != 0 => game.duel_rules.step_damage(step),
-        Row::Time if step != 0 => game.duel_rules.cycle_time(step),
-        Row::Bans if pressed & DECIDE != 0 => {
-            room.bans = Some(BanPicker {
-                picks: Vec::new(),
-                cursor: 0,
-                scroll: 0,
-            });
-            game.sound_queue.push((SE_OPEN, "lobby"));
-        }
-        Row::Ready if pressed & DECIDE != 0 => {
-            let ready = !room.lobby.seats[room.seat].ready;
-            game.sound_queue.push((SE_DECIDE, "lobby"));
-            intend(room, net, game, Intent::Ready(ready));
+        Row::Mode => game.duel_rules.cycle_mode(step),
+        Row::Damage => game.duel_rules.step_damage(step),
+        Row::Time => game.duel_rules.cycle_time(step),
+        Row::Keyblade => {
+            let blades = &room.limits.keyblades;
+            let at = blades
+                .iter()
+                .position(|&k| k == game.equipment.weapon)
+                .unwrap_or(0) as i32;
+            let n = blades.len() as i32;
+            if n > 0 {
+                let next = blades[(at + step).rem_euclid(n) as usize];
+                let mut build = build_of(game);
+                build.keyblade = next;
+                put_build(game, &build);
+                game.sound_queue.push((SE_MOVE, "lobby"));
+            }
         }
         _ => {}
     }
@@ -602,6 +684,111 @@ fn input(room: &mut LobbyRoom, net: &mut DuelNet, game: &mut Game, pressed: u64)
     }
 }
 
+/// A row picked in the list.
+fn pick_row(room: &mut LobbyRoom, net: &mut DuelNet, game: &mut Game, row: Row) {
+    match row {
+        Row::Bans => {
+            room.bans = Some(BanPicker {
+                picks: Vec::new(),
+                cursor: 0,
+                scroll: 0,
+            });
+            game.sound_queue.push((SE_OPEN, "lobby"));
+        }
+        Row::Customize => game.duel_open_camp = true,
+        Row::Ready => {
+            let ready = !room.lobby.seats[room.seat].ready;
+            intend(room, net, game, Intent::Ready(ready));
+        }
+        _ => {}
+    }
+}
+
+/// The lobby's list in the game's look: the pause list's boxes, glove and
+/// light (visual::pause_definition), rebuilt when the rows change, its
+/// texts updated in place when a value steps.
+fn list_input(
+    room: &mut LobbyRoom,
+    net: &mut DuelNet,
+    game: &mut Game,
+    art: &game_over::GameOverRes,
+    (pressed, repeat): (u64, u64),
+) {
+    let host = net.role == Role::Host;
+    let want = rows(room, &game.duel_rules, host);
+    let texts: Vec<Vec<u8>> = want.iter().map(|&r| row_text(room, game, r)).collect();
+    let (seq, ..) = art.list_art();
+    if room.list.is_none() || room.list_rows != want {
+        let last = room.list.as_ref().map(|l| l.cursor());
+        room.list = (!want.is_empty()).then(|| {
+            List::new(
+                &art.list_definition(want.len()),
+                texts.clone(),
+                0,
+                false,
+                last,
+            )
+        });
+        room.list_rows = want.clone();
+    }
+    let Some(list) = room.list.as_mut() else {
+        return;
+    };
+    for (i, t) in texts.into_iter().enumerate() {
+        list.set_text(i, t);
+    }
+    list.update_sprites(seq);
+    let out = list.frame(seq, pressed, repeat);
+    let cursor = list.cursor();
+    for s in out.sounds {
+        game.sound_queue.push((s, "lobby"));
+    }
+    room.cursor = cursor;
+    let row = want.get(cursor).copied();
+    let step = if pressed & RIGHT != 0 || repeat & RIGHT != 0 && pressed & LEFT == 0 {
+        1
+    } else if pressed & LEFT != 0 || repeat & LEFT != 0 {
+        -1
+    } else {
+        0
+    };
+    if let Some(r) = row
+        && step != 0
+    {
+        step_row(room, game, r, step);
+    }
+    if let Some(picked) = out.picked
+        && let Some(&r) = want.get(usize::from(picked).wrapping_sub(1))
+    {
+        pick_row(room, net, game, r);
+    }
+}
+
+/// Without the pause list's art: the same rows as text (Up/Down, Decide,
+/// Left/Right).
+fn plain_input(room: &mut LobbyRoom, net: &mut DuelNet, game: &mut Game, pressed: u64) {
+    let list = rows(room, &game.duel_rules, net.role == Role::Host);
+    room.list_rows = list.clone();
+    if list.is_empty() || pressed == 0 {
+        return;
+    }
+    let n = list.len();
+    room.cursor = room.cursor.min(n - 1);
+    if pressed & UP != 0 {
+        room.cursor = (room.cursor + n - 1) % n;
+        game.sound_queue.push((SE_MOVE, "lobby"));
+    } else if pressed & DOWN != 0 {
+        room.cursor = (room.cursor + 1) % n;
+        game.sound_queue.push((SE_MOVE, "lobby"));
+    } else if pressed & (LEFT | RIGHT) != 0 {
+        let step = if pressed & RIGHT != 0 { 1 } else { -1 };
+        step_row(room, game, list[room.cursor], step);
+    } else if pressed & DECIDE != 0 {
+        game.sound_queue.push((SE_DECIDE, "lobby"));
+        pick_row(room, net, game, list[room.cursor]);
+    }
+}
+
 /// Text in the system font's encoding; game text (item names) is used as
 /// it is.
 fn text(s: &str) -> Vec<u8> {
@@ -612,7 +799,23 @@ fn joined(parts: &[&[u8]]) -> Vec<u8> {
     parts.concat()
 }
 
-/// The lines the lobby shows: (text, highlighted, warning).
+/// Where a player is, in words.
+fn section_words(seat: &duel_lobby::Seat, stage: Stage) -> &'static str {
+    if seat.ready {
+        return "ready";
+    }
+    match (stage, seat.section) {
+        (Stage::Bans, _) if seat.bans_done => "done banning",
+        (_, duel_lobby::SECTION_BANS) => "choosing bans",
+        (_, duel_lobby::SECTION_CAMP) => "in the camp",
+        (Stage::Bans, _) => "about to ban",
+        _ => "choosing a build",
+    }
+}
+
+/// The lines the lobby's panel shows: (text, highlighted, warning). With
+/// the game's list up, the panel is the status above it; without (no
+/// pause art), the rows are listed here too.
 pub(crate) fn lines(room: &LobbyRoom, net: &DuelNet, game: &Game) -> Vec<(Vec<u8>, bool, bool)> {
     let mut out = Vec::new();
     if !room.up {
@@ -622,20 +825,12 @@ pub(crate) fn lines(room: &LobbyRoom, net: &DuelNet, game: &Game) -> Vec<(Vec<u8
     let me = net.name.as_str();
     let them = net.peer.as_deref().unwrap_or("Opponent");
     let names = |seat: usize| if seat == room.seat { me } else { them };
-    let ability = |id: u16| {
-        room.names
-            .get(&id)
-            .cloned()
-            .unwrap_or_else(|| text(&format!("? {id}")))
-    };
-    // The system font has no brackets or arrows: the cursor's row is gold.
-    let mark = |_on: bool| "   ";
     out.push((
         text(&format!("Duel lobby   Match {}", room.lobby.match_no + 1)),
         false,
         false,
     ));
-    // The ban picker replaces the list while it is open.
+    // The ban picker replaces the panel while it is open.
     if let Some(p) = &room.bans {
         out.push((
             text(&format!("Ban up to {MAX_BANS} abilities for both players")),
@@ -643,56 +838,65 @@ pub(crate) fn lines(room: &LobbyRoom, net: &DuelNet, game: &Game) -> Vec<(Vec<u8
             false,
         ));
         out.push((
-            text(&format!(
-                "{}Done: {} chosen",
-                mark(p.cursor == 0),
-                p.picks.len()
-            )),
+            text(&format!("   Done: {} chosen", p.picks.len())),
             p.cursor == 0,
             false,
         ));
         let pool = room.limits.ban_pool();
         for (i, &id) in pool.iter().enumerate().skip(p.scroll).take(BAN_ROWS) {
             let on = p.cursor == i + 1;
-            let x = if p.picks.contains(&id) { "* " } else { "   " };
-            out.push((
-                joined(&[&text(mark(on)), &text(x), &ability(id)]),
-                on,
-                false,
-            ));
+            let x = if p.picks.contains(&id) {
+                "   * "
+            } else {
+                "      "
+            };
+            out.push((joined(&[&text(x), &name(room, id)]), on, false));
+        }
+        if let Some((note, at)) = &room.note
+            && game.tick.saturating_sub(*at) < 240
+        {
+            out.push((text(&format!("   {note}")), false, true));
         }
         return out;
     }
-    // The rules (the host's to change).
-    let list = rows(room, &game.duel_rules, host);
-    let cursor_row = list.get(room.cursor).copied();
-    for (label, value) in game.duel_rules.lines() {
-        let row = match label {
-            "Mode" => Row::Mode,
-            "Damage" => Row::Damage,
-            _ => Row::Time,
-        };
-        let on = host && cursor_row == Some(row);
-        let arrows = if on { format!("- {value} +") } else { value };
-        out.push((text(&format!("{}{label}   {arrows}", mark(on))), on, false));
+    if room.list.is_none() {
+        // No pause art: the rows as text, the cursor's in gold.
+        let list = rows(room, &game.duel_rules, host);
+        for (i, &r) in list.iter().enumerate() {
+            out.push((
+                joined(&[&text("   "), &row_text(room, game, r)]),
+                i == room.cursor,
+                false,
+            ));
+        }
     }
     if !host {
-        out.push((text(&format!("   Rules set by {them}")), false, false));
+        let rules: Vec<String> = game
+            .duel_rules
+            .lines()
+            .into_iter()
+            .map(|(l, v)| format!("{l} {v}"))
+            .collect();
+        out.push((
+            text(&format!("   {}   by {them}", rules.join("   "))),
+            false,
+            false,
+        ));
     }
-    // The bans, both players'.
+    // Both players' bans.
     for seat in 0..2 {
         let s = &room.lobby.seats[seat];
         let what = if !s.bans_done {
-            text("choosing...")
+            text("not yet")
         } else if s.bans.is_empty() {
-            text("no bans")
+            text("none")
         } else {
             let mut v = Vec::new();
             for (k, &b) in s.bans.iter().enumerate() {
                 if k > 0 {
                     v.extend(text(", "));
                 }
-                v.extend(ability(b));
+                v.extend(name(room, b));
             }
             v
         };
@@ -702,46 +906,52 @@ pub(crate) fn lines(room: &LobbyRoom, net: &DuelNet, game: &Game) -> Vec<(Vec<u8
             false,
         ));
     }
-    match room.lobby.stage {
-        Stage::Bans => {
-            if list.contains(&Row::Bans) {
-                let on = cursor_row == Some(Row::Bans);
-                out.push((text(&format!("{}Choose bans", mark(on))), on, false));
-            } else {
-                out.push((text(&format!("   Waiting for {them}'s bans")), false, false));
-            }
+    // Where the other player is.
+    let other = &room.lobby.seats[1 - room.seat];
+    out.push((
+        text(&format!(
+            "   {them}: {}",
+            section_words(other, room.lobby.stage)
+        )),
+        false,
+        false,
+    ));
+    if room.lobby.stage == Stage::Loadout {
+        // The build: AP against the limit, the Keyblade's numbers.
+        let used = room.limits.ap_used(&game.ability_slots);
+        let over = used > room.limits.ap_max;
+        out.push((
+            text(&format!(
+                "   AP {used} / {}{}",
+                room.limits.ap_max,
+                if over {
+                    ": too many abilities equipped"
+                } else {
+                    ""
+                }
+            )),
+            false,
+            over,
+        ));
+        let mut e = game.equipment.clone();
+        e.weapon = game.equipment.weapon;
+        let g = game.ability_source.gear(&e, None);
+        let ability = game
+            .ability_source
+            .equipment_abilities
+            .get(&e.weapon)
+            .copied()
+            .filter(|&a| a != 0);
+        let mut line = joined(&[&text("   "), &name(room, e.weapon), &text(":")]);
+        line.extend(text(&format!(
+            "   Strength +{}   Magic +{}",
+            g.strength, g.magic
+        )));
+        if let Some(a) = ability {
+            line.extend(text("   "));
+            line.extend(name(room, a));
         }
-        Stage::Loadout => {
-            out.push((
-                text(&format!(
-                    "   Start: Abilities ({} AP), Keyblade and items",
-                    room.limits.ap_max
-                )),
-                false,
-                false,
-            ));
-            let mine = room.lobby.seats[room.seat].ready;
-            let on = cursor_row == Some(Row::Ready);
-            out.push((
-                text(&format!(
-                    "{}{}",
-                    mark(on),
-                    if mine { "Ready!" } else { "Ready" }
-                )),
-                on,
-                false,
-            ));
-            let theirs = room.lobby.seats[1 - room.seat].ready;
-            out.push((
-                text(&format!(
-                    "   {them}: {}",
-                    if theirs { "ready" } else { "not ready" }
-                )),
-                false,
-                false,
-            ));
-        }
-        Stage::Start => {}
+        out.push((line, false, false));
     }
     if let Some((note, at)) = &room.note
         && game.tick.saturating_sub(*at) < 240
@@ -749,4 +959,36 @@ pub(crate) fn lines(room: &LobbyRoom, net: &DuelNet, game: &Game) -> Vec<(Vec<u8
         out.push((text(&format!("   {note}")), false, true));
     }
     out
+}
+
+/// The game's list on screen (the panel and the ban picker are drawn with
+/// the network overlay).
+pub(crate) fn present(
+    room: Option<Res<LobbyRoom>>,
+    art: Option<Res<game_over::GameOverRes>>,
+    mut frame: ResMut<Ui2dFrame>,
+) {
+    let (Some(room), Some(art)) = (room, art) else {
+        return;
+    };
+    if !room.up || room.bans.is_some() || room.in_camp {
+        return;
+    }
+    let Some(list) = room.list.as_ref() else {
+        return;
+    };
+    let (seq, art_sheet, font_sheet, font) = art.list_art();
+    let f = field_command_menu::Font {
+        widths: &font.widths,
+        pad: 1,
+    };
+    let draws = list.draw(seq, &f);
+    for (sheet, quads) in draws.below.into_iter().chain(draws.above) {
+        let slot = match sheet {
+            visual::sprite_player::Sheet::Art(_) => art_sheet,
+            visual::sprite_player::Sheet::Font => font_sheet,
+            visual::sprite_player::Sheet::Icon => continue,
+        };
+        frame.draws.push((slot, quads));
+    }
 }

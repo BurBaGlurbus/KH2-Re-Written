@@ -1135,6 +1135,8 @@ struct Game {
     duel_camp: bool,
     /// F3 asked the host for a test vote.
     duel_test_vote: bool,
+    /// The duel's lobby asked the camp to open (its list's row).
+    duel_open_camp: bool,
     /// A match is running: a knocked-out Sora stays down for the round.
     duel_match: bool,
     /// Damage dealt and hits landed this match, by the attacker's slot.
@@ -12097,7 +12099,7 @@ fn camp_tick(
             game.event(serde_json::json!({"event":"camp_open","tick":tick}));
         }
     } else if c.curtain.is_none()
-        && c.pad.pressed & 0x2 != 0
+        && (c.pad.pressed & 0x2 != 0 || std::mem::take(&mut game.duel_open_camp))
         && !game.talking
         && (!game.duel || game.duel_camp)
     {
@@ -13709,6 +13711,7 @@ fn run(mut args: Vec<PathBuf>) -> Result<AppExit, Box<dyn std::error::Error>> {
         duel_frozen: false,
         duel_camp: false,
         duel_test_vote: false,
+        duel_open_camp: false,
         duel_match: false,
         duel_dealt: [0; 2],
         duel_landed: [0; 2],
@@ -14535,6 +14538,7 @@ fn run(mut args: Vec<PathBuf>) -> Result<AppExit, Box<dyn std::error::Error>> {
                     perf_overlay::sample,
                     perf_overlay::present,
                     duel_net::sample,
+                    duel_lobby_room::present,
                     duel_net::present,
                 )
                     .chain(),
