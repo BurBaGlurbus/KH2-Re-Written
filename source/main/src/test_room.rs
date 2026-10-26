@@ -1106,6 +1106,16 @@ struct Game {
     rival_kit: Option<Arc<rival::RivalKit>>,
     /// `--rival-script`: a scripted rival from the first tick.
     rival_script: bool,
+    /// [Test] `--duel-bench`: both duel Soras close in and swing inside each
+    /// combo window (the combo measurement), the joiner's through its
+    /// buttons, the host's own Sora through its input.
+    duel_bench: bool,
+    /// [Test] `--duel-magic`: both duel Soras cast every spell in turn at
+    /// the other.
+    duel_magic: bool,
+    /// [Test] `--duel-idle`: this player's Sora stands still (the other
+    /// side of a bench).
+    duel_idle: bool,
     /// Where the room starts Sora (position, yaw): the duel arena's centre.
     room_start: ([f32; 3], f32),
     /// The duel's arena (a row of `duel_arena::ARENAS`).
@@ -7533,7 +7543,26 @@ fn simulate(
         *slot = Some(*t);
     }
     // [Duel] Between matches (the lobby, the countdown) neither Sora moves.
-    let frozen = game.duel_frozen;
+    // [Test] `--duel-idle`: nor does this player's.
+    let frozen = game.duel_frozen || game.duel_idle;
+    // [Test] `--duel-bench` on the host: its Sora closes in and swings as
+    // the bench pad says.
+    let bench =
+        ((game.duel_bench || game.duel_magic) && !game.net_client && game.autoplay.is_some())
+            .then(|| {
+                let foe = game.rivals.first()?.fighter.player.position;
+                let me = game.sora.player.position;
+                Some(if game.duel_magic {
+                    rival::magic_pad(tick, 0, me, foe)
+                } else {
+                    rival::bench_pad(tick, me, foe)
+                })
+            })
+            .flatten();
+    let (direction, attack, jump, guard) = match bench {
+        Some(p) => (Vec2::from_array(p.direction), p.attack, false, false),
+        None => (direction, attack, jump, guard),
+    };
     let input = Input {
         direction: if frozen {
             [0.; 2]
@@ -7658,7 +7687,12 @@ fn simulate(
         }
         menu_item = party_items_tour::use_slot(tick).or(menu_item);
     }
-    let cast = cast.or(menu_cast).filter(|_| !frozen);
+    // [Test] `--duel-magic` on the host: the bench's spell.
+    let bench_cast = match bench.map(|p| p.command) {
+        Some(rival::Command::Cast(t)) => Some(t),
+        _ => None,
+    };
+    let cast = cast.or(menu_cast).or(bench_cast).filter(|_| !frozen);
     let menu_item = menu_item.filter(|_| !frozen);
     // Spells and items a form disables are refused (FUN_1403b6cb0).
     let (cast, menu_item) = match game.drive.as_ref() {
@@ -7718,7 +7752,13 @@ fn simulate(
         if let Some(t) = cast
             && !talking
         {
-            magic_room::request(&mut game, t, tick);
+            let mp = game.sora.player.mp.cur;
+            let ok = magic_room::request(&mut game, t, tick);
+            if game.duel {
+                let (slot, after) = (game.local_slot, game.sora.player.mp.cur);
+                game.event(serde_json::json!({"event":"duel_cast","tick":tick,
+                    "slot":slot,"magic":t,"ok":ok,"mp":[mp, after]}));
+            }
         }
         if let Some(slot) = menu_item
             && !talking
@@ -7779,11 +7819,18 @@ fn simulate(
             game.net_pad.command = net_command;
             // [Test] `--rival-script` on a joiner: the rival's test script
             // presses his buttons, against the host's Sora.
-            if game.rival_script
+            if (game.rival_script || game.duel_bench || game.duel_magic)
                 && !frozen
                 && let Some(foe) = game.rivals.first().map(|r| r.fighter.player.position)
             {
-                game.net_pad = rival::script_pad(tick, game.sora.player.position, foe);
+                let me = game.sora.player.position;
+                game.net_pad = if game.duel_magic {
+                    rival::magic_pad(tick, 75, me, foe)
+                } else if game.duel_bench {
+                    rival::bench_pad(tick, me, foe)
+                } else {
+                    rival::script_pad(tick, me, foe)
+                };
             }
             player::Step::default()
         } else {
@@ -12952,6 +12999,9 @@ fn run(mut args: Vec<PathBuf>) -> Result<AppExit, Box<dyn std::error::Error>> {
     let mut perf_overlay = false;
     let mut basic_fk = false;
     let mut rival_script = false;
+    let mut duel_bench = false;
+    let mut duel_magic = false;
+    let mut duel_idle = false;
     // The LAN duel (duel_net.rs): host or join, the port, the name shown
     // to the other player, the link simulator and the overlay.
     let mut net_host = false;
@@ -13020,6 +13070,9 @@ fn run(mut args: Vec<PathBuf>) -> Result<AppExit, Box<dyn std::error::Error>> {
             Some("--perf-overlay") => perf_overlay = true,
             Some("--basic-fk") => basic_fk = true,
             Some("--rival-script") => rival_script = true,
+            Some("--duel-bench") => duel_bench = true,
+            Some("--duel-magic") => duel_magic = true,
+            Some("--duel-idle") => duel_idle = true,
             Some("--host") => net_host = true,
             Some("--join") => {
                 net_join = Some(
@@ -13698,6 +13751,9 @@ fn run(mut args: Vec<PathBuf>) -> Result<AppExit, Box<dyn std::error::Error>> {
         rivals: Vec::new(),
         rival_kit: Some(rival_kit),
         rival_script,
+        duel_bench,
+        duel_magic,
+        duel_idle,
         room_start: (loaded.spawn.to_array(), loaded.yaw),
         duel_arena: 0,
         duel_rules,

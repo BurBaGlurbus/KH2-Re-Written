@@ -317,12 +317,15 @@ pub(crate) fn tick(mut game: ResMut<Game>, mut previous: Local<HashMap<(u64, usi
             .filter(|vol| matches!(vol.role, magic::Role::Damage))
         {
             ensure_attack_rows(rt, vol.atkp, vol.sub);
+            // A live volume keeps its attack id (the shared retire frees
+            // an id whose instance was not seen this tick).
+            let instance = magic_room::KEY_BASE | rival::tag_key(vol.key, views[a].slot);
+            rt.instance_seen.insert(instance, simulated(tick));
             for (v, (victim, _, bodies)) in all.iter().enumerate() {
                 if a == v || !views[v].alive || landed.iter().any(|l| l.victim == *victim) {
                     continue;
                 }
                 let points = combat::swept_volume(vol.centre, vol.previous, vol.radius, vol.height);
-                let instance = magic_room::KEY_BASE | rival::tag_key(vol.key, views[a].slot);
                 let barrier = guard_volume(&spells[v], &points, vol.radius);
                 let body_hit = points.iter().find_map(|&c| {
                     bodies.iter().find(|(b, r, _)| {
@@ -350,10 +353,13 @@ pub(crate) fn tick(mut game: ResMut<Game>, mut previous: Local<HashMap<(u64, usi
             }
         }
     }
-    // Every swing sphere's centre this tick, for next tick's sweep.
+    // Every swing sphere's centre this tick, for next tick's sweep; each live
+    // swing keeps its attack id, so it hits a Sora once (and again only as
+    // its row's interval allows), not once per tick of contact.
     previous.clear();
     for (_, wins, _) in &all {
         for (instance, _, spheres) in wins {
+            rt.instance_seen.insert(*instance, simulated(tick));
             for (i, &(centre, _)) in spheres.iter().enumerate() {
                 previous.insert((*instance, i), centre);
             }
@@ -364,6 +370,11 @@ pub(crate) fn tick(mut game: ResMut<Game>, mut previous: Local<HashMap<(u64, usi
     let rules = game.duel_rules;
     for hit in landed {
         land(game, rules, &kit, sstm, &facts, hit, tick);
+    }
+    // Each rival's record advances once a tick (FUN_1403cf4b0), as the room
+    // Sora's does in combat_tick: an attack's interval slots re-arm it.
+    for r in &mut game.rivals {
+        r.fighter.vitals.record.tick(1., false);
     }
     knock_outs(game, tick);
 }
@@ -398,6 +409,31 @@ fn set_started(game: &mut Game, who: Who, tick: u64) {
     }
 }
 
+/// Whether a Sora cannot be hurt by the other Sora now. [Duel rule] A Sora
+/// takes the other's combo as an enemy takes Sora's: his flinches (hurt
+/// motions 0-5, ground and air) have no invulnerable frames, so each step
+/// that connects lands, the hit record and its combo group deciding as they
+/// do against a target. A blow (a finisher's launch or a knock-down), its
+/// landing, the recovery and the knock-out keep the frames the game's
+/// motions give them, as do dodges and attacks with frames of their own,
+/// so a launched Sora gets up before he can be hit again.
+fn untouchable(p: &Player, clips: &Clips) -> bool {
+    if p.invulnerable > 0. {
+        return true;
+    }
+    if matches!(p.action, Action::Hurt(i) if i < player::hurt::BLOW[0]) {
+        return false;
+    }
+    p.range_invulnerable(clips)
+}
+
+/// The tick the field simulated: `simulate` has advanced the room's clock
+/// when the duel's hits run, and the shared retire (enemy_battle) keeps the
+/// attack ids of instances seen on the simulated tick.
+fn simulated(tick: u64) -> u64 {
+    tick.saturating_sub(1)
+}
+
 fn land(
     game: &mut Game,
     rules: duel_rules::MatchRules,
@@ -422,7 +458,7 @@ fn land(
         Some(_) => Some((rows[0].hit_effect, rows[0].hit_effect_random)),
     };
     // The attack's id and combo group, shared with the room's other hits.
-    rt.instance_seen.insert(hit.instance, tick);
+    rt.instance_seen.insert(hit.instance, simulated(tick));
     let (aid, group) = *rt.instance_ids.entry(hit.instance).or_insert_with(|| {
         let combo = rows[0].combo_group as i32;
         let group = if combo != 0 {
@@ -434,6 +470,10 @@ fn land(
     });
     let away = (hit.moving.unwrap_or(victim_at - attacker_at) * Vec3::new(1., 0., 1.))
         .normalize_or(Vec3::Z);
+    let attacker_combo = {
+        let (a, _) = fighter(game, kit, hit.attacker);
+        [a.player.combo.step, a.player.combo.finish]
+    };
     let attacker_stats = {
         let (a, _) = fighter(game, kit, hit.attacker);
         let p = &a.player;
@@ -456,6 +496,10 @@ fn land(
         a.vitals.attacker
     };
     let (victim, clips) = fighter(game, kit, hit.victim);
+    let refused = |game: &mut Game, why: &str| {
+        game.event(serde_json::json!({"event":"duel_hit_refused","tick":tick,
+            "attacker":attacker_slot,"victim":victim_slot,"atkp":hit.atkp,"why":why}));
+    };
     if victim.vitals.record.has(aid) {
         return;
     }
@@ -488,8 +532,10 @@ fn land(
             "attacker":attacker_slot,"victim":victim_slot,"atkp":hit.atkp}));
         return;
     }
-    if victim.vitals.invulnerable > 0. || victim.player.range_invulnerable(clips) {
+    if victim.vitals.invulnerable > 0. || untouchable(&victim.player, clips) {
         victim.vitals.record.hit(aid, group, false, |_| (0, 0));
+        let why = format!("invulnerable in {:?}", victim.player.action);
+        refused(game, &why);
         return;
     }
     let cure = matches!(rows[0].kind, 5 | 6);
@@ -498,6 +544,7 @@ fn land(
         (r, rows[r].interval)
     });
     if !counted {
+        refused(game, "hit record (combo group)");
         return;
     }
     let attack = params_of(&rows[row]);
@@ -593,7 +640,9 @@ fn land(
     }
     game.event(
         serde_json::json!({"event":"duel_hit","tick":tick,"attacker":attacker_slot,
-        "victim":victim_slot,"atkp":hit.atkp,"step":row,"formula":formula,"damage":damage,"hp":hp}),
+        "victim":victim_slot,"atkp":hit.atkp,"step":row,"formula":formula,"damage":damage,"hp":hp,
+        "combo":attacker_combo,"reaction":attack.reaction,"spell":hit.spell.is_some(),
+        "aid":aid,"group":group,"interval":rows[row].interval,"instance":hit.instance}),
     );
 }
 

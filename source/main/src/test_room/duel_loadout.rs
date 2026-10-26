@@ -172,6 +172,12 @@ pub(crate) fn apply(
     let v = &mut game.sora.vitals;
     v.hp = v.target.max_hp;
     v.ko_ticks = 0;
+    // [Duel rule] Sora takes the other Sora's hits on a target's record:
+    // a player-type record locks out every other attack group for 30 ticks
+    // after a hit, and the lock waits while he is in a damage motion
+    // (FUN_1403cf4b0), so only a combo's first step would land. Without it,
+    // as on an enemy, each step that connects counts.
+    v.record = combat::HitRecord::new(false);
     // Items: every consumable in stock and the slots filled in order.
     let mut stocked = Vec::new();
     if let Some(it) = game.items.as_mut() {

@@ -291,7 +291,8 @@ fn spawn(game: &mut Game, slot: u8, distance: f32, control: Control) -> Option<[
     let mut vitals = game.sora.vitals.clone();
     vitals.hp = vitals.target.max_hp;
     vitals.ko_ticks = 0;
-    vitals.record = combat::HitRecord::new(true);
+    // A duel's Sora has a target's hit record (duel_loadout.rs).
+    vitals.record = combat::HitRecord::new(!game.duel);
     let rival = Rival::new(game, slot, player, vitals, control)?;
     game.rivals.retain(|r| r.slot != slot);
     game.rivals.push(rival);
@@ -368,17 +369,49 @@ pub(crate) fn script_pad(tick: u64, me: [f32; 3], toward: [f32; 3]) -> RivalPad 
     pad
 }
 
-/// `KH2RW_RIVAL_BENCH` (a damage measurement): close in and swing without
-/// pause, every press inside the combo's window.
-pub(crate) fn bench_pad(tick: u64, me: [f32; 3], toward: [f32; 3]) -> RivalPad {
+/// The spells the magic bench casts, in turn.
+const BENCH_SPELLS: [u8; 6] = [
+    magic::FIRE,
+    magic::BLIZZARD,
+    magic::THUNDER,
+    magic::CURE,
+    magic::MAGNET,
+    magic::REFLECT,
+];
+
+/// [Test] `--duel-magic`: come within 250 of the other Sora and cast the
+/// next spell every 150 ticks (`offset` staggers the two players).
+pub(crate) fn magic_pad(tick: u64, offset: u64, me: [f32; 3], toward: [f32; 3]) -> RivalPad {
     let d = Vec2::new(toward[0] - me[0], toward[2] - me[2]);
+    let t = tick + offset;
     RivalPad {
-        direction: if d.length() > 90. {
+        direction: if d.length() > 250. {
             d.normalize_or_zero().to_array()
         } else {
             [0., 0.]
         },
-        attack: d.length() < 220. && tick.is_multiple_of(6),
+        command: if t.is_multiple_of(150) {
+            Command::Cast(BENCH_SPELLS[(t / 150) as usize % BENCH_SPELLS.len()])
+        } else {
+            Command::None
+        },
+        ..RivalPad::default()
+    }
+}
+
+/// `KH2RW_RIVAL_BENCH` (a damage measurement): close in and swing without
+/// pause, every press inside the combo's window.
+pub(crate) fn bench_pad(tick: u64, me: [f32; 3], toward: [f32; 3]) -> RivalPad {
+    let d = Vec2::new(toward[0] - me[0], toward[2] - me[2]);
+    // Close in to a ground combo's reach and stand: a press from farther
+    // starts the running lunge instead of the combo.
+    RivalPad {
+        direction: if d.length() > 140. {
+            d.normalize_or_zero().to_array()
+        } else {
+            [0., 0.]
+        },
+        attack: d.length() < 160. && tick.is_multiple_of(6),
         ..RivalPad::default()
     }
 }
@@ -510,7 +543,11 @@ pub(crate) fn tick(mut game: ResMut<Game>) {
         match pad.command {
             Command::None => {}
             Command::Cast(t) => {
-                magic_room::request(game, t, tick);
+                let mp = game.sora.player.mp.cur;
+                let ok = magic_room::request(game, t, tick);
+                let after = game.sora.player.mp.cur;
+                game.event(serde_json::json!({"event":"duel_cast","tick":tick,
+                    "slot":rival.slot,"magic":t,"ok":ok,"mp":[mp, after]}));
             }
             Command::Item(slot) => item_room::request(game, slot as usize, tick),
             Command::Drive(form) => {
