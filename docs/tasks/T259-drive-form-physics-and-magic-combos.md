@@ -55,6 +55,13 @@ Per form, measured in the room after the fixes (PRTY from the form's own objentr
 | Final | 16 / 2, inertia 0.94 / 0.99 | 585 | 151, 152, finisher 153 | 182, 181 | Glide 208 |
 | Anti | 16 / 2 | 185 | 151, 153, finisher 155 (each with several windows) | 181, 182 (144-tick hover) | none |
 
+With `--form-moves-chain` (Combo Master during the moves, so a miss does not end the string) every form reaches
+its finishers from the data: base air 181, 182, 183; Valor air 181, 182, 181, finisher 183 (Air Combo Plus);
+Limit air 181, 182, 183; Master 181, 185, 181, 185, 184; Final air 182, 181, finisher 183. Final's 183 starts
+its elements 42–50 at the PAX's frames, 44/45 on the right Keyblade's grip (0x4005) and 46/47 on the left's
+(0x4006) at frames 36/40 — the elements issue #147 had never seen (read from `P_EX100_ULTF.mset`'s frame
+trigger 1 records).
+
 ## Magic and the combo
 
 Exe (FUN_1403d6fc0 case 2 → FUN_1403d6ca0(obj, 1), FUN_1403a9dd0, FUN_1403d7780, FUN_1403c5170): every spell is
@@ -99,8 +106,9 @@ game's own motion data. No change was made to the magic combo rules.
   from above) ends the chain as the exe's connected bit would, but enemy height and size change which records fit.
 - Wisdom's air shot has no combo window in the data; whether the original lets Wisdom shoot again in the air before
   landing was not observed.
-- Final Form effects 44–47 (issue #147) still did not start in these runs; the refraction draw (#148) and the items
-  of #150 are not part of this record.
+- The refraction draw (#148) and the items of #150 (the Keyblade's reappear flash, arrival replay, slot-1 sparks)
+  are not part of this record. Element 51 of Final's 183 (frame 144) did not start: the motion ended first in the
+  room; not compared with the game.
 
 ## Verdict
 
@@ -110,5 +118,4 @@ compared side by side with the installed game.
 
 ## Next
 
-Final Form's elements 44–47 (#147) and the remaining form effects (#150, #148); a side-by-side check once a save
-with Drive forms exists.
+The remaining form effects (#150, #148); a side-by-side check once a save with Drive forms exists.

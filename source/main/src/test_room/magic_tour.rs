@@ -24,6 +24,21 @@ pub fn set_moves_only() {
     MOVES_ONLY.store(true, Ordering::Relaxed);
 }
 
+/// `--form-moves-chain`: Combo Master during the moves, so every press may
+/// chain whether or not the last swing hit (the forms' whole strings, up to
+/// their finishers).
+static CHAIN: AtomicBool = AtomicBool::new(false);
+
+pub fn set_chain() {
+    MOVES_ONLY.store(true, Ordering::Relaxed);
+    CHAIN.store(true, Ordering::Relaxed);
+}
+
+/// Whether Combo Master is on this tick.
+pub fn chain(tick: u64, shift: u64) -> bool {
+    CHAIN.load(Ordering::Relaxed) && probing(tick, shift)
+}
+
 /// The schedule's tick for the room's `tick`.
 fn at(tick: u64, shift: u64) -> Option<u64> {
     let t = tick.checked_sub(shift)?;
@@ -111,16 +126,16 @@ const WALK: (u64, u64) = (90, 150);
 const STAND_JUMP: u64 = 170;
 const GROUND_COMBO: u64 = 340;
 const AIR_COMBO: u64 = 700;
-/// Attack every third tick for 200 ticks (ground), 90 (air).
+/// Attack every third tick for 200 ticks (ground), 180 (air).
 const MASH: (u64, u64, u64) = (2, 200, 3);
-const AIR_MASH: u64 = 90;
-const SQUARE_RUN: (u64, u64) = (900, 980);
-const SQUARE_GROUND: (u64, u64) = (910, 940);
-const SQUARE_AIR: u64 = 1050;
+const AIR_MASH: u64 = 180;
+const SQUARE_RUN: (u64, u64) = (1000, 1080);
+const SQUARE_GROUND: (u64, u64) = (1010, 1040);
+const SQUARE_AIR: u64 = 1150;
 /// The air Jump (Aerial Dodge), then the air Square (Glide).
-const SQUARE_AIR_PRESS: [u64; 2] = [1070, 1090];
-const GLIDE_HOLD: (u64, u64) = (1090, 1170);
-const MOVES_LEN: u64 = 1250;
+const SQUARE_AIR_PRESS: [u64; 2] = [1170, 1190];
+const GLIDE_HOLD: (u64, u64) = (1190, 1270);
+const MOVES_LEN: u64 = 1350;
 
 /// The last tick of the schedule.
 pub fn end() -> u64 {

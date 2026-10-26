@@ -7861,6 +7861,9 @@ fn simulate(
             None => {}
         }
         cast = magic_tour::cast(tick, game.magic_shift);
+        if magic_tour::chain(tick, game.magic_shift) {
+            game.sora.player.abilities.set(abilities::bit::COMBO_MASTER);
+        }
         game.cure_target = magic_tour::cure_target(tick, game.magic_shift);
     }
     if game.autoplay.is_some()
@@ -13847,6 +13850,7 @@ fn run(mut args: Vec<PathBuf>) -> Result<AppExit, Box<dyn std::error::Error>> {
                     .parse::<u8>()?;
             }
             Some("--form-moves") => magic_tour::set_moves_only(),
+            Some("--form-moves-chain") => magic_tour::set_chain(),
             Some("--magic-tour") if autoplay.is_none() => {
                 magic_tour = true;
                 autoplay = Some(
