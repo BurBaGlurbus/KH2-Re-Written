@@ -630,6 +630,54 @@ impl AreaSource {
             .map(|f| (f.index.to_owned(), f.ordinal, f.name_hash))
     }
 
+    /// Loads the townsperson kinds of `spawns` not loaded yet, on several
+    /// threads (each with its own library), and registers them in the order
+    /// they are first met. Returns the load errors by object id.
+    fn load_kinds<'a>(&mut self, spawns: impl Iterator<Item = &'a Spawn>) -> HashMap<u32, String> {
+        let mut missing: Vec<u32> = Vec::new();
+        for s in spawns {
+            let id = s.entity.object;
+            if let Some(&oi) = self.object_index.get(&id)
+                && self.objects[oi].object_type == 15
+                && !self.kind_index.contains_key(&id)
+                && !missing.contains(&id)
+            {
+                missing.push(id);
+            }
+        }
+        let (source, objects, object_index) = (&self.source, &self.objects, &self.object_index);
+        let loaded: Vec<std::result::Result<NpcKind, String>> = std::thread::scope(|scope| {
+            let threads: Vec<_> = missing
+                .iter()
+                .map(|id| {
+                    let object = &objects[object_index[id]];
+                    scope.spawn(move || {
+                        let mut library = Library::open(source).map_err(|e| e.to_string())?;
+                        NpcKind::load(source, &mut library, object).map_err(|e| e.to_string())
+                    })
+                })
+                .collect();
+            threads
+                .into_iter()
+                .map(|t| t.join().expect("townsperson thread"))
+                .collect()
+        });
+        let mut failed = HashMap::new();
+        for (id, kind) in missing.into_iter().zip(loaded) {
+            match kind {
+                Ok(kind) => {
+                    self.kinds.push(kind);
+                    self.kind_index
+                        .insert(id, self.kind_base + self.kinds.len() - 1);
+                }
+                Err(e) => {
+                    failed.insert(id, e);
+                }
+            }
+        }
+        failed
+    }
+
     #[allow(clippy::type_complexity)]
     fn townspeople(
         &mut self,
@@ -644,54 +692,35 @@ impl AreaSource {
         HashMap<u16, Vec<Op>>,
         HashMap<u32, Vec<u8>>,
     ) {
+        let zone = state.zone_spawns(|id| types.get(&id).copied());
+        let failed = self.load_kinds(spawns.iter().chain(&zone));
+        // A townsperson whose kind did not load is left out (reported once
+        // per spawn, as before).
+        let kind_of = |this: &Self, s: &Spawn| -> Option<usize> {
+            let &oi = this.object_index.get(&s.entity.object)?;
+            if this.objects[oi].object_type != 15 {
+                return None;
+            }
+            let kind = this.kind_index.get(&s.entity.object).copied();
+            if kind.is_none()
+                && let Some(e) = failed.get(&s.entity.object)
+            {
+                eprintln!("NPC {} not loaded: {e}", s.entity.object);
+            }
+            kind
+        };
         let mut random = Lcg(0x4b1d_0000 ^ (area as u32) << 8 ^ 0x2545);
         let mut npcs = Vec::new();
         for (i, s) in spawns.iter().enumerate() {
-            let Some(&oi) = self.object_index.get(&s.entity.object) else {
+            let Some(kind) = kind_of(self, s) else {
                 continue;
-            };
-            if self.objects[oi].object_type != 15 {
-                continue;
-            }
-            let kind = match self.kind_index.get(&s.entity.object) {
-                Some(&k) => k,
-                None => match NpcKind::load(&self.source, &mut self.library, &self.objects[oi]) {
-                    Ok(kind) => {
-                        self.kinds.push(kind);
-                        let k = self.kind_base + self.kinds.len() - 1;
-                        self.kind_index.insert(s.entity.object, k);
-                        k
-                    }
-                    Err(e) => {
-                        eprintln!("NPC {} not loaded: {e}", s.entity.object);
-                        continue;
-                    }
-                },
             };
             npcs.push(build_npc(state, kind, s, i, &mut random));
         }
         let mut deferred = Vec::new();
-        for s in state.zone_spawns(|id| types.get(&id).copied()) {
-            let Some(&oi) = self.object_index.get(&s.entity.object) else {
+        for s in zone {
+            let Some(kind) = kind_of(self, &s) else {
                 continue;
-            };
-            if self.objects[oi].object_type != 15 {
-                continue;
-            }
-            let kind = match self.kind_index.get(&s.entity.object) {
-                Some(&k) => k,
-                None => match NpcKind::load(&self.source, &mut self.library, &self.objects[oi]) {
-                    Ok(kind) => {
-                        self.kinds.push(kind);
-                        let k = self.kind_base + self.kinds.len() - 1;
-                        self.kind_index.insert(s.entity.object, k);
-                        k
-                    }
-                    Err(e) => {
-                        eprintln!("NPC {} not loaded: {e}", s.entity.object);
-                        continue;
-                    }
-                },
             };
             deferred.push(Deferred {
                 spawn: s,

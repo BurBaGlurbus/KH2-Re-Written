@@ -54,3 +54,32 @@ whose triangles changed, on several threads, and uploads only those tiles; the m
 to about 5 ms. The render thread (now about 9 ms in the room and the limit) lost the HUD texture
 re-upload and most mesh re-uploads; what remains is the CPU-skinned characters' meshes, which change
 once per tick (see the task record's deferred list).
+
+## HD textures, memory and loads (T237)
+
+Measured 2026-10-26 on the same PC, scenes, window and settings, uncapped. "Before" is local `main` at
+`1b92156` (the end of T236 above), "after" is `8b2985a`, and "no 3D HD" is `8b2985a` with a temporary,
+uncommitted patch that keeps the models', maps', map objects' and effects' original textures (the HUD's
+HD images are required by the source check). Three alternating runs per build and scene; medians unless
+a range is given. Discord, a browser and other sessions were running; the no-HD batch ran later and was
+slower across the board, so its frame rates are not compared. Raw records stay private in the output folder outside the checkout (`f2-*`).
+
+| | Test room before | after | no 3D HD | Twilight Town before | after | no 3D HD |
+|---|---|---|---|---|---|---|
+| Data decoded (ms after start) | 7,039 | 2,870 | — | 4,161 | 2,205 | — |
+| First frame (ms after start) | 8,450 | 3,525 | — | 5,342 | 2,903 | — |
+| Door change, background decode (ms) | — | — | — | 2,150 | 777 | 829 |
+| Process memory, peak (GiB) | 1.92–2.08 | 1.39–1.57 | 1.43–1.46 | 1.61–1.63 | 1.24–1.27 | 1.28–1.29 |
+| Field play FPS (ticks 0–1800) | 221.7 | 205.5 | (171) | 147.1 | 157.4 | (131) |
+| Field 1% low / p99 (FPS / ms) | 91.9 / 9.9 | 87.1 / 10.6 | | 59.4 / 12.6 | 62.4 / 11.7 | |
+| Camp menu FPS | 282.0 | 259.4 | (234) | 195.6 | 195.0 | |
+
+- Start: the room's data decodes in 2.9 s instead of 7.0 s and the first frame shows at 3.5 s instead of
+  8.5 s; Twilight Town 2.2 s and 2.9 s instead of 4.2 s and 5.3 s. The GPU device is now created during
+  the decode; most other stages overlap on threads.
+- A door change in Twilight Town decodes in 0.78 s instead of 2.15 s, so the screen holds black for less
+  time.
+- Memory: 0.4–0.5 GiB less at peak. The HD textures add no measurable process memory (uploaded once,
+  kept only on the GPU; GPU memory not measured).
+- Frame rate: unchanged within noise; the HD textures did not measurably slow drawing.
+

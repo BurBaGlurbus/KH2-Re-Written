@@ -3377,6 +3377,15 @@ fn load(
     timer.mark("objects and room start");
     let battle = read_archive(source, &config.battle)?;
     // The effect containers and the enemies' sound banks likewise.
+    // The party limits' files (rooms with a fight), likewise: Sora's kit
+    // waits for their motions.
+    let limits_job = config.enemy.is_some().then(|| {
+        let (source, battle) = (source.clone(), battle.clone());
+        std::thread::spawn(move || {
+            let mut library = data::path_lookup::Library::open(&source).ok()?;
+            Some(party_limit::load(&source, &mut library, &battle, "us"))
+        })
+    });
     let effects_job = config.effects.clone().map(|e| {
         let source = source.clone();
         std::thread::spawn(move || read_effect_sources(&source, &e))
@@ -3624,10 +3633,9 @@ fn load(
     // The party limits' files: Sora's motions join his kit, the friends'
     // their motion tables.
     timer.mark("effects");
-    let mut limit_source = match (&config.enemy, data::path_lookup::Library::open(source)) {
-        (Some(_), Ok(mut library)) => party_limit::load(source, &mut library, &battle, "us"),
-        _ => party_limit::LimitSource::default(),
-    };
+    let mut limit_source = limits_job
+        .and_then(|job| job.join().expect("party limits thread"))
+        .unwrap_or_default();
     timer.mark("limits");
     // Donald's and Goofy's limit motions, for their motion tables. The
     // party (rooms with a fight to join) loads on a thread of its own while
@@ -4116,6 +4124,7 @@ fn load(
         let at = u32::from_le_bytes(sstm.get(4..8)?.try_into().ok()?) as usize;
         summon::Source::new(d.summons.clone(), sstm.get(at..)?)
     });
+    timer.mark("menu names and second deck");
     let enemy = match &config.enemy {
         Some(e) => Some(load_enemy(
             source,
@@ -4128,6 +4137,7 @@ fn load(
         )?),
         None => None,
     };
+    timer.mark("enemy");
     let area_talk = match (&area_load, &config.menu) {
         (Some((src, area)), Some(menu)) => {
             let loc = |name: &str| src.locate(name).ok_or(format!("{name} is not installed"));
@@ -4167,6 +4177,7 @@ fn load(
         }
         _ => None,
     };
+    timer.mark("area talk");
     let keyblades = bar_entry(&system, b"went")
         .and_then(|went| {
             crate::keyblade_board::Keyblades::read(
@@ -4201,6 +4212,7 @@ fn load(
             .ok()?
             .pop()
     });
+    timer.mark("Keyblades and board");
     // The game-over sequence (obj/GAMEOVER.mset, pause.2ld, the death event).
     let game_over = {
         let joint = objects
@@ -4220,6 +4232,7 @@ fn load(
         }
     };
     // The room Keyblade's attack spheres (obj/<model>.mdlx), for the map test.
+    timer.mark("game over");
     let wall_blade = keyblades
         .model(KINGDOM_KEY)
         .and_then(|name| {
