@@ -260,7 +260,11 @@ pub(crate) mod fighter_slots {
 
 /// Start of every fixed step: what arrived, the other player coming and
 /// going.
-pub(crate) fn begin(net: Option<ResMut<DuelNet>>, mut game: ResMut<Game>) {
+pub(crate) fn begin(
+    net: Option<ResMut<DuelNet>>,
+    mut game: ResMut<Game>,
+    mut loadout: ResMut<duel_loadout::DuelLoadout>,
+) {
     let Some(mut net) = net else { return };
     net.session.update();
     while let Some(event) = net.session.next_event() {
@@ -281,7 +285,7 @@ pub(crate) fn begin(net: Option<ResMut<DuelNet>>, mut game: ResMut<Game>) {
             NetEvent::Rejected(reason) => {
                 game.event(serde_json::json!({"event":"net_rejected","tick":tick,"reason":reason}));
                 net.status = Status::Ended(format!("The host refused: {reason}"), tick);
-                leave_session(&mut game);
+                leave_session(&mut game, &mut loadout);
             }
             NetEvent::Disconnected(reason) => {
                 game.event(
@@ -299,7 +303,7 @@ pub(crate) fn begin(net: Option<ResMut<DuelNet>>, mut game: ResMut<Game>) {
                 };
                 net.status = Status::Ended(text, tick);
                 if net.role == Role::Join {
-                    leave_session(&mut game);
+                    leave_session(&mut game, &mut loadout);
                 }
             }
         }
@@ -319,11 +323,12 @@ const BANNER_TICKS: u64 = 5 * 60;
 
 /// The joiner's session ended: its Sora is its own again (the field
 /// simulates him) and the room pauses as usual.
-fn leave_session(game: &mut Game) {
+fn leave_session(game: &mut Game, loadout: &mut duel_loadout::DuelLoadout) {
     game.net_client = false;
     game.net_pad = rival::RivalPad::default();
     game.duel = false;
     game.rivals.clear();
+    duel_loadout::restore(game, loadout);
 }
 
 /// End of every fixed step: what this tick queued goes out.

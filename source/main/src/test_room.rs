@@ -74,6 +74,7 @@ mod deck_tour;
 mod drive_fx;
 mod drive_room;
 mod duel_hits;
+mod duel_loadout;
 mod duel_net;
 mod duel_sync;
 mod duel_wire;
@@ -14059,6 +14060,13 @@ fn run(mut args: Vec<PathBuf>) -> Result<AppExit, Box<dyn std::error::Error>> {
         }),
         (false, None) => None,
     };
+    // The duel's baseline (duel_loadout.rs), for a session or the scripted
+    // rival; the room's own build comes back when the session ends.
+    let mut duel_loadout = duel_loadout::DuelLoadout::default();
+    if net_setup.is_some() || rival_script {
+        let record = duel_loadout::apply(&mut game, &mut duel_loadout)?;
+        game.event(record);
+    }
     let duel_session = match &net_setup {
         Some(setup) => {
             let session = duel_net::DuelNet::start(setup)?;
@@ -14190,6 +14198,7 @@ fn run(mut args: Vec<PathBuf>) -> Result<AppExit, Box<dyn std::error::Error>> {
     if let Some(session) = duel_session {
         app.insert_resource(session);
     }
+    app.insert_resource(duel_loadout);
     Ok(app
         .insert_resource(game)
         .insert_resource(Startup {
