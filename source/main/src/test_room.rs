@@ -4098,6 +4098,7 @@ fn load(
         let at = u32::from_le_bytes(sstm.get(4..8)?.try_into().ok()?) as usize;
         summon::Source::new(d.summons.clone(), sstm.get(at..)?)
     });
+    timer.mark("menu names and second deck");
     let enemy = match &config.enemy {
         Some(e) => Some(load_enemy(
             source,
@@ -4110,6 +4111,7 @@ fn load(
         )?),
         None => None,
     };
+    timer.mark("enemy");
     let area_talk = match (&area_load, &config.menu) {
         (Some((src, area)), Some(menu)) => {
             let loc = |name: &str| src.locate(name).ok_or(format!("{name} is not installed"));
@@ -4149,6 +4151,7 @@ fn load(
         }
         _ => None,
     };
+    timer.mark("area talk");
     let keyblades = bar_entry(&system, b"went")
         .and_then(|went| {
             crate::keyblade_board::Keyblades::read(
@@ -4183,6 +4186,7 @@ fn load(
             .ok()?
             .pop()
     });
+    timer.mark("Keyblades and board");
     // The game-over sequence (obj/GAMEOVER.mset, pause.2ld, the death event).
     let game_over = {
         let joint = objects
@@ -4202,6 +4206,7 @@ fn load(
         }
     };
     // The room Keyblade's attack spheres (obj/<model>.mdlx), for the map test.
+    timer.mark("game over");
     let wall_blade = keyblades
         .model(KINGDOM_KEY)
         .and_then(|name| {
