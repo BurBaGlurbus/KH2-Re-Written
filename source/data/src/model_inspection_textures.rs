@@ -168,7 +168,7 @@ pub fn read_textures(
     payload: &[u8],
     asset_offset: usize,
     texture_bar_ordinal: usize,
-    replacements: &[ReplacementSample],
+    replacements: &[impl std::borrow::Borrow<ReplacementSample>],
     modes: &[TextureMode],
     total_rgba: &mut usize,
 ) -> io::Result<InspectionTextures> {
@@ -182,7 +182,10 @@ pub fn read_textures(
         .map(|i| i.width as usize * i.height as usize * 4)
         .sum();
     reserve(total_rgba, original_bytes)?;
-    let metadata: Vec<_> = replacements.iter().map(|r| r.metadata.clone()).collect();
+    let metadata: Vec<_> = replacements
+        .iter()
+        .map(|r| r.borrow().metadata.clone())
+        .collect();
     let links = model_texture_routing::read_links(payload, asset_offset, &metadata)?;
     let decoded = crate::model_texture_pixels::decode_images(payload)?;
     let play = crate::model_texture_play::read_patches(payload)?
@@ -212,6 +215,7 @@ pub fn read_textures(
         })
         .collect();
     for replacement in replacements {
+        let replacement = replacement.borrow();
         let bytes = &replacement.bytes;
         let declared = replacement.metadata.declared_decompressed_length as usize;
         let count = bytes
@@ -321,6 +325,64 @@ impl InspectionTextures {
         self.bind(environment, TextureMode::OriginalIndexed)
     }
 
+    /// Fits region-sized remaster images to their pages. A map object's
+    /// replacement holds only its environment's region (`crops`: x, y,
+    /// width, height in the original's texels), at the original size or a
+    /// whole multiple `k`; it becomes the original page scaled by `k` with
+    /// the region replaced, so the model's UVs address it unchanged. An image
+    /// that is neither the region nor the page at a whole multiple (the
+    /// region tried first) is replaced by the original's pixels.
+    pub fn fit_hd_regions(&mut self, crops: &[(usize, [u32; 4])]) {
+        for &(environment, [x, y, cw, ch]) in crops {
+            let (Ok(hd), Ok(sd)) = (
+                self.bind(environment, TextureMode::ExactHdBase),
+                self.bind(environment, TextureMode::OriginalIndexed),
+            ) else {
+                continue;
+            };
+            let (Some(hd), Some(sd)) = (hd.image_index, sd.image_index) else {
+                continue;
+            };
+            let page = &self.images[sd].levels[0];
+            let region = &self.images[hd].levels[0];
+            let (pw, ph) = (page.width, page.height);
+            let (rw, rh) = (region.width, region.height);
+            let whole_of = |w: u32, h: u32| {
+                let k = rw / w.max(1);
+                (k >= 1 && rw == w * k && rh == h * k).then_some(k)
+            };
+            // The region first: a map's images all match their region.
+            let whole_page = [x, y, cw, ch] == [0, 0, pw, ph];
+            let fitted = match whole_of(cw, ch) {
+                Some(_) if whole_page => continue,
+                Some(k) if x + cw <= pw && y + ch <= ph => {
+                    let (w, h) = (pw * k, ph * k);
+                    let mut pixels = vec![0u8; (w * h * 4) as usize];
+                    for py in 0..h {
+                        for px in 0..w {
+                            let inside = (x * k..(x + cw) * k).contains(&px)
+                                && (y * k..(y + ch) * k).contains(&py);
+                            let from = if inside {
+                                let (u, v) = (px - x * k, py - y * k);
+                                &region.pixels_rgba[((v * rw + u) * 4) as usize..][..4]
+                            } else {
+                                let (u, v) = (px / k, py / k);
+                                &page.pixels_rgba[((v * pw + u) * 4) as usize..][..4]
+                            };
+                            let to = ((py * w + px) * 4) as usize;
+                            pixels[to..to + 4].copy_from_slice(from);
+                        }
+                    }
+                    TextureLevel::new(w, h, pixels)
+                }
+                _ if whole_of(pw, ph).is_some() => continue,
+                _ => TextureLevel::new(pw, ph, page.pixels_rgba.clone()),
+            };
+            self.images[hd].levels = vec![fitted];
+            self.images[hd].mip_layout = None;
+        }
+    }
+
     pub fn bind(&self, environment: usize, mode: TextureMode) -> io::Result<TextureBinding> {
         let mut binding = TextureBinding {
             status: BindingStatus::PartColors,
@@ -416,6 +478,42 @@ mod tests {
             play: Vec::new(),
         }
     }
+    #[test]
+    fn hd_regions_are_placed_in_their_page() {
+        let mut t = textures();
+        // A 2x2 page (texel value = index) and a 1x1 region at (1, 0), 2x.
+        t.images[0].levels = vec![TextureLevel::new(
+            2,
+            2,
+            (0..4u8).flat_map(|i| [i; 4]).collect(),
+        )];
+        t.images.push(TextureImage {
+            identity: ImageIdentity::Replacement {
+                replacement_ordinal: 7,
+            },
+            pixel_decode_profile: "authored".into(),
+            mip_layout: None,
+            levels: vec![TextureLevel::new(2, 2, vec![9; 16])],
+        });
+        t.links.ordered_targets[0].matching_replacement_ordinals = vec![7];
+        t.fit_hd_regions(&[(0, [1, 0, 1, 1])]);
+        let level = &t.images[1].levels[0];
+        assert_eq!((level.width, level.height), (4, 4));
+        let texel = |x: u32, y: u32| level.pixels_rgba[((y * 4 + x) * 4) as usize];
+        assert_eq!(
+            [texel(0, 0), texel(1, 1), texel(2, 0), texel(3, 1)],
+            [0, 0, 9, 9]
+        );
+        assert_eq!([texel(0, 2), texel(2, 3)], [2, 3]);
+        // A size that is neither region nor page: the original's pixels.
+        t.images[1].levels = vec![TextureLevel::new(3, 1, vec![9; 12])];
+        t.fit_hd_regions(&[(0, [1, 0, 1, 1])]);
+        assert_eq!(
+            t.images[1].levels[0].pixels_rgba,
+            t.images[0].levels[0].pixels_rgba
+        );
+    }
+
     #[test]
     fn hd_or_original_takes_the_exact_replacement_else_the_original() {
         let mut t = textures();

@@ -90,8 +90,35 @@ fn build_anim(model: &InspectionModel, m: &InterpolatedMotion) -> Result<BobAnim
     Ok(BobAnim { frames })
 }
 
-/// Reads every BOB model and the placement table of a map archive.
-pub fn load(archive: &[u8]) -> Result<LoadedBobs> {
+/// Places the model's region-sized remaster images in their pages (the
+/// regions from each environment's CLAMP register, as the field map's).
+fn fit_hd_regions(model: &mut InspectionModel, bank: &[u8]) {
+    let Some(set) = model.textures.as_mut().and_then(std::sync::Arc::get_mut) else {
+        return;
+    };
+    let Ok(layout) = data::model_texture::read_layout(bank) else {
+        return;
+    };
+    let crops: Vec<_> = layout
+        .environments
+        .iter()
+        .enumerate()
+        .map(|(ordinal, env)| {
+            let (w, h) = (1u32 << env.tex0[3], 1u32 << env.tex0[4]);
+            let a = env.address;
+            let region = crate::room::EnvRegion::new(a[0], a[1], [a[2], a[3], a[4], a[5]], [w, h]);
+            (ordinal, region.crop)
+        })
+        .collect();
+    set.fit_hd_regions(&crops);
+}
+
+/// Reads every BOB model and the placement table of a map archive, with the
+/// map's remaster images for the models' textures.
+pub fn load(
+    archive: &[u8],
+    replacements: &[data::replacement_payload::ReplacementSample],
+) -> Result<LoadedBobs> {
     let table = bar::read_bar(archive)?;
     let slice = |e: &bar::BarEntry| -> Option<&[u8]> {
         archive.get(e.offset as usize..e.offset as usize + e.size as usize)
@@ -121,11 +148,15 @@ pub fn load(archive: &[u8]) -> Result<LoadedBobs> {
             }
         }
         let bank_arg = bank.and_then(|(b, off)| b.map(|b| (b, off, 0usize)));
-        let Ok(model) = model_inspection::model_from_payload(payload, bank_arg) else {
+        let Ok(mut model) = model_inspection::model_from_payload(payload, bank_arg, replacements)
+        else {
             // Keep indices aligned with the placement table.
             models.push(None);
             continue;
         };
+        if let Some((bank, ..)) = bank_arg {
+            fit_hd_regions(&mut model, bank);
+        }
         let mut anims = Vec::new();
         if let Some(bytes) = motions
             && let Ok(inner) = bar::read_bar(bytes)

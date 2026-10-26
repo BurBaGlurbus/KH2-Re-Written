@@ -407,7 +407,7 @@ impl AreaSource {
             .read_map_replacements(&format!("map/{name}.map"))
             .unwrap_or_default();
         let room = load_room_archive(&map, None, &replacements)?;
-        let bobs = visual::scenery::load(&map).unwrap_or_else(|e| {
+        let bobs = visual::scenery::load(&map, &replacements).unwrap_or_else(|e| {
             eprintln!("{name}: map objects not loaded: {e}");
             visual::scenery::LoadedBobs {
                 models: Vec::new(),
