@@ -592,7 +592,10 @@ fn land(
         attacker_stats.magic,
         victim.vitals.target.defense,
     ];
-    let damage = rules.damage(formula);
+    // Hits on Magic (spells, Reflect's counter, form magic) take the magic
+    // multiplier; every hit stops at the rules' cap.
+    let magic = attack.stat == 1;
+    let damage = rules.damage(formula, magic, victim.vitals.target.max_hp);
     let damage_motion = (10..=39).contains(&victim.player.motion_id(clips));
     let veto = combat::sora_veto(ab.has(127), ab.has(128), victim.vitals.hp, 0, damage_motion);
     let max = victim.vitals.target.max_hp;
@@ -696,7 +699,7 @@ fn land(
         "victim":victim_slot,"atkp":hit.atkp,"step":row,"formula":formula,"damage":damage,"hp":hp,
         "combo":attacker_combo,"reaction":attack.reaction,"spell":hit.spell.is_some(),
         "aid":aid,"group":group,"interval":rows[row].interval,"instance":hit.instance,
-        "stats":stats,"power":attack.power}),
+        "stats":stats,"power":attack.power,"magic":magic}),
     );
 }
 

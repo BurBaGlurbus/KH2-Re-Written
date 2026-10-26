@@ -473,7 +473,13 @@ pub(crate) fn sample(net: Option<ResMut<DuelNet>>, game: Res<Game>) {
     let warnings: Vec<String> = net.warnings.iter().cloned().collect();
     lines.extend(warnings.into_iter().map(|w| (w, true)));
     lines.push((
-        format!("Damage x{}   tick {}", game.duel_rules.damage, game.tick),
+        format!(
+            "Damage x{}  magic x{}  cap {}   tick {}",
+            game.duel_rules.damage,
+            game.duel_rules.magic,
+            cap_text(game.duel_rules.hit_cap),
+            game.tick
+        ),
         false,
     ));
     net.starved = 0;
@@ -526,6 +532,15 @@ fn faded_backing(
             blend: 0,
         }],
     )
+}
+
+/// A hit cap as the lobby and the overlay show it.
+pub(crate) fn cap_text(cap: u8) -> String {
+    if cap >= 100 {
+        "Off".into()
+    } else {
+        format!("{cap}%")
+    }
 }
 
 /// The overlay at the top right and the session banner in the middle, on

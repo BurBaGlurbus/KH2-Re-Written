@@ -114,7 +114,9 @@ private networks (your home Wi-Fi), or the other player cannot reach you.
 | `--name NAME` | The name the other player sees |
 | `--net-sim LATENCY,JITTER,LOSS` | Add latency (ms), jitter (ms) and loss (%) to what this instance sends |
 | `--net-overlay` | Show the network overlay |
-| `--duel-damage N` | Host: multiply Sora-against-Sora damage by N (0.5 to 10, default 3) |
+| `--duel-damage N` | Host: multiply the damage of attacks (hits on Strength) by N (0.5 to 10, default 3) |
+| `--duel-magic-damage N` | Host: multiply the damage of magic (spells, Reflect's counter, form magic) by N (0.5 to 10, default 1.5) |
+| `--duel-hit-cap PCT` | Host: no single hit takes more than PCT % of max HP (20, 25, 30, 35, 40, 50, 60, 75; 100 for none; default 40) |
 | `--rival-script` | No network: a second Sora run by a test script, to try the duel alone. With `--join`: the script presses the joiner's buttons (attacks, Fire, Thunder, a Potion, Valor Form) |
 
 In the room, F3 → Sora has *Network overlay* (ping, loss, data rates, buffered snapshots and warnings, top
@@ -133,19 +135,20 @@ command goes to the host with its buttons, the host runs it, and the effects it 
 naming the effect file, so each side draws them from its own install. Esc leaves; the other side sees "Opponent
 left" (or a timeout after five seconds) and the host waits for the next player.
 
-**The lobby:** when the other player joins, the game's own menu list opens over the arena (Up/Down, Decide,
-Back, Left/Right on a value); the panel at the top left shows both players' bans, where the other player is
-(choosing bans, in the camp, ready), your AP against the limit and your Keyblade's numbers:
+**The lobby:** when the other player joins, the game's own pause menu opens on its *Duel* pages (L2/R2 turn
+the pages, Up/Down choose a row, Left/Right change it; the help line says what a row does, and where the other
+player is shows on each page):
 
-1. The host sets the rules with Left/Right: the mode (*One KO*, *Best of 3*, *Time limit*, where the larger
-   share of HP left wins at time up), the damage multiplier and the time limit. The joiner sees them.
-2. Each player bans up to two abilities for this match (*Choose bans*, or *Done* with none). A ban takes the
-   ability away from both players; both lists stay on screen.
-3. Each player picks a Keyblade on its row with Left/Right (any of the 24, each with its own stats and ability;
-   the camera turns to your Sora holding it), then *Abilities and items* (or **Start**) opens the camp:
-   *Abilities* (up to 166 AP, level 99 with every AP Boost the game allows), *Equip* and *Items*. The host
-   checks every build; a refusal says why in orange.
-4. *Ready* on both starts the match; the other player's status shows below. A rule change takes Ready back.
+1. *Match*: the host sets the mode (*One KO*, *Best of 3*, *Time limit*, where the larger share of HP left wins
+   at time up), *Damage* (attacks), *Magic damage*, *Hit cap* and the time limit. The joiner sees them and
+   cannot change them.
+2. *Bans*: each player bans up to two abilities for this match and confirms (no ban is a choice too). A ban
+   takes the ability away from both players; the other player's bans show below.
+3. *Ready*: each player picks a Keyblade (any of the 24, each with its own stats and ability) and sees the AP
+   used against the limit. While the builds are made the menu's own *Abilities* (up to 166 AP, level 99 with
+   every AP Boost the game allows) and *Items* (Equip and the item slots) are on the top level. The host checks
+   every build; a refusal shows on the help line.
+4. *Ready* on both starts the match. A rule change takes Ready back.
 
 **The arena:** the match is fought in the test room's arena. Both Soras start on a line through the room's
 own start, 600 units apart, facing each other, with the camera behind each player's Sora. There are no
@@ -155,23 +158,27 @@ enemies, no talk and no exits during a duel.
 moves before GO. A knock-out ends a round (a knocked-out Sora stays down). *One KO* is one round; *Best of 3*
 goes until someone wins two (the round and score show at the top); *Time limit* shows the clock, and at time
 up the larger share of HP left wins. Between rounds both Soras are refilled and put back at the start. At the
-end each screen shows VICTORY, DEFEAT or DRAW with how it was decided, the rounds, the match time, the damage
-dealt and the hits landed; the winner's camera pushes in, the loser's rises behind his Sora. *Rematch* on both
+end each screen shows VICTORY, DEFEAT or DRAW and how it was decided over the field, and the pause menu with
+*Rematch*, *Leave* and *Results* (the rounds, the match time, the damage dealt and the hits landed); the
+winner's camera pushes in, the loser's rises behind his Sora. *Rematch* on both
 goes back to the lobby (new bans, the builds where they were); *Leave* closes the duel, and the launcher comes
 back on its Multiplayer screen. If the other player leaves in the lobby or the camp, the camp closes without
 keeping the duel's build and the room's own comes back. If the other player
 leaves during a match, it is your win. From a command line the host can set `--duel-mode stock|best3|time` and
 `--duel-time 60|90|120|180|300`.
 
-F3 → Sora → Duel → *Test vote* (host) tries the vote both players will use for later choices: different answers
-go to a coin flip on the host that both screens show.
+F3 → Sora → Duel → *Test vote* (host) tries the vote both players will use for later choices, in the pause
+menu: different answers go to a coin flip on the host that both screens show on the help line.
 
 **The duel build:** for a session both Soras fight at level 99 with every bonus level's HP, MP, Drive bars,
 item slots and abilities, the top level of every spell, Valor, Wisdom, Master and Final Form at their level cap
 (Limit Form is off), a full Drive gauge, and 99 of every consumable (Potion to Megalixir; the stat boosts, Tents
 and Drive Recoveries are left out). Nothing is read from or written to a save; the room's own build comes back
-when the session ends. Damage between the two Soras is the game's formula times the host's damage rule (×3 by
-default: `--duel-damage N` or F3 → Sora → Duel). The other Sora's HP stays on the target gauge (top right) for
+when the session ends. Damage between the two Soras is the game's formula times the host's rules: attacks ×3
+by default (`--duel-damage N` or F3 → Sora → Duel), magic ×1.5 (`--duel-magic-damage N`), and no single hit
+takes more than 40 % of max HP (`--duel-hit-cap PCT`). The formula is Strength or Magic minus Defence, so at
+level 99 the Keyblade's stats count for a lot: with the defaults a Thundaga does 24 on the Kingdom Key and 90 on
+the Keyblade with the most Magic, and neither takes a full bar in one cast. The other Sora's HP stays on the target gauge (top right) for
 the whole duel. The lobby's Keyblade, abilities and item slots go on top of it.
 
 **Known limitations:**

@@ -51,6 +51,8 @@ struct SavedCamp {
 enum RowKind {
     Mode,
     Damage,
+    Magic,
+    HitCap,
     Time,
     Ban(usize),
     ConfirmBans,
@@ -238,6 +240,13 @@ fn prepare_builds(room: &mut LobbyRoom, game: &mut Game, camp: &mut CampRes) {
     }
 }
 
+/// What a Keyblade adds (Strength, Magic, ...) on this Sora.
+fn keyblade_gear(game: &Game, k: u16) -> player::equipment_stats::Totals {
+    let mut e = game.equipment.clone();
+    e.weapon = k;
+    game.ability_source.gear(&e, None)
+}
+
 /// The camp's state from before the duel comes back.
 fn restore_camp(room: &mut LobbyRoom, camp: &mut CampRes) {
     if let Some(s) = room.saved.take() {
@@ -356,9 +365,18 @@ pub(crate) fn tick(
             .map(|s| s & 0x7fff)
             .filter(|s| *s != 0 && !room.limits.cost.contains_key(s))
             .collect();
+        let blades: Vec<[i32; 3]> = room
+            .limits
+            .keyblades
+            .iter()
+            .map(|&k| {
+                let g = keyblade_gear(game, k);
+                [i32::from(k), i32::from(g.strength), i32::from(g.magic)]
+            })
+            .collect();
         game.event(serde_json::json!({"event":"lobby_open","tick":game.tick,
             "abilities":room.limits.abilities.len(),"keyblades":room.limits.keyblades.len(),
-            "ap":room.limits.ap_max,"not_abilities":other}));
+            "ap":room.limits.ap_max,"not_abilities":other,"keyblade_stats":blades}));
         // The camp's status panel shows the duel's Sora (level 99).
         if let Some(rt) = game.enemy.as_mut() {
             rt.numbers_dirty = true;
@@ -573,6 +591,8 @@ fn step(
     match kind {
         RowKind::Mode => game.duel_rules.cycle_mode(s),
         RowKind::Damage => game.duel_rules.step_damage(s),
+        RowKind::Magic => game.duel_rules.step_magic(s),
+        RowKind::HitCap => game.duel_rules.cycle_cap(s),
         RowKind::Time => game.duel_rules.cycle_time(s),
         RowKind::Ban(i) => {
             let n = room.limits.ban_pool().len() + 1;
@@ -614,7 +634,8 @@ fn step(
         let tick = game.tick;
         let rules = game.duel_rules;
         game.event(serde_json::json!({"event":"duel_rules","tick":tick,
-            "mode":rules.info().name,"damage":rules.damage,"time_limit":rules.time_limit}));
+            "mode":rules.info().name,"damage":rules.damage,"magic":rules.magic,
+            "hit_cap":rules.hit_cap,"time_limit":rules.time_limit}));
     }
 }
 
@@ -665,6 +686,26 @@ fn row(
 /// Page names, their rows, and what each row does.
 type Pages = (Vec<Vec<u8>>, Vec<Vec<DuelRow>>, Vec<Vec<RowKind>>);
 
+/// The damage rows' choices: x0.5 to x10 by 0.5.
+fn multipliers() -> Vec<Vec<u8>> {
+    let n = ((duel_rules::DAMAGE_RANGE.1 - duel_rules::DAMAGE_RANGE.0) / duel_rules::DAMAGE_STEP)
+        as usize
+        + 1;
+    (0..n)
+        .map(|i| {
+            text(&format!(
+                "x{}",
+                duel_rules::DAMAGE_RANGE.0 + duel_rules::DAMAGE_STEP * i as f32
+            ))
+        })
+        .collect()
+}
+
+/// A multiplier's place among the choices.
+fn multiplier_at(k: f32) -> usize {
+    ((k - duel_rules::DAMAGE_RANGE.0) / duel_rules::DAMAGE_STEP).round() as usize
+}
+
 /// The duel's pages for this player: names, rows, and what each row does.
 fn pages(room: &LobbyRoom, net: &DuelNet, game: &Game, ap: i32) -> Pages {
     let host = net.role == Role::Host;
@@ -697,28 +738,44 @@ fn pages(room: &LobbyRoom, net: &DuelNet, game: &Game, ap: i32) -> Pages {
         ),
         row(
             "Damage",
-            {
-                let n = ((duel_rules::DAMAGE_RANGE.1 - duel_rules::DAMAGE_RANGE.0)
-                    / duel_rules::DAMAGE_STEP) as usize
-                    + 1;
-                (0..n)
-                    .map(|i| {
-                        text(&format!(
-                            "x{}",
-                            duel_rules::DAMAGE_RANGE.0 + duel_rules::DAMAGE_STEP * i as f32
-                        ))
-                    })
-                    .collect()
-            },
-            ((rules.damage - duel_rules::DAMAGE_RANGE.0) / duel_rules::DAMAGE_STEP).round()
-                as usize,
+            multipliers(),
+            multiplier_at(rules.damage),
             help(&format!(
-                "Every hit's damage is the game's times this.{by_host}"
+                "Attacks' damage is the game's times this.{by_host}"
+            )),
+            !host,
+        ),
+        row(
+            "Magic damage",
+            multipliers(),
+            multiplier_at(rules.magic),
+            help(&format!(
+                "Spells, Reflect's counter and form magic: the game's damage times this.{by_host}"
+            )),
+            !host,
+        ),
+        row(
+            "Hit cap",
+            duel_rules::HIT_CAPS
+                .iter()
+                .map(|&c| text(&duel_net::cap_text(c)))
+                .collect(),
+            duel_rules::HIT_CAPS
+                .iter()
+                .position(|&c| c == rules.hit_cap)
+                .unwrap_or(0),
+            help(&format!(
+                "No single hit takes more than this share of max HP.{by_host}"
             )),
             !host,
         ),
     ];
-    let mut k = vec![RowKind::Mode, RowKind::Damage];
+    let mut k = vec![
+        RowKind::Mode,
+        RowKind::Damage,
+        RowKind::Magic,
+        RowKind::HitCap,
+    ];
     if rules.info().timed {
         r.push(row(
             "Time limit",
@@ -864,8 +921,8 @@ const KEY_RIGHT: u64 = 0x80;
 const KEY_R2: u64 = 0x1_0000;
 
 /// [Test] Unattended runs: the joiner bans the pool's first ability and
-/// takes the table's last Keyblade (both keep the room's in the magic
-/// bench, for equal spells), the host skips; both ready up a second and a
+/// takes the table's last Keyblade (in the magic bench the one with the
+/// most Magic, against the host's Kingdom Key), the host skips; both ready up a second and a
 /// half into the builds (their camp opens about half a second in), once
 /// the test vote the host puts to both is over. The pages turn on the way,
 /// for the captures: Bans while the bans are chosen, Ready once the
@@ -903,9 +960,18 @@ fn script(room: &mut LobbyRoom, net: &mut DuelNet, camp: &mut CampRes, game: &mu
             };
             intend(room, net, game, Intent::Ban(bans));
         }
-        Stage::Loadout if room.stage_ticks == 52 && room.seat == 1 && !game.duel_magic => {
-            if let (Some(&k), Some(e)) = (
-                room.limits.keyblades.last(),
+        Stage::Loadout if room.stage_ticks == 52 && room.seat == 1 => {
+            let pick = if game.duel_magic {
+                room.limits
+                    .keyblades
+                    .iter()
+                    .copied()
+                    .max_by_key(|&k| keyblade_gear(game, k).magic)
+            } else {
+                room.limits.keyblades.last().copied()
+            };
+            if let (Some(k), Some(e)) = (
+                pick,
                 camp.open
                     .as_mut()
                     .and_then(|m| m.data.items.equipment.first_mut()),

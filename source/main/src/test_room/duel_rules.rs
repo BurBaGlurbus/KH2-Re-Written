@@ -1,5 +1,6 @@
 //! The duel's match rules. The host chooses them in the lobby (and with
-//! `--duel-damage` / F3); the joiner receives them and shows them read-only.
+//! `--duel-damage`, `--duel-magic-damage`, `--duel-hit-cap` / F3); the
+//! joiner receives them and shows them read-only.
 //! The modes are a table, so a new one is a row and its match flow.
 
 /// How a match is won.
@@ -62,17 +63,31 @@ const DEFAULT_TIME: u16 = 180;
 /// 185 s at x1. x3 makes that about a minute, and 30-45 s for players who
 /// land more of their combos.
 pub(crate) const DEFAULT_DAMAGE: f32 = 3.;
-/// The lobby's and F3 menu's step and the range they allow.
+/// The default magic damage rule [duel choice; T245's benchmark]: hits
+/// whose power is the attacker's Magic (spells, Reflect's counter, form
+/// magic) take this instead of the attacks' multiplier.
+pub(crate) const DEFAULT_MAGIC: f32 = 1.5;
+/// The lobby's and F3 menu's step and the range they allow (both
+/// multipliers).
 pub(crate) const DAMAGE_STEP: f32 = 0.5;
 pub(crate) const DAMAGE_RANGE: (f32, f32) = (0.5, 10.);
+/// The per-hit caps the host can pick, in percent of the target's max HP
+/// (100: no cap).
+pub(crate) const HIT_CAPS: [u8; 9] = [20, 25, 30, 35, 40, 50, 60, 75, 100];
+const DEFAULT_HIT_CAP: u8 = 40;
 
 /// The duel's rules (the host's; the joiner shows them).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct MatchRules {
     pub mode: Mode,
-    /// What every Sora-against-Sora hit's damage is multiplied by, after
-    /// the game's own formula (attacks, magic and forms alike).
+    /// What a Sora-against-Sora hit's damage is multiplied by, after the
+    /// game's own formula: hits on Strength (attacks) ...
     pub damage: f32,
+    /// ... and hits on Magic (spells, Reflect's counter, form magic).
+    pub magic: f32,
+    /// No single hit takes more than this percent of the target's max HP
+    /// (100: no cap).
+    pub hit_cap: u8,
     /// Seconds, for the timed mode.
     pub time_limit: u16,
 }
@@ -82,6 +97,8 @@ impl Default for MatchRules {
         MatchRules {
             mode: Mode::Stock,
             damage: DEFAULT_DAMAGE,
+            magic: DEFAULT_MAGIC,
+            hit_cap: DEFAULT_HIT_CAP,
             time_limit: DEFAULT_TIME,
         }
     }
@@ -89,12 +106,20 @@ impl Default for MatchRules {
 
 impl MatchRules {
     /// A hit's damage under the rules: the formula's number times the
-    /// multiplier, rounded; a hit that did damage still does at least 1.
-    pub(crate) fn damage(&self, formula: i32) -> i32 {
+    /// attacks' or the magic multiplier (`magic`: the hit's power is the
+    /// attacker's Magic), rounded, then no more than the cap's share of
+    /// `max_hp`; a hit that did damage still does at least 1.
+    pub(crate) fn damage(&self, formula: i32, magic: bool, max_hp: i32) -> i32 {
         if formula <= 0 {
             return formula;
         }
-        ((formula as f32 * self.damage).round() as i32).max(1)
+        let k = if magic { self.magic } else { self.damage };
+        let d = ((formula as f32 * k).round() as i32).max(1);
+        if self.hit_cap >= 100 {
+            return d;
+        }
+        let cap = (max_hp * i32::from(self.hit_cap) / 100).max(1);
+        d.min(cap)
     }
 
     /// The mode's row.
@@ -118,6 +143,21 @@ impl MatchRules {
             (self.damage + DAMAGE_STEP * step as f32).clamp(DAMAGE_RANGE.0, DAMAGE_RANGE.1);
     }
 
+    /// The magic multiplier one step up or down, kept in range.
+    pub(crate) fn step_magic(&mut self, step: i32) {
+        self.magic = (self.magic + DAMAGE_STEP * step as f32).clamp(DAMAGE_RANGE.0, DAMAGE_RANGE.1);
+    }
+
+    /// The next (or previous) hit cap in the table.
+    pub(crate) fn cycle_cap(&mut self, step: i32) {
+        let at = HIT_CAPS
+            .iter()
+            .position(|&c| c == self.hit_cap)
+            .unwrap_or(4) as i32;
+        let n = HIT_CAPS.len() as i32;
+        self.hit_cap = HIT_CAPS[(at + step).rem_euclid(n) as usize];
+    }
+
     /// The next (or previous) time limit in the table.
     pub(crate) fn cycle_time(&mut self, step: i32) {
         let at = TIME_LIMITS
@@ -131,8 +171,10 @@ impl MatchRules {
     /// Whether every field is one the lobby can choose (the joiner's check
     /// of what arrives).
     pub(crate) fn valid(&self) -> bool {
-        self.damage.is_finite()
-            && (DAMAGE_RANGE.0..=DAMAGE_RANGE.1).contains(&self.damage)
+        let in_range = |k: f32| k.is_finite() && (DAMAGE_RANGE.0..=DAMAGE_RANGE.1).contains(&k);
+        in_range(self.damage)
+            && in_range(self.magic)
+            && HIT_CAPS.contains(&self.hit_cap)
             && TIME_LIMITS.contains(&self.time_limit)
     }
 
@@ -160,17 +202,43 @@ mod tests {
     fn the_damage_rule_scales_and_rounds() {
         let rules = |damage| MatchRules {
             damage,
+            hit_cap: 100,
             ..MatchRules::default()
         };
-        assert_eq!(rules(2.5).damage(2), 5);
-        assert_eq!(rules(2.5).damage(3), 8);
-        assert_eq!(rules(2.5).damage(0), 0);
+        assert_eq!(rules(2.5).damage(2, false, 170), 5);
+        assert_eq!(rules(2.5).damage(3, false, 170), 8);
+        assert_eq!(rules(2.5).damage(0, false, 170), 0);
         assert_eq!(
-            rules(0.5).damage(1),
+            rules(0.5).damage(1, false, 170),
             1,
             "a hit that did damage still does some"
         );
-        assert_eq!(rules(1.).damage(7), 7);
+        assert_eq!(rules(1.).damage(7, false, 170), 7);
+    }
+
+    #[test]
+    fn magic_has_its_own_multiplier_and_every_hit_its_cap() {
+        let r = MatchRules {
+            damage: 3.,
+            magic: 1.5,
+            hit_cap: 40,
+            ..MatchRules::default()
+        };
+        assert_eq!(r.damage(8, false, 170), 24);
+        assert_eq!(r.damage(8, true, 170), 12);
+        // 40 % of 170 is 68: a Thundaga bolt of 30 on a high-Magic Keyblade
+        // at x3 (90) stops there.
+        assert_eq!(r.damage(30, true, 170), 45);
+        assert_eq!(MatchRules { magic: 3., ..r }.damage(30, true, 170), 68);
+        assert_eq!(
+            MatchRules {
+                hit_cap: 100,
+                magic: 3.,
+                ..r
+            }
+            .damage(30, true, 170),
+            90
+        );
     }
 
     #[test]
@@ -186,6 +254,13 @@ mod tests {
         assert_eq!(r.damage, DAMAGE_RANGE.1);
         r.step_damage(-1);
         assert_eq!(r.damage, DAMAGE_RANGE.1 - DAMAGE_STEP);
+        r.step_magic(-100);
+        assert_eq!(r.magic, DAMAGE_RANGE.0);
+        r.cycle_cap(-5);
+        assert_eq!(r.hit_cap, 100);
+        r.cycle_cap(1);
+        assert_eq!(r.hit_cap, 20);
+        assert!(!MatchRules { hit_cap: 41, ..r }.valid());
         r.cycle_time(1);
         assert_eq!(r.time_limit, 300);
         r.cycle_time(1);

@@ -285,6 +285,8 @@ pub(crate) fn encode_rules(rules: &MatchRules) -> Vec<u8> {
     w.u8(RULES);
     w.u8(rules.mode_code());
     w.f32(rules.damage);
+    w.f32(rules.magic);
+    w.u8(rules.hit_cap);
     w.u16(rules.time_limit);
     w.finish()
 }
@@ -297,6 +299,8 @@ pub(crate) fn decode_rules(bytes: &[u8]) -> Option<MatchRules> {
     let rules = MatchRules {
         mode: MatchRules::mode_from(r.u8()?)?,
         damage: r.f32()?,
+        magic: r.f32()?,
+        hit_cap: r.u8()?,
         time_limit: r.u16()?,
     };
     (r.is_empty() && rules.valid()).then_some(rules)
@@ -699,6 +703,8 @@ mod tests {
         let rules = MatchRules {
             mode: super::super::duel_rules::Mode::Timed,
             damage: 3.5,
+            magic: 1.5,
+            hit_cap: 50,
             time_limit: 90,
         };
         assert_eq!(decode_rules(&encode_rules(&rules)), Some(rules));

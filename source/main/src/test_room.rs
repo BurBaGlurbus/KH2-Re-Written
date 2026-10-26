@@ -13179,6 +13179,29 @@ fn run(mut args: Vec<PathBuf>) -> Result<AppExit, Box<dyn std::error::Error>> {
                     .parse::<f32>()?
                     .clamp(duel_rules::DAMAGE_RANGE.0, duel_rules::DAMAGE_RANGE.1);
             }
+            Some("--duel-magic-damage") => {
+                duel_rules.magic = options
+                    .next()
+                    .and_then(|v| v.to_str())
+                    .ok_or("duel magic damage absent")?
+                    .parse::<f32>()?
+                    .clamp(duel_rules::DAMAGE_RANGE.0, duel_rules::DAMAGE_RANGE.1);
+            }
+            Some("--duel-hit-cap") => {
+                let cap = options
+                    .next()
+                    .and_then(|v| v.to_str())
+                    .ok_or("duel hit cap absent")?
+                    .parse::<u8>()?;
+                if !duel_rules::HIT_CAPS.contains(&cap) {
+                    return Err(format!(
+                        "duel hit cap: one of {:?} percent (100: none)",
+                        duel_rules::HIT_CAPS
+                    )
+                    .into());
+                }
+                duel_rules.hit_cap = cap;
+            }
             Some("--duel-mode") => {
                 let name = options
                     .next()

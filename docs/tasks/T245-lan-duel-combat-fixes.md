@@ -90,11 +90,32 @@ The spells' effects reach the joiner (44–72 `spell_effect` records a run). A c
 is in a hurt motion, as in the game. Curaga uses all the MP left and starts the MP charge (3000 ticks at the
 base rate, the game's), so the bench casts it last.
 
-Balance, not changed: the formula is power × (stat − defence). At level 99 Sora's Defence is 53 and his Magic
-55 with Kingdom Key, a difference of 2. A Keyblade with Magic +6 makes it 8, four times the damage: the lobby
-script's Keyblade (Magic 61) does 90 a Thundaga bolt, 180 a cast, a knock-out from full HP. Physical attacks
-scale with Strength the same way. This is the game's own formula, not a fault, so the ×3 default stays; a
-separate spell multiplier or a lower damage rule is the owner's decision.
+Balance: the formula is power × (stat − defence). At level 99 Sora's Defence is 53 and his Magic 55 with Kingdom
+Key, a difference of 2; the Keyblade with the most Magic (item 544, Magic +7) makes it 8, four times the damage.
+At ×3 its Thundaga was 90 a bolt, 180 a cast: a knock-out from full HP.
+
+## Magic damage rule and hit cap
+
+The owner's decision (2026-10-26, 13:33Z): keep the game's formula and add a separate magic rule. [Duel rules]
+
+- `MatchRules::magic` multiplies hits whose power is the attacker's Magic (the attack row's stat: spells,
+  Reflect's counter, form magic); `damage` now multiplies the hits on Strength only.
+- `MatchRules::hit_cap`: no single hit, attack or magic, takes more than this percent of the target's max HP
+  (20, 25, 30, 35, 40, 50, 60, 75, or 100 for none).
+- Both are rows on the lobby's Match page (host-editable, the joiner's read-only), go to the joiner with the
+  rules over the reliable channel, and have flags: `--duel-magic-damage X`, `--duel-hit-cap PCT`.
+
+The default, from the benchmark (`mag3h`: the host on Kingdom Key casting at an idle joiner; `mag3j`: the joiner
+on item 544 casting at an idle host). Each hit's game formula, then the damage at magic ×1.5 and a 40 % cap:
+
+| Keyblade (Magic bonus) | Firaga (5 hits) | Blizzaga | Thundaga (2 bolts) | Magnega |
+| --- | --- | --- | --- | --- |
+| Kingdom Key (+1) | 1, 1, 1, 1, 4 → 14 a cast | 8 → 12 | 8 + 8 → 24 | 2 → 3 |
+| Item 544 (+7, the most Magic) | 4, 4, 4, 4, 14 → 45 | 15 → 23 | 30 + 30 → 90 | 8 → 12 |
+
+[Duel choice] magic ×1.5, cap 40 %: a Kingdom Key Thundaga (24) is about a Kingdom Key combo string at ×3 (27),
+and the strongest Keyblade's Thundaga takes about half of 170 HP, never a full bar. The cap (68 of 170) holds
+even if the host raises magic: at ×3 the same Keyblade's Blizzaga (formula 30, 90) stopped at 68 (`mag3c`).
 
 ## Checks
 
@@ -105,9 +126,10 @@ separate spell multiplier or a lower damage rule is the owner's decision.
 | Bench, joiner → idle host and host → idle joiner (`combo7j`, `combo7h`): full strings land, no refused contact, one hit per step | PASS |
 | Magic bench, host → idle joiner, joiner → idle host, both casting (`mag1h`, `mag1j`, `mag1b`): every spell accepted, MP spent, hits, Reflect, Cure, items, Valor on both screens | PASS |
 | Tours after the magic fix (`mag1-*` against `main5d-*`): talk, magic identical; party-hit identical but for the exit tick (6840/6841, known) | PASS |
+| Magic rule and cap: rules round-trip and damage tests; `mag3h`, `mag3j` (numbers above), `mag3c` (×3 capped at 68; the joiner's Match page shows the host's Magic damage and Hit cap read-only) | PASS |
 | Two PCs, players at the keys | NOT RUN |
 
 ## Verdict / next
 
-Combos PASS and magic PASS on one PC (loopback, unattended). Two PCs NOT RUN. Next: the menus in the pause
-menu's look (T246).
+Combos PASS, magic PASS, and the magic rule and hit cap PASS on one PC (loopback, unattended). Two PCs NOT
+RUN. The menus are T246.
