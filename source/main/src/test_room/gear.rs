@@ -29,14 +29,15 @@ pub(super) fn rows(
         .collect()
 }
 
-/// The development room owns one of every Keyblade, armor and accessory the
-/// item table gives a picture (the debug and dummy weapons have none), minus
-/// the Kingdom Key, which the room starts with in the member's weapon and each
-/// owned form's weapon slot [test-room choice, not campaign progression].
+/// The development room owns one of every Keyblade, staff, shield, armor and
+/// accessory the item table gives a picture (the debug and dummy weapons have
+/// none), minus the Kingdom Key, which the room starts with in the member's
+/// weapon and each owned form's weapon slot [test-room choice, not campaign
+/// progression].
 pub(super) fn owned(table: &[data::item_table::Item]) -> Vec<u16> {
     table
         .iter()
-        .filter(|i| matches!(i.kind, 2 | 14 | 15) && i.picture != 0 && i.id != KINGDOM_KEY)
+        .filter(|i| matches!(i.kind, 2..=4 | 14 | 15) && i.picture != 0 && i.id != KINGDOM_KEY)
         .map(|i| i.id)
         .collect()
 }

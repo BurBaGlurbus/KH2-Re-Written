@@ -115,6 +115,7 @@ mod limit_form_tour;
 mod limit_tour;
 mod magic_room;
 mod magic_tour;
+mod menu_friend;
 mod party_anim_tour;
 mod party_blade;
 mod party_camp_tour;
@@ -448,6 +449,10 @@ impl SparkRing {
 const SPARK_FADE: f32 = 4.;
 /// The effect owner id of an enemy attack's hit spark.
 const ENEMY_HIT_OWNER: u8 = 0xf9;
+/// Sora's key in the object sound banks (the PLAYER objentry id 0x236) and
+/// in the victim hit counters.
+const PLAYER_OBJECT: u32 = 0x236;
+const PLAYER_VICTIM: u64 = u64::MAX;
 
 /// Running effect instances and the quads they drew this tick.
 #[derive(Resource)]
@@ -1231,6 +1236,8 @@ struct Game {
     /// The party limits' files, the limit running and the one the menu
     /// asked for.
     party_limits: Arc<party_limit::LimitSource>,
+    /// What the members' kinds are rebuilt from (a weapon change).
+    party_reload: Option<Arc<party_room::ReloadSource>>,
     party_limit: Option<party_limit::Running>,
     limit_request: Option<u16>,
     /// The summons' tables, the summon out, and what the menu asked for.
@@ -1399,6 +1406,12 @@ struct Game {
     /// presses (Triangle; decide, back or Triangle).
     talking: bool,
     rc_queued: bool,
+    /// A save point's Save was chosen: the camp opens the file menu.
+    save_menu_wanted: bool,
+    /// Files the save point's menu wrote this run, and the world and area
+    /// of the save point last used.
+    files_saved: u32,
+    save_place: Option<(u8, u8)>,
     advance_queued: bool,
     /// The reaction-command search's records and the command manager's
     /// reaction state: the slot, the held command, this tick's press
@@ -2214,6 +2227,9 @@ struct Loaded {
     step_info: Option<(u8, visual::footsteps::WorldInfo)>,
     /// Donald and Goofy's models and motions (empty when not installed).
     party: Vec<std::sync::Arc<party_room::PartyKind>>,
+    /// Each member's camp model (MENU_FRIEND_n), in `party` order.
+    menu_friends: Vec<Option<menu_friend::MenuFriend>>,
+    party_reload: Option<party_room::ReloadSource>,
     spawn: Vec3,
     /// Sora's facing at the spawn (scene yaw).
     yaw: f32,
@@ -2413,6 +2429,8 @@ fn load_journal(
 /// lines (sys.bar), and the system font.
 struct CampSource {
     menu: Menu2ld,
+    /// msg/<lang>/sys.bar (the file menu's texts).
+    sys: Locator,
     entries: Vec<pause_menu::Entry>,
     font: SystemFont,
     /// "LV", "HP", "MP" and Sora's name (0xb9fc..0xb9fe, 0x851f).
@@ -3160,6 +3178,7 @@ fn load_camp_source(
         )
     })?;
     Ok(CampSource {
+        sys: m.messages.clone(),
         menu,
         entries,
         font,
@@ -3260,7 +3279,11 @@ type ReadEffects = (EffectSources, Vec<(u32, Option<Vec<u8>>, Option<Vec<u8>>)>)
 
 /// The configured effect containers (with their remaster pages) and the
 /// battle enemies' object effects and sound banks.
-fn read_effect_sources(source: &ProbeSource, e: &EffectConfig) -> Result<ReadEffects, String> {
+fn read_effect_sources(
+    source: &ProbeSource,
+    e: &EffectConfig,
+    player: &str,
+) -> Result<ReadEffects, String> {
     use visual::effects::{load_atlas, load_pax};
     // Each enemy object's own sound bank (the `se/obj/seNNN` asset of its
     // archive): registered under its header number, which is the thousand
@@ -3268,7 +3291,10 @@ fn read_effect_sources(source: &ProbeSource, e: &EffectConfig) -> Result<ReadEff
     let mut enemy_bank_bytes = Vec::new();
     let mut register = |key: u32, index: &str, ordinal: usize, hash: [u8; 16]| {
         let bank = sound::object_bank(source, index, ordinal, hash);
-        let voice = (key != 0)
+        if key == PLAYER_OBJECT && bank.is_none() {
+            eprintln!("Sora's object archive carries no se/obj bank");
+        }
+        let voice = (key != 0 && key != PLAYER_OBJECT)
             .then(|| sound::object_voice_bank(source, index, ordinal, hash))
             .flatten();
         enemy_bank_bytes.push((key, bank, voice));
@@ -3277,6 +3303,11 @@ fn read_effect_sources(source: &ProbeSource, e: &EffectConfig) -> Result<ReadEff
         register(0, &l.index, l.ordinal, l.name_hash);
     }
     if let Ok(library) = data::path_lookup::Library::open(source) {
+        // Sora's own object archive: the bank his victim sound plays from.
+        match library.find(&format!("obj/{player}.a.us")) {
+            Some(f) => register(PLAYER_OBJECT, f.index, f.ordinal, f.name_hash),
+            None => eprintln!("obj/{player}.a.us is not installed"),
+        }
         for &(id, name) in &enemy_battle::SUPPORTED {
             if let Some(f) = library.find(&format!("obj/{name}.a.us")) {
                 register(id, f.index, f.ordinal, f.name_hash);
@@ -3468,8 +3499,8 @@ fn load(
         })
     });
     let effects_job = config.effects.clone().map(|e| {
-        let source = source.clone();
-        std::thread::spawn(move || read_effect_sources(&source, &e))
+        let (source, player) = (source.clone(), config.player_object_name.clone());
+        std::thread::spawn(move || read_effect_sources(&source, &e, &player))
     });
     // The camp, journal and music decode on a thread of their own while the
     // rest loads: they need only the archives and their locators.
@@ -3745,13 +3776,36 @@ fn load(
             .collect();
         let source = source.clone();
         let (system, battle, objects) = (system.clone(), battle.clone(), objects.clone());
+        // The camp's model of each party slot (MENU_FRIEND_n). [I] Only
+        // Donald and Goofy in their own slots: what object a world guest's
+        // slot resolves to (FUN_1403dfeb0) is not traced.
+        let friend_slots: Vec<bool> = jobs
+            .iter()
+            .enumerate()
+            .map(|(i, (name, ..))| ["P_EX020", "P_EX030"].get(i) == Some(name))
+            .collect();
         std::thread::spawn(move || {
             // The members load on their own threads, each with its own
             // library; the results keep the roster order.
             let (source, system, objects) = (&source, &system, &objects);
             let lvup = bar_entry(&battle, b"lvup").unwrap_or(&[]);
             let plrp = bar_entry(&battle, b"plrp").unwrap_or(&[]);
-            std::thread::scope(|s| -> Vec<Result<_, String>> {
+            std::thread::scope(|s| {
+                let friends: Vec<_> = friend_slots
+                    .iter()
+                    .enumerate()
+                    .map(|(i, &wanted)| {
+                        s.spawn(move || {
+                            if !wanted {
+                                return None;
+                            }
+                            let mut library = data::path_lookup::Library::open(source).ok()?;
+                            menu_friend::load(source, &mut library, objects, i + 1)
+                                .map_err(|e| eprintln!("camp model of party slot {}: {e}", i + 1))
+                                .ok()
+                        })
+                    })
+                    .collect();
                 let threads: Vec<_> = jobs
                     .into_iter()
                     .map(|(name, member, motions)| {
@@ -3768,16 +3822,22 @@ fn load(
                                 name,
                                 member,
                                 motions,
+                                None,
                             )
                             .map(|k| (k, member))
                             .map_err(|e| format!("party member {name}: {e}"))
                         })
                     })
                     .collect();
-                threads
+                let members: Vec<Result<_, String>> = threads
                     .into_iter()
                     .map(|t| t.join().expect("party member thread"))
-                    .collect()
+                    .collect();
+                let friends: Vec<_> = friends
+                    .into_iter()
+                    .map(|t| t.join().expect("camp model thread"))
+                    .collect();
+                (members, friends)
             })
         })
     });
@@ -4115,6 +4175,9 @@ fn load(
                 if let Some(bytes) = bank
                     && let Ok(number) = banks.insert(bytes)
                 {
+                    if key == PLAYER_OBJECT {
+                        eprintln!("Sora's object sound bank: {number}");
+                    }
                     sources.enemy_banks.insert(key, number);
                 }
                 if let Some(bytes) = voice
@@ -4325,12 +4388,13 @@ fn load(
         })
         .unwrap_or_default();
     timer.mark("music and the rest");
+    let mut menu_friends = Vec::new();
     let party = match party_thread {
         Some(thread) => {
-            let loaded = thread.join().expect("party thread");
+            let (loaded, friends) = thread.join().expect("party thread");
             let mut kinds = Vec::new();
             if let Ok(mut library) = data::path_lookup::Library::open(source) {
-                for result in loaded {
+                for (result, friend) in loaded.into_iter().zip(friends) {
                     let (mut k, member) = match result {
                         Ok(v) => v,
                         Err(e) => {
@@ -4355,6 +4419,8 @@ fn load(
                             drive_room::Voices::read(bar_entry(&battle, b"vtbl").ok()?, bank)
                         });
                     kinds.push(std::sync::Arc::new(k));
+                    // The camp model goes with the member it was read for.
+                    menu_friends.push(friend);
                 }
             }
             kinds
@@ -4383,6 +4449,15 @@ fn load(
         party_limits: std::mem::take(&mut limit_source),
         items: item_room::load(&system).ok(),
         party,
+        menu_friends,
+        party_reload: config.enemy.as_ref().map(|_| party_room::ReloadSource {
+            source: source.clone(),
+            system: system.clone(),
+            battle: battle.clone(),
+            objects: objects.clone(),
+            items: data::item_table::read(bar_entry(&system, b"item").unwrap_or(&[]))
+                .unwrap_or_default(),
+        }),
         forms,
         reaction_commands,
         sora_weight,
@@ -4720,6 +4795,7 @@ struct Startup {
     enemy_model: Option<model_inspection::InspectionModel>,
     effect_atlas: Option<visual::effects::Atlas>,
     npc_model: Option<model_inspection::InspectionModel>,
+    menu_friends: Vec<Option<menu_friend::MenuFriend>>,
 }
 
 /// Spawns one textured mesh per model part under `parent`, in part order.
@@ -6103,65 +6179,94 @@ fn setup(
         let c = &game.clip_poses[walk];
         c.frame(0).iter().map(|p| *p + c.root[0]).collect()
     };
-    let menu_root = commands
-        .spawn((
-            MenuModelRoot,
-            Transform::from_xyz(0., 0., 100.),
-            Visibility::Hidden,
-            RenderLayers::layer(MENU_LAYER),
-        ))
-        .id();
-    for (ordinal, entity) in spawn_model(
-        &mut commands,
-        &actor,
-        &walk_pose,
-        menu_root,
-        &mut meshes,
-        &mut materials,
-        &mut images,
-    ) {
-        if let Some(entity) = entity {
-            commands
-                .entity(entity)
-                .insert((MenuModelPart(ordinal), RenderLayers::layer(MENU_LAYER)));
+    // Each slot renders alone into its own target (camp-03 §5.1: RT1 is
+    // cleared and drawn per member): Sora on MENU_LAYER, the members on
+    // the layers after it.
+    let mut spawn_menu_slot = |commands: &mut Commands,
+                               member: usize,
+                               model: &model_inspection::InspectionModel,
+                               pose: &[Vec3]|
+     -> usize {
+        let layer = RenderLayers::layer(MENU_LAYER + member);
+        let menu_root = commands
+            .spawn((
+                MenuModelRoot,
+                Transform::from_xyz(0., 0., 100.),
+                Visibility::Hidden,
+                layer.clone(),
+            ))
+            .id();
+        for (ordinal, entity) in spawn_model(
+            commands,
+            model,
+            pose,
+            menu_root,
+            &mut meshes,
+            &mut materials,
+            &mut images,
+        ) {
+            if let Some(entity) = entity {
+                commands
+                    .entity(entity)
+                    .insert((MenuModelPart { member, ordinal }, layer.clone()));
+            }
         }
-    }
-    let menu_target = images.add(Image::new_target_texture(
-        MENU_TARGET[0],
-        MENU_TARGET[1],
-        TextureFormat::Rgba8UnormSrgb,
-        None,
-    ));
-    commands.spawn((
-        Camera3d::default(),
-        Camera {
-            order: -3,
-            is_active: false,
-            clear_color: ClearColorConfig::Custom(Color::NONE),
-            ..default()
-        },
-        bevy::camera::RenderTarget::Image(menu_target.clone().into()),
-        // A 640x480-style camera with horizontal FOV 40° (focal 879.19):
-        // vertical 2·atan(240 / 879.19); squeezed to the layout, the
-        // target's 16:9 square pixels match it (camp-03 §1).
-        Projection::Perspective(PerspectiveProjection {
-            fov: 2. * (240f32 / 879.1928).atan(),
-            near: 1.,
-            far: 100_000.,
-            ..default()
-        }),
-        Transform::from_xyz(0., 50., 800.).looking_at(Vec3::new(0., 0., -55.), Vec3::Y),
-        Msaa::Off,
-        Tonemapping::None,
-        DebandDither::Disabled,
-        NoIndirectDrawing,
-        RenderLayers::layer(MENU_LAYER),
-        MenuCamera,
-    ));
+        let menu_target = images.add(Image::new_target_texture(
+            MENU_TARGET[0],
+            MENU_TARGET[1],
+            TextureFormat::Rgba8UnormSrgb,
+            None,
+        ));
+        commands.spawn((
+            Camera3d::default(),
+            Camera {
+                order: -3,
+                is_active: false,
+                clear_color: ClearColorConfig::Custom(Color::NONE),
+                ..default()
+            },
+            bevy::camera::RenderTarget::Image(menu_target.clone().into()),
+            // A 640x480-style camera with horizontal FOV 40° (focal 879.19):
+            // vertical 2·atan(240 / 879.19); squeezed to the layout, the
+            // target's 16:9 square pixels match it (camp-03 §1).
+            Projection::Perspective(PerspectiveProjection {
+                fov: 2. * (240f32 / 879.1928).atan(),
+                near: 1.,
+                far: 100_000.,
+                ..default()
+            }),
+            Transform::from_xyz(0., 50., 800.).looking_at(Vec3::new(0., 0., -55.), Vec3::Y),
+            Msaa::Off,
+            Tonemapping::None,
+            DebandDither::Disabled,
+            NoIndirectDrawing,
+            layer,
+            MenuCamera(member),
+        ));
+        frame.add_image(menu_target, MENU_TARGET, true)
+    };
+    let sheet = spawn_menu_slot(&mut commands, 0, &actor, &walk_pose);
+    let friends = std::mem::take(&mut startup.menu_friends)
+        .into_iter()
+        .enumerate()
+        .map(|(i, friend)| {
+            let f = friend?;
+            let sheet = spawn_menu_slot(&mut commands, i + 1, &f.model, &f.frames[0]);
+            Some(MenuFriendView {
+                sheet,
+                indices: f.model.parts.iter().map(|p| p.indices.clone()).collect(),
+                frames: f.frames,
+                length: f.length,
+            })
+        })
+        .collect();
     commands.insert_resource(MenuModel {
-        sheet: frame.add_image(menu_target, MENU_TARGET, true),
+        sheet,
         clip: walk,
         indices: actor.parts.iter().map(|p| p.indices.clone()).collect(),
+        friends,
+        last_time: None,
+        steps: 0,
     });
     // Sora's skeleton for the skateboard's rider retarget.
     let skinning = std::mem::take(&mut actor.skinning);
@@ -6456,15 +6561,33 @@ const MENU_TARGET: [u32; 2] = [1280, 720];
 #[derive(Component)]
 struct MenuModelRoot;
 #[derive(Component)]
-struct MenuModelPart(usize);
+struct MenuModelPart {
+    /// The camp member (0 = Sora).
+    member: usize,
+    ordinal: usize,
+}
+/// The camp member a menu camera renders.
 #[derive(Component)]
-struct MenuCamera;
+struct MenuCamera(usize);
 
 #[derive(Resource)]
 struct MenuModel {
     sheet: usize,
     clip: usize,
     indices: Vec<Vec<u32>>,
+    /// Members 1.. (`None`: not rendered).
+    friends: Vec<Option<MenuFriendView>>,
+    /// Sora's walk time when last presented, and the camp updates since
+    /// the members were added (their walks have their own lengths).
+    last_time: Option<f32>,
+    steps: u32,
+}
+
+struct MenuFriendView {
+    sheet: usize,
+    indices: Vec<Vec<u32>>,
+    frames: Vec<Vec<Vec3>>,
+    length: f32,
 }
 
 /// While the camp shows its members, render Sora's walk at the menu time
@@ -6472,23 +6595,39 @@ struct MenuModel {
 #[allow(clippy::too_many_arguments)]
 fn menu_model_present(
     camp: Option<Res<CampRes>>,
-    model: Option<Res<MenuModel>>,
+    model: Option<ResMut<MenuModel>>,
     game_over: Option<Res<game_over::GameOverRes>>,
     sora_rig: Option<Res<SoraRig>>,
     game: Res<Game>,
-    mut cameras: Query<&mut Camera, With<MenuCamera>>,
+    mut cameras: Query<(&mut Camera, &MenuCamera)>,
     mut roots: Query<&mut Visibility, With<MenuModelRoot>>,
     parts: Query<(&MenuModelPart, &Mesh3d)>,
     mut meshes: ResMut<Assets<Mesh>>,
 ) {
-    let Some(model) = model else { return };
+    let Some(mut model) = model else { return };
     // The game-over list shows Sora on the GAMEOVER set's motion.
     let over = game_over.as_ref().and_then(|g| g.model_time());
-    let time = camp
-        .and_then(|c| c.open.as_ref().and_then(|m| m.model_time))
-        .or(over);
-    if let Ok(mut camera) = cameras.single_mut() {
-        camera.is_active = time.is_some();
+    let camp_time = camp.and_then(|c| c.open.as_ref().and_then(|m| m.model_time));
+    let time = camp_time.or(over);
+    // The game-over list shows Sora alone.
+    for (mut camera, slot) in &mut cameras {
+        camera.is_active = if slot.0 == 0 {
+            time.is_some()
+        } else {
+            camp_time.is_some()
+        };
+    }
+    // The members walk while the camp shows them (FUN_1403001b0 per slot).
+    match camp_time {
+        Some(t) => {
+            let last = model.last_time;
+            model.steps += menu_friend::steps_between(last, t);
+            model.last_time = Some(t);
+        }
+        None => {
+            model.last_time = None;
+            model.steps = 0;
+        }
     }
     for mut v in &mut roots {
         let want = if time.is_some() {
@@ -6503,12 +6642,25 @@ fn menu_model_present(
     let Some(t) = time else { return };
     if let (Some(t), Some(g), Some(rig)) = (over, game_over.as_ref(), sora_rig.as_ref()) {
         if let Some(positions) = game_over::pose(g, rig, t) {
-            for (part, handle) in &parts {
-                let positions = model.indices[part.0].iter().map(|&i| positions[i as usize]);
+            for (part, handle) in parts.iter().filter(|(p, _)| p.member == 0) {
+                let positions = model.indices[part.ordinal]
+                    .iter()
+                    .map(|&i| positions[i as usize]);
                 visual::room::set_positions(&mut meshes, &handle.0, positions);
             }
         }
         return;
+    }
+    for (part, handle) in parts.iter().filter(|(p, _)| p.member > 0) {
+        let Some(Some(f)) = model.friends.get(part.member - 1) else {
+            continue;
+        };
+        let k = menu_friend::time(model.steps, f.length).min(f.frames.len() - 1);
+        let pose = &f.frames[k];
+        let positions = f.indices[part.ordinal]
+            .iter()
+            .map(|&i| pose[i as usize].to_array());
+        visual::room::set_positions(&mut meshes, &handle.0, positions);
     }
     // The member model is base Sora's walk; in a Drive form the room's
     // clips are the form's.
@@ -6519,8 +6671,8 @@ fn menu_model_present(
     let f = (t as usize).min(c.len() - 1);
     let root = c.root[f.min(c.root.len() - 1)];
     let pose = c.frame(f);
-    for (part, handle) in &parts {
-        let positions = model.indices[part.0]
+    for (part, handle) in parts.iter().filter(|(p, _)| p.member == 0) {
+        let positions = model.indices[part.ordinal]
             .iter()
             .map(|&i| (pose[i as usize] + root).to_array());
         visual::room::set_positions(&mut meshes, &handle.0, positions);
@@ -10433,6 +10585,14 @@ fn combat_tick(game: &mut Game, tick: u64) {
         {
             sound_queue.push((id as u32, "sora_hit"));
         }
+        // Sora's own victim sound (FUN_140410d60), from his object's bank.
+        if counted {
+            effect_queue.push(EffectRequest::VictimSound {
+                object: PLAYER_OBJECT,
+                reaction: rows[row].reaction,
+                key: PLAYER_VICTIM,
+            });
+        }
         // The claw's spark on Sora's hit shape, from the Shadow's own
         // effects (FUN_1403d1b40; a sphere here, so height = radius).
         if counted && rows[row].hit_effect != 0 {
@@ -11561,7 +11721,33 @@ struct CampRes {
     notice_sheets: HashMap<String, usize>,
     /// The menus' language code (`menu/<lang>/` notice and photo files).
     lang: String,
+    /// The save point's file menu (save.2ld), read the first time it opens
+    /// with its sheets; the install it saves beside.
+    files: Option<crate::save_files::Files>,
+    steam_root: PathBuf,
+    /// Each character's obtained-order ability list and seen bits
+    /// (save+0x4278 / +0x41f8 for Sora, +0x4318 / +0x4204 for the party),
+    /// by character id (Sora 1).
+    ability_marks: HashMap<u8, (Vec<u16>, Vec<bool>)>,
 }
+
+/// FUN_140368ed0 at the camp's start for one member: its order list and
+/// seen bits from the room, the new marks of this camp.
+fn with_marks(
+    c: &CampRes,
+    character: u8,
+    mut m: pause_menu::abilities::MemberAbilities,
+) -> pause_menu::abilities::MemberAbilities {
+    let cap = if character == SORA_CHARACTER { 80 } else { 48 };
+    let (mut order, mut seen) = c.ability_marks.get(&character).cloned().unwrap_or_default();
+    m.new = pause_menu::abilities::new_marks(&mut order, &mut seen, &m.slots, cap);
+    m.order = order;
+    m.seen = seen;
+    m
+}
+
+/// Sora's character id (FUN_1403e60c0 maps Roxas 0xe to it too).
+const SORA_CHARACTER: u8 = 1;
 
 /// Sheet slots of the journal's images.
 #[derive(Default)]
@@ -11579,7 +11765,10 @@ struct JournalSheets {
 impl CampRes {
     /// A menu (camp, curtain or journal) holds the screen and the pad.
     fn menu_up(&self) -> bool {
-        self.open.is_some() || self.journal.is_some() || self.curtain.is_some()
+        self.open.is_some()
+            || self.journal.is_some()
+            || self.curtain.is_some()
+            || self.files.as_ref().is_some_and(|f| f.ui.is_some())
     }
 }
 
@@ -11901,6 +12090,8 @@ fn camp_tick(
     if game.autoplay.is_some() {
         let logical = if let Some(tour) = &game.ability_tour {
             tour.logical(game.tick)
+        } else if game.save_point_tour {
+            reaction_command::save_tour_logical(tick)
         } else if game.magic_tour || game.sephiroth_tour {
             // The magic and Sephiroth tours never open the camp.
             0
@@ -11927,6 +12118,9 @@ fn camp_tick(
     }
     if game.duel && c.open.is_none() && game.duel_camp.is_none() && c.pad.pressed & 0x2 != 0 {
         game.duel_start = true;
+    }
+    if save_menu_tick(c, &mut game, &mut audio, &mut frame, &mut images) {
+        return;
     }
     let mut sounds = Vec::new();
     let layout = &c.source.menu.layout;
@@ -12088,6 +12282,18 @@ fn camp_tick(
             game.config_flags = c.config_flags;
             c.stock = menu.data.items.counts.clone();
             c.seen = menu.data.items.seen.clone();
+            // The obtained-order lists and seen bits stay with each
+            // character (a Party swap reorders the camp's pages).
+            for (i, a) in menu.data.abilities.members.iter().enumerate() {
+                let character = match i {
+                    0 => SORA_CHARACTER,
+                    _ => menu.data.items.equipment.get(i).map_or(0, |e| e.character),
+                };
+                if character != 0 {
+                    c.ability_marks
+                        .insert(character, (a.order.clone(), a.seen.clone()));
+                }
+            }
             c.shortcuts = menu.data.customize.shortcuts;
             if let Some(e) = menu.data.items.equipment.first() {
                 c.equipment = e.clone();
@@ -12147,7 +12353,14 @@ fn camp_tick(
             // The party members' records and HP / MP, by character (a Party
             // swap reorders the camp's pages; the room's party order is
             // not written back).
-            for rt in game.party.iter_mut() {
+            let Game {
+                party,
+                ability_source,
+                party_reload,
+                party_limits,
+                ..
+            } = &mut *game;
+            for rt in party.iter_mut() {
                 let Some(m) = menu
                     .data
                     .items
@@ -12166,6 +12379,13 @@ fn camp_tick(
                         menu.data.abilities.members.get(m),
                         menu.data.customize.styles.get(m).copied(),
                     );
+                    // FUN_1402fc760 → FUN_1403c2100: the record's status
+                    // totals follow its equipment.
+                    rt.gear = ability_source.gear(e, None);
+                    // A new staff or shield: the member's weapon object.
+                    if let Some(src) = party_reload.as_ref() {
+                        party_room::start_reweapon(src, party_limits, rt);
+                    }
                 }
                 if let Some(p) = menu.data.panels.members.get(m) {
                     rt.hp = p.hp;
@@ -12181,7 +12401,8 @@ fn camp_tick(
                     "frequency": m.save.frequency.to_vec(), "items": m.save.items.to_vec(),
                     "originals": m.save.originals.to_vec(),
                     "abilities": m.save.abilities.iter().filter(|&&v| v != 0).copied().collect::<Vec<_>>(),
-                    "weapon": m.save.weapon, "hp": m.hp, "mp": m.mp.cur})).collect();
+                    "weapon": m.save.weapon, "hp": m.hp, "mp": m.mp.cur,
+                    "gear": [m.gear.strength, m.gear.magic, m.gear.defense]})).collect();
                 game.event(serde_json::json!({"event":"camp_party","tick":tick,"members":records}));
             }
             // Items used in the camp change the room's HP / MP.
@@ -12411,13 +12632,17 @@ fn member_pages(
         &equipment,
         None,
     );
-    let abilities = pause_menu::abilities::MemberAbilities {
-        slots: s.abilities.to_vec(),
-        ap_max: totals.ap,
-        weapon_ability,
-        form_weapon_abilities: Vec::new(),
-        frequency: s.frequency.to_vec(),
-    };
+    let abilities = with_marks(
+        c,
+        m.character,
+        pause_menu::abilities::MemberAbilities {
+            slots: s.abilities.to_vec(),
+            ap_max: totals.ap,
+            weapon_ability,
+            frequency: s.frequency.to_vec(),
+            ..Default::default()
+        },
+    );
     let used = pause_menu::abilities::used(&pause_menu::abilities::entries(
         &c.source.items.table,
         &abilities,
@@ -12533,13 +12758,17 @@ fn camp_data(
     n.magic += i32::from(gear.magic);
     n.defense += i32::from(gear.defense);
     n.ap += i32::from(gear.ap);
-    let sora_abilities = pause_menu::abilities::MemberAbilities {
-        slots: c.ability_slots.clone(),
-        ap_max: n.ap,
-        weapon_ability: c.source.weapon_ability,
-        form_weapon_abilities: form_abilities.clone(),
-        frequency: Vec::new(),
-    };
+    let sora_abilities = with_marks(
+        c,
+        SORA_CHARACTER,
+        pause_menu::abilities::MemberAbilities {
+            slots: c.ability_slots.clone(),
+            ap_max: n.ap,
+            weapon_ability: c.source.weapon_ability,
+            form_weapon_abilities: form_abilities.clone(),
+            ..Default::default()
+        },
+    );
     let ap_used = pause_menu::abilities::used(&pause_menu::abilities::entries(
         &c.source.items.table,
         &sora_abilities,
@@ -12742,6 +12971,135 @@ fn journal_data(
     }
 }
 
+/// The save point's file menu (FUN_1403a8b10 case 0x37 → FUN_1402e78e0):
+/// opened when Save is chosen, then fed the camp's pad until it closes.
+/// Returns true while it holds the pad.
+fn save_menu_tick(
+    c: &mut CampRes,
+    game: &mut Game,
+    audio: &mut Audio,
+    frame: &mut Ui2dFrame,
+    images: &mut Assets<Image>,
+) -> bool {
+    let tick = game.tick;
+    let mut sounds = Vec::new();
+    if std::mem::take(&mut game.save_menu_wanted) && !c.menu_up() {
+        if c.files.is_none()
+            && let Some(source) = c.picture_source.clone()
+        {
+            // Unattended runs save into generated files kept in memory.
+            let backend = if game.autoplay.is_some() {
+                Ok(crate::save_files::FileBackend::in_memory(
+                    crate::save_files::synthetic_container(),
+                ))
+            } else {
+                crate::save_files::FileBackend::open(&crate::launcher::data_dir(), &c.steam_root)
+            };
+            let sys = &c.source.sys;
+            match backend.and_then(|b| {
+                crate::save_files::Files::load(
+                    &source,
+                    (&sys.index, sys.ordinal, sys.name_hash),
+                    b,
+                    0,
+                )
+            }) {
+                Ok(mut f) => {
+                    for k in 0..f.menu.image_sizes.len() {
+                        if let Some(t) = f.menu.replacements[k].take() {
+                            f.sheets
+                                .push(frame.add_sheet(images, t.rgba, t.size, t.texel_scale));
+                        }
+                    }
+                    c.files = Some(f);
+                }
+                Err(e) => {
+                    game.event(
+                        serde_json::json!({"event":"file_menu_unavailable","tick":tick,
+                        "error":e.to_string()}),
+                    );
+                }
+            }
+        }
+        if let Some(f) = c.files.as_mut() {
+            f.backend.set_snapshot(save_snapshot(game));
+            let menu = save::menu::Menu::new(
+                save::menu::Kind::SavePoint { world_map: false },
+                &f.backend,
+                f.last_slot,
+            );
+            f.ui = Some(visual::file_menu::FileMenu::new(
+                menu,
+                f.texts.clone(),
+                &f.menu.layout,
+                c.source.font.widths.clone(),
+            ));
+            // The menu asks for its open sound (se000 #11) itself.
+            game.event(serde_json::json!({"event":"file_menu_open","tick":tick}));
+        }
+    }
+    let Some(f) = c.files.as_mut() else {
+        return false;
+    };
+    let Some(ui) = f.ui.as_mut() else {
+        return false;
+    };
+    let pressed = crate::save_files::inputs(c.pad.pressed, c.pad.repeat);
+    let layout = &f.menu.layout;
+    for e in ui.frame(layout, &mut f.backend, &pressed) {
+        match e {
+            save::menu::Event::Sound(n) => sounds.push(n as u32),
+            save::menu::Event::Saved { slot } => {
+                f.last_slot = Some(slot);
+                game.files_saved += 1;
+                game.event(serde_json::json!({"event":"file_saved","tick":tick,"slot":slot}));
+            }
+            save::menu::Event::Closed => ui.close(layout),
+            // [Not built] The room cannot return to the title.
+            other => {
+                game.event(serde_json::json!({"event":"file_menu","tick":tick,
+                    "what":format!("{other:?}")}));
+                ui.close(layout);
+            }
+        }
+    }
+    if ui.is_finished() {
+        f.ui = None;
+        game.event(serde_json::json!({"event":"file_menu_closed","tick":tick}));
+    }
+    game.tick += 1;
+    for n in sounds {
+        game.event(serde_json::json!({"event":"sound","tick":tick,"id":n,"cause":"file menu"}));
+        let Audio { output, banks, .. } = audio;
+        if let (Some(output), Ok(Some(r))) = (output.as_ref(), banks.request(n))
+            && let Ok(mut mixer) = output.mixer.lock()
+        {
+            for layer in r.layers {
+                mixer.play(layer, n, r.volume, 1.);
+            }
+        }
+    }
+    true
+}
+
+/// What the room writes into a save: the place and the numbers a file card
+/// shows (the rest of the save image is not captured yet, issue #79).
+fn save_snapshot(game: &Game) -> save::data::SaveData {
+    use save::slots::field;
+    let mut d = save::data::SaveData::blank();
+    if let Some((world, area)) = game.save_place {
+        d.set_u8(field::WORLD, world);
+        d.set_u8(field::AREA, area);
+    }
+    let level = game.sora.vitals.level;
+    d.set_u8(field::PARTY + field::RECORD_LEVEL, level);
+    d.set_u32(field::PLAY_FRAMES, game.tick as u32);
+    let difficulty = game.enemy.as_ref().map_or(1, |rt| rt.difficulty as u32);
+    d.set_u32(field::DIFFICULTY, difficulty);
+    d.seal();
+    d
+}
+
 /// FUN_1403018e0's load (here at once): the item picture the camp asks for,
 /// from the install (`itempic/item-%03d.imd`).
 fn load_wanted_picture(c: &mut CampRes, frame: &mut Ui2dFrame, images: &mut Assets<Image>) {
@@ -12898,6 +13256,26 @@ fn camp_present(
         // The keyboard or mouse was last used: key caps (pad 0).
         pad: c.glyph as u8,
     };
+    if let Some(f) = &c.files
+        && let Some(ui) = &f.ui
+    {
+        let d = ui.draw(&f.menu, &font);
+        for (image, quads) in d.art {
+            if let Some(&sheet) = f.sheets.get(image) {
+                frame.draws.push((sheet, quads));
+            }
+        }
+        for (sheet, quads) in d.sheets {
+            let slot = match sheet {
+                visual::sprite_player::Sheet::Art(image) => f.sheets.get(image).copied(),
+                visual::sprite_player::Sheet::Font => Some(c.font_sheet),
+                visual::sprite_player::Sheet::Icon => Some(c.icon_sheet),
+            };
+            if let Some(slot) = slot {
+                frame.draws.push((slot, quads));
+            }
+        }
+    }
     if let Some(menu) = c.open.as_mut() {
         let art = c.art[c.glyph].or(c.art[0]).expect("camp art");
         for (sheet, mut quads) in menu.draw(&c.source.menu.layout, &font) {
@@ -12905,15 +13283,19 @@ fn camp_present(
                 pause_menu::Sheet::Art => art,
                 pause_menu::Sheet::Font => c.font_sheet,
                 pause_menu::Sheet::Icon => c.icon_sheet,
-                // Only Sora's model is rendered in this room.
+                // Sora's target, or the member's (MENU_FRIEND_n).
                 pause_menu::Sheet::Model(i) => {
-                    let Some(m) = model.as_ref().filter(|_| i == 0) else {
+                    let sheet = model.as_ref().and_then(|m| match i {
+                        0 => Some(m.sheet),
+                        _ => m.friends.get(i - 1)?.as_ref().map(|f| f.sheet),
+                    });
+                    let Some(sheet) = sheet else {
                         continue;
                     };
                     for q in &mut quads {
                         q.uv = [0, 0, MENU_TARGET[0] as i32, MENU_TARGET[1] as i32];
                     }
-                    m.sheet
+                    sheet
                 }
                 pause_menu::Sheet::Picture(id) => {
                     let Some(&Some(s)) = c.picture_sheets.get(&id) else {
@@ -14037,6 +14419,9 @@ fn run(mut args: Vec<PathBuf>) -> Result<AppExit, Box<dyn std::error::Error>> {
                 limit: None,
                 fx_at: None,
                 record: combat::HitRecord::new(true),
+                gear: player::equipment_stats::Totals::start(0, 0, 0, 0),
+                weapon_item: 0,
+                reload: None,
                 ko_fx: false,
                 cast_motion: 0,
                 reflected: false,
@@ -14102,6 +14487,7 @@ fn run(mut args: Vec<PathBuf>) -> Result<AppExit, Box<dyn std::error::Error>> {
         party_items_tour,
         party_camp_tour,
         party_limits: Arc::new(std::mem::take(&mut loaded.party_limits)),
+        party_reload: loaded.party_reload.take().map(Arc::new),
         party_limit: None,
         limit_request: None,
         limit_decide: None,
@@ -14148,6 +14534,9 @@ fn run(mut args: Vec<PathBuf>) -> Result<AppExit, Box<dyn std::error::Error>> {
         party_push: Vec::new(),
         talking: false,
         rc_queued: false,
+        save_menu_wanted: false,
+        files_saved: 0,
+        save_place: None,
         reaction_commands: None,
         reaction: Default::default(),
         offers_seen: 0,
@@ -14587,6 +14976,9 @@ fn run(mut args: Vec<PathBuf>) -> Result<AppExit, Box<dyn std::error::Error>> {
             picture_sheets: HashMap::new(),
             notice_sheets: HashMap::new(),
             lang: settings.loaded_or("us"),
+            files: None,
+            steam_root: args[0].clone(),
+            ability_marks: HashMap::new(),
         });
     }
     if let Some(src) = loaded.game_over.take() {
@@ -14634,6 +15026,7 @@ fn run(mut args: Vec<PathBuf>) -> Result<AppExit, Box<dyn std::error::Error>> {
             enemy_model,
             effect_atlas,
             npc_model,
+            menu_friends: std::mem::take(&mut loaded.menu_friends),
         })
         .insert_resource(rig)
         .insert_resource(SparkRing::default())
@@ -14789,7 +15182,7 @@ fn run(mut args: Vec<PathBuf>) -> Result<AppExit, Box<dyn std::error::Error>> {
                 skate_present,
                 present_enemy,
                 (enemy_gallery::present, present_spells, summon::present).chain(),
-                party_room::present,
+                (party_room::swap_weapons, party_room::present).chain(),
                 drive_room::party_visibility,
                 present_npc,
                 present_effects,

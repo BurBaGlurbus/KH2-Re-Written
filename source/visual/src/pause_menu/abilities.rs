@@ -51,6 +51,8 @@ const VISIBLE: usize = 9;
 /// Item type of abilities; the "on" name icon (0x1405ba700).
 const ABILITY_TYPE: u8 = 0x13;
 const EQUIPPED_ICON: u8 = 0x0d;
+/// A character row's badge offset from the row (camp-06 §2.3).
+const CHAR_BADGE_X: f32 = 100.;
 
 /// One member's abilities: 80 slots (bit 15 = equipped, 0 = empty), AP
 /// maximum and the equipped weapon's ability.
@@ -65,6 +67,81 @@ pub struct MemberAbilities {
     /// A party member's frequencies (record +0xf5, 31 bytes, indexed by
     /// FUN_1401dc060); empty for Sora.
     pub frequency: Vec<u8>,
+    /// The member's obtained-order list (ids, save+0x4278 for Sora,
+    /// +0x4318 + 0x60·(t−2) for the party) with each position's "new" bit
+    /// (DAT_140bf0dc0, set at the camp's start by FUN_140368ed0) and
+    /// "seen" bit (save+0x41f8 / +0x4204). Empty: no NEW! marks.
+    pub order: Vec<u16>,
+    pub new: Vec<bool>,
+    pub seen: Vec<bool>,
+}
+
+impl MemberAbilities {
+    /// The NEW! state of ability `id` (camp-06 §1.5): `Some(seen)` while
+    /// its position in the obtained-order list is new.
+    pub fn badge(&self, id: u16) -> Option<bool> {
+        let i = self.order.iter().position(|&o| o == id & 0x7fff)?;
+        self.new
+            .get(i)
+            .copied()
+            .unwrap_or(false)
+            .then(|| self.seen.get(i).copied().unwrap_or(false))
+    }
+
+    /// FUN_14036a5f0 / FUN_14036a3a0 for a whole member: `Some(all seen)`
+    /// when any position is new.
+    pub fn any_badge(&self) -> Option<bool> {
+        let new: Vec<usize> = (0..self.order.len())
+            .filter(|&i| self.new.get(i).copied().unwrap_or(false))
+            .collect();
+        (!new.is_empty()).then(|| {
+            new.iter()
+                .all(|&i| self.seen.get(i).copied().unwrap_or(false))
+        })
+    }
+
+    /// FUN_14036a120: visiting the row of `id` sets its seen bit.
+    pub fn see(&mut self, id: u16) {
+        if let Some(i) = self.order.iter().position(|&o| o == id & 0x7fff) {
+            if self.seen.len() <= i {
+                self.seen.resize(i + 1, false);
+            }
+            self.seen[i] = true;
+        }
+    }
+}
+
+/// FUN_140368ed0 for one member at the camp's start: the abilities in the
+/// record's slots that the obtained-order list lacks are appended (up to
+/// `cap`, 80 for Sora and 48 for the party), each position whose seen bit
+/// is clear is new, and a listed ability no longer in the slots is marked
+/// seen.
+pub fn new_marks(
+    order: &mut Vec<u16>,
+    seen: &mut Vec<bool>,
+    slots: &[u16],
+    cap: usize,
+) -> Vec<bool> {
+    for &s in slots {
+        let id = s & 0x7fff;
+        if id == 0 {
+            continue;
+        }
+        if order.len() >= cap {
+            break;
+        }
+        if !order.contains(&id) {
+            order.push(id);
+        }
+    }
+    seen.resize(order.len(), false);
+    let new: Vec<bool> = seen.iter().map(|&s| !s).collect();
+    for (i, &id) in order.iter().enumerate() {
+        if !slots.iter().any(|&s| s & 0x7fff == id) {
+            seen[i] = true;
+        }
+    }
+    new
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -230,6 +307,9 @@ pub(super) struct Ui {
     /// (FUN_140360270), right-aligned at the LightCur point.
     freqs: Vec<Id>,
     tabs: Vec<Id>,
+    /// The list rows' and the character rows' NEW! badges.
+    badges: Vec<Id>,
+    char_badges: Vec<Id>,
     frame: Option<Id>,
     bubble: Option<Id>,
     gauge: Option<Id>,
@@ -359,6 +439,24 @@ impl Camp {
             self.sprites.get_mut(r).offset = [0., pitch * i as f32];
             self.closers.push((r, TOP_ROWS.close));
             rows.push(r);
+        }
+        // A character row's NEW! badge at row base + (100, 0) (camp-06
+        // §2.3): any new ability, dim once all are seen.
+        self.ability_ui.char_badges.clear();
+        for (i, &r) in rows.iter().enumerate() {
+            let group = self
+                .data
+                .abilities
+                .members
+                .get(i)
+                .and_then(MemberAbilities::any_badge)
+                .map_or(BLANK, |seen| items::BADGE[seen as usize]);
+            let b = self
+                .sprites
+                .create(seq, PRIO_ROW + 1, ART, group, None, None);
+            self.child(b, r);
+            self.sprites.get_mut(b).offset = [CHAR_BADGE_X, 0.];
+            self.ability_ui.char_badges.push(b);
         }
         self.ability_ui.chars = MenuList::new(rows, cursor);
         let panel = self.sprites.create(
@@ -634,6 +732,7 @@ impl Camp {
         self.ability_ui.costs.clear();
         self.ability_ui.freqs.clear();
         self.ability_ui.tabs.clear();
+        self.ability_ui.badges.clear();
         for i in 0..visible {
             let r = self.sprites.create(seq, PRIO_LIST, ART, BLANK, None, None);
             self.child(r, panel);
@@ -659,6 +758,7 @@ impl Camp {
                 .create(seq, PRIO_LIST_BADGE, ART, BLANK, None, None);
             self.child(b, r);
             self.sprites.get_mut(b).offset = badge_at;
+            self.ability_ui.badges.push(b);
             let mut ft = self.row_text(Vec::new());
             ft.align = 1;
             let f = self
@@ -717,8 +817,21 @@ impl Camp {
         } else {
             self.build_gauge(seq);
         }
+        self.see_cursor_ability();
         self.ability_skin(seq);
         self.update_gauge(seq, true);
+    }
+
+    /// FUN_140363c70: the cursor's ability is seen (on entry and every
+    /// cursor change), before the rows are skinned again.
+    fn see_cursor_ability(&mut self) {
+        let member = self.ability_ui.member;
+        if let Some(e) = self.cursor_entry()
+            && e.slot.is_some()
+            && let Some(m) = self.data.abilities.members.get_mut(member)
+        {
+            m.see(e.id);
+        }
     }
 
     fn cursor_entry(&self) -> Option<Entry> {
@@ -758,6 +871,9 @@ impl Camp {
             ] {
                 self.sprites.set(seq, id, BLANK, None);
                 self.set_text(id, Vec::new());
+            }
+            if let Some(&b) = self.ability_ui.badges.get(i) {
+                self.sprites.set(seq, b, BLANK, None);
             }
             let nm = self.ability_ui.names[i];
             self.set_text(nm, Vec::new());
@@ -816,6 +932,15 @@ impl Camp {
             // FUN_140360270 draws it while the ability is equipped.
             if let Some(f) = e.freq.filter(|_| e.equipped) {
                 self.set_text(self.ability_ui.freqs[j], frequency_glyph(f));
+            }
+            // The NEW! badge (camp-06 §1.5); the weapon's ability has none.
+            let member = self.ability_ui.member;
+            if let (Some(&b), Some(seen)) = (
+                self.ability_ui.badges.get(j),
+                e.slot
+                    .and_then(|_| self.data.abilities.members.get(member)?.badge(e.id)),
+            ) {
+                self.sprites.set(seq, b, items::BADGE[seen as usize], None);
             }
         }
     }
@@ -1054,9 +1179,9 @@ impl Camp {
             sounds.push(s);
         }
         if moved && self.substate == 1 {
-            if self.ability_ui.list.scroll != scroll {
-                self.ability_skin(seq);
-            }
+            self.see_cursor_ability();
+            self.ability_skin(seq);
+            let _ = scroll;
             self.ability_list_mask();
             self.update_gauge(seq, true);
             self.ability_list_help(seq);
@@ -1363,8 +1488,7 @@ mod tests {
             slots: vec![0x89, 0xa2 | 0x8000, 0x52 | 0x8000, 0x5e],
             ap_max: 5,
             weapon_ability: 0x21e,
-            form_weapon_abilities: Vec::new(),
-            frequency: Vec::new(),
+            ..MemberAbilities::default()
         };
         let e = entries(&table, &m);
         let ids: Vec<u16> = e.iter().map(|e| e.id).collect();
@@ -1376,6 +1500,38 @@ mod tests {
         // Guard 2 + Combo Plus 1 (the weapon costs nothing).
         assert_eq!(used(&e), 3);
         assert!(e.iter().all(|e| e.freq.is_none()));
+    }
+
+    #[test]
+    fn new_abilities_badge_until_seen_and_stay_seen() {
+        // First camp: two abilities learned, both new.
+        let (mut order, mut seen) = (Vec::new(), Vec::new());
+        let slots = vec![0x52 | 0x8000, 0x89];
+        let new = new_marks(&mut order, &mut seen, &slots, 80);
+        assert_eq!(order, vec![0x52, 0x89]);
+        assert_eq!(new, vec![true, true]);
+        let mut m = MemberAbilities {
+            slots: slots.clone(),
+            order,
+            new,
+            seen,
+            ..MemberAbilities::default()
+        };
+        assert_eq!(m.badge(0x52 | 0x8000), Some(false));
+        assert_eq!(m.any_badge(), Some(false));
+        m.see(0x52);
+        assert_eq!(m.badge(0x52), Some(true));
+        assert_eq!(m.any_badge(), Some(false));
+        m.see(0x89);
+        assert_eq!(m.any_badge(), Some(true));
+        // Next camp: a third ability; the seen two are no longer new.
+        let (mut order, mut seen) = (m.order, m.seen);
+        let new = new_marks(&mut order, &mut seen, &[0x52, 0x89, 0x5e], 80);
+        assert_eq!(new, vec![false, false, true]);
+        // An ability no longer in the slots is marked seen.
+        let new = new_marks(&mut order, &mut seen, &[0x52], 80);
+        assert_eq!(new, vec![false, false, true]);
+        assert_eq!(seen, vec![true, true, true]);
     }
 
     #[test]

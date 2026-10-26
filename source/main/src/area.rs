@@ -126,6 +126,9 @@ pub struct LoadedArea {
     /// type 7): scene position (Y up) and the REACTION entry of its model's
     /// collision table (command 0x37 "Save").
     pub save_points: Vec<(Vec3, data::object_collision::Entry)>,
+    /// The save point object's effects (`obj/SAVE_POINT.a.us`) when the
+    /// area has save points.
+    pub save_point_pax: Option<Arc<data::object_effect::Pax>>,
 }
 
 /// What the field and battle music slots must do on entering an area
@@ -429,6 +432,12 @@ impl AreaSource {
         let pax = map_pax(&map, &replacements).map(Arc::new);
         timer.mark("area: collision and map effects");
         let save_points = self.save_points(&spawns);
+        let save_point_pax = if save_points.is_empty() {
+            None
+        } else {
+            data::object_effect::read_file_pax(&mut self.library, "obj/SAVE_POINT.a.us")
+                .map(Arc::new)
+        };
         let player = Area::player_spawn(&spawns)
             .map(|s| {
                 let [x, y, z] = s.entity.position;
@@ -455,6 +464,7 @@ impl AreaSource {
                 player,
                 pax,
                 save_points,
+                save_point_pax,
             },
         ))
     }

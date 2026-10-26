@@ -1,6 +1,7 @@
 //! The unattended `--party-camp-tour <dir>` (in the ability tour's setup,
 //! a room with Donald and Goofy): the camp's Customize, Abilities, Status
-//! and Equip pages of Donald, each switched to Goofy with R2, and a check
+//! and Equip pages of Donald, each switched to Goofy with R2, the top
+//! level's and Party's member models, Donald's second staff, and a check
 //! that Donald's record took every change.
 //!
 //! Customize: △ on Battle Style (Technic → Target), △ on Thunder (Free →
@@ -24,8 +25,9 @@ const SCREEN: u64 = 90;
 
 /// (wait, press, capture 35 ticks after it).
 const STEPS: &[(u64, u64, bool)] = &[
-    // Top: Items → Abilities → Customize.
-    (20, DOWN, false),
+    // Top: the party frame with the three models; Items → Abilities →
+    // Customize.
+    (20, DOWN, true),
     (MOVE, DOWN, false),
     (20, DECIDE, false),
     // 0x19: Donald's preview.
@@ -73,7 +75,7 @@ const STEPS: &[(u64, u64, bool)] = &[
     (20, DECIDE, true),
     (SCREEN, CANCEL, false),
     (SCREEN, CANCEL, false),
-    // Items: Donald → Equip, his weapon list, R2 to Goofy.
+    // Items: Donald → Equip, his weapon list, the second staff, R2 to Goofy.
     (SCREEN, UP, false),
     (MOVE, UP, false),
     (MOVE, UP, false),
@@ -82,9 +84,17 @@ const STEPS: &[(u64, u64, bool)] = &[
     (SCREEN, DOWN, true),
     (20, DECIDE, true),
     (SCREEN, DECIDE, true),
-    (SCREEN, CANCEL, false),
+    (MOVE, DOWN, false),
+    (MOVE, DECIDE, true),
     (SCREEN, R2, true),
     (SCREEN, CANCEL, false),
+    (SCREEN, CANCEL, false),
+    // Party: the members' cards with their models.
+    (SCREEN, DOWN, false),
+    (MOVE, DOWN, false),
+    (MOVE, DOWN, false),
+    (20, DECIDE, false),
+    (SCREEN, UP, true),
     (SCREEN, CANCEL, false),
     (SCREEN, CANCEL, false),
 ];
@@ -103,6 +113,8 @@ pub fn tour(slots: Vec<u16>) -> Tour {
             captures.push(tick + 35);
         }
     }
+    // The room after the camp: Donald holds the staff he was given.
+    captures.push(tick + 90);
     Tour {
         inputs,
         captures,
@@ -114,11 +126,11 @@ pub fn tour(slots: Vec<u16>) -> Tour {
 }
 
 /// Donald's record after the tour: Target Attack, Thunder equipped at
-/// Well-Balanced, Potion on Auto-Reload at Last hope!.
+/// Well-Balanced, Potion on Auto-Reload at Last hope!, a staff in hand.
 pub fn donald_passes(s: &player::party_members::Save) -> bool {
     let thunder = s.abilities.contains(&0x80a7);
     let potion = s.originals[..usize::from(s.item_slots)].contains(&1);
-    s.style == 1 && thunder && s.frequency[9] == 1 && potion && s.frequency[0] == 2
+    s.style == 1 && thunder && s.frequency[9] == 1 && potion && s.frequency[0] == 2 && s.weapon != 0
 }
 
 #[cfg(test)]
@@ -129,7 +141,7 @@ mod tests {
     fn inputs_and_captures_end_before_the_close() {
         let t = tour(Vec::new());
         assert!(t.inputs.windows(2).all(|w| w[0].0 < w[1].0));
-        assert!(t.captures.iter().all(|&c| c < t.close));
+        assert!(t.captures.iter().all(|&c| c < t.end));
         assert_eq!(t.inputs.last().map(|i| i.0), Some(t.close));
     }
 }

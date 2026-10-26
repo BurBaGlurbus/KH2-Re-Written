@@ -21,6 +21,8 @@ use visual::{
 pub struct FileBackend {
     container: Container,
     store: Option<Store>,
+    /// What Save writes: the host's picture of the running game.
+    snapshot: Option<SaveData>,
 }
 
 impl FileBackend {
@@ -29,6 +31,7 @@ impl FileBackend {
         Self {
             container,
             store: None,
+            snapshot: None,
         }
     }
 
@@ -66,7 +69,14 @@ impl FileBackend {
         Ok(Self {
             container,
             store: Some(own),
+            snapshot: None,
         })
+    }
+
+    /// The state the next Save writes (the host captures it when the menu
+    /// opens).
+    pub fn set_snapshot(&mut self, data: SaveData) {
+        self.snapshot = Some(data);
     }
 
     fn persist(&self) -> bool {
@@ -101,7 +111,7 @@ impl Backend for FileBackend {
     }
 
     fn capture(&mut self) -> SaveData {
-        SaveData::blank()
+        self.snapshot.clone().unwrap_or_else(SaveData::blank)
     }
 }
 

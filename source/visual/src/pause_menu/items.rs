@@ -45,6 +45,8 @@ const GREY: usize = 119;
 const RED: usize = 122;
 const YELLOW: usize = 124;
 pub(super) const BADGE: [usize; 2] = [50, 49];
+/// Item type of the magic (Fire, Blizzard, ...: the "new magic" checks).
+const MAGIC_KIND: u8 = 0x12;
 
 const STOCK_FRAME: [usize; 3] = [293, 294, 295];
 const STOCK_EMPTY: usize = 302;
@@ -175,6 +177,28 @@ pub struct ItemsData {
     /// "New" items (DAT_140bf0dc0) and the seen bits (save+0x41a8).
     pub new_items: Vec<u16>,
     pub seen: Vec<u16>,
+}
+
+/// FUN_14036aa70(−1): the new magic (item type 0x12) of this camp.
+fn new_magic(d: &ItemsData) -> Vec<u16> {
+    d.new_items
+        .iter()
+        .copied()
+        .filter(|&id| d.table.iter().any(|i| i.id == id && i.kind == MAGIC_KIND))
+        .collect()
+}
+
+/// FUN_14036aa70(id) / FUN_14036a9a0(id): `Some(seen)` while magic `id` is
+/// new.
+pub fn magic_badge(d: &ItemsData, id: u16) -> Option<bool> {
+    (id != 0 && new_magic(d).contains(&id)).then(|| d.seen.contains(&id))
+}
+
+/// FUN_14036aa70(−1) / FUN_14036a9a0(−1): `Some(all seen)` when any magic is
+/// new.
+pub fn any_magic_badge(d: &ItemsData) -> Option<bool> {
+    let new = new_magic(d);
+    (!new.is_empty()).then(|| new.iter().all(|i| d.seen.contains(i)))
 }
 
 /// The camp's "new" items (FUN_140369520): the stock's items the save has
@@ -688,6 +712,20 @@ impl Camp {
 
     /// Items of the "new" types (0x1405bc560) not yet in the stock list's
     /// seen bits.
+    /// FUN_14036a8f0 / FUN_14036a7f0: `Some(seen)` while item `id` is new.
+    pub(super) fn item_badge(&self, id: u16) -> Option<bool> {
+        (id != 0 && self.data.items.new_items.contains(&id))
+            .then(|| self.data.items.seen.contains(&id))
+    }
+
+    pub(super) fn magic_badge(&self, id: u16) -> Option<bool> {
+        magic_badge(&self.data.items, id)
+    }
+
+    pub(super) fn any_magic_badge(&self) -> Option<bool> {
+        any_magic_badge(&self.data.items)
+    }
+
     pub(super) fn new_stock_items(&self) -> Vec<u16> {
         self.data
             .items
@@ -2056,6 +2094,26 @@ mod tests {
         assert_eq!(count_text(12), vec![0x2d, 0x22, 0x23]);
         assert_eq!(type_icon(0, true), 0xc);
         assert_eq!(type_icon(9, false), 0xb);
+    }
+
+    #[test]
+    fn only_new_magic_carries_the_customize_badge() {
+        let mut d = data();
+        d.table.push(ItemInfo {
+            id: 0x15,
+            kind: MAGIC_KIND,
+            ..ItemInfo::default()
+        });
+        d.new_items = vec![1, 0x15];
+        // The potion is new but not magic.
+        assert_eq!(magic_badge(&d, 1), None);
+        assert_eq!(magic_badge(&d, 0x15), Some(false));
+        assert_eq!(any_magic_badge(&d), Some(false));
+        d.seen.push(0x15);
+        assert_eq!(magic_badge(&d, 0x15), Some(true));
+        assert_eq!(any_magic_badge(&d), Some(true));
+        d.new_items = vec![1];
+        assert_eq!(any_magic_badge(&d), None);
     }
 
     #[test]

@@ -4,9 +4,10 @@
 //! item slots with the stat comparison (5, 7–9: FUN_140356b00 /
 //! FUN_1403581a0 / FUN_140355770 / FUN_1402fd410 modes 2–3), the
 //! auto-reload toggle and its box (3: FUN_140354dc0 / FUN_140355660) and
-//! the accessory AP box (4: FUN_140359200 / FUN_140355570). Form
-//! sub-weapons (6), item pictures, NEW! badges, the SELECT notice and the
-//! status recompute after an equip are not built.
+//! the accessory AP box (4: FUN_140359200 / FUN_140355570), and the pick
+//! lists' NEW! badges (FUN_14036a8f0 / FUN_14036a7f0, seen on each cursor
+//! change by FUN_140358ba0). Form sub-weapons (6), item pictures, the
+//! SELECT notice and the status recompute after an equip are not built.
 use super::items::{Grid, type_icon};
 use super::*;
 
@@ -159,6 +160,8 @@ pub(super) struct Ui {
     pub(super) pick: Grid,
     pick_rows: Vec<Id>,
     pick_boxes: Vec<Id>,
+    /// The pick rows' NEW! badges (P+0xa960+0x1f8·i, prio 0x753f).
+    pick_badges: Vec<Id>,
     sec: usize,
     slot: usize,
     reload_id: u16,
@@ -1068,6 +1071,8 @@ impl Camp {
         let mut rows = Vec::new();
         self.equip_ui.pick_rows.clear();
         self.equip_ui.pick_boxes.clear();
+        self.equip_ui.pick_badges.clear();
+        let badge_at = [rg.light_position_x as f32, rg.text_position_y as f32];
         for i in 0..rows_n {
             let mut t = Self::kept_text(Vec::new(), TEXT_SIZE);
             t.group_position = false;
@@ -1082,6 +1087,10 @@ impl Camp {
             ct.align = 1;
             ct.keep_rgb = false;
             self.sprites.get_mut(r).after = Some(ct);
+            let nb = self.sprites.create(seq, PRIO_INFO, ART, BLANK, None, None);
+            self.child(nb, r);
+            self.sprites.get_mut(nb).offset = badge_at;
+            self.equip_ui.pick_badges.push(nb);
             rows.push(r);
             if weapons {
                 let bp = seq.groups[ABILITY_BOX[sec]].ui_padding as f32;
@@ -1170,6 +1179,9 @@ impl Camp {
                 self.sprites.set(seq, b, BLANK, None);
                 self.set_text(b, Vec::new());
             }
+            if let Some(&b) = self.equip_ui.pick_badges.get(i) {
+                self.sprites.set(seq, b, BLANK, None);
+            }
         }
         let picks = self.equip_ui.picks.clone();
         if weapons && picks.is_empty() {
@@ -1195,6 +1207,11 @@ impl Camp {
             self.set_text(r, name);
             if let Some(t) = self.sprites.get_mut(r).after.as_mut() {
                 t.bytes = items::count_text(n);
+            }
+            // A new item's badge, dim once seen (FUN_14036a8f0 / 7f0).
+            if let (Some(&b), Some(seen)) = (self.equip_ui.pick_badges.get(i), self.item_badge(id))
+            {
+                self.sprites.set(seq, b, items::BADGE[seen as usize], None);
             }
             if weapons
                 && let Some(st) = self.item_stats(id)
@@ -1549,9 +1566,14 @@ impl Camp {
         }
         if moved && self.substate == 1 {
             self.picture_close(seq);
-            if self.equip_ui.pick.scroll != scroll {
-                self.pick_fill(seq);
+            // FUN_140358ba0: the new item under the cursor is seen.
+            if let Some(id) = self.pick_cursor()
+                && self.item_badge(id) == Some(false)
+            {
+                self.data.items.seen.push(id);
             }
+            self.pick_fill(seq);
+            let _ = scroll;
             self.pick_help(seq);
         }
         let mut leave = false;

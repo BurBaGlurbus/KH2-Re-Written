@@ -45,6 +45,10 @@ pub struct Field<'a> {
     pub lock: Option<u64>,
     pub sora_target: Option<u64>,
     pub enemies: &'a [Candidate],
+    /// The member's current action entry (obj+0xee8) is an action or an
+    /// item (entry flag bit 0 clear), not a wait command
+    /// ([`crate::party_members::Follower::acted`]).
+    pub acted: bool,
 }
 
 fn distance(a: Vec3, b: Vec3) -> f32 {
@@ -85,8 +89,9 @@ pub fn drops(style: u8, current: &Candidate, f: &Field) -> bool {
         TARGET => f.lock.is_some_and(|l| l != current.key),
         // FUN_1401b35e0: kept within reach and near Sora.
         HUDDLE => !(me <= KEEP && sora <= (NEAR_SORA + AWAY_FROM_SORA) * 0.5),
-        // FUN_1401b33f0: kept within reach and away from Sora.
-        PARTY => !(me <= KEEP && sora >= AWAY_FROM_SORA),
+        // FUN_1401b33f0: dropped after an action entry; else kept within
+        // reach and away from Sora.
+        PARTY => f.acted || !(me <= KEEP && sora >= AWAY_FROM_SORA),
         // FUN_1401b3700 always picks again; FUN_1401b35d0 never does.
         SORA => true,
         _ => false,
@@ -147,7 +152,12 @@ pub fn pick(style: u8, f: &Field) -> Option<u64> {
 
 /// One member's targeting state: the target's key and the leash flag
 /// (obj+0xe18 bit 6), which the member clears once it stands at its spot
-/// behind Sora (FUN_1401b41a0).
+/// behind Sora (FUN_1401b41a0). While the flag stands the member has no
+/// target: `FUN_1401b4d20` (a target to act on) reads it as none, so no
+/// action entry that needs one is eligible (`FUN_1401b2880`) and the
+/// acts stop facing and closing in (`FUN_1401ccba0`, `FUN_1401ce8f0`),
+/// and the style think (`FUN_1401b3340`, vtable 0x142b976d0) returns
+/// before its battle states.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Targeting {
     pub target: Option<u64>,
@@ -157,8 +167,8 @@ pub struct Targeting {
 impl Targeting {
     /// FUN_1401b8910 for one tick: out of battle no target; the leash
     /// raises the flag; a target that is gone, or whose keep test drops
-    /// it, is picked again. While the flag stands the member follows Sora
-    /// [I: the flag's reader was not traced].
+    /// it, is picked again. While the flag stands the member has no target
+    /// and follows Sora.
     pub fn update(&mut self, style: u8, battle: bool, f: &Field) -> Option<u64> {
         let flat = ((f.me[0] - f.sora[0]).powi(2) + (f.me[2] - f.sora[2]).powi(2)).sqrt();
         if flat > leash(style) {
@@ -202,6 +212,7 @@ mod tests {
             lock: None,
             sora_target: None,
             enemies,
+            acted: false,
         }
     }
 
@@ -248,6 +259,17 @@ mod tests {
         assert_eq!(pick(PARTY, &f), Some(3));
         assert!(drops(PARTY, &e[1], &f));
         assert!(!drops(PARTY, &at(4, 1100.), &f));
+    }
+
+    #[test]
+    fn party_attack_picks_again_after_an_action_entry() {
+        let e = [at(4, 1100.)];
+        let mut f = field(&e);
+        assert!(!drops(PARTY, &e[0], &f));
+        f.acted = true;
+        assert!(drops(PARTY, &e[0], &f));
+        // The other styles' keep tests do not read it.
+        assert!(!drops(TARGET, &e[0], &f));
     }
 
     #[test]

@@ -136,6 +136,8 @@ pub(super) struct Ui {
     /// The frequency glyphs at the rows' right end (FUN_14035add0).
     freqs: Vec<Id>,
     headings: Vec<Id>,
+    /// The list rows' NEW! badges (B+0xa960+0x1f8·i, prio P+3).
+    badges: Vec<Id>,
     frame: Option<Id>,
     bubble: Option<Id>,
     /// The member an L2 / R2 switch goes to (DAT_140746588).
@@ -401,6 +403,24 @@ impl Camp {
                 .create(seq, PRIO_ROW, ART, TOP_ROWS.appear, Some(queued), Some(t));
             self.sprites.get_mut(r).offset = [0., pitch * i as f32];
             self.closers.push((r, TOP_ROWS.close));
+            // Sora's row carries the NEW! badge while some magic is new
+            // (camp-07 §3.1), at the row group's (100, 0).
+            if i == 0
+                && let Some(seen) = self.any_magic_badge()
+            {
+                let at = &seq.groups[TOP_ROWS.appear];
+                let b = self.sprites.create(
+                    seq,
+                    PRIO_ROW + 1,
+                    ART,
+                    items::BADGE[seen as usize],
+                    None,
+                    None,
+                );
+                self.child(b, r);
+                self.sprites.get_mut(b).offset =
+                    [at.light_position_x as f32, at.text_position_y as f32];
+            }
             rows.push(r);
         }
         self.custom_ui.chars = MenuList::new(rows, cursor);
@@ -612,6 +632,7 @@ impl Camp {
         self.custom_ui.labels.clear();
         self.custom_ui.freqs.clear();
         self.custom_ui.headings.clear();
+        self.custom_ui.badges.clear();
         for i in 0..VISIBLE {
             let r = self.sprites.create(seq, P, ART, BLANK, None, None);
             self.child(r, panel);
@@ -630,9 +651,13 @@ impl Camp {
             let f = self.sprites.create(seq, P + 2, ART, WHITE, None, Some(ft));
             self.child(f, r);
             self.sprites.get_mut(f).offset = right_at;
+            let b = self.sprites.create(seq, P + 3, ART, BLANK, None, None);
+            self.child(b, r);
+            self.sprites.get_mut(b).offset = right_at;
             self.custom_ui.rows.push(r);
             self.custom_ui.labels.push(t);
             self.custom_ui.freqs.push(f);
+            self.custom_ui.badges.push(b);
         }
         for k in 0..VISIBLE {
             let mut t = Text::new(Vec::new(), heading_size);
@@ -667,9 +692,22 @@ impl Camp {
             lines: VISIBLE,
         };
         self.customize_mask();
+        self.see_cursor_magic();
         let t = self.data.abilities.texts.switch.clone();
         self.show_banner(seq, t);
         self.customize_skin(seq);
+    }
+
+    /// FUN_14035e490 / FUN_14036a220: resting on a shortcut or MP Charge
+    /// row sees its new magic (on entry and every cursor change).
+    fn see_cursor_magic(&mut self) {
+        if let Some(e) = self.customize_cursor_entry()
+            && e.cat < 2
+            && self.magic_badge(e.id).is_some()
+            && !self.data.items.seen.contains(&e.id)
+        {
+            self.data.items.seen.push(e.id);
+        }
     }
 
     fn customize_cursor_entry(&self) -> Option<Entry> {
@@ -715,6 +753,9 @@ impl Camp {
             let t = self.custom_ui.labels[k];
             self.sprites.set(seq, t, WHITE, None);
             self.set_text(t, Vec::new());
+            if let Some(&b) = self.custom_ui.badges.get(k) {
+                self.sprites.set(seq, b, BLANK, None);
+            }
         }
         let n = self.custom_ui.entries.len();
         let s = self.custom_ui.list.scroll;
@@ -747,6 +788,10 @@ impl Camp {
                 .set(seq, self.custom_ui.rows[v], ROW[e.cat], None);
             let text = self.customize_text(e, false);
             self.set_text(self.custom_ui.labels[v], text);
+            // The row's new magic (camp-07 §4.2).
+            if let (Some(&b), Some(seen)) = (self.custom_ui.badges.get(v), self.magic_badge(e.id)) {
+                self.sprites.set(seq, b, items::BADGE[seen as usize], None);
+            }
         }
     }
 
@@ -979,9 +1024,9 @@ impl Camp {
             sounds.push(s);
         }
         if moved && self.substate == 1 {
-            if self.custom_ui.list.scroll != scroll {
-                self.customize_skin(seq);
-            }
+            self.see_cursor_magic();
+            self.customize_skin(seq);
+            let _ = scroll;
             self.customize_mask();
             self.customize_list_help(seq);
         }

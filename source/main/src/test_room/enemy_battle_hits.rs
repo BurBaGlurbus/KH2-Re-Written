@@ -1,8 +1,9 @@
 //! Contact bridge for admitted gallery brains and the existing player battle
 //! context. The legacy battle step advances the shared player hit record first.
 use super::{
-    EffectRequest, Fighter, Game, abilities, enemy_combat::WorldShape, enemy_gallery::GalleryActor,
-    ensure_attack_rows, magic_room, params_of, party_room,
+    EffectRequest, Fighter, Game, PLAYER_OBJECT, PLAYER_VICTIM, abilities,
+    enemy_combat::WorldShape, enemy_gallery::GalleryActor, ensure_attack_rows, magic_room,
+    params_of, party_room,
 };
 use bevy::prelude::*;
 use data::battle_tables;
@@ -1003,6 +1004,15 @@ pub fn tick(game: &mut Game, actors: &mut [GalleryActor], tick: u64) {
             }
             if counted && rows[row].hit_sound >= 0 {
                 sound_queue.push((rows[row].hit_sound as u32, "sora_hit"));
+            }
+            // Sora's own victim sound (FUN_140410d60), from his object's
+            // bank.
+            if counted {
+                effect_queue.push(EffectRequest::VictimSound {
+                    object: PLAYER_OBJECT,
+                    reaction: rows[row].reaction,
+                    key: PLAYER_VICTIM,
+                });
             }
             // The attacker's spark on Sora's hit shape (FUN_1403d1b40; a
             // sphere, so height = radius), from the attacker's own effects.

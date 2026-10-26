@@ -1388,8 +1388,8 @@ fn land_attacks(game: &mut Game, run: &mut Running, strikes: &[Strike], tick: u6
                 i,
                 game.party[i].kind.name,
                 combat::AttackerStats {
-                    strength: game.party[i].kind.strength,
-                    magic: game.party[i].kind.magic,
+                    strength: game.party[i].kind.strength + i32::from(game.party[i].gear.strength),
+                    magic: game.party[i].kind.magic + i32::from(game.party[i].gear.magic),
                     max: 99999,
                     min: 1,
                     mods: combat::AttackerMods {
