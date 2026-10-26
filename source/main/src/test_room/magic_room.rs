@@ -22,6 +22,7 @@ pub const MEMBER_NAMES: u16 = 0xf000;
 const SE_ERROR: u32 = 5;
 
 /// 03system and 00battle data of the six spells.
+#[derive(Clone)]
 pub struct MagicSource {
     pub records: Vec<magic::Record>,
     pub rows: Vec<magic::Row>,
@@ -277,7 +278,7 @@ pub fn spark(
 pub fn request(game: &mut Game, magic_type: u8, tick: u64) -> bool {
     let Game {
         magic,
-        player,
+        sora: Fighter { player, .. },
         clips,
         sound_queue,
         drive,
@@ -419,7 +420,7 @@ pub fn tick(game: &mut Game, tick: u64) {
     {
         let Game {
             magic,
-            player,
+            sora: Fighter { player, vitals, .. },
             selected_target,
             enemy,
             world,
@@ -602,7 +603,7 @@ pub fn tick(game: &mut Game, tick: u64) {
         }
         if let Some(rt) = enemy.as_mut() {
             if let Some(t) = invulnerable {
-                rt.sora_invulnerable = rt.sora_invulnerable.max(t);
+                vitals.invulnerable = vitals.invulnerable.max(t);
             }
             // attack_strike on the party: Cure's heal is an ATKP Type 6 row
             // (Power x Magic + 99) / 100, added to HP and clamped.
@@ -611,13 +612,13 @@ pub fn tick(game: &mut Game, tick: u64) {
                     continue;
                 }
                 let attack = params_of(&rt.steps[&(st.atkp, st.sub)][0]);
-                let full = combat::TargetState::full(rt.sora_target.max_hp);
-                let heal = combat::damage_with(&rt.sora, &attack, &rt.sora_target, &full);
+                let full = combat::TargetState::full(vitals.target.max_hp);
+                let heal = combat::damage_with(&vitals.attacker, &attack, &vitals.target, &full);
                 if st.party == 0 {
-                    rt.sora_hp = (rt.sora_hp + heal).min(rt.sora_target.max_hp);
+                    vitals.hp = (vitals.hp + heal).min(vitals.target.max_hp);
                     events.push(
                         serde_json::json!({"event":"heal","tick":tick,"atkp":st.atkp,
-                        "sub":st.sub,"amount":heal,"sora_hp":rt.sora_hp}),
+                        "sub":st.sub,"amount":heal,"sora_hp":vitals.hp}),
                     );
                 } else if let Some(member) = members.get_mut(st.party - 1) {
                     // A dead member is revived by the heal (FUN_1403c3c30).

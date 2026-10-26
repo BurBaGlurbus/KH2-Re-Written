@@ -850,12 +850,15 @@ fn read_stick(
     keys: Res<ButtonInput<KeyCode>>,
     mouse: Res<ButtonInput<MouseButton>>,
     pads: Query<(&Gamepad, Option<&Name>)>,
+    controls: Option<Res<input::Controls>>,
     mut wm: ResMut<WorldMap>,
 ) {
     if wm.autoplay.is_some() {
         return;
     }
-    let (data, keyboard, glyph) = input::read_devices(&keys, &mouse, 0., &pads);
+    let default = input::Controls::default();
+    let controls = controls.as_deref().unwrap_or(&default);
+    let (data, keyboard, glyph) = input::read_devices(&keys, &mouse, 0., &pads, controls);
     wm.devices = (keyboard, glyph);
     wm.stick = controller::analog(data.left);
     wm.right = controller::analog(data.right);

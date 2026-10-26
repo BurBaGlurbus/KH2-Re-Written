@@ -69,7 +69,7 @@ pub fn tour_input(game: &Game, tick: u64) -> (Vec2, bool, bool) {
     if tick < 240 {
         return (Vec2::ZERO, false, false);
     }
-    let sora = Vec3::from_array(game.player.position);
+    let sora = Vec3::from_array(game.sora.player.position);
     let near = game
         .gallery_targets
         .first()
@@ -126,20 +126,18 @@ pub fn tick(
         }
         // [Tour setup] The room's Sora is level 1; he gets the HP to last
         // the run (his hits stay vulnerable, so the grab can happen).
-        if tick == 60
-            && let Some(rt) = game.enemy.as_mut()
-        {
-            rt.sora_target.max_hp = 9999;
-            rt.sora_hp = 9999;
+        if tick == 60 && game.enemy.is_some() {
+            game.sora.vitals.target.max_hp = 9999;
+            game.sora.vitals.hp = 9999;
         }
         // [Tour setup] Heartless Angel leaves him at 1 HP; two seconds later
         // he is refilled so the run goes on (the game would need a heal).
         if tick > 60
             && tick.is_multiple_of(120)
-            && let Some(rt) = game.enemy.as_mut()
-            && (1..1000).contains(&rt.sora_hp)
+            && game.enemy.is_some()
+            && (1..1000).contains(&game.sora.vitals.hp)
         {
-            rt.sora_hp = rt.sora_target.max_hp;
+            game.sora.vitals.hp = game.sora.vitals.target.max_hp;
             game.event(serde_json::json!({"event":"sephiroth_tour_refill","tick":tick}));
         }
         // Lock on once he is there, and again whenever the lock was lost.
@@ -161,8 +159,8 @@ pub fn tick(
                         "motion":b.brain.motion(),"position":b.brain.position(),
                         "state":b.brain.boss_state(),"error":b.error})
                 });
-            let sora_hp = game.enemy.as_ref().map(|e| e.sora_hp);
-            let (sora, locked) = (game.player.position, game.target_locked);
+            let sora_hp = game.enemy.as_ref().map(|_| game.sora.vitals.hp);
+            let (sora, locked) = (game.sora.player.position, game.target_locked);
             game.event(serde_json::json!({"event":"sephiroth_tour","tick":tick,
                 "boss":boss,"sora_hp":sora_hp,"sora":sora,"locked":locked}));
         }
@@ -200,7 +198,7 @@ pub fn tick(
             });
             let (at, yaw) = placed.unwrap_or_else(|| {
                 (
-                    Vec3::from_array(game.player.position) + Vec3::new(0., 0., 750.),
+                    Vec3::from_array(game.sora.player.position) + Vec3::new(0., 0., 750.),
                     std::f32::consts::PI,
                 )
             });

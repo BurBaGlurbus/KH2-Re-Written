@@ -47,6 +47,19 @@ pub enum Anchor {
     /// A Wisdom bullet (by key): the element takes its position and
     /// direction every tick (`effect_set_pos` / `effect_set_dir`).
     Bullet(u64),
+    /// The duel's other Sora's own object, by slot (as `Sora` for him).
+    Rival(u8),
+    /// A duel rival's weapon slot (his slot, the weapon slot): his trail.
+    RivalWeapon(u8, usize),
+}
+
+/// A Wisdom bullet's place and direction, on the room Sora or a rival.
+fn bullet_at(game: &Game, key: u64) -> Option<([f32; 3], [f32; 3])> {
+    game.drive
+        .iter()
+        .chain(game.rivals.iter().filter_map(|r| r.own.drive.as_ref()))
+        .find_map(|d| d.bullets.iter().find(|b| b.key == key))
+        .map(|b| (b.pos, b.dir))
 }
 
 /// An instance's world matrix at `at` turned to `dir` (scene coordinates),
@@ -102,6 +115,8 @@ struct Running {
     instance: Instance,
     dpd: Arc<Dpd>,
     bind: Option<Bind>,
+    /// The duel's other Sora whose object a bound element follows.
+    rival: Option<u8>,
     owner: u8,
     /// The element, when it follows the room enemy's object.
     enemy_element: Option<object_effect::Element>,
@@ -177,9 +192,9 @@ impl DriveFx {
 
 /// Sora this frame: his scene-space object matrix, the bone matrices, and
 /// each weapon slot's grip matrix and blade tip (model space).
-struct SoraPose<'a> {
+struct SoraPose {
     root: Mat4,
-    bones: Option<&'a HashMap<usize, Mat4>>,
+    bones: Option<HashMap<usize, Mat4>>,
     slots: [Option<(Mat4, Vec3)>; 2],
     /// Bone codes 0x4001 / 0x4009 (FUN_1403b50f0): the centres of Sora's
     /// first type-1 and type-9 collision entries, above his origin.
@@ -187,16 +202,33 @@ struct SoraPose<'a> {
     heal_lift: f32,
 }
 
-fn sora_pose(game: &Game) -> SoraPose<'_> {
-    let p = game.player.position;
+/// Each rival's pose (his state swapped in for a moment).
+fn rival_poses(game: &mut Game) -> Vec<(u8, SoraPose)> {
+    let mut out = Vec::new();
+    let mut rivals = std::mem::take(&mut game.rivals);
+    for r in &mut rivals {
+        super::rival::swap(game, r);
+        out.push((r.slot, sora_pose(game)));
+        super::rival::swap(game, r);
+    }
+    game.rivals = rivals;
+    out
+}
+
+fn sora_pose(game: &Game) -> SoraPose {
+    let p = game.sora.player.position;
     let root = Mat4::from_rotation_translation(
-        Quat::from_rotation_y(game.player.yaw),
+        Quat::from_rotation_y(game.sora.player.yaw),
         Vec3::from_array(p),
     );
-    let clip = game.poses.get(&(game.player.action, game.player.armed));
-    let frame = game.player.motion_frame(&game.clips) as usize;
+    let clip = game
+        .poses
+        .get(&(game.sora.player.action, game.sora.player.armed));
+    let frame = game.sora.player.motion_frame(&game.clips) as usize;
     let cp = clip.and_then(|&c| game.clip_poses.get(c));
-    let bones = cp.and_then(|c| c.body.get(frame.min(c.body.len().saturating_sub(1))));
+    let bones = cp
+        .and_then(|c| c.body.get(frame.min(c.body.len().saturating_sub(1))))
+        .cloned();
     // FUN_1403b5450's slot matrix and the blade length along it: the hand
     // joint holding the weapon, and the weapon vertex farthest from it [I].
     let slot = |grips: &[Mat4], verts: &[Vec<Vec3>]| -> Option<(Mat4, Vec3)> {
@@ -258,7 +290,7 @@ fn bound_world(pose: &SoraPose, bind: &Bind) -> Mat {
         0x4001 => root * Mat4::from_translation(Vec3::new(0., pose.body_lift, 0.)),
         0x4009 => root * Mat4::from_translation(Vec3::new(0., pose.heal_lift, 0.)),
         b if !(0..0x4000).contains(&b) => root,
-        b => match pose.bones.and_then(|m| m.get(&(b as usize))) {
+        b => match pose.bones.as_ref().and_then(|m| m.get(&(b as usize))) {
             Some(m) => root * *m * flip,
             None => root,
         },
@@ -304,11 +336,16 @@ pub fn tick(
     }
     // A Wisdom bullet's element: killed with a hit, faded over 8 frames when
     // its life runs out (`effect_fadeout(fx, 8.0, 0)`).
-    let ends = game
+    let mut ends = game
         .drive
         .as_mut()
         .map(|d| std::mem::take(&mut d.bullet_ends))
         .unwrap_or_default();
+    for r in &mut game.rivals {
+        if let Some(d) = r.own.drive.as_mut() {
+            ends.append(&mut d.bullet_ends);
+        }
+    }
     for (key, faded) in ends {
         if faded {
             for r in fx
@@ -346,6 +383,7 @@ pub fn tick(
             .retain(|r| !(r.group.is_some() && group.is_none_or(|g| r.group == Some(g))));
     }
     let pose = sora_pose(&game);
+    let rival_poses = rival_poses(&mut game);
     let mut sounds = Vec::new();
     let mut log = Vec::new();
     let tick = game.tick;
@@ -384,20 +422,35 @@ pub fn tick(
         let mut enemy_element = None;
         let mut actor_element = None;
         let mut bullet = None;
+        let mut rival = None;
         let (bind, world) = match anchor {
-            Anchor::Sora => {
+            Anchor::Sora | Anchor::Rival(_) => {
+                let pose = match anchor {
+                    Anchor::Rival(slot) => {
+                        rival = Some(slot);
+                        match rival_poses.iter().find(|p| p.0 == slot) {
+                            Some((_, p)) => p,
+                            None => continue,
+                        }
+                    }
+                    _ => &pose,
+                };
                 let bind = (element.flags & 1 != 0).then_some(Bind {
                     bone: element.bone,
                     local,
                 });
                 let world = match &bind {
-                    Some(b) => bound_world(&pose, b),
+                    Some(b) => bound_world(pose, b),
                     None => ::effect::math::mul(&to_game(pose.root), &local),
                 };
                 (bind, world)
             }
             Anchor::Map { .. } => (None, local),
             Anchor::Weapon(_) => (None, ::effect::math::IDENTITY),
+            Anchor::RivalWeapon(slot, _) => {
+                rival = Some(slot);
+                (None, ::effect::math::IDENTITY)
+            }
             Anchor::Actor(id) => {
                 let Some(&(position, yaw)) = game.actor_poses.get(&id) else {
                     continue;
@@ -421,15 +474,11 @@ pub fn tick(
                 ::effect::instance_matrix(to_world(at.to_array()), [pitch, yaw, 0.], element.scale),
             ),
             Anchor::Bullet(key) => {
-                let Some(b) = game
-                    .drive
-                    .as_ref()
-                    .and_then(|d| d.bullets.iter().find(|b| b.key == key))
-                else {
+                let Some((pos, dir)) = bullet_at(&game, key) else {
                     continue;
                 };
                 bullet = Some((key, element.scale));
-                (None, aimed(b.pos, b.dir, element.scale))
+                (None, aimed(pos, dir, element.scale))
             }
             Anchor::Enemy => {
                 let Some((position, yaw)) = enemy_at else {
@@ -482,13 +531,16 @@ pub fn tick(
                 instance,
                 dpd,
                 bind,
+                rival,
                 spark,
                 owner: req.owner,
                 enemy_element,
                 actor_element,
                 bullet,
                 trail: match anchor {
-                    Anchor::Weapon(slot) if element.flags & 0x10000 != 0 => {
+                    Anchor::Weapon(slot) | Anchor::RivalWeapon(_, slot)
+                        if element.flags & 0x10000 != 0 =>
+                    {
                         Some((slot, element.bone_pos))
                     }
                     _ => None,
@@ -519,9 +571,30 @@ pub fn tick(
     let mut draws: Vec<Drawn<ModelDraw>> = Vec::new();
     let mut triangles: Vec<(i8, Vec<::effect::Triangle>)> = Vec::new();
     let mut unsupported = Vec::new();
-    for r in fx.running.iter_mut() {
+    // The rivals' trails' points (each rival's state swapped in).
+    let mut rival_trails = Vec::new();
+    let mut rivals = std::mem::take(&mut game.rivals);
+    for rv in &mut rivals {
+        super::rival::swap(&mut game, rv);
+        for (i, r) in fx.running.iter().enumerate() {
+            if r.rival == Some(rv.slot)
+                && let Some((slot, bone)) = &r.trail
+            {
+                rival_trails.push((i, super::weapon_trail::points(&game, bone, *slot)));
+            }
+        }
+        super::rival::swap(&mut game, rv);
+    }
+    game.rivals = rivals;
+    for (i, r) in fx.running.iter_mut().enumerate() {
         if let Some(b) = &r.bind {
-            r.instance.world = bound_world(&pose, b);
+            let own = match r.rival {
+                Some(slot) => rival_poses.iter().find(|p| p.0 == slot).map(|p| &p.1),
+                None => Some(&pose),
+            };
+            if let Some(own) = own {
+                r.instance.world = bound_world(own, b);
+            }
         }
         if let Some((id, element)) = &r.actor_element
             && let Some(&(position, yaw)) = game.actor_poses.get(id)
@@ -532,15 +605,15 @@ pub fn tick(
             r.instance.world = super::bound_world(position, yaw, element);
         }
         if let Some((slot, bone)) = &r.trail {
-            r.instance.trail = super::weapon_trail::points(&game, bone, *slot);
+            r.instance.trail = match r.rival {
+                None => super::weapon_trail::points(&game, bone, *slot),
+                Some(_) => rival_trails.iter().find(|t| t.0 == i).and_then(|t| t.1),
+            };
         }
         if let Some((key, scale)) = r.bullet
-            && let Some(b) = game
-                .drive
-                .as_ref()
-                .and_then(|d| d.bullets.iter().find(|b| b.key == key))
+            && let Some((pos, dir)) = bullet_at(&game, key)
         {
-            r.instance.world = aimed(b.pos, b.dir, scale);
+            r.instance.world = aimed(pos, dir, scale);
         }
         let q = r.instance.frame(&view, &mut fx.rng);
         for &k in &r.instance.unsupported {
@@ -571,6 +644,15 @@ pub fn tick(
             .running
             .iter()
             .any(|r| r.owner == owner && !r.instance.is_released());
+    }
+    for rv in &mut game.rivals {
+        for slot in 0..2 {
+            let owner = super::weapon_trail::owner(Some(rv.slot), slot);
+            rv.own.trail_live[slot] = fx
+                .running
+                .iter()
+                .any(|r| r.owner == owner && !r.instance.is_released());
+        }
     }
     // The prizes on the ground (obj/PRIZE.mdlx, program 203): billboards at
     // each prize's centre.

@@ -24,6 +24,7 @@ established.
 | Particle/model effects | [source/visual/effect/src/](../source/visual/effect/src/) |
 | Spell effects and the magic tour | `source/main/src/test_room/spell_fx.rs`, `magic_room.rs`, `magic_tour.rs` |
 | Mixing and Windows sound output | [source/audio/src/](../source/audio/src/) |
+| LAN play: UDP session, discovery, link simulator | [source/net/src/](../source/net/src/); the duel in the room: `source/main/src/test_room/duel_*.rs`, `rival.rs` |
 | Which sounds a scene requests | `source/visual/src/sound.rs`, `footsteps.rs` |
 | Reading a game file format | [source/data/src/](../source/data/src/); descriptive model, motion, room and table prefixes |
 | Supported-source checks | [validation/src/lib.rs](../validation/src/lib.rs) |

@@ -41,7 +41,7 @@ pub fn badge_tour(
 pub fn tour(game: &mut Game) {
     let tick = game.tick;
     let Game {
-        player,
+        sora: Fighter { player, .. },
         enemy,
         world,
         ..
@@ -105,7 +105,7 @@ pub fn tour(game: &mut Game) {
 
 pub fn tick(game: &mut Game, tick: u64) {
     let Game {
-        player,
+        sora: Fighter { player, vitals, .. },
         enemy,
         world,
         log,
@@ -128,7 +128,7 @@ pub fn tick(game: &mut Game, tick: u64) {
     let dead = rt.enemy.current_act() == Some(shadow::ActKind::Dead);
     if dead && !rt.was_dead {
         let styles = items.as_ref().map(|i| &i.src.box_styles);
-        kill(player, rt, world, styles, log, tick);
+        kill(player, vitals, rt, world, styles, log, tick);
         // FUN_1403e8780: Wisdom counts Heartless, Final Nobodies.
         if let Some(d) = drive.as_mut() {
             d.pending_exp += player::forms::kill_exp(form, d.enemy_character);
@@ -211,7 +211,7 @@ pub fn tick(game: &mut Game, tick: u64) {
         sound_queue.push((enemy_prizes::sounds(orb.kind).1, "prize_pickup"));
         // Antiform's pickup skips HP orbs (formcmd-01 §5).
         if e.hp > 0 && form != player::forms::ANTI {
-            rt.sora_hp = (rt.sora_hp + e.hp).min(rt.sora_target.max_hp);
+            vitals.hp = (vitals.hp + e.hp).min(vitals.target.max_hp);
         }
         if e.mp > 0 {
             player.mp.add(e.mp);
@@ -230,7 +230,7 @@ pub fn tick(game: &mut Game, tick: u64) {
         log_event(
             log,
             serde_json::json!({"event":"prize","tick":tick,"kind":orb.kind,
-                "hp":rt.sora_hp,"mp":player.mp.cur,"drive":player.drive.level,
+                "hp":vitals.hp,"mp":player.mp.cur,"drive":player.drive.level,
                 "drive_partial":player.drive.partial,"munny":rt.munny}),
         );
     }
@@ -239,6 +239,7 @@ pub fn tick(game: &mut Game, tick: u64) {
 /// The kill (FUN_140410af0): EXP, level-ups, then the prize scatter.
 fn kill(
     player: &mut Player,
+    vitals: &mut Vitals,
     rt: &mut EnemyRuntime,
     world: &RoomWorld,
     styles: Option<&std::collections::HashMap<u16, u8>>,
@@ -247,12 +248,12 @@ fn kill(
 ) {
     let (enemy_exp, level_exp) = rt.exp_rule;
     let critical = rt.difficulty == combat::Difficulty::Critical;
-    let low = rt.sora_hp * 2 <= rt.sora_target.max_hp;
+    let low = vitals.hp * 2 <= vitals.target.max_hp;
     let boost = low.then_some(player.abilities.experience_boost as u32);
     let exp = enemy_prizes::kill_exp(enemy_exp, level_exp, critical, boost);
     // FUN_1403ed110: No Experience (ability bit 116) takes the kill's EXP.
     if !player.abilities.has(abilities::bit::NO_EXPERIENCE) {
-        grant_exp(rt, exp, log, tick);
+        grant_exp(rt, vitals, exp, log, tick);
     }
     // FUN_1403dc170: counts scaled by Jackpot, munny converted by Drive
     // Converter, three item rolls with Lucky Lucky.
@@ -303,12 +304,18 @@ fn kill(
 
 /// EXP into Sora's total, then each level gained (FUN_140410af0's level
 /// loop). The debug menu's level-up uses it too.
-pub fn grant_exp(rt: &mut EnemyRuntime, exp: u32, log: &mut Option<std::fs::File>, tick: u64) {
+pub fn grant_exp(
+    rt: &mut EnemyRuntime,
+    vitals: &mut Vitals,
+    exp: u32,
+    log: &mut Option<std::fs::File>,
+    tick: u64,
+) {
     if exp == 0 {
         return;
     }
     rt.exp_total = (rt.exp_total + exp).min(9_999_999);
-    let before = rt.level;
+    let before = vitals.level;
     let levels = &rt.sora_levels;
     let after = enemy_prizes::level_for(rt.exp_total, before, |l| {
         levels.get(l as usize - 1).map(|r| r.exp)
@@ -327,9 +334,9 @@ pub fn grant_exp(rt: &mut EnemyRuntime, exp: u32, log: &mut Option<std::fs::File
             lines: super::level_growth::level_lines(&old, &new, critical, 0),
         });
         rt.level_effect = true;
-        rt.sora.strength += new.strength as i32 - old.strength as i32;
-        rt.sora.magic += new.magic as i32 - old.magic as i32;
-        rt.sora_target.defense += new.defense as i32 - old.defense as i32;
+        vitals.attacker.strength += new.strength as i32 - old.strength as i32;
+        vitals.attacker.magic += new.magic as i32 - old.magic as i32;
+        vitals.target.defense += new.defense as i32 - old.defense as i32;
         // [I] the first growth choice's ability.
         let learned = new.abilities[0];
         if learned != 0 {
@@ -338,17 +345,17 @@ pub fn grant_exp(rt: &mut EnemyRuntime, exp: u32, log: &mut Option<std::fs::File
         log_event(
             log,
             serde_json::json!({"event":"level_up","tick":tick,"level":l,
-                "strength":rt.sora.strength,"magic":rt.sora.magic,
-                "defense":rt.sora_target.defense,"learned":learned}),
+                "strength":vitals.attacker.strength,"magic":vitals.attacker.magic,
+                "defense":vitals.target.defense,"learned":learned}),
         );
     }
     if after != before {
-        rt.level = after;
+        vitals.level = after;
         rt.numbers_dirty = true;
     }
     log_event(
         log,
         serde_json::json!({"event":"exp","tick":tick,"gain":exp,"total":rt.exp_total,
-            "level":rt.level}),
+            "level":vitals.level}),
     );
 }

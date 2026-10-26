@@ -197,6 +197,47 @@ pub struct ConfigRow {
     pub help: Vec<Vec<u8>>,
 }
 
+/// Top-level entry ids from this one up are the caller's own choices
+/// (Rematch, a vote's options): picking one hands it back in
+/// `DuelPages::picked`.
+pub const CALLER_ENTRY: u8 = 0x40;
+
+/// Pages a caller puts on the Config screen in place of the exe's and the
+/// settings' (the LAN duel's screens): rows of choices the caller owns. The
+/// camp shows them as Config shows its own and hands back the Left / Right
+/// steps; the caller applies them and updates the rows, and the camp
+/// redraws what changed. The top level's entries can be the caller's
+/// choices too, and their help lines change when the caller changes them.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct DuelPages {
+    /// Who opened the camp and which version of its screen (the caller's).
+    pub owner: (u8, u32),
+    pub names: Vec<Vec<u8>>,
+    pub rows: Vec<Vec<DuelRow>>,
+    /// Left / Right on a row that is not locked: (page, row, forward), for
+    /// the caller to take.
+    pub steps: Vec<(usize, usize, bool)>,
+    /// A caller entry picked on the top level (CALLER_ENTRY and up).
+    pub picked: Option<u8>,
+    /// Start was pressed (the camp stays open for the caller).
+    pub start: bool,
+    /// Cancel was pressed on the top level (the caller may close it).
+    pub cancel: bool,
+    /// The top level's Cancel and Start do not close the camp.
+    pub keep_open: bool,
+}
+
+/// One caller row: label, choices (game text), the chosen one, help, and
+/// whether this player may change it.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct DuelRow {
+    pub label: Vec<u8>,
+    pub choices: Vec<Vec<u8>>,
+    pub selected: usize,
+    pub help: Vec<u8>,
+    pub locked: bool,
+}
+
 /// Everything the camp shows besides its art.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Data {
@@ -226,6 +267,9 @@ pub struct Data {
     pub settings: Option<crate::settings::Settings>,
     /// The language codes the install has (the Text Language choices).
     pub languages: Vec<String>,
+    /// The caller's pages on the Config screen (None: the exe's and the
+    /// settings' pages).
+    pub duel: Option<DuelPages>,
 }
 
 /// Cursor memory kept between camp openings (DAT_140beec30 / 7c).
@@ -636,6 +680,8 @@ pub struct Camp {
     banner: Option<Id>,
     // Config.
     config_values: [usize; 8],
+    /// The duel rows the Config screen last showed (its refresh).
+    duel_seen: Vec<DuelRow>,
     config_list: MenuList,
     choices: Vec<Vec<Id>>,
     config_frame: Option<Id>,
@@ -672,6 +718,7 @@ impl Camp {
             layout: task,
             sprites: sp,
             config_values: config_values(data.config_flags, data.game_mode),
+            duel_seen: Vec::new(),
             data,
             memory,
             state: State::Top,
@@ -922,6 +969,7 @@ impl Camp {
         let seq = &layout.sequences[SEQUENCE];
         let pad = Pad { trig, repeat };
         let mut sounds = Vec::new();
+        self.duel_refresh(seq);
         if !self.exit {
             // FUN_1403249e0: the clock rebuilds every frame.
             let groups = time_groups(time_frames);
@@ -1175,7 +1223,9 @@ impl Camp {
             self.show_help(seq, help);
             self.substate = 1;
         }
-        if let Some(s) = pick_sound(pick, moved, true) {
+        // Start in a camp kept open is the caller's (it plays its own sound).
+        let callers = matches!(pick, Pick::Start) && self.keep_open();
+        if let Some(s) = pick_sound(pick, moved, true).filter(|_| !callers) {
             sounds.push(s);
         }
         if moved && self.substate == 1 {
@@ -1183,9 +1233,26 @@ impl Camp {
             self.show_help(seq, help);
         }
         match pick {
+            Pick::Start if self.keep_open() => {
+                if let Some(d) = self.data.duel.as_mut() {
+                    d.start = true;
+                }
+            }
+            Pick::Cancel if self.keep_open() => {
+                if let Some(d) = self.data.duel.as_mut() {
+                    d.cancel = true;
+                }
+            }
             Pick::Cancel | Pick::Start => {
                 self.memory.entry = self.data.entries[self.top.cursor].id;
                 self.exit = true;
+            }
+            Pick::Row(i) if self.data.entries[i].id >= CALLER_ENTRY => {
+                // The caller's choice goes back to it; the camp stays.
+                let id = self.data.entries[i].id;
+                if let Some(d) = self.data.duel.as_mut() {
+                    d.picked = Some(id);
+                }
             }
             Pick::Row(i) => {
                 let entry = self.data.entries[i].clone();
@@ -1846,7 +1913,9 @@ impl Camp {
 
     /// The exe's page, then the settings pages when the caller offers them.
     fn config_pages(&self) -> usize {
-        if self.data.settings.is_some() {
+        if let Some(d) = &self.data.duel {
+            d.names.len().max(1)
+        } else if self.data.settings.is_some() {
             crate::settings::PAGES.len()
         } else {
             1
@@ -1854,7 +1923,55 @@ impl Camp {
     }
 
     fn page_name(&self) -> Vec<u8> {
+        if let Some(d) = &self.data.duel {
+            return d.names.get(self.config_page).cloned().unwrap_or_default();
+        }
         encode_text(crate::settings::PAGES[self.config_page])
+    }
+
+    /// The caller keeps the camp open (the duel's lobby).
+    fn keep_open(&self) -> bool {
+        self.data.duel.as_ref().is_some_and(|d| d.keep_open)
+    }
+
+    /// The caller's rows on the current page.
+    fn duel_rows(&self) -> Option<&[DuelRow]> {
+        let d = self.data.duel.as_ref()?;
+        Some(d.rows.get(self.config_page).map_or(&[], |r| r.as_slice()))
+    }
+
+    /// The caller changed its rows: the Config screen shows the new ones
+    /// (rebuilt when their number changed, else laid out again).
+    fn duel_refresh(&mut self, seq: &Sequence) {
+        // The top level's help follows the caller's entry under the cursor.
+        if self.data.duel.is_some() && self.state == State::Top && self.substate == 1 {
+            let want = &self.data.entries[self.top.cursor].help;
+            let changed = self
+                .help
+                .filter(|&h| self.sprites.alive(h))
+                .and_then(|h| self.sprites.get(h).text.as_ref())
+                .is_some_and(|t| &t.bytes != want);
+            if changed {
+                self.show_help(seq, want.clone());
+            }
+        }
+        if self.state != State::Config || self.substate != 1 {
+            return;
+        }
+        let Some(rows) = self.duel_rows().map(<[DuelRow]>::to_vec) else {
+            return;
+        };
+        if rows == self.duel_seen {
+            return;
+        }
+        if rows.len() != self.choices.len() {
+            let cursor = self.config_list.cursor.min(rows.len().saturating_sub(1));
+            self.build_config_rows(seq, cursor);
+        } else {
+            self.config_layout(seq);
+        }
+        self.config_help(seq);
+        self.duel_seen = rows;
     }
 
     /// FUN_140365580 + FUN_140364a10: tab 0, the panel, 8 labels, their
@@ -1883,12 +2000,16 @@ impl Camp {
             let banner = self.data.banner.clone();
             self.show_banner(seq, banner);
         }
-        let cursor = if self.config_page == 0 {
+        let cursor = if self.config_page == 0 && self.data.duel.is_none() {
             self.memory.config_row
         } else {
             0
         };
         self.build_config_rows(seq, cursor);
+        self.duel_seen = self
+            .duel_rows()
+            .map(<[DuelRow]>::to_vec)
+            .unwrap_or_default();
     }
 
     /// The labels, choices and anchor rows of the current page.
@@ -1939,6 +2060,9 @@ impl Camp {
     }
 
     fn config_row_count(&self) -> usize {
+        if let Some(rows) = self.duel_rows() {
+            return rows.len();
+        }
         match &self.data.settings {
             Some(s) if self.config_page > 0 => s.rows(self.config_page, &self.data.languages).len(),
             _ => self.data.config.len().min(8),
@@ -1949,6 +2073,22 @@ impl Camp {
     /// a longer list shows only the current one, as Game Mode does), the
     /// chosen one and its help.
     fn config_view(&self, i: usize) -> ConfigView {
+        if let Some(r) = self.duel_rows().and_then(|rows| rows.get(i)) {
+            let (shown, selected) = if r.choices.len() <= 3 {
+                (r.choices.clone(), r.selected)
+            } else {
+                (
+                    vec![r.choices.get(r.selected).cloned().unwrap_or_default()],
+                    0,
+                )
+            };
+            return ConfigView {
+                label: r.label.clone(),
+                shown,
+                selected,
+                help: Some(r.help.clone()),
+            };
+        }
         if let Some(s) = &self.data.settings
             && self.config_page > 0
         {
@@ -1991,11 +2131,12 @@ impl Camp {
 
     fn config_mask(&mut self) {
         let base = (0x73 & !0x10) | 0x3000;
-        let sides = if self.config_page == 0 && self.config_list.cursor == 7 {
-            0
-        } else {
-            0xc_0000
-        };
+        let sides =
+            if self.data.duel.is_none() && self.config_page == 0 && self.config_list.cursor == 7 {
+                0
+            } else {
+                0xc_0000
+            };
         let pages = if self.config_pages() > 1 { 0xc000 } else { 0 };
         self.config_list.mask = base | sides | pages;
     }
@@ -2118,7 +2259,9 @@ impl Camp {
             self.config_help(seq);
             self.update_config_frame(seq);
         }
-        if let Some(s) = pick_sound(pick, moved, true) {
+        // Start in a camp kept open is the caller's (it plays its own sound).
+        let callers = matches!(pick, Pick::Start) && self.keep_open();
+        if let Some(s) = pick_sound(pick, moved, true).filter(|_| !callers) {
             sounds.push(s);
         }
         if moved {
@@ -2129,7 +2272,21 @@ impl Camp {
         match pick {
             Pick::Left | Pick::Right => {
                 let row = self.config_list.cursor;
-                if self.config_page == 0 {
+                let page = self.config_page;
+                if let Some(d) = self.data.duel.as_mut() {
+                    // The caller's row: its step goes back to the caller; a
+                    // row this player may not change refuses.
+                    if d.rows
+                        .get(page)
+                        .and_then(|r| r.get(row))
+                        .is_some_and(|r| r.locked)
+                    {
+                        sounds.pop();
+                        sounds.push(SOUND_INVALID);
+                    } else {
+                        d.steps.push((page, row, pick == Pick::Right));
+                    }
+                } else if self.config_page == 0 {
                     let n = self.data.config[row].choices.len().clamp(1, 3);
                     let v = &mut self.config_values[row];
                     *v = if pick == Pick::Left {
@@ -2162,6 +2319,11 @@ impl Camp {
                 self.config_help(seq);
                 self.light.retarget();
             }
+            Pick::Start if self.keep_open() => {
+                if let Some(d) = self.data.duel.as_mut() {
+                    d.start = true;
+                }
+            }
             Pick::Start => {
                 self.save_config();
                 self.exit = true;
@@ -2189,6 +2351,9 @@ impl Camp {
     /// FUN_140365460: the values back into the save flags; the cursor row
     /// (on the exe's page) and the page are remembered.
     fn save_config(&mut self) {
+        if self.data.duel.is_some() {
+            return;
+        }
         self.data.config_flags = config_flags(self.data.config_flags, &self.config_values);
         if self.config_page == 0 {
             self.memory.config_row = self.config_list.cursor;
@@ -2205,6 +2370,11 @@ impl Camp {
     }
 
     /// The Config row under the cursor (for `open_on_config`).
+    /// The top-level entry under the cursor (its id).
+    pub fn top_entry(&self) -> Option<u8> {
+        self.data.entries.get(self.top.cursor).map(|e| e.id)
+    }
+
     pub fn config_cursor(&self) -> usize {
         self.config_list.cursor
     }

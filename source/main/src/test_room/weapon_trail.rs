@@ -26,15 +26,17 @@ fn slot_poses(cp: &ClipPoses, slot: usize) -> (&[Mat4], &[Mat4], &[Vec<Vec3>]) {
 /// The two points of `bone` on weapon slot `slot`'s blade in engine world
 /// space for this tick, or `None` without a weapon pose.
 pub fn points(game: &Game, bone: &BonePos, slot: usize) -> Option<[[f32; 3]; 2]> {
-    let clip = *game.poses.get(&(game.player.action, game.player.armed))?;
+    let clip = *game
+        .poses
+        .get(&(game.sora.player.action, game.sora.player.armed))?;
     let cp = game.clip_poses.get(clip)?;
-    let frame = game.player.motion_frame(&game.clips) as usize;
+    let frame = game.sora.player.motion_frame(&game.clips) as usize;
     let (blades, hands, _) = slot_poses(cp, slot);
     let blade = blades.get(frame.min(blades.len().checked_sub(1)?))?;
     let hand = hands.get(frame.min(hands.len().checked_sub(1)?))?;
     let length = game.trail_length[slot]?;
-    let at = Vec3::from_array(game.player.position);
-    let turn = Quat::from_rotation_y(game.player.yaw);
+    let at = Vec3::from_array(game.sora.player.position);
+    let turn = Quat::from_rotation_y(game.sora.player.yaw);
     let to_scene = |ratio: f32| {
         let p = at + turn * (*hand * *blade).transform_point3(Vec3::X * length * ratio);
         to_world(p.to_array())
@@ -45,7 +47,9 @@ pub fn points(game: &Game, bone: &BonePos, slot: usize) -> Option<[[f32; 3]; 2]>
 /// The blade bone's length: the mesh extent along the bone's x axis divided
 /// by the trail element's far ratio (3.7 for the Keyblades).
 fn calibrate(game: &Game, far_ratio: f32, slot: usize) -> Option<f32> {
-    let clip = *game.poses.get(&(game.player.action, game.player.armed))?;
+    let clip = *game
+        .poses
+        .get(&(game.sora.player.action, game.sora.player.armed))?;
     let cp = game.clip_poses.get(clip)?;
     let (blades, _, frames) = slot_poses(cp, slot);
     let blade = blades.first()?;
@@ -66,6 +70,17 @@ fn calibrate(game: &Game, far_ratio: f32, slot: usize) -> Option<f32> {
 
 /// The effect owner ids of each slot's trail instance.
 pub const OWNERS: [u8; 2] = [0xfc, 0xf8];
+/// A duel rival's, by his slot then the weapon slot.
+pub const RIVAL_OWNERS: [[u8; 2]; 2] = [[0xf0, 0xf1], [0xf2, 0xf3]];
+
+/// The trail owner of weapon `slot` on the room Sora (`rival` None) or a
+/// rival.
+pub fn owner(rival: Option<u8>, slot: usize) -> u8 {
+    match rival {
+        None => OWNERS[slot],
+        Some(r) => RIVAL_OWNERS[usize::from(r).min(1)][slot],
+    }
+}
 
 /// FUN_1403effa0, the weapon object's per-frame trail routine: with no live
 /// trail effect (`obj+0xc00` clear), an open range-12 window (`obj+0x18c`
@@ -76,19 +91,24 @@ pub const OWNERS: [u8; 2] = [0xfc, 0xf8];
 /// mode, a menu) are taken as clear.
 /// Every weapon object runs it (FUN_1403efa60), so slot 1's Keyblade
 /// (Valor, Master, Final) trails on its own motion's windows with its own
-/// element 10; slot 0's room Keyblade only while drawn.
-pub fn tick(game: &mut Game, pax: Option<&Arc<Pax>>, slot: usize) {
+/// element 10; slot 0's room Keyblade only while drawn. A duel rival runs it
+/// with his state swapped in (`rival`: his slot).
+pub fn tick(game: &mut Game, pax: Option<&Arc<Pax>>, slot: usize, rival: Option<u8>) {
     let Some(pax) = pax else { return };
     let Some(element) = pax.by_id(TRAIL_ELEMENT) else {
         return;
     };
-    let owner = OWNERS[slot];
+    let owner = owner(rival, slot);
     let window = window_open(game, slot);
     if window && game.trail_length[slot].is_none() {
         game.trail_length[slot] = calibrate(game, element.bone_pos.ratio_b, slot);
         let tick = game.tick;
         let length = game.trail_length[slot];
-        game.event(serde_json::json!({"event":"weapon_trail_length","tick":tick,"slot":slot,"length":length}));
+        let mut e = serde_json::json!({"event":"weapon_trail_length","tick":tick,"slot":slot,"length":length});
+        if let Some(r) = rival {
+            e["rival"] = r.into();
+        }
+        game.event(e);
     }
     if !game.trail_live[slot] {
         if window {
@@ -98,7 +118,10 @@ pub fn tick(game: &mut Game, pax: Option<&Arc<Pax>>, slot: usize) {
                     id: TRAIL_ELEMENT,
                     owner,
                 },
-                anchor: drive_fx::Anchor::Weapon(slot),
+                anchor: match rival {
+                    None => drive_fx::Anchor::Weapon(slot),
+                    Some(r) => drive_fx::Anchor::RivalWeapon(r, slot),
+                },
             });
             game.trail_live[slot] = true;
         }
@@ -110,13 +133,16 @@ pub fn tick(game: &mut Game, pax: Option<&Arc<Pax>>, slot: usize) {
 
 /// Whether the slot's weapon motion holds range 12 at this frame.
 fn window_open(game: &Game, slot: usize) -> bool {
-    if slot == 0 && !game.player.armed {
+    if slot == 0 && !game.sora.player.armed {
         return false;
     }
-    let Some(&clip) = game.poses.get(&(game.player.action, game.player.armed)) else {
+    let Some(&clip) = game
+        .poses
+        .get(&(game.sora.player.action, game.sora.player.armed))
+    else {
         return false;
     };
-    let frame = game.player.motion_frame(&game.clips);
+    let frame = game.sora.player.motion_frame(&game.clips);
     let cp = &game.clip_poses[clip];
     let windows = if slot == 0 { &cp.trails } else { &cp.trails2 };
     windows

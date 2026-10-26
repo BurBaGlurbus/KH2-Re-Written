@@ -406,6 +406,10 @@ pub fn tick(
     mut gallery: ResMut<enemy_gallery::EnemyGallery>,
 ) {
     let Some(mut res) = res else { return };
+    // A duel has no game over: a knocked-out Sora stands up again.
+    if game.duel {
+        return;
+    }
     let res = &mut *res;
     // The capture clock runs from the fall on, past the reload.
     if res.rt.is_some() || res.real > 0 {
@@ -419,23 +423,20 @@ pub fn tick(
     let res_real = res.real;
     if res.tour && game.tour_defeat_due() {
         let Game {
-            player,
-            clips,
-            enemy,
-            ..
+            sora, clips, enemy, ..
         } = &mut *game;
-        if let Some(rt) = enemy.as_mut() {
-            rt.sora_hp = 0;
-            player.die(clips);
+        if enemy.is_some() {
+            sora.vitals.hp = 0;
+            sora.player.die(clips);
         }
     }
     if res.rt.is_none() {
         // Sora's HP is 0, his DEAD motion plays and no Drive form catches
         // the fall (a form's KO is a different task, FUN_14040caa0).
-        let hp = game.enemy.as_ref().map(|rt| rt.sora_hp);
+        let hp = game.enemy.as_ref().map(|_| game.sora.vitals.hp);
         let in_form = game.drive.as_ref().is_some_and(|d| d.shown != 0);
-        if hp == Some(0) && game.player.dead() && !in_form {
-            res.rt = Some(Rt::new((game.player.position, game.player.yaw)));
+        if hp == Some(0) && game.sora.player.dead() && !in_form {
+            res.rt = Some(Rt::new((game.sora.player.position, game.sora.player.yaw)));
             let tick = game.tick;
             game.event(serde_json::json!({"event":"game_over_start","tick":tick}));
             game.sound_queue.push((GAME_OVER_SOUND, "game_over"));
@@ -443,8 +444,8 @@ pub fn tick(
         return;
     }
     // The room's own KO refill and revive must not stand Sora up.
-    if let Some(rt) = game.enemy.as_mut() {
-        rt.ko_ticks = 0;
+    if game.enemy.is_some() {
+        game.sora.vitals.ko_ticks = 0;
     }
     let GameOverRes {
         src,
@@ -524,20 +525,25 @@ fn continue_reload(
     (position, yaw): ([f32; 3], f32),
 ) {
     if let Some(rt) = game.enemy.as_mut() {
-        rt.sora_hp = rt.sora_target.max_hp;
-        rt.ko_ticks = 0;
+        let v = &mut game.sora.vitals;
+        v.hp = v.target.max_hp;
+        v.ko_ticks = 0;
         rt.enemy.respawn();
     }
     gallery.respawn_all();
     // He stands at the entrance with the abilities, MP and Drive he had.
-    game.player.revive();
-    game.player.position = position;
-    game.player.yaw = yaw;
+    game.sora.player.revive();
+    game.sora.player.position = position;
+    game.sora.player.yaw = yaw;
     rig.camera = FollowCamera::new(
         follow_camera::OUTDOOR,
-        &camera_input(&game.player, game.player.position, game.params.run_speed),
+        &camera_input(
+            &game.sora.player,
+            game.sora.player.position,
+            game.params.run_speed,
+        ),
     );
-    rig.previous_position = game.player.position;
+    rig.previous_position = game.sora.player.position;
     game.action_started = game.tick;
     let tick = game.tick;
     game.event(serde_json::json!({"event":"game_over_continue","tick":tick}));

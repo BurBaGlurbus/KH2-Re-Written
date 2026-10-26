@@ -116,6 +116,22 @@ impl Menu {
         self.cursor
     }
 
+    /// A row's text changes in place (another menu's value that Left and
+    /// Right step; the game-over list never changes its own).
+    pub fn set_text(&mut self, i: usize, text: Vec<u8>) {
+        if self.texts.get(i) == Some(&text) {
+            return;
+        }
+        if let Some(&row) = self.rows.get(i)
+            && let Some(t) = self.sprites.get_mut(row).text.as_mut()
+        {
+            t.bytes = text.clone();
+        }
+        if let Some(t) = self.texts.get_mut(i) {
+            *t = text;
+        }
+    }
+
     fn row_group(&self, i: usize) -> usize {
         if i == self.cursor {
             ROW_SELECTED

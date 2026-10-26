@@ -30,12 +30,19 @@ pub struct CheckedIndex {
 
 /// A package reader. With chunk digests (a session on a schema 2 manifest)
 /// every byte served comes from a CHUNK_SIZE chunk that was just read and
-/// matched against the full-scan record; a mismatch fails the read.
+/// matched against the full-scan record; a mismatch fails the read. A
+/// recording reader (`recording`) takes a chunk with no record yet as it
+/// is first read and keeps its digest for the next session's check.
 pub struct SourceReader {
     file: File,
     len: u64,
     pos: u64,
-    expected: Vec<[u8; 32]>,
+    expected: Vec<Option<[u8; 32]>>,
+    /// Chunks with no record are recorded on their first read (else such a
+    /// read fails).
+    recording: bool,
+    /// A chunk was recorded since the reader opened.
+    recorded: bool,
     /// Verified chunks kept for reuse (index, bytes), most recent last.
     cache: Vec<(u64, Vec<u8>)>,
 }
@@ -54,11 +61,11 @@ fn digest_bytes(hex: &str) -> Option<[u8; 32]> {
 }
 
 impl SourceReader {
-    fn new(file: File, len: u64, chunks: &[String]) -> std::io::Result<Self> {
+    pub(crate) fn new(file: File, len: u64, chunks: &[String]) -> std::io::Result<Self> {
         let expected = chunks
             .iter()
             .map(|h| {
-                digest_bytes(h).ok_or_else(|| {
+                digest_bytes(h).map(Some).ok_or_else(|| {
                     std::io::Error::new(std::io::ErrorKind::InvalidData, "chunk digest")
                 })
             })
@@ -68,8 +75,53 @@ impl SourceReader {
             len,
             pos: 0,
             expected,
+            recording: false,
+            recorded: false,
             cache: Vec::new(),
         })
+    }
+
+    /// A reader whose chunks recorded as "" are recorded on their first
+    /// read (one entry per CHUNK_SIZE chunk of `len`).
+    pub(crate) fn recording(file: File, len: u64, chunks: &[String]) -> std::io::Result<Self> {
+        let n = len.div_ceil(validation::CHUNK_SIZE) as usize;
+        if chunks.len() != n {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "chunk list length",
+            ));
+        }
+        let expected = chunks
+            .iter()
+            .map(|h| match h.as_str() {
+                "" => Ok(None),
+                h => digest_bytes(h).map(Some).ok_or_else(|| {
+                    std::io::Error::new(std::io::ErrorKind::InvalidData, "chunk digest")
+                }),
+            })
+            .collect::<std::io::Result<_>>()?;
+        Ok(Self {
+            file,
+            len,
+            pos: 0,
+            expected,
+            recording: true,
+            recorded: false,
+            cache: Vec::new(),
+        })
+    }
+
+    /// The chunk digests as now known (hex; "" for none), and whether any
+    /// was recorded since the reader opened.
+    pub(crate) fn chunk_record(&self) -> (Vec<String>, bool) {
+        let hex = |d: &[u8; 32]| d.iter().map(|b| format!("{b:02x}")).collect::<String>();
+        (
+            self.expected
+                .iter()
+                .map(|d| d.as_ref().map(hex).unwrap_or_default())
+                .collect(),
+            self.recorded,
+        )
     }
 
     pub fn metadata(&self) -> std::io::Result<Metadata> {
@@ -89,11 +141,18 @@ impl SourceReader {
         self.file.seek(SeekFrom::Start(start))?;
         self.file.read_exact(&mut bytes)?;
         let digest: [u8; 32] = Sha256::digest(&bytes).into();
-        if self.expected.get(k as usize) != Some(&digest) {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                "package bytes differ from the full-scan record; source rejected",
-            ));
+        match self.expected.get_mut(k as usize) {
+            Some(Some(d)) if *d == digest => {}
+            Some(slot @ None) if self.recording => {
+                *slot = Some(digest);
+                self.recorded = true;
+            }
+            _ => {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "package bytes differ from the full-scan record; source rejected",
+                ));
+            }
         }
         if self.cache.len() == CACHED_CHUNKS {
             self.cache.remove(0);
@@ -378,6 +437,49 @@ impl CheckedIndex {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_recording_reader_records_chunks_once_and_the_next_one_checks_them() {
+        let dir = std::env::temp_dir().join(format!("kh2-record-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("pkg");
+        let len = validation::CHUNK_SIZE * 2 + 17;
+        let bytes: Vec<u8> = (0..len).map(|i| (i * 7 % 251) as u8).collect();
+        fs::write(&path, &bytes).unwrap();
+        let none = vec![String::new(); 3];
+        let mut r = SourceReader::recording(File::open(&path).unwrap(), len, &none).unwrap();
+        // 20 bytes of chunk 1 and 10 of chunk 2 (17 long).
+        let mut got = vec![0; 30];
+        r.seek(SeekFrom::Start(validation::CHUNK_SIZE * 2 - 20))
+            .unwrap();
+        r.read_exact(&mut got).unwrap();
+        assert_eq!(
+            got,
+            bytes[(validation::CHUNK_SIZE * 2 - 20) as usize..][..30]
+        );
+        let (record, recorded) = r.chunk_record();
+        assert!(recorded);
+        assert_eq!(record[0], "");
+        assert_eq!(record[1].len(), 64);
+        assert_eq!(record[2].len(), 64);
+        // The next session checks what was recorded; an unrecorded chunk
+        // is recorded then, a changed one fails.
+        let mut r = SourceReader::recording(File::open(&path).unwrap(), len, &record).unwrap();
+        r.seek(SeekFrom::Start(validation::CHUNK_SIZE * 2)).unwrap();
+        r.read_exact(&mut got[..17]).unwrap();
+        assert!(!r.chunk_record().1);
+        let mut changed = bytes.clone();
+        changed[(validation::CHUNK_SIZE * 2 + 3) as usize] ^= 1;
+        fs::write(&path, &changed).unwrap();
+        let mut r = SourceReader::recording(File::open(&path).unwrap(), len, &record).unwrap();
+        r.seek(SeekFrom::Start(validation::CHUNK_SIZE * 2)).unwrap();
+        assert!(r.read_exact(&mut got[..17]).is_err());
+        // A strict reader never records.
+        let mut r = SourceReader::new(File::open(&path).unwrap(), len, &[]).unwrap();
+        r.read_exact(&mut got[..4]).unwrap();
+        assert!(SourceReader::new(File::open(&path).unwrap(), len, &none).is_err());
+        fs::remove_dir_all(&dir).unwrap();
+    }
     use std::{
         sync::atomic::{AtomicU64, Ordering},
         time::SystemTime,

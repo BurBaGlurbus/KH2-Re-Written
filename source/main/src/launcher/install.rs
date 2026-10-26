@@ -61,6 +61,15 @@ pub struct Settings {
     /// The quick start guide has been shown once.
     #[serde(default)]
     pub guide_seen: bool,
+    /// The name the other player sees in a LAN duel (the Windows user name
+    /// until changed) and the last host address typed.
+    #[serde(default)]
+    pub player_name: Option<String>,
+    #[serde(default)]
+    pub last_host: Option<String>,
+    /// The duel's devices (`--input`): auto, kbm, pad or both.
+    #[serde(default)]
+    pub duel_input: Option<String>,
 }
 
 pub fn load_settings(dir: &Path) -> Settings {
@@ -865,6 +874,33 @@ pub fn test_args(dir: &Path, program: &str, b: &Bound) -> Result<Vec<String>, St
     Ok(args)
 }
 
+/// `kh2fm room` for a LAN duel: the arena config (the developer's own
+/// launch file, else the made one) with the session's options after it.
+pub fn duel_args(dir: &Path, b: &Bound, session: &[String]) -> Result<Vec<String>, String> {
+    let own = launch_file(dir, "launch")
+        .ok()
+        .map(|l| (dir.join(&l.config), l.options))
+        .filter(|(config, _)| config_identity(config).as_deref() == Some(b.identity.as_str()));
+    let (config, options) = match own {
+        Some(own) => own,
+        None => (made_config(dir, b, "room")?, Vec::new()),
+    };
+    if config_identity(&config).as_deref() != Some(b.identity.as_str()) {
+        return Err(
+            "The duel's config was made for a different build than the chosen folder.".into(),
+        );
+    }
+    let mut args = vec![
+        "room".to_owned(),
+        b.folder.to_string_lossy().into_owned(),
+        b.manifest.to_string_lossy().into_owned(),
+        config.to_string_lossy().into_owned(),
+    ];
+    args.extend(options);
+    args.extend(session.iter().cloned());
+    Ok(args)
+}
+
 /// `kh2fm tt` or `kh2fm eh` without arguments: the world's field config
 /// with the arena launch file's source paths.
 pub fn field_args(world: &str) -> Result<Vec<PathBuf>, String> {
@@ -1075,6 +1111,9 @@ mod tests {
             manifest: Some(f.0.join("m.json")),
             skate3_iso: Some(f.0.join("skate.iso")),
             guide_seen: true,
+            player_name: Some("Riku".into()),
+            last_host: Some("192.168.1.20".into()),
+            duel_input: Some("pad".into()),
         };
         save_settings(&f.0, &s).unwrap();
         assert_eq!(load_settings(&f.0), s);

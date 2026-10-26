@@ -1049,7 +1049,7 @@ pub fn tick(mut game: ResMut<Game>, mut gallery: ResMut<EnemyGallery>) {
                     .map(|(&k, &l)| (k, l))
                     .collect();
             }
-            a.player_yaw = game.player.yaw;
+            a.player_yaw = game.sora.player.yaw;
             // A battle actor fights: the battle flag (DAT_142a11404), and
             // whether Sora cannot be damaged (`obj_is_star`).
             a.facts.battle = true;
@@ -1057,17 +1057,22 @@ pub fn tick(mut game: ResMut<Game>, mut gallery: ResMut<EnemyGallery>) {
             a.facts.player_hp = game
                 .enemy
                 .as_ref()
-                .map(|e| (e.sora_hp, e.sora_target.max_hp));
-            a.facts.player_mp = Some((game.player.mp.cur, game.player.mp.max));
+                .map(|_| (game.sora.vitals.hp, game.sora.vitals.target.max_hp));
+            a.facts.player_mp = Some((game.sora.player.mp.cur, game.sora.player.mp.max));
             a.facts.player_star = game.cheats.invincible
-                || game.player.range_invulnerable(&game.clips)
+                || game.sora.player.range_invulnerable(&game.clips)
                 || game
                     .enemy
                     .as_ref()
-                    .is_some_and(|e| e.sora_invulnerable > 0.);
+                    .is_some_and(|_| game.sora.vitals.invulnerable > 0.);
         }
         let prior = (battle.brain.motion(), battle.brain.serial());
-        match battle.tick(&game.world, game.player.position, &actor.kind, &mut rng) {
+        match battle.tick(
+            &game.world,
+            game.sora.player.position,
+            &actor.kind,
+            &mut rng,
+        ) {
             Ok((choice, key)) => {
                 actor.position = Vec3::from_array(battle.brain.position());
                 actor.yaw = battle.brain.yaw();

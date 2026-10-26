@@ -878,6 +878,10 @@ fn map_collision(map: &[u8], mask: u64) -> Result<collision::World> {
 /// The controller's view of the map collision: one body-versus-map move
 /// per tick through the exe's solver (FUN_14016fec0 as FUN_1403b9090 calls
 /// it). The scene is Y up; the exe is Y down: (x, y, z) ↔ (x, −y, −z).
+/// The floor state of a body that has met no floor yet (engine-side
+/// normal (0, −1, 0), no material).
+pub const FLOOR_NONE: ([f32; 3], u8) = ([0., -1., 0.], 0);
+
 pub struct MapWorld {
     world: collision::World,
     /// Floor normal from the previous tick (obj+0x768 is −normal), (0, −1,
@@ -908,9 +912,23 @@ impl MapWorld {
     pub fn new(world: collision::World) -> Self {
         Self {
             world,
-            floor_normal: std::sync::Mutex::new([0., -1., 0.]),
-            floor_ground: std::sync::atomic::AtomicU8::new(0),
+            floor_normal: std::sync::Mutex::new(FLOOR_NONE.0),
+            floor_ground: std::sync::atomic::AtomicU8::new(FLOOR_NONE.1),
         }
+    }
+
+    /// Puts another body's previous floor normal and material in place of
+    /// the kept ones and returns those (a second Sora moves against the same
+    /// map between two swaps).
+    pub fn swap_floor_state(&self, state: ([f32; 3], u8)) -> ([f32; 3], u8) {
+        let normal = std::mem::replace(
+            &mut *self.floor_normal.lock().expect("floor normal"),
+            state.0,
+        );
+        let ground = self
+            .floor_ground
+            .swap(state.1, std::sync::atomic::Ordering::Relaxed);
+        (normal, ground)
     }
 
     /// An attack volume's segment against the map (FUN_140171090, class 4)

@@ -8,6 +8,8 @@ use std::{collections::HashSet, io};
 pub mod ard;
 pub mod bar;
 pub mod battle_tables;
+pub mod bbs_map;
+pub mod bbs_source;
 pub mod bdscript;
 pub mod command_table;
 pub mod enemy_actions;
@@ -64,7 +66,7 @@ pub mod world_map;
 pub const RECORD_SIZE: usize = 32;
 pub const MAX_INDEX_BYTES: usize = 32 * 1024 * 1024;
 
-#[derive(Debug, Serialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
 pub struct HedEntry {
     pub name_hash: [u8; 16],
     pub package_offset: u64,

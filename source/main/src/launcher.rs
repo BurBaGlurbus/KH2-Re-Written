@@ -14,6 +14,8 @@ mod paint;
 mod test_configs;
 
 use bevy::app::AppExit;
+use bevy::input::ButtonState;
+use bevy::input::keyboard::{Key, KeyboardInput};
 use bevy::input::mouse::{MouseScrollUnit, MouseWheel};
 use bevy::prelude::*;
 use bevy::window::{FileDragAndDrop, PrimaryWindow, WindowResolution};
@@ -46,6 +48,21 @@ const LIST_TOP: f32 = 196.;
 const LIST_BOTTOM: f32 = 630.;
 const LIST_WIDTH: f32 = 620.;
 const GUIDE_LIST_TOP: f32 = 572.;
+/// The Multiplayer screen in the pause menu's (the camp's) layout: its
+/// entry boxes at the top left under the header, the help box and the
+/// panel at the bottom [launcher drawing after the camp's look; the game's
+/// own menu art is not loaded here].
+const MP_ROW_X: f32 = 200.;
+const MP_ROW_TOP: f32 = 132.;
+const MP_ROW_W: f32 = 340.;
+const MP_ROW_BOTTOM: f32 = 540.;
+const MP_BAND: f32 = 112.;
+const MP_PANEL_TOP: f32 = 560.;
+const MP_HELP_X: f32 = 400.;
+const MP_BLUE: u32 = 0x1530ff;
+const MP_HELP: u32 = 0x48b4ff;
+const MP_ORANGE: u32 = 0xff7a1a;
+const MP_YELLOW: u32 = 0xffcc33;
 
 #[derive(Clone, Debug, PartialEq)]
 enum Action {
@@ -64,8 +81,31 @@ enum Action {
     Guide,
     /// Leave the guide.
     CloseGuide,
+    /// The LAN duel screen.
+    Multiplayer,
+    /// Host a duel and wait for a player.
+    HostDuel,
+    /// Join a host the LAN search found (index into the found list).
+    JoinFound(usize),
+    /// Type the host's address, then join it.
+    JoinAddress,
+    /// Type the name the other player sees.
+    EditName,
+    /// The next devices choice for duels (two windows on one PC).
+    CycleInput,
     Quit,
 }
+
+/// A text field being typed into.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Field {
+    Name,
+    Address,
+}
+
+/// Longest name and address typed.
+const NAME_LIMIT: usize = 24;
+const ADDRESS_LIMIT: usize = 40;
 
 #[derive(Clone)]
 struct Item {
@@ -128,6 +168,8 @@ enum Screen {
     BrowseIso(Option<PathBuf>, Bound),
     Check(Job),
     Tests(Bound),
+    /// The LAN duel: host, join, the player's name.
+    Multiplayer(Bound),
     Loading(Running, Bound),
     Problem {
         title: String,
@@ -156,10 +198,32 @@ struct Launcher {
     repeat: Option<(i32, f32)>,
     mouse: Option<Vec2>,
     paint: Option<Paint>,
+    /// The field being typed into and its text so far.
+    editing: Option<(Field, String)>,
+    /// The Multiplayer screen's LAN search and the hosts it found.
+    browser: Option<net::Browser>,
+    found: Vec<net::Found>,
+    /// This executable's identity (hosts with another are not joinable).
+    build: Option<[u8; 32]>,
 }
 
 impl Launcher {
     fn go(&mut self, screen: Screen) {
+        // The LAN search runs only on the Multiplayer screen.
+        if matches!(screen, Screen::Multiplayer(_)) {
+            if self.browser.is_none() {
+                let build = *self
+                    .build
+                    .get_or_insert_with(|| crate::test_room::build_identity().unwrap_or([0; 32]));
+                self.browser = net::Browser::new(net::DEFAULT_PORT, build)
+                    .inspect_err(|e| eprintln!("LAN search unavailable: {e}"))
+                    .ok();
+            }
+        } else {
+            self.browser = None;
+            self.found.clear();
+            self.editing = None;
+        }
         self.screen = screen;
         self.items = self.build_items();
         self.cursor = self
@@ -214,6 +278,10 @@ impl Launcher {
                     .enumerate()
                     .map(|(i, t)| Item::new(t.name, Action::Run(i)).detail(t.blurb))
                     .collect();
+                items.push(
+                    Item::new("Multiplayer", Action::Multiplayer)
+                        .detail("A duel against another player on the same network"),
+                );
                 items.extend(self.viewers.iter().enumerate().map(|(i, v)| {
                     Item::new(v.label.clone(), Action::View(i))
                         .detail("Developer tool, slow to start")
@@ -226,6 +294,56 @@ impl Launcher {
                 items.push(Item::new("Change game folder", Action::Pick));
                 items.push(Item::new("Quick start guide", Action::Guide));
                 items.push(Item::new("Quit", Action::Quit));
+                items
+            }
+            Screen::Multiplayer(b) => {
+                let typing = |field: Field| match &self.editing {
+                    Some((f, text)) if *f == field => Some(format!("{text}_")),
+                    _ => None,
+                };
+                let name = typing(Field::Name).unwrap_or_else(|| self.player_name());
+                let address = typing(Field::Address).unwrap_or_else(|| {
+                    self.settings
+                        .last_host
+                        .clone()
+                        .unwrap_or_else(|| "Type the host's IP address".into())
+                });
+                let mut items = vec![
+                    Item::new("Host a duel", Action::HostDuel)
+                        .detail("Wait for a player on this network"),
+                ];
+                for (i, host) in self.found.iter().enumerate() {
+                    let item =
+                        Item::new(format!("Join {}", host.name), Action::JoinFound(i)).tag("LAN");
+                    items.push(if !host.compatible {
+                        item.detail(format!(
+                            "{}: another version of the launcher",
+                            host.addr.ip()
+                        ))
+                        .disabled()
+                    } else if !host.open {
+                        item.detail(format!("{}: already in a duel", host.addr.ip()))
+                            .disabled()
+                    } else {
+                        item.detail(match host.ping_ms {
+                            Some(ms) => format!("{}, {ms} ms", host.addr.ip()),
+                            None => host.addr.ip().to_string(),
+                        })
+                    });
+                }
+                if self.found.is_empty() && self.browser.is_some() {
+                    items.push(
+                        Item::new("Looking for hosts on this network...", Action::Multiplayer)
+                            .disabled(),
+                    );
+                }
+                items.extend([
+                    Item::new("Join by address", Action::JoinAddress).detail(address),
+                    Item::new("Name", Action::EditName).detail(name),
+                    Item::new("Controls", Action::CycleInput)
+                        .detail(input_label(self.duel_input())),
+                    Item::new("Back", Action::UseFolder(b.folder.clone())),
+                ]);
                 items
             }
             Screen::Guide(_) => vec![Item::new("Continue", Action::CloseGuide)],
@@ -561,6 +679,7 @@ fn read_input(
 /// Rows of the current list: height, gap, label size.
 fn row_metrics(l: &Launcher) -> (f32, f32, f32) {
     match l.screen {
+        Screen::Multiplayer(_) => (44., 4., 24.),
         Screen::Browse(_) | Screen::BrowseIso(..) => (40., 4., 20.),
         _ if l.items.iter().any(|i| i.detail.is_some()) => (66., 6., 24.),
         _ => (48., 6., 24.),
@@ -569,13 +688,23 @@ fn row_metrics(l: &Launcher) -> (f32, f32, f32) {
 
 fn visible_rows(l: &Launcher) -> usize {
     let (h, gap, _) = row_metrics(l);
-    (((LIST_BOTTOM - list_top(l) + gap) / (h + gap)) as usize).max(1)
+    let bottom = if matches!(l.screen, Screen::Multiplayer(_)) {
+        MP_ROW_BOTTOM
+    } else {
+        LIST_BOTTOM
+    };
+    (((bottom - list_top(l) + gap) / (h + gap)) as usize).max(1)
 }
 
 fn row_rect(l: &Launcher, i: usize) -> [f32; 4] {
     let (h, gap, _) = row_metrics(l);
     let k = i as f32 - l.scroll as f32;
-    [MARGIN, list_top(l) + k * (h + gap), LIST_WIDTH, h]
+    let (x, w) = if matches!(l.screen, Screen::Multiplayer(_)) {
+        (MP_ROW_X, MP_ROW_W)
+    } else {
+        (MARGIN, LIST_WIDTH)
+    };
+    [x, list_top(l) + k * (h + gap), w, h]
 }
 
 fn move_cursor(l: &mut Launcher, by: i32) {
@@ -694,6 +823,184 @@ fn act(l: &mut Launcher, action: Action, exit: &mut MessageWriter<AppExit>) {
                 launch(l, &action, b);
             }
         }
+        Action::Multiplayer => {
+            if let Screen::Tests(b) = &l.screen {
+                let b = b.clone();
+                l.go(Screen::Multiplayer(b));
+            }
+        }
+        Action::HostDuel => {
+            let name = l.player_name();
+            duel(l, vec!["--host".into(), "--name".into(), name]);
+        }
+        Action::JoinFound(i) => {
+            if let Some(host) = l.found.get(i) {
+                let address = host.addr.to_string();
+                let name = l.player_name();
+                duel(l, vec!["--join".into(), address, "--name".into(), name]);
+            }
+        }
+        Action::JoinAddress => {
+            let text = l.settings.last_host.clone().unwrap_or_default();
+            l.edit(Field::Address, text);
+        }
+        Action::EditName => {
+            let text = l.player_name();
+            l.edit(Field::Name, text);
+        }
+        Action::CycleInput => {
+            let at = INPUT_CHOICES
+                .iter()
+                .position(|&c| c == l.duel_input())
+                .unwrap_or(0);
+            l.settings.duel_input = Some(INPUT_CHOICES[(at + 1) % INPUT_CHOICES.len()].into());
+            if let Err(e) = install::save_settings(&l.dir, &l.settings) {
+                eprintln!("Launcher settings not saved: {e}");
+            }
+            l.refresh();
+        }
+    }
+}
+
+/// The duel's device choices (the room's `--input`), in the order Controls
+/// cycles them.
+const INPUT_CHOICES: [&str; 4] = ["auto", "kbm", "pad", "both"];
+
+fn input_label(choice: &str) -> &'static str {
+    match choice {
+        "kbm" => "Keyboard and mouse",
+        "pad" => "Controller",
+        "both" => "Keyboard, mouse and controller",
+        _ => "Auto: on one PC, the host keyboard and the joiner a controller",
+    }
+}
+
+impl Launcher {
+    /// The name the other player sees: the saved one, else the Windows
+    /// user name.
+    /// The duel's devices as saved (auto by default).
+    fn duel_input(&self) -> &str {
+        self.settings
+            .duel_input
+            .as_deref()
+            .filter(|c| INPUT_CHOICES.contains(c))
+            .unwrap_or("auto")
+    }
+
+    fn player_name(&self) -> String {
+        self.settings
+            .player_name
+            .clone()
+            .filter(|n| !n.trim().is_empty())
+            .or_else(|| std::env::var("USERNAME").ok())
+            .unwrap_or_else(|| "Player".into())
+    }
+
+    fn edit(&mut self, field: Field, text: String) {
+        self.editing = Some((field, text));
+        self.refresh();
+    }
+
+    /// Rebuilds the rows in place (the cursor stays).
+    fn refresh(&mut self) {
+        self.items = self.build_items();
+        self.glow.resize(self.items.len(), 0.);
+        self.cursor = self.cursor.min(self.items.len().saturating_sub(1));
+    }
+}
+
+/// Typing into a field: characters, Backspace, Enter to keep, Esc to drop.
+/// Returns true while the field takes the keys.
+fn type_text(
+    l: &mut Launcher,
+    keys: &ButtonInput<KeyCode>,
+    typed: &mut MessageReader<KeyboardInput>,
+) -> bool {
+    let Some((field, mut text)) = l.editing.take() else {
+        typed.clear();
+        return false;
+    };
+    let limit = match field {
+        Field::Name => NAME_LIMIT,
+        Field::Address => ADDRESS_LIMIT,
+    };
+    for event in typed.read() {
+        if event.state != ButtonState::Pressed {
+            continue;
+        }
+        match &event.logical_key {
+            Key::Character(chars) => {
+                for c in chars.chars().filter(|c| !c.is_control()) {
+                    let allowed = match field {
+                        Field::Name => c != '"',
+                        Field::Address => c.is_ascii_alphanumeric() || ".:-".contains(c),
+                    };
+                    if allowed && text.chars().count() < limit {
+                        text.push(c);
+                    }
+                }
+            }
+            Key::Space if field == Field::Name && text.chars().count() < limit => {
+                text.push(' ');
+            }
+            Key::Backspace => {
+                text.pop();
+            }
+            _ => {}
+        }
+    }
+    if keys.just_pressed(KeyCode::Escape) {
+        l.refresh();
+        return true;
+    }
+    if keys.any_just_pressed([KeyCode::Enter, KeyCode::NumpadEnter]) {
+        let text = text.trim().to_owned();
+        match field {
+            Field::Name => {
+                if !text.is_empty() {
+                    l.settings.player_name = Some(text);
+                }
+                if let Err(e) = install::save_settings(&l.dir, &l.settings) {
+                    eprintln!("Launcher settings not saved: {e}");
+                }
+                l.refresh();
+            }
+            Field::Address if !text.is_empty() => {
+                l.settings.last_host = Some(text.clone());
+                if let Err(e) = install::save_settings(&l.dir, &l.settings) {
+                    eprintln!("Launcher settings not saved: {e}");
+                }
+                let name = l.player_name();
+                duel(l, vec!["--join".into(), text, "--name".into(), name]);
+            }
+            Field::Address => l.refresh(),
+        }
+        return true;
+    }
+    l.editing = Some((field, text));
+    l.refresh();
+    true
+}
+
+/// Starts the test room as a duel host or joiner with `session` options.
+fn duel(l: &mut Launcher, session: Vec<String>) {
+    let Screen::Multiplayer(b) = &l.screen else {
+        return;
+    };
+    let b = b.clone();
+    let mut session = session;
+    session.extend(["--input".into(), l.duel_input().to_owned()]);
+    let started = install::duel_args(&l.dir, &b, &session).and_then(|args| {
+        let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+        spawn("Multiplayer".into(), exe, args)
+    });
+    match started {
+        Ok(running) => l.go(Screen::Loading(running, b)),
+        Err(why) => l.go(Screen::Problem {
+            title: "The duel could not start".into(),
+            lines: vec![why],
+            retry: Some(b),
+        }),
     }
 }
 
@@ -726,6 +1033,7 @@ fn back(l: &mut Launcher, exit: &mut MessageWriter<AppExit>) {
         Screen::Pick => l.settings.game_folder.clone().map(Action::UseFolder),
         Screen::Problem { retry: Some(b), .. } => Some(Action::UseFolder(b.folder.clone())),
         Screen::Tests(_) => Some(Action::Quit),
+        Screen::Multiplayer(b) => Some(Action::UseFolder(b.folder.clone())),
         Screen::Guide(_) => Some(Action::CloseGuide),
         _ => None,
     };
@@ -776,6 +1084,21 @@ fn checked(l: &mut Launcher, result: Result<Bound, String>, folder: &Path) {
     l.go(Screen::Tests(b));
 }
 
+/// Developer check: with `KH2RW_LAUNCHER_SHOT` naming a PNG, F12 saves a
+/// picture of the launcher there (a window capture of the GPU surface comes
+/// out black).
+fn screenshot(mut commands: Commands, keys: Res<ButtonInput<KeyCode>>) {
+    if keys.just_pressed(KeyCode::F12)
+        && let Some(path) = std::env::var_os("KH2RW_LAUNCHER_SHOT")
+    {
+        commands
+            .spawn(bevy::render::view::screenshot::Screenshot::primary_window())
+            .observe(bevy::render::view::screenshot::save_to_disk(PathBuf::from(
+                path,
+            )));
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn update(
     mut l: ResMut<Launcher>,
@@ -787,6 +1110,7 @@ fn update(
     mut drops: MessageReader<FileDragAndDrop>,
     mut windows: Query<&mut Window, With<PrimaryWindow>>,
     mut winit: ResMut<WinitSettings>,
+    mut typed: MessageReader<KeyboardInput>,
     mut exit: MessageWriter<AppExit>,
 ) {
     let l = &mut *l;
@@ -891,6 +1215,10 @@ fn update(
         if let (true, true, Some(room)) = (status.success(), new_game, room) {
             // New Game on the title continues straight into the test room.
             launch(l, &Action::Run(room), b);
+        } else if status.success() && name == "Multiplayer" {
+            // A duel left from its result screen (or closed) comes back to
+            // Multiplayer: the hosts on the network, Host, Join.
+            l.go(Screen::Multiplayer(b));
         } else if status.success() {
             let cursor = l.cursor;
             l.go(Screen::Tests(b));
@@ -918,6 +1246,28 @@ fn update(
         checked(l, result, &folder);
     }
 
+    // The LAN search: new or vanished hosts rebuild the list.
+    if let Some(browser) = l.browser.as_mut() {
+        browser.update();
+        // (When each host was last heard is not part of the rows; its ping
+        // is, to 5 ms.)
+        let rows = |f: &[net::Found]| -> Vec<_> {
+            f.iter()
+                .map(|h| {
+                    let ping = h.ping_ms.map(|ms| ms.div_ceil(5));
+                    (h.name.clone(), h.addr, h.compatible, h.open, ping)
+                })
+                .collect()
+        };
+        if rows(browser.found()) != rows(&l.found) {
+            l.found = browser.found().to_vec();
+            l.refresh();
+        }
+    }
+    // A field being typed into takes the keyboard.
+    if type_text(l, &keys, &mut typed) {
+        return;
+    }
     // Input on lists.
     if l.items.is_empty() {
         return;
@@ -1002,6 +1352,20 @@ fn draw(
     }
     let mut paint = l.paint.take().expect("paint");
     let (p, f) = (&mut paint, &mut *frame);
+    if matches!(l.screen, Screen::Multiplayer(_)) {
+        multiplayer(l, p, f);
+        if l.fade > 0. {
+            p.rect(
+                f,
+                [0., 0., paint::W, paint::H],
+                [rgba(0x000000, l.fade); 4],
+                false,
+            );
+        }
+        p.flush(&mut images, f);
+        l.paint = Some(paint);
+        return;
+    }
     let (top, bottom) = (rgba(0x0b0f1a, 1.), rgba(0x05070c, 1.));
     p.rect(
         f,
@@ -1031,6 +1395,7 @@ fn draw(
             .map_or_else(|| "Find your Skate 3 ISO".into(), plain),
         Screen::Check(_) => "Checking the game folder".into(),
         Screen::Tests(_) => "Choose a test".into(),
+        Screen::Multiplayer(_) => "Multiplayer".into(),
         Screen::Loading(run, _) => format!("Loading {}", run.name),
         Screen::Problem { title, .. } => title.clone(),
     };
@@ -1121,6 +1486,7 @@ fn list_top(l: &Launcher) -> f32 {
     match &l.screen {
         Screen::Problem { lines, .. } => LIST_TOP + 26. * lines.len() as f32 + 24.,
         Screen::Guide(_) => GUIDE_LIST_TOP,
+        Screen::Multiplayer(_) => MP_ROW_TOP,
         _ => LIST_TOP,
     }
 }
@@ -1190,6 +1556,211 @@ fn list(l: &Launcher, p: &mut Paint, f: &mut Ui2dFrame) {
     }
 }
 
+/// The Multiplayer screen in the camp's look: the header band and its
+/// MENU-style title, the entries as the camp's boxes (red for the cursor's,
+/// the pointer beside it), the bottom panel with the player's name and the
+/// hosts found, and the help box with the cursor's entry's line.
+fn multiplayer(l: &Launcher, p: &mut Paint, f: &mut Ui2dFrame) {
+    let blue = rgba(MP_BLUE, 1.);
+    let (top, bottom) = (rgba(0x030a2e, 1.), rgba(0x01030f, 1.));
+    p.rect(
+        f,
+        [0., 0., paint::W, paint::H],
+        [top, top, bottom, bottom],
+        false,
+    );
+    // The header band, its frame lines and the title's plate.
+    let (band_top, band_bottom) = (rgba(0x020a3a, 1.), rgba(0x010628, 1.));
+    p.rect(
+        f,
+        [0., 0., paint::W, MP_BAND],
+        [band_top, band_top, band_bottom, band_bottom],
+        false,
+    );
+    p.rect(f, [0., MP_BAND, paint::W, 4.], [blue; 4], false);
+    for x in [218., 236.] {
+        p.rect(f, [x, 0., 3., MP_BAND], [blue; 4], false);
+    }
+    let (pill_top, pill_bottom) = (rgba(0x2040e0, 1.), rgba(0x0a1890, 1.));
+    p.plate(
+        f,
+        [128., 14., 272., 44.],
+        22.,
+        0.,
+        [pill_top, pill_top, pill_bottom, pill_bottom],
+        false,
+    );
+    p.text(
+        f,
+        Face::Heading,
+        30.,
+        [264., 16.],
+        0.5,
+        "MULTIPLAYER",
+        [rgba(TEXT, 1.); 2],
+        0.,
+    );
+    // The entries.
+    let (h, _, size) = row_metrics(l);
+    let rows = visible_rows(l);
+    for i in l.scroll..(l.scroll + rows).min(l.items.len()) {
+        let item = &l.items[i];
+        let on = i == l.cursor;
+        let [x, y, w, _] = row_rect(l, i);
+        let (edge, fill_top, fill_bottom, ink) = match (on, item.action.is_some()) {
+            (true, _) => (0xff2a1a, 0x7a0a08, 0x220000, TEXT),
+            (false, true) => (0x4a5060, 0x2a2e36, 0x0e1014, 0xb4b8c0),
+            (false, false) => (0x353a46, 0x1c1f26, 0x0a0b0e, FAINT),
+        };
+        p.plate(
+            f,
+            [x - 2., y - 2., w + 4., h + 4.],
+            12.,
+            0.,
+            [rgba(edge, 1.); 4],
+            false,
+        );
+        let (a, b) = (rgba(fill_top, 1.), rgba(fill_bottom, 1.));
+        p.plate(f, [x, y, w, h], 10., 0., [a, a, b, b], false);
+        let tag_w = item.tag.map_or(0., |t| p.measure(Face::Body, 15., t) + 20.);
+        let label = p.fit(Face::Body, size, &item.label, w - 32. - tag_w);
+        let label_y = y + (h - size * 1.33) / 2.;
+        p.text(
+            f,
+            Face::Body,
+            size,
+            [x + 22., label_y],
+            0.,
+            &label,
+            [rgba(ink, 1.); 2],
+            0.,
+        );
+        if let Some(tag) = item.tag {
+            p.text(
+                f,
+                Face::Body,
+                15.,
+                [x + w - 14., y + (h - 20.) / 2.],
+                1.,
+                tag,
+                [rgba(GOLD, 1.); 2],
+                0.,
+            );
+        }
+        if on {
+            let cy = y + h / 2.;
+            triangle(
+                f,
+                p,
+                [[x - 34., cy - 11.], [x - 34., cy + 11.], [x - 10., cy]],
+                rgba(TEXT, 1.),
+            );
+        }
+    }
+    // The bottom panels: the player's name and the hosts found, then the
+    // help box.
+    let (panel_top, panel_bottom) = (rgba(0x000528, 1.), rgba(0x000214, 1.));
+    let fill = [panel_top, panel_top, panel_bottom, panel_bottom];
+    let panel_h = paint::H - MP_PANEL_TOP;
+    p.rect(f, [0., MP_PANEL_TOP, MP_HELP_X - 16., panel_h], fill, false);
+    p.rect(
+        f,
+        [MP_HELP_X, MP_PANEL_TOP, paint::W - MP_HELP_X, panel_h],
+        fill,
+        false,
+    );
+    p.rect(f, [0., MP_PANEL_TOP, MP_HELP_X - 16., 4.], [blue; 4], false);
+    p.rect(
+        f,
+        [MP_HELP_X - 19., MP_PANEL_TOP, 3., panel_h],
+        [blue; 4],
+        false,
+    );
+    p.rect(
+        f,
+        [MP_HELP_X, MP_PANEL_TOP, paint::W - MP_HELP_X, 4.],
+        [blue; 4],
+        false,
+    );
+    p.rect(f, [MP_HELP_X, MP_PANEL_TOP, 3., panel_h], [blue; 4], false);
+    let name = p.fit(Face::Body, 26., &l.player_name(), 300.);
+    let hosts = l.found.iter().filter(|h| h.compatible && h.open).count();
+    for (label, value, colour, y) in [
+        ("NAME", name, MP_ORANGE, MP_PANEL_TOP + 16.),
+        ("HOSTS", hosts.to_string(), 0x2ad4ff, MP_PANEL_TOP + 80.),
+    ] {
+        p.text(
+            f,
+            Face::Heading,
+            22.,
+            [40., y],
+            0.,
+            label,
+            [rgba(colour, 1.); 2],
+            0.,
+        );
+        p.text(
+            f,
+            Face::Body,
+            26.,
+            [MP_HELP_X - 50., y + 26.],
+            1.,
+            &value,
+            [rgba(MP_YELLOW, 1.); 2],
+            0.,
+        );
+    }
+    let help = l
+        .items
+        .get(l.cursor)
+        .map(|i| {
+            i.detail
+                .clone()
+                .unwrap_or_else(|| multiplayer_help(&i.label))
+        })
+        .unwrap_or_default();
+    let mut y = MP_PANEL_TOP + 18.;
+    for line in wrap(p, Face::Body, 26., &help, paint::W - MP_HELP_X - 60.)
+        .into_iter()
+        .take(2)
+    {
+        p.text(
+            f,
+            Face::Body,
+            26.,
+            [MP_HELP_X + 25., y],
+            0.,
+            &line,
+            [rgba(MP_HELP, 1.); 2],
+            0.,
+        );
+        y += 36.;
+    }
+    let hints = if l.editing.is_some() {
+        "Type, then Enter to keep      Esc  cancel"
+    } else {
+        "Enter / A  select      Esc / B  back"
+    };
+    p.text(
+        f,
+        Face::Body,
+        15.,
+        [MP_HELP_X + 25., paint::H - 34.],
+        0.,
+        hints,
+        [rgba(FAINT, 1.); 2],
+        0.,
+    );
+}
+
+/// The help line of a Multiplayer entry with no detail of its own.
+fn multiplayer_help(label: &str) -> String {
+    match label {
+        "Back" => "Back to the test list.".into(),
+        _ => String::new(),
+    }
+}
+
 fn triangle(f: &mut Ui2dFrame, p: &Paint, pts: [[f32; 2]; 3], c: Rgba) {
     let at = |[x, y]: [f32; 2]| paint::to_layout(x, y);
     f.draws.push((
@@ -1211,6 +1782,9 @@ fn footer(l: &Launcher, p: &mut Paint, f: &mut Ui2dFrame) {
         }
         Screen::Pick => "Enter / A  select      F1 / Back  guide      Esc / B  back",
         Screen::Guide(_) => "Enter / A  continue      F1 / Back  open this guide again later",
+        Screen::Multiplayer(_) if l.editing.is_some() => {
+            "Type, then Enter to keep      Esc  cancel"
+        }
         _ => "Enter / A  select      Esc / B  back",
     };
     p.text(
@@ -1409,6 +1983,10 @@ pub fn main() -> std::process::ExitCode {
             repeat: None,
             mouse: None,
             paint: None,
+            editing: None,
+            browser: None,
+            found: Vec::new(),
+            build: None,
         })
         .insert_resource(ClearColor(Color::BLACK))
         .insert_resource(WinitSettings::game())
@@ -1424,7 +2002,7 @@ pub fn main() -> std::process::ExitCode {
             order: 0,
             overlay: false,
         })
-        .add_systems(Update, (update, draw).chain())
+        .add_systems(Update, ((update, draw).chain(), screenshot))
         .run();
     std::process::ExitCode::SUCCESS
 }

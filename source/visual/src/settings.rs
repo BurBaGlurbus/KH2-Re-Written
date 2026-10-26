@@ -62,7 +62,7 @@ pub struct Settings {
     /// A `LANGUAGES` code.
     pub language: String,
     pub show_hud: bool,
-    /// Mouse camera turn speed, 1..=10, 5 the room's default.
+    /// Mouse camera turn speed, 1..=10, 5 the PC version's.
     pub camera_speed: u8,
 }
 
@@ -364,9 +364,9 @@ impl Settings {
         gain(self.master_volume) * gain(self.effects_volume)
     }
 
-    /// The mouse turn per pixel (the room's 0.1 at 5).
+    /// Mouse-look's multiplier: 1 at 5, the PC version's speed.
     pub fn camera_factor(&self) -> f32 {
-        0.02 * self.camera_speed as f32
+        self.camera_speed as f32 / 5.
     }
 }
 
@@ -445,7 +445,7 @@ mod tests {
         assert_eq!(s.scale(), 1.);
         assert_eq!(s.brightness_factor(), 1.);
         assert_eq!(s.music_gain(), 1.);
-        assert!((s.camera_factor() - 0.1).abs() < 1e-6);
+        assert_eq!(s.camera_factor(), 1.);
         s.master_volume = 5;
         s.effects_volume = 0;
         assert_eq!(s.music_gain(), 0.25);

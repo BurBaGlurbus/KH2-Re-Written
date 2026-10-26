@@ -2168,7 +2168,7 @@ fn log_event(log: &mut Option<File>, record: serde_json::Value) {
 /// weapons and spells land.
 pub fn tick(game: &mut Game, tick: u64) {
     let Game {
-        player,
+        sora: Fighter { player, vitals, .. },
         params,
         world,
         party,
@@ -2255,7 +2255,7 @@ pub fn tick(game: &mut Game, tick: u64) {
     let sora_target = key_at(&enemies, *selected_target);
     let lock = sora_target.filter(|_| *target_locked);
     let hp: [Option<(i32, i32)>; 3] = {
-        let sora = enemy.as_ref().map(|rt| (rt.sora_hp, rt.sora_target.max_hp));
+        let sora = enemy.as_ref().map(|_| (vitals.hp, vitals.target.max_hp));
         let mut hp = [sora, None, None];
         for (i, m) in party.iter().enumerate().take(2) {
             hp[i + 1] = Some((m.hp, m.max_hp));
@@ -3076,10 +3076,7 @@ pub fn tick(game: &mut Game, tick: u64) {
             let pct = 100 + i32::from(boost);
             let share = |max: i32| (max * info.amount as i32 * pct + 9999) / 10000;
             let (hp_max, mp_max) = if slot == 0 {
-                (
-                    enemy.as_ref().map(|rt| rt.sora_target.max_hp),
-                    player.mp.max,
-                )
+                (enemy.as_ref().map(|_| vitals.target.max_hp), player.mp.max)
             } else if let Some(m) = party.get(slot - 1) {
                 (Some(m.max_hp), m.mp.max)
             } else {
@@ -3094,13 +3091,13 @@ pub fn tick(game: &mut Game, tick: u64) {
                 _ => 0,
             };
             let record = if slot == 0 {
-                if let Some(rt) = enemy.as_mut() {
-                    rt.sora_hp = (rt.sora_hp + heal_hp).min(rt.sora_target.max_hp);
+                if enemy.is_some() {
+                    vitals.hp = (vitals.hp + heal_hp).min(vitals.target.max_hp);
                 }
                 player.mp.add(heal_mp);
                 serde_json::json!({"event":"party_item_heal","tick":tick,"item":item,
                     "target":"Sora","hp":heal_hp,"mp":heal_mp,
-                    "sora_hp":enemy.as_ref().map(|rt| rt.sora_hp),"mp_now":player.mp.cur})
+                    "sora_hp":enemy.as_ref().map(|_| vitals.hp),"mp_now":player.mp.cur})
             } else if let Some(m) = party.get_mut(slot - 1) {
                 let was_down = heal_member(m, heal_hp);
                 if heal_mp > 0 {
@@ -3140,12 +3137,12 @@ pub fn tick(game: &mut Game, tick: u64) {
             continue;
         }
         let attack = params_of(&rt.steps[&(atkp, 0)][0]);
-        let full = combat::TargetState::full(rt.sora_target.max_hp);
-        let amount = combat::damage_with(&stats, &attack, &rt.sora_target, &full);
+        let full = combat::TargetState::full(vitals.target.max_hp);
+        let amount = combat::damage_with(&stats, &attack, &vitals.target, &full);
         let record = if slot == 0 {
-            rt.sora_hp = (rt.sora_hp + amount).min(rt.sora_target.max_hp);
+            vitals.hp = (vitals.hp + amount).min(vitals.target.max_hp);
             serde_json::json!({"event":"party_heal","tick":tick,"healer":healer_name,
-                "atkp":atkp,"amount":amount,"target":"Sora","hp":rt.sora_hp})
+                "atkp":atkp,"amount":amount,"target":"Sora","hp":vitals.hp})
         } else if let Some(member) = party.get_mut(slot - 1) {
             let was_down = heal_member(member, amount);
             serde_json::json!({"event":"party_heal","tick":tick,"healer":healer_name,

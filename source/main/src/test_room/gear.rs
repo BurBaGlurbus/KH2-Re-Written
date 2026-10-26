@@ -91,11 +91,12 @@ impl Game {
         if new == old {
             return;
         }
-        if let Some(rt) = self.enemy.as_mut() {
-            rt.sora.strength += i32::from(new.strength) - i32::from(old.strength);
-            rt.sora.magic += i32::from(new.magic) - i32::from(old.magic);
-            rt.sora_target.defense += i32::from(new.defense) - i32::from(old.defense);
-            rt.sora_target.weakness = new.resist.map(i32::from);
+        if self.enemy.is_some() {
+            let v = &mut self.sora.vitals;
+            v.attacker.strength += i32::from(new.strength) - i32::from(old.strength);
+            v.attacker.magic += i32::from(new.magic) - i32::from(old.magic);
+            v.target.defense += i32::from(new.defense) - i32::from(old.defense);
+            v.target.weakness = new.resist.map(i32::from);
         }
         self.gear = new;
         self.event(

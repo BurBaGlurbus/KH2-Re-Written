@@ -73,6 +73,22 @@ pub(crate) use debug_menu::DebugMenu;
 mod deck_tour;
 mod drive_fx;
 mod drive_room;
+mod duel_arena;
+mod duel_camp;
+mod duel_fx;
+mod duel_hits;
+mod duel_loadout;
+mod duel_lobby;
+mod duel_lobby_room;
+mod duel_match;
+mod duel_match_room;
+mod duel_music;
+mod duel_net;
+mod duel_prefs;
+mod duel_rules;
+mod duel_sync;
+mod duel_vote;
+mod duel_wire;
 mod enemy_battle;
 mod enemy_battle_hits;
 mod enemy_battle_tour;
@@ -83,6 +99,11 @@ mod enemy_motion_fx;
 mod enemy_script;
 mod enemy_target;
 mod enemy_tour;
+mod fighter;
+mod mirage_arena;
+/// The executable's identity, which the launcher's LAN search compares.
+pub(crate) use duel_net::build_identity;
+use fighter::{Fighter, Vitals};
 mod game_over;
 mod gear;
 mod gear_tour;
@@ -105,6 +126,7 @@ mod party_room;
 mod perf_overlay;
 mod prize_room;
 mod reaction_command;
+mod rival;
 mod second_deck;
 mod sephiroth;
 mod settings_room;
@@ -436,6 +458,9 @@ const PLAYER_VICTIM: u64 = u64::MAX;
 #[derive(Resource)]
 struct Effects {
     weapon: Option<Arc<object_effect::Pax>>,
+    /// The room Keyblade's PAX as loaded (a duel rival's trail until his
+    /// own Keyblade's kit replaces it).
+    room_weapon: Option<Arc<object_effect::Pax>>,
     enemy: Option<Arc<object_effect::Pax>>,
     enemy_paxes: HashMap<u32, Arc<object_effect::Pax>>,
     enemy_banks: HashMap<u32, u16>,
@@ -923,6 +948,11 @@ struct SceneRoot(Entity);
 #[derive(Component)]
 pub(crate) struct RoomPart;
 
+/// The generated test arena's floor and walls (hidden while the duel is in
+/// the Mirage Arena).
+#[derive(Component)]
+pub(crate) struct ArenaFloor;
+
 /// A scrolling chunk's UV animation (UVSC record, draw-01 §7).
 #[derive(Component)]
 pub(crate) struct UvScroll {
@@ -1085,9 +1115,86 @@ struct Game {
     player_push_shapes: Vec<object_collision::Entry>,
     clips: Clips,
     world: RoomWorld,
-    player: Player,
+    /// The room's own Sora.
+    sora: fighter::Fighter,
+    /// The duel's other Soras (none outside a duel or its test script),
+    /// in slot order, and the kit they move and are drawn with.
+    rivals: Vec<rival::Rival>,
+    rival_kit: Option<Arc<rival::RivalKit>>,
+    /// `--rival-script`: a scripted rival from the first tick.
+    rival_script: bool,
+    /// [Test] `--duel-bench`: both duel Soras close in and swing inside each
+    /// combo window (the combo measurement), the joiner's through its
+    /// buttons, the host's own Sora through its input.
+    duel_bench: bool,
+    /// [Test] `--duel-magic`: both duel Soras cast every spell in turn at
+    /// the other.
+    duel_magic: bool,
+    /// [Test] `--duel-idle`: this player's Sora stands still (the other
+    /// side of a bench).
+    duel_idle: bool,
+    /// Where the room starts Sora (position, yaw): the duel arena's centre.
+    room_start: ([f32; 3], f32),
+    /// The duel's arena (a row of `duel_arena::ARENAS`).
+    duel_arena: usize,
+    /// The duel's rules (`--duel-damage`, F3 on the host; the host's reach
+    /// the joiner).
+    duel_rules: duel_rules::MatchRules,
+    /// A duel runs (a LAN session or `--rival-script`): the pause menu,
+    /// the debug menu and game over no longer stop the field.
+    duel: bool,
+    /// The room Sora's slot (0 the host's, 1 the joiner's).
+    local_slot: u8,
+    /// The LAN duel's joiner: the host simulates; this instance sends its
+    /// buttons (`net_pad`, this tick's) and shows the host's snapshots.
+    net_client: bool,
+    net_pad: rival::RivalPad,
+    /// What the host's tick did that the joiner shows itself: sounds,
+    /// sparks, knock-outs (sent and cleared by duel_sync).
+    duel_events: Vec<duel_wire::DuelEvent>,
+    /// The network overlay (F3 > Sora > Display, `--net-overlay`) and the
+    /// link simulator preset the debug menu chose (duel_net::SIMULATED).
+    net_overlay: bool,
+    net_simulated: Option<usize>,
+    /// The duel's lobby (or countdown) holds both Soras still.
+    duel_frozen: bool,
+    /// F3 asked the host for a test vote.
+    duel_test_vote: bool,
+    /// A duel screen asks the camp to open (duel_camp.rs), with its
+    /// entries and pages.
+    duel_open_camp: bool,
+    duel_camp: Option<duel_camp::Request>,
+    /// START in a duel with no screen holding the camp (the match's
+    /// Forfeit menu takes it).
+    duel_start: bool,
+    /// A vote is open: the other duel screens give it the camp.
+    duel_vote_up: bool,
+    /// Whether this install can show the duel's Mirage Arena.
+    mirage: mirage_arena::Avail,
+    /// The duel's music holds the music voices (the room's waits).
+    duel_music: bool,
+    /// [Test] The duel's unattended script: menu keys (mode 7) for the
+    /// camp this tick.
+    duel_camp_press: u64,
+    /// [Test] `--duel-shots`: the duel's screens add captures of
+    /// themselves, once per moment.
+    duel_shots: bool,
+    /// [Test] `--duel-forfeit`: this player forfeits two seconds into the
+    /// first fight, through the menu.
+    duel_forfeit: bool,
+    /// [Test] `--duel-quick`: the unattended result picks Quick rematch.
+    duel_quick: bool,
+    /// [Test] `--duel-wisdom` (joiner): Wisdom Form now and then, and the
+    /// bench's swings (its shots).
+    duel_wisdom: bool,
+    duel_shot_keys: std::collections::HashSet<(u8, u64, u64)>,
+    /// A match is running: a knocked-out Sora stays down for the round.
+    duel_match: bool,
+    /// Damage dealt and hits landed this match, by the attacker's slot.
+    duel_dealt: [u32; 2],
+    duel_landed: [u16; 2],
     poses: HashMap<(Action, bool), usize>,
-    clip_poses: Vec<ClipPoses>,
+    clip_poses: Arc<Vec<ClipPoses>>,
     part_indices: Vec<Vec<u32>>,
     tick: u64,
     log: Option<File>,
@@ -1323,6 +1430,9 @@ struct Game {
     /// A running mission overlay's camera (scene transform, field of view)
     /// and its `SeqBlur` weight with the event frame it belongs to.
     overlay_camera: Option<boss::OverlayView>,
+    /// The duel match's shots (the intro, the result), when no mission
+    /// overlay holds the view.
+    duel_camera: Option<boss::OverlayView>,
     overlay_blur: Option<(f32, i32)>,
     /// The voice bank of each battle enemy object (objentry id).
     enemy_voice_banks: HashMap<u32, u16>,
@@ -1419,11 +1529,11 @@ struct Hud {
 struct CameraRig {
     camera: FollowCamera,
     previous_position: [f32; 3],
-    /// Right-drag turn not yet consumed by a tick, in manual-turn units.
-    pending_turn: f32,
+    /// Mouse motion (counts) not yet taken by a tick, and the stick's
+    /// multiplier for it (input::mouse_look).
+    mouse_counts: Vec2,
+    mouse_gain: f32,
     recenter_queued: bool,
-    /// Mouse-drag look not yet consumed by a tick (first person's pitch).
-    pending_look: f32,
     /// First person last tick, and Sora's fade ramp (`actor+0xa10`: value and
     /// step, FUN_1403b7810) with its end.
     was_first_person: bool,
@@ -1491,6 +1601,14 @@ impl CameraCollision {
                 .iter()
                 .map(|t| t.map(|p| to_world(p.to_array())))
                 .collect(),
+        }
+    }
+
+    /// Plain triangles in game world coordinates (another game's map).
+    fn from_triangles(triangles: Vec<[[f32; 3]; 3]>) -> Self {
+        Self {
+            worlds: Vec::new(),
+            triangles,
         }
     }
 
@@ -2678,18 +2796,13 @@ struct EnemyRuntime {
     steps: HashMap<(u16, u8), Vec<data::battle_tables::Attack>>,
     /// The ATKP table, for spell rows by sub-table.
     atkp: Vec<u8>,
-    sora: combat::AttackerStats,
     enemy: Shadow,
     rng: ScriptRandom,
     claws: HashMap<u8, Vec<(usize, Vec3, f32)>>,
     shadow_attacker: combat::AttackerStats,
-    sora_target: combat::TargetStats,
     sora_body: Vec<(usize, Vec3, f32, bool)>,
     /// Summed TARGET radii for aerial hops (FUN_1403d7520).
     target_reach: f32,
-    /// Sora's hit record (obj+0xc98): the claws' hit-once mask and the
-    /// 30-tick group lock of a player-type object.
-    sora_record: combat::HitRecord,
     /// Attack ids and combo groups of live attack instances.
     ids: combat::AttackIds,
     instance_ids: HashMap<u64, (u8, i32)>,
@@ -2697,16 +2810,12 @@ struct EnemyRuntime {
     next_group: i32,
     difficulty: combat::Difficulty,
     claw_previous: HashMap<(u64, usize), Vec3>,
-    /// Sora's HP and KO timer (test room refills after a KO).
-    sora_hp: i32,
-    ko_ticks: u32,
     /// The kill's EXP inputs, przt record and Sora's LVUP rows.
     exp_rule: (u16, u16),
     prize: data::battle_tables::Prize,
     sora_levels: Vec<data::battle_tables::PlayerLevel>,
-    /// Sora's level, EXP, munny, the prizes in the world, and whether the
-    /// enemy was dead last tick.
-    level: u8,
+    /// Sora's EXP, munny, the prizes in the world, and whether the enemy
+    /// was dead last tick (his level is `Game::sora.vitals`).
     exp_total: u32,
     munny: u32,
     orbs: Vec<player::enemy_prizes::Orb>,
@@ -2734,8 +2843,6 @@ struct EnemyRuntime {
     hit_effects: HashMap<u16, (u8, u8)>,
     /// Full ATKP rows (Keyblade, guard and claws) for the clash rules.
     rows: HashMap<u16, data::battle_tables::Attack>,
-    /// Sora's invulnerability after a guard (+0xd70), in ticks.
-    sora_invulnerable: f32,
     /// Motion serial and tick already scanned for sound triggers.
     sound_tick: Option<(u32, u32)>,
     /// The claw spheres of this tick, for the party members' hit tests
@@ -4881,6 +4988,8 @@ struct FrameStats {
     sum: f64,
     worst: f64,
     slow: u32,
+    /// This window's frame times (ms), for its 1% low and 99th percentile.
+    times: Vec<f64>,
 }
 
 fn frame_stats(
@@ -4909,11 +5018,20 @@ fn frame_stats(
     stats.sum += ms;
     stats.worst = stats.worst.max(ms);
     stats.slow += u32::from(ms > 20.);
+    stats.times.push(ms);
     if stats.frames == 600 {
         let mean = stats.sum / 600.;
+        // The 1% low (the slowest 1% of frames' mean, as FPS) and the 99th
+        // percentile frame time.
+        let mut sorted = std::mem::take(&mut stats.times);
+        sorted.sort_by(f64::total_cmp);
+        let slowest = &sorted[sorted.len() - sorted.len().div_ceil(100)..];
+        let low = 1e3 / (slowest.iter().sum::<f64>() / slowest.len() as f64);
+        let p99 = sorted[(sorted.len() - 1) * 99 / 100];
         game.event(
             serde_json::json!({"event":"frame_stats","tick":tick,"mean_ms":mean,
-            "worst_ms":stats.worst,"over_20ms":stats.slow}),
+            "worst_ms":stats.worst,"over_20ms":stats.slow,"fps":1e3 / mean,
+            "low_1pct_fps":low,"p99_ms":p99}),
         );
         stats.frames = 0;
         stats.sum = 0.;
@@ -4927,10 +5045,13 @@ fn frame_stats(
 /// so at frame rates under 60 a tick could read a pose two or more ticks
 /// old; kept here, every tick reads its predecessor's, as at 60 FPS.
 fn keep_weapon_pose(mut game: ResMut<Game>) {
-    let Some(&clip) = game.poses.get(&(game.player.action, game.player.armed)) else {
+    let Some(&clip) = game
+        .poses
+        .get(&(game.sora.player.action, game.sora.player.armed))
+    else {
         return;
     };
-    let frame = game.player.motion_frame(&game.clips) as usize;
+    let frame = game.sora.player.motion_frame(&game.clips) as usize;
     let weapon_frames = &game.clip_poses[clip].weapon_frames;
     if let Some(pose) = weapon_frames.get(frame.min(weapon_frames.len().saturating_sub(1)))
         && *pose != game.weapon_display
@@ -5034,13 +5155,17 @@ fn area_transition(
     game.step_bank = step_room_bank(&game.step_info, next.world, next.area);
     game.ambient = room_ambient(&game.step_info, next.world, next.area);
     let (position, yaw) = next.player;
-    game.player = Player::new(position.to_array(), yaw);
+    game.sora.player = Player::new(position.to_array(), yaw);
     rig.collision = CameraCollision::new(&room);
     rig.camera = FollowCamera::new(
         follow_camera::OUTDOOR,
-        &camera_input(&game.player, game.player.position, game.params.run_speed),
+        &camera_input(
+            &game.sora.player,
+            game.sora.player.position,
+            game.params.run_speed,
+        ),
     );
-    rig.previous_position = game.player.position;
+    rig.previous_position = game.sora.player.position;
     game.event(
         serde_json::json!({"event":"area_load","world":world,"area":number,
         "worker_ms":worker_ms,"main_decode_ms":decoded.as_secs_f64() * 1e3,
@@ -5251,9 +5376,9 @@ fn field_npc_tick(
         && game.tick == 30
         && let Some(n) = current.npcs.iter().find(|n| n.alive)
     {
-        game.player.position = [n.position.x + 30., n.position.y, n.position.z];
+        game.sora.player.position = [n.position.x + 30., n.position.y, n.position.z];
     }
-    let sora = Vec3::from_array(game.player.position);
+    let sora = Vec3::from_array(game.sora.player.position);
     let talking = talk.active.is_some();
     if *was_talking
         && !talking
@@ -5436,8 +5561,8 @@ fn field_npc_tick(
             "sora_to":at.to_array()}),
         );
     }
-    game.player.position[0] = at.x;
-    game.player.position[2] = at.z;
+    game.sora.player.position[0] = at.x;
+    game.sora.player.position[2] = at.z;
     for e in events {
         game.event(e);
     }
@@ -5957,6 +6082,7 @@ fn setup(
         let texture = rgba_image(w, h, rgba, &mut images);
         commands.spawn((
             ChildOf(world),
+            ArenaFloor,
             Mesh3d(meshes.add(mesh(arena.positions, arena.uvs, arena.colors))),
             MeshMaterial3d(materials.add_fogged(StandardMaterial {
                 base_color: Color::WHITE,
@@ -6025,7 +6151,7 @@ fn setup(
         .spawn((
             SoraRoot,
             ChildOf(world),
-            Transform::from_translation(Vec3::from_array(game.player.position)),
+            Transform::from_translation(Vec3::from_array(game.sora.player.position)),
             Visibility::default(),
         ))
         .id();
@@ -6754,14 +6880,22 @@ fn read_pad(
     camp: Option<Res<CampRes>>,
     debug: Res<debug_menu::DebugMenu>,
     game_over: Option<Res<game_over::GameOverRes>>,
+    lobby: Option<Res<duel_lobby_room::LobbyRoom>>,
+    vote: Option<Res<duel_vote::VoteRoom>>,
+    duel_match: Option<Res<duel_match_room::MatchRoom>>,
+    controls: Res<input::Controls>,
     mut game: ResMut<Game>,
     mut targeting: ResMut<enemy_target::Targeting>,
 ) {
     if game.autoplay.is_some() {
         return;
     }
-    let (data, _, _) = input::read_devices(&keys, &mouse, 0., &pads);
-    let menu = camp.is_some_and(|c| c.menu_up()) || game_over.is_some_and(|g| g.menu_up());
+    let (data, _, _) = input::read_devices(&keys, &mouse, 0., &pads, &controls);
+    let menu = camp.is_some_and(|c| c.menu_up())
+        || game_over.is_some_and(|g| g.menu_up())
+        || lobby.is_some_and(|l| l.menu_up())
+        || vote.is_some_and(|v| v.menu_up(usize::from(game.net_client)))
+        || duel_match.is_some_and(|m| m.menu_up());
     let mode = if menu {
         controller::MODE_TITLE
     } else {
@@ -6940,7 +7074,10 @@ fn simulate(
             magic_tour::jump(tick, game.magic_shift),
             magic_tour::attack(tick, game.magic_shift)
                 || game.limit_form_tour
-                    && limit_form_tour::attack(tick, game.player.action == Action::GuardRecoil),
+                    && limit_form_tour::attack(
+                        tick,
+                        game.sora.player.action == Action::GuardRecoil,
+                    ),
         )
     } else if let Some(tour) = &game.ability_tour {
         (
@@ -7005,7 +7142,7 @@ fn simulate(
         .filter(|a| a.explore && game.autoplay.is_some())
     {
         Some(a) if a.pending.is_none() && a.transition.is_none() => {
-            let p = game.player.position;
+            let p = game.sora.player.position;
             match area::exit_target(&a.current.state, a.previous, [p[0], p[2]]) {
                 Some(d) => (Vec2::from_array(d), Vec2::Y),
                 None => (direction, stick),
@@ -7027,16 +7164,16 @@ fn simulate(
     // The limit tour: full MP before each limit, and Trinity Limit.
     if game.limit_tour {
         if limit_tour::refill(tick) {
-            game.player.mp.cur = game.player.mp.max;
-            game.player.mp.remaining = 0.;
-            game.player.mp.total = 0.;
-            game.player.mp_charging = false;
+            game.sora.player.mp.cur = game.sora.player.mp.max;
+            game.sora.player.mp.remaining = 0.;
+            game.sora.player.mp.total = 0.;
+            game.sora.player.mp_charging = false;
             // [Tour setup] Sora stands STAND_OFF units in front of the
             // Shadow, facing it, as a player would walk up before a limit.
             if let Some(rt) = game.enemy.as_ref() {
                 let e = rt.enemy.position;
-                game.player.position = [e[0], e[1], e[2] + limit_tour::STAND_OFF];
-                game.player.yaw = std::f32::consts::PI;
+                game.sora.player.position = [e[0], e[1], e[2] + limit_tour::STAND_OFF];
+                game.sora.player.yaw = std::f32::consts::PI;
             }
         }
         if tick == 1
@@ -7045,7 +7182,7 @@ fn simulate(
                 .as_ref()
                 .and_then(|d| d.ability_bits.get(&limit_tour::TRINITY_ABILITY))
         {
-            game.player.abilities.set(bit);
+            game.sora.player.abilities.set(bit);
         }
     }
     // The deck and summon tours own the summon charms.
@@ -7069,7 +7206,7 @@ fn simulate(
         // Magic row colour (command-01 section 0.6: 5 without spells, 1
         // when every entry is unusable) and the open submenu's rows.
         if let Some(mg) = game.magic.as_ref() {
-            let list = mg.menu_list(&game.player.mp);
+            let list = mg.menu_list(&game.sora.player.mp);
             if let Some(row) = m.menu.items.get_mut(1) {
                 row.colour = if list.is_empty() {
                     5
@@ -7089,7 +7226,7 @@ fn simulate(
         }
         // Items row: 5 without items, 1 when every row is unusable.
         if let Some(it) = game.items.as_ref() {
-            let list = it.menu_list(game.player.in_air());
+            let list = it.menu_list(game.sora.player.in_air());
             if let Some(row) = m.menu.items.get_mut(2) {
                 row.colour = if list.is_empty() {
                     5
@@ -7145,7 +7282,7 @@ fn simulate(
             if let (Some(sub), Some(d)) = (m.menu.sub.as_mut(), game.drive.as_ref())
                 && sub.kind == 3
             {
-                for (item, (_, _, c)) in sub.items.iter_mut().zip(d.menu(&game.player.drive)) {
+                for (item, (_, _, c)) in sub.items.iter_mut().zip(d.menu(&game.sora.player.drive)) {
                     item.colour = c;
                 }
             }
@@ -7362,7 +7499,7 @@ fn simulate(
         match decision {
             // Limit Form: the Magic slot is "Limit" (0x2c3, submenu 12).
             Decision::Open(1) if game.drive.as_ref().is_some_and(|d| d.limit_form()) => {
-                let (mp, charging) = (game.player.mp.cur, game.player.mp_charging);
+                let (mp, charging) = (game.sora.player.mp.cur, game.sora.player.mp_charging);
                 if let Some(d) = game.drive.as_ref() {
                     let items = d
                         .limit_rows(mp, charging)
@@ -7384,7 +7521,7 @@ fn simulate(
                 }
             }
             Decision::Open(1) => {
-                let mp = game.player.mp;
+                let mp = game.sora.player.mp;
                 if let Some(mg) = game.magic.as_mut() {
                     let list = mg.menu_list(&mp);
                     let items = list
@@ -7403,7 +7540,7 @@ fn simulate(
                 }
             }
             Decision::Open(2) => {
-                let air = game.player.in_air();
+                let air = game.sora.player.in_air();
                 let g = &mut *game;
                 let (items, magic) = (&mut g.items, &g.magic);
                 if let (Some(it), Some(mg)) = (items.as_mut(), magic.as_ref()) {
@@ -7479,7 +7616,7 @@ fn simulate(
             }
             // Backing out of the list returns to the Magic list.
             Decision::Closed if game.cure_pick.take().is_some() => {
-                let mp = game.player.mp;
+                let mp = game.sora.player.mp;
                 if let Some(mg) = game.magic.as_mut() {
                     let list = mg.menu_list(&mp);
                     let items = list
@@ -7498,7 +7635,7 @@ fn simulate(
                 }
             }
             Decision::Open(3) => {
-                let gauge = game.player.drive;
+                let gauge = game.sora.player.drive;
                 if let Some(d) = game.drive.as_mut() {
                     let list = d.menu(&gauge);
                     let items = list
@@ -7546,7 +7683,7 @@ fn simulate(
                 Some(shadow::ActKind::ClawL | shadow::ActKind::ClawR | shadow::ActKind::ClawF)
             )
         });
-        let guarding = matches!(game.player.action, Action::Guard | Action::GuardRecoil);
+        let guarding = matches!(game.sora.player.action, Action::Guard | Action::GuardRecoil);
         !game.magic_tour && !game.sephiroth_tour && AUTOPLAY_GUARDS.contains(&tick)
             || game.limit_form_tour && limit_form_tour::guard(tick, claw, guarding)
     } else {
@@ -7592,11 +7729,11 @@ fn simulate(
     // FUN_1403d7520: the hop's vector is the target's TARGET point minus
     // Sora's own (his TARGET shape's point, not his feet).
     let hop_vector = selected.target.map(|s| {
-        let p = enemy_target::player_targetcentre(&game).unwrap_or(game.player.position);
+        let p = enemy_target::player_targetcentre(&game).unwrap_or(game.sora.player.position);
         [s.centre[0] - p[0], s.centre[1] - p[1], s.centre[2] - p[2]]
     });
     let target = selected.target.map(|s| {
-        let p = game.player.position;
+        let p = game.sora.player.position;
         [
             s.centre[0] - p[0],
             s.centre[1] - p[1],
@@ -7614,14 +7751,39 @@ fn simulate(
     for (slot, t) in nearby.iter_mut().zip(&shapes) {
         *slot = Some(*t);
     }
+    // [Duel] Between matches (the lobby, the countdown) neither Sora moves.
+    // [Test] `--duel-idle`: nor does this player's.
+    let frozen = game.duel_frozen || game.duel_idle;
+    // [Test] `--duel-bench` on the host: its Sora closes in and swings as
+    // the bench pad says.
+    let bench =
+        ((game.duel_bench || game.duel_magic) && !game.net_client && game.autoplay.is_some())
+            .then(|| {
+                let foe = game.rivals.first()?.fighter.player.position;
+                let me = game.sora.player.position;
+                Some(if game.duel_magic {
+                    rival::magic_pad(tick, 0, me, foe)
+                } else {
+                    rival::bench_pad(tick, me, foe)
+                })
+            })
+            .flatten();
+    let (direction, attack, jump, guard) = match bench {
+        Some(p) => (Vec2::from_array(p.direction), p.attack, false, false),
+        None => (direction, attack, jump, guard),
+    };
     let input = Input {
-        direction: direction.to_array(),
-        jump,
-        jump_up,
-        attack,
-        guard,
+        direction: if frozen {
+            [0.; 2]
+        } else {
+            direction.to_array()
+        },
+        jump: jump && !frozen,
+        jump_up: jump_up && !frozen,
+        attack: attack && !frozen,
+        guard: guard && !frozen,
         // Square held (logical 0x200).
-        guard_held: game.autoplay.is_none() && game.pad.held & 0x200 != 0,
+        guard_held: !frozen && game.autoplay.is_none() && game.pad.held & 0x200 != 0,
         target: target.map(|t| [t[0], t[2]]),
         hop_vector,
         target_reach: target.map_or(0., |t| t[3]),
@@ -7669,8 +7831,16 @@ fn simulate(
     if game.magic_tour {
         // The Magic Lock-On probes switch the ability the tick before.
         match magic_tour::lock_on(tick, game.magic_shift) {
-            Some(true) => game.player.abilities.set(abilities::bit::MAGIC_LOCK_ON),
-            Some(false) => game.player.abilities.clear(abilities::bit::MAGIC_LOCK_ON),
+            Some(true) => game
+                .sora
+                .player
+                .abilities
+                .set(abilities::bit::MAGIC_LOCK_ON),
+            Some(false) => game
+                .sora
+                .player
+                .abilities
+                .clear(abilities::bit::MAGIC_LOCK_ON),
             None => {}
         }
         cast = magic_tour::cast(tick, game.magic_shift);
@@ -7726,7 +7896,25 @@ fn simulate(
         }
         menu_item = party_items_tour::use_slot(tick).or(menu_item);
     }
-    let cast = cast.or(menu_cast);
+    // [Test] `--duel-magic` on the host: the bench's spells, item and
+    // Drive, and no others (the unattended script's would take their turns).
+    let (cast, menu_item) = if game.duel_magic {
+        match bench.map(|p| p.command) {
+            Some(rival::Command::Cast(t)) => (Some(t), None),
+            Some(rival::Command::Item(slot)) => (None, Some(slot as usize)),
+            Some(rival::Command::Drive(form)) => {
+                if let Some(d) = game.drive.as_mut().filter(|_| !frozen) {
+                    d.request = Some(form);
+                }
+                (None, None)
+            }
+            _ => (None, None),
+        }
+    } else {
+        (cast.or(menu_cast), menu_item)
+    };
+    let cast = cast.filter(|_| !frozen);
+    let menu_item = menu_item.filter(|_| !frozen);
     // Spells and items a form disables are refused (FUN_1403b6cb0).
     let (cast, menu_item) = match game.drive.as_ref() {
         Some(d) => (
@@ -7744,7 +7932,11 @@ fn simulate(
             t,
             magic::FIRE | magic::BLIZZARD | magic::THUNDER | magic::MAGNET
         )
-        && game.player.abilities.has(abilities::bit::MAGIC_LOCK_ON)
+        && game
+            .sora
+            .player
+            .abilities
+            .has(abilities::bit::MAGIC_LOCK_ON)
         && game.selected_target.is_none()
     {
         let chosen = enemy_target::acquire(&game, &gallery, &mut targeting);
@@ -7767,15 +7959,34 @@ fn simulate(
             "params":gallery.target_params.is_some(),
             "enemy":enemy_state}));
     }
-    if let Some(t) = cast
-        && !talking
-    {
-        magic_room::request(&mut game, t, tick);
-    }
-    if let Some(slot) = menu_item
-        && !talking
-    {
-        item_room::request(&mut game, slot, tick);
+    // The joiner's commands go to the host with his buttons.
+    let mut net_command = rival::Command::None;
+    if game.net_client {
+        if let Some(t) = cast.filter(|_| !talking) {
+            net_command = rival::Command::Cast(t);
+        } else if let Some(slot) = menu_item.filter(|_| !talking) {
+            net_command = rival::Command::Item(slot as u8);
+        } else if let Some(form) = game.drive.as_mut().and_then(|d| d.request.take()) {
+            net_command = rival::Command::Drive(form);
+        }
+    } else {
+        if let Some(t) = cast
+            && !talking
+        {
+            let mp = game.sora.player.mp.cur;
+            let ok = magic_room::request(&mut game, t, tick);
+            if game.duel {
+                let (slot, after) = (game.local_slot, game.sora.player.mp.cur);
+                let levels = game.magic.as_ref().map(|m| m.levels);
+                game.event(serde_json::json!({"event":"duel_cast","tick":tick,
+                    "slot":slot,"magic":t,"ok":ok,"mp":[mp, after],"levels":levels}));
+            }
+        }
+        if let Some(slot) = menu_item
+            && !talking
+        {
+            item_room::request(&mut game, slot, tick);
+        }
     }
     // A party limit asked for from the second deck starts here
     // (FUN_1403d8b40); while it runs its scene moves Sora.
@@ -7823,15 +8034,42 @@ fn simulate(
         summon::decide(&mut game, tick, if rc { Some(1) } else { decide });
         if summon::sora_in_limit(&mut game) {
             player::Step::default()
+        } else if game.net_client {
+            // The joiner's Sora is the host's to move: his buttons go to
+            // the host (duel_sync), and the host's snapshots place him.
+            game.net_pad = rival::RivalPad::of(&input);
+            game.net_pad.command = net_command;
+            // [Test] `--rival-script` on a joiner: the rival's test script
+            // presses his buttons, against the host's Sora.
+            if (game.rival_script || game.duel_bench || game.duel_magic || game.duel_wisdom)
+                && !frozen
+                && let Some(foe) = game.rivals.first().map(|r| r.fighter.player.position)
+            {
+                let me = game.sora.player.position;
+                game.net_pad = if game.duel_magic {
+                    rival::magic_pad(tick, 100, me, foe)
+                } else if game.duel_wisdom {
+                    let mut p = rival::bench_pad(tick, me, foe);
+                    if tick.is_multiple_of(600) {
+                        p.command = rival::Command::Drive(player::forms::WISDOM);
+                    }
+                    p
+                } else if game.duel_bench {
+                    rival::bench_pad(tick, me, foe)
+                } else {
+                    rival::script_pad(tick, me, foe)
+                };
+            }
+            player::Step::default()
         } else {
             let Game {
-                player,
+                sora,
                 params,
                 clips,
                 world,
                 ..
             } = &mut *game;
-            player.tick(&input, params, clips, world)
+            sora.player.tick(&input, params, clips, world)
         }
     };
     if game.map_fx_pending
@@ -7843,128 +8081,133 @@ fn simulate(
             start_map_effects(&mut game, &pax, a.bg_mask, None);
         }
     }
-    magic_room::tick(&mut game, tick);
-    // Wisdom's shots join the spell volumes before the hits are tested.
-    drive_room::shots(&mut game);
-    item_room::tick(&mut game, tick);
-    // The area's zone task (FUN_1403a4f90, priority 12000) runs after the
-    // objects: exits are tested against Sora's new position.
-    if let Some(a) = area.as_deref_mut()
-        && a.pending.is_none()
-        && a.transition.is_none()
-    {
-        let moving = (direction.length() > 0.).then(|| direction.normalize().to_array());
-        let running = stick.length() >= WALK_THRESHOLD;
-        let probe = area::probe(
-            Vec3::from_array(game.player.position),
-            game.player.yaw,
-            moving,
-            running,
-        );
-        // A disable reason stays for 6 s (FUN_140167ef0 param 6.0).
-        if a.guide_hold > 0 {
-            a.guide_hold -= 1;
-        } else {
-            a.guide = None;
-        }
-        let blocked = a.source.blocked_destinations();
-        let is_blocked = |w: u8, d: u8| blocked.contains(&(w, d));
-        for request in area::requests(&mut a.current.state, &probe, is_blocked) {
-            if let ::area::Request::Blocked { world, area: dest } = &request {
-                a.guide = a.source.blocked_text(*world, *dest);
-                a.guide_hold = 360;
+    // The joiner simulates nothing: the host's snapshots carry it all.
+    if !game.net_client {
+        magic_room::tick(&mut game, tick);
+        // Wisdom's shots join the spell volumes before the hits are tested.
+        drive_room::shots(&mut game);
+        item_room::tick(&mut game, tick);
+        // The area's zone task (FUN_1403a4f90, priority 12000) runs after the
+        // objects: exits are tested against Sora's new position.
+        if let Some(a) = area.as_deref_mut()
+            && a.pending.is_none()
+            && a.transition.is_none()
+        {
+            let moving = (direction.length() > 0.).then(|| direction.normalize().to_array());
+            let running = stick.length() >= WALK_THRESHOLD;
+            let probe = area::probe(
+                Vec3::from_array(game.sora.player.position),
+                game.sora.player.yaw,
+                moving,
+                running,
+            );
+            // A disable reason stays for 6 s (FUN_140167ef0 param 6.0).
+            if a.guide_hold > 0 {
+                a.guide_hold -= 1;
+            } else {
+                a.guide = None;
             }
-            if let ::area::Request::Guide {
-                world, area: dest, ..
-            } = &request
-            {
-                let known = a.visited.contains(&(*world, *dest));
-                a.guide = if known {
-                    a.source.place_name(*world, *dest).cloned()
-                } else {
-                    Some(a.source.unknown_place.clone())
-                };
-            }
-            if let ::area::Request::Jump {
-                world,
-                area,
-                entrance,
-                ..
-            } = request
-            {
-                game.event(serde_json::json!({"event":"exit","tick":tick,"world":world,
-                    "area":area,"entrance":entrance}));
-                if a.transition.is_none() {
-                    a.transition = Some(Transition {
-                        stage: Stage::Closing,
-                        iris: None,
-                        fade: Fade::default(),
-                        target: (world, area, entrance),
-                        job: start_area_job(&a.source, (world, area, entrance)),
-                    });
+            let blocked = a.source.blocked_destinations();
+            let is_blocked = |w: u8, d: u8| blocked.contains(&(w, d));
+            for request in area::requests(&mut a.current.state, &probe, is_blocked) {
+                if let ::area::Request::Blocked { world, area: dest } = &request {
+                    a.guide = a.source.blocked_text(*world, *dest);
+                    a.guide_hold = 360;
                 }
-            } else if let ::area::Request::BgGroups { on, off } = request {
-                for (bit, state) in [(on, true), (off, false)] {
-                    if let Some(bit) = bit {
-                        if state {
-                            a.bg_mask |= 1 << bit;
-                        } else {
-                            a.bg_mask &= !(1u64 << bit);
-                        }
-                        if let RoomWorld::Map(w) = &mut game.world {
-                            w.set_group(bit, state);
-                        }
-                        // FUN_140162a00 spawns the group's elements,
-                        // FUN_1401629b0 destroys them.
-                        if state {
-                            if let Some(pax) = a.current.pax.clone() {
-                                start_map_effects(&mut game, &pax, 1 << bit, Some(bit));
+                if let ::area::Request::Guide {
+                    world, area: dest, ..
+                } = &request
+                {
+                    let known = a.visited.contains(&(*world, *dest));
+                    a.guide = if known {
+                        a.source.place_name(*world, *dest).cloned()
+                    } else {
+                        Some(a.source.unknown_place.clone())
+                    };
+                }
+                if let ::area::Request::Jump {
+                    world,
+                    area,
+                    entrance,
+                    ..
+                } = request
+                {
+                    game.event(serde_json::json!({"event":"exit","tick":tick,"world":world,
+                    "area":area,"entrance":entrance}));
+                    // A duel stays in its arena.
+                    if a.transition.is_none() && !game.duel {
+                        a.transition = Some(Transition {
+                            stage: Stage::Closing,
+                            iris: None,
+                            fade: Fade::default(),
+                            target: (world, area, entrance),
+                            job: start_area_job(&a.source, (world, area, entrance)),
+                        });
+                    }
+                } else if let ::area::Request::BgGroups { on, off } = request {
+                    for (bit, state) in [(on, true), (off, false)] {
+                        if let Some(bit) = bit {
+                            if state {
+                                a.bg_mask |= 1 << bit;
+                            } else {
+                                a.bg_mask &= !(1u64 << bit);
                             }
-                        } else {
-                            game.fx_clear_map.push(Some(bit));
+                            if let RoomWorld::Map(w) = &mut game.world {
+                                w.set_group(bit, state);
+                            }
+                            // FUN_140162a00 spawns the group's elements,
+                            // FUN_1401629b0 destroys them.
+                            if state {
+                                if let Some(pax) = a.current.pax.clone() {
+                                    start_map_effects(&mut game, &pax, 1 << bit, Some(bit));
+                                }
+                            } else {
+                                game.fx_clear_map.push(Some(bit));
+                            }
                         }
                     }
                 }
             }
         }
-    }
-    wall_hit::tick(&mut game, tick);
-    combat_tick(&mut game, tick);
-    prize_room::tick(&mut game, tick);
-    if game.magic_tour
-        && let Some((member, spell, heal)) = magic_tour::party_cast(tick, game.magic_shift)
-    {
-        let ordered = party_room::order_cast(&mut game, member, spell, heal);
-        game.event(
-            serde_json::json!({"event":"party_cast_order","tick":tick,"member":member,
+        wall_hit::tick(&mut game, tick);
+        combat_tick(&mut game, tick);
+        prize_room::tick(&mut game, tick);
+        if game.magic_tour
+            && let Some((member, spell, heal)) = magic_tour::party_cast(tick, game.magic_shift)
+        {
+            let ordered = party_room::order_cast(&mut game, member, spell, heal);
+            game.event(
+                serde_json::json!({"event":"party_cast_order","tick":tick,"member":member,
             "spell":format!("{spell:?}"),"heal":heal,"ordered":ordered}),
-        );
-    }
-    if game.party_hit_tour {
-        party_hit_tour::drive(&mut game, tick);
-    }
-    if game.party_anim_tour {
-        party_anim_tour::drive(&mut game, tick);
-    }
-    party_room::tick(&mut game, tick);
-    // Drive: requests, the form change, the form gauge (after the player
-    // tick, like FUN_1403a92c0 / FUN_140404a40).
-    {
-        let mut slots = camp.as_deref_mut().map(|c| &mut c.ability_slots);
-        let exp = game
-            .drive
-            .as_mut()
-            .map_or(0, |d| std::mem::take(&mut d.pending_exp));
-        drive_room::add_form_exp(&mut game, exp, slots.as_deref_mut());
-        drive_room::tick(&mut game, slots.as_deref().map(|s| s.as_slice()));
-        drive_room::limit_tick(&mut game);
-        drive_room::motion_effects(&mut game);
+            );
+        }
+        if game.party_hit_tour {
+            party_hit_tour::drive(&mut game, tick);
+        }
+        if game.party_anim_tour {
+            party_anim_tour::drive(&mut game, tick);
+        }
+        party_room::tick(&mut game, tick);
+        // Drive: requests, the form change, the form gauge (after the player
+        // tick, like FUN_1403a92c0 / FUN_140404a40).
+        {
+            let mut slots = camp.as_deref_mut().map(|c| &mut c.ability_slots);
+            let exp = game
+                .drive
+                .as_mut()
+                .map_or(0, |d| std::mem::take(&mut d.pending_exp));
+            drive_room::add_form_exp(&mut game, exp, slots.as_deref_mut());
+            drive_room::tick(&mut game, slots.as_deref().map(|s| s.as_slice()));
+            drive_room::limit_tick(&mut game);
+            drive_room::motion_effects(&mut game);
+        }
     }
     // Camera inputs: Q/E or J/L and the right stick turn, -/= zoom, C
     // recenters (test-room bindings for the original's camera buttons).
     let mut turn = 0f32;
     let mut zoom = 0f32;
     let mut right_stick = 0f32;
+    let mut mouse_pitch = 0f32;
     if game.autoplay.is_some() {
         // Unattended runs orbit 180 degrees to check Sora from the front.
         if (660..720).contains(&tick) && !game.sephiroth_tour {
@@ -7986,13 +8229,20 @@ fn simulate(
         if game.pad.pressed & 0x2_0000 != 0 {
             rig.recenter_queued = true;
         }
-        let pending = rig.pending_turn.clamp(-1., 1.);
-        if turn == 0. && pending != 0. {
-            turn = pending;
-            rig.pending_turn -= pending;
+        // Mouse-look takes the right stick for a frame it moves in
+        // (FUN_14039c180, FUN_140166100).
+        if let Some(m) = input::mouse_look(std::mem::take(&mut rig.mouse_counts), rig.mouse_gain) {
+            turn = m.turn;
+            zoom = m.height;
+            right_stick = m.turn.abs().max(m.height.abs()).min(1.);
+            mouse_pitch = m.height;
         }
     }
-    let mut camera = camera_input(&game.player, rig.previous_position, game.params.run_speed);
+    let mut camera = camera_input(
+        &game.sora.player,
+        rig.previous_position,
+        game.params.run_speed,
+    );
     // First person (camera mode 1, Select): FUN_140165110 enters on the press,
     // FUN_140165e30 reads the right stick's up/down bits (0xc0000) for the
     // pitch and R3 to level it, and the idle states (FUN_1403a70a0,
@@ -8001,17 +8251,18 @@ fn simulate(
     camera.select = game.pad.pressed & 0x40_0000 != 0;
     camera.reset_pitch = game.pad.pressed & 0x2_0000 != 0;
     camera.head_lift = game.params.head_height;
-    camera.first_person_ok = first_person_allowed(&game.player, &game.clips);
+    camera.first_person_ok = first_person_allowed(&game.sora.player, &game.clips);
     if game.autoplay.is_none() && game.pad.held & 0xc_0000 != 0 {
         let [_, y, magnitude] = controller::analog(game.pad_data.right);
         camera.look = y * magnitude;
     }
-    let pending_look = rig.pending_look.clamp(-1., 1.);
-    if camera.look == 0. && pending_look != 0. {
-        camera.look = pending_look;
-        rig.pending_look -= pending_look;
+    if mouse_pitch != 0. {
+        camera.look = mouse_pitch;
     }
-    if rig.camera.first_person && !game.player.dead() && game.player.can_command(&game.clips) {
+    if rig.camera.first_person
+        && !game.sora.player.dead()
+        && game.sora.player.can_command(&game.clips)
+    {
         let held = game.pad.held;
         let mut amount =
             (held & 0x20_0000 != 0) as i32 as f32 - (held & 0x10_0000 != 0) as i32 as f32;
@@ -8019,8 +8270,9 @@ fn simulate(
             amount = turn.clamp(-1., 1.);
         }
         // A turn to the right lowers the scene yaw.
-        game.player.yaw -= amount * follow_camera::MANUAL_TURN;
-        camera.player_forward = to_world([game.player.yaw.sin(), 0., game.player.yaw.cos()]);
+        game.sora.player.yaw -= amount * follow_camera::MANUAL_TURN;
+        camera.player_forward =
+            to_world([game.sora.player.yaw.sin(), 0., game.sora.player.yaw.cos()]);
     }
     camera.stick = [stick.x, -stick.y];
     camera.magnitude = stick.length().min(1.);
@@ -8094,11 +8346,11 @@ fn simulate(
         rig.was_aiming = rig.camera.aiming;
     }
     rig.fade.tick();
-    rig.previous_position = game.player.position;
+    rig.previous_position = game.sora.player.position;
     game.tick += 1;
     if let Some(action) = step.started {
-        let position = game.player.position;
-        let armed = game.player.armed;
+        let position = game.sora.player.position;
+        let armed = game.sora.player.armed;
         game.action_started = game.tick;
         // A command Sora asked for (the manager's request): it ends a held
         // reaction command (FUN_1403a89a0).
@@ -8113,22 +8365,29 @@ fn simulate(
         ) {
             game.reaction.request_made = true;
         }
-        let motion = game.player.motion_id(&game.clips);
+        let motion = game.sora.player.motion_id(&game.clips);
         let ptya_id = match action {
             Action::Attack(i) | Action::AirAttack(i) => Some(game.clips.records[i].id),
             _ => None,
         };
-        let combo = [game.player.combo.step, game.player.combo.finish];
+        let combo = [game.sora.player.combo.step, game.sora.player.combo.finish];
         game.event(
             serde_json::json!({"event":"action","tick":tick,"action":format!("{action:?}"),"armed":armed,
             "position":position,"landed":step.landed,"motion":motion,"ptya":ptya_id,"combo":combo}),
         );
     }
-    sora_sounds(&mut game);
+    // The joiner's Sora sounds and raises dust on the host, which sends both.
+    if !game.net_client {
+        sora_sounds(&mut game);
+        sora_dust(&mut game);
+    }
     sora_vibration(&mut game);
-    sora_dust(&mut game);
     if tick.is_multiple_of(60) {
-        let (position, yaw, action) = (game.player.position, game.player.yaw, game.player.action);
+        let (position, yaw, action) = (
+            game.sora.player.position,
+            game.sora.player.yaw,
+            game.sora.player.action,
+        );
         let enemy = game.enemy.as_ref().map(|e| {
             serde_json::json!({"position":e.enemy.position,"yaw":e.enemy.yaw,
                 "hp":e.enemy.hp,"act":format!("{:?}", e.enemy.current_act()),"motion":e.enemy.motion})
@@ -8189,9 +8448,20 @@ fn effects_tick(
     {
         fx.weapon = Some(pax);
     }
-    weapon_trail::tick(&mut game, fx.weapon.as_ref(), 0);
+    weapon_trail::tick(&mut game, fx.weapon.as_ref(), 0, None);
     let second = game.weapon2_pax.clone();
-    weapon_trail::tick(&mut game, second.as_ref(), 1);
+    weapon_trail::tick(&mut game, second.as_ref(), 1, None);
+    // A duel's other Sora swings his own trails (his state swapped in).
+    let mut rivals = std::mem::take(&mut game.rivals);
+    for r in &mut rivals {
+        rival::swap(&mut game, r);
+        let first = game.weapon_pax.clone().or_else(|| fx.room_weapon.clone());
+        let second = game.weapon2_pax.clone();
+        weapon_trail::tick(&mut game, first.as_ref(), 0, Some(r.slot));
+        weapon_trail::tick(&mut game, second.as_ref(), 1, Some(r.slot));
+        rival::swap(&mut game, r);
+    }
+    game.rivals = rivals;
     let view = game_view(rig.camera.eye, rig.camera.look_at);
     for request in std::mem::take(&mut game.effect_queue) {
         let (pax, element, world, label, bound) = match request {
@@ -8741,8 +9011,8 @@ fn talk_tick(mut game: ResMut<Game>, talk: Option<ResMut<Talk>>) {
         talk.tick = talk.loop_start;
     }
     talk.dissolve = talk.dissolve.saturating_sub(1);
-    let sora = Vec3::from_array(game.player.position);
-    if talk.active.is_none() && rc {
+    let sora = Vec3::from_array(game.sora.player.position);
+    if talk.active.is_none() && rc && !game.duel {
         // FUN_140401410 → FUN_140400f90: lock Sora, snap the NPC to face
         // him, cross-dissolve to the talk camera.
         talk.active = Some(0);
@@ -8761,10 +9031,10 @@ fn talk_tick(mut game: ResMut<Game>, talk: Option<ResMut<Talk>>) {
         let v = talk.position - sora;
         let want = v.x.atan2(v.z);
         let step = game.params.turn_speed;
-        let delta = (want - game.player.yaw + std::f32::consts::PI)
+        let delta = (want - game.sora.player.yaw + std::f32::consts::PI)
             .rem_euclid(std::f32::consts::TAU)
             - std::f32::consts::PI;
-        game.player.yaw += delta.clamp(-step, step);
+        game.sora.player.yaw += delta.clamp(-step, step);
         loop {
             let Some(op) = talk.script.get(i).cloned() else {
                 // End: restore facing, camera (with a dissolve) and control.
@@ -8905,14 +9175,15 @@ fn vibration_library(battle: &[u8]) -> Option<player::vibration::Library> {
 /// Frame trigger 31 on Sora's motion starts a wave, and the callback
 /// (FUN_14019b1d0) turns the running one into this tick's motor bytes.
 fn sora_vibration(game: &mut Game) {
-    let key = (game.action_started, game.player.action);
-    let frame = game.player.motion_frame(&game.clips);
+    let key = (game.action_started, game.sora.player.action);
+    let frame = game.sora.player.motion_frame(&game.clips);
     let from = match game.vibration_scan {
         Some((s, a, f)) if (s, a) == key && f <= frame => Some(f),
         _ => None,
     };
     game.vibration_scan = Some((key.0, key.1, frame));
     let due: Vec<u8> = game
+        .sora
         .player
         .clip(&game.clips)
         .vibrations
@@ -8960,8 +9231,8 @@ fn rumble_output(
 }
 
 fn sora_sounds(game: &mut Game) {
-    let clip = game.poses[&(game.player.action, game.player.armed)];
-    let frame = game.player.motion_frame(&game.clips);
+    let clip = game.poses[&(game.sora.player.action, game.sora.player.armed)];
+    let frame = game.sora.player.motion_frame(&game.clips);
     let started = game.action_started;
     let from = match game.sound_frame {
         Some((s, f)) if s == started && f <= frame => Some(f),
@@ -8979,9 +9250,9 @@ fn sora_sounds(game: &mut Game) {
         .drive
         .as_ref()
         .is_some_and(|d| d.active && d.form == player::forms::ANTI);
-    let clip = game.player.clip(&game.clips).clone();
-    let raw = game.player.frame;
-    let key = (started, game.player.action);
+    let clip = game.sora.player.clip(&game.clips).clone();
+    let raw = game.sora.player.frame;
+    let key = (started, game.sora.player.action);
     if let Some(v) = game.voices.as_mut() {
         let from = match v.scan {
             Some((s, a, f)) if (s, a) == key && f <= raw => Some(f),
@@ -9002,7 +9273,7 @@ fn sora_sounds(game: &mut Game) {
     // Frame trigger 8 on Sora's own motion: cloth, jump and item-use sounds.
     // The looped frame, so a walking or running cycle plays its triggers
     // again each time it wraps (a wrap clears the scan, as for swings).
-    let looped = game.player.motion_frame(&game.clips);
+    let looped = game.sora.player.motion_frame(&game.clips);
     let from = match game.move_se_scan {
         Some((s, a, f)) if (s, a) == key && f <= looped => Some(f),
         _ => None,
@@ -9045,8 +9316,8 @@ fn dust_ground_bit(ground: u8) -> u8 {
 /// Frame trigger 19 (FUN_140424c60): the map's category element for this
 /// ground and foot starts at the foot, turned along Sora's heading.
 fn sora_dust(game: &mut Game) {
-    let key = (game.action_started, game.player.action);
-    let looped = game.player.motion_frame(&game.clips);
+    let key = (game.action_started, game.sora.player.action);
+    let looped = game.sora.player.motion_frame(&game.clips);
     let from = match game.dust_scan {
         Some((s, a, f)) if (s, a) == key && f <= looped => Some(f),
         _ => None,
@@ -9059,7 +9330,7 @@ fn sora_dust(game: &mut Game) {
     if bit == 0 {
         return;
     }
-    let clip = game.player.clip(&game.clips).clone();
+    let clip = game.sora.player.clip(&game.clips).clone();
     for &(at, p0) in &clip.dust {
         if !(0..32).contains(&p0) || !from.is_none_or(|f| at > f) || at > looped {
             continue;
@@ -9068,7 +9339,7 @@ fn sora_dust(game: &mut Game) {
         let Some(element) = pax.by_category(mask) else {
             continue;
         };
-        let heading = to_world([game.player.yaw.sin(), 0., game.player.yaw.cos()]);
+        let heading = to_world([game.sora.player.yaw.sin(), 0., game.sora.player.yaw.cos()]);
         game.fx_queue.push(drive_fx::Placed {
             req: drive_fx::FxRequest {
                 pax: pax.clone(),
@@ -9076,7 +9347,7 @@ fn sora_dust(game: &mut Game) {
                 owner: 0xfb,
             },
             anchor: drive_fx::Anchor::World {
-                at: Vec3::from_array(game.player.position),
+                at: Vec3::from_array(game.sora.player.position),
                 pitch: 0.,
                 yaw: heading[0].atan2(heading[2]),
             },
@@ -9190,7 +9461,7 @@ fn hud_tick(
     // (FUN_1403c2020), F12 lets the missing party count as present.
     if game.autoplay.is_none() && game.drive.is_some() {
         if keys.just_pressed(KeyCode::F11) {
-            game.player.drive.refill();
+            game.sora.player.drive.refill();
         }
         if keys.just_pressed(KeyCode::F12)
             && let Some(d) = game.drive.as_mut()
@@ -9204,13 +9475,14 @@ fn hud_tick(
     }
     let Some(mut hud) = hud else { return };
     let mut s = hud.stats;
-    if let Some(rt) = game.enemy.as_mut() {
+    if game.enemy.is_some() {
         // Combat drives HP; F6 refills it.
+        let v = &mut game.sora.vitals;
         if keys.just_pressed(KeyCode::F6) {
-            rt.sora_hp = rt.sora_target.max_hp;
+            v.hp = v.target.max_hp;
         }
-        s.hp = rt.sora_hp;
-        s.max_hp = rt.sora_target.max_hp;
+        s.hp = v.hp;
+        s.max_hp = v.target.max_hp;
     } else if game.autoplay.is_some() {
         match game.tick {
             420 => s.hp = s.max_hp * 7 / 10,
@@ -9226,22 +9498,22 @@ fn hud_tick(
             s.hp = (s.hp + 2).min(s.max_hp);
         }
         if keys.just_pressed(KeyCode::F7) {
-            game.player.mp.add(-10);
+            game.sora.player.mp.add(-10);
         }
         if keys.just_pressed(KeyCode::F8) {
-            game.player.mp.add(10);
+            game.sora.player.mp.add(10);
         }
         if keys.just_pressed(KeyCode::F9) {
-            game.player.drive.add(10);
+            game.sora.player.drive.add(10);
         }
     }
     // MP is Sora's (casts spend it, MP Charge refills it).
-    s.mp = game.player.mp.cur;
-    s.max_mp = game.player.mp.max;
-    let mp = game.player.mp;
+    s.mp = game.sora.player.mp.cur;
+    s.max_mp = game.sora.player.mp.max;
+    let mp = game.sora.player.mp;
     s.mp_charge = mp.charging().then_some((mp.remaining, mp.total));
     // The Drive gauge is Sora's (hits, damage and orbs fill it).
-    let drive = game.player.drive;
+    let drive = game.sora.player.drive;
     (s.drive, s.drive_level, s.drive_max) = (drive.partial, drive.level, drive.max);
     s.drive_mode = drive.mode;
     (s.form_bars, s.form_time, s.form_max_time) = (drive.bars, drive.time, drive.max_time);
@@ -9702,7 +9974,7 @@ fn enemy_targets(rt: &EnemyRuntime) -> Vec<player::ptya::Target> {
 
 fn combat_tick(game: &mut Game, tick: u64) {
     let Game {
-        player,
+        sora: Fighter { player, vitals, .. },
         clips,
         clip_poses,
         poses,
@@ -9727,14 +9999,18 @@ fn combat_tick(game: &mut Game, tick: u64) {
         magic_shift,
         wall,
         party,
+        duel,
         ..
     } = game;
     let Some(rt) = enemy.as_mut() else { return };
+    // The unattended run's test blows (not in a duel: the other Sora's
+    // hits are the test there).
     let debug_blow = std::mem::take(debug_blow)
         || (autoplay.is_some()
             && !*enemy_battle_tour
             && !*sephiroth_tour
             && !*magic_tour
+            && !*duel
             && AUTOPLAY_BLOWS.contains(&tick));
     let act_at_start = rt.enemy.current_act();
     let place = if *magic_tour {
@@ -9934,7 +10210,7 @@ fn combat_tick(game: &mut Game, tick: u64) {
     }
     // The enemy's record advances once a tick (FUN_1403cf4b0), like Sora's.
     let in_damage_motion = (10..=39).contains(&player.motion_id(clips));
-    rt.sora_record.tick(1., in_damage_motion);
+    vitals.record.tick(1., in_damage_motion);
     rt.enemy.record.tick(1., false);
     if let Some((instance, ..)) = &hit {
         // The volume hit an actor: it no longer tests the map (wall_hit.rs).
@@ -9964,7 +10240,7 @@ fn combat_tick(game: &mut Game, tick: u64) {
         let attack = params_of(&rows[row]);
         // The attacker's ability terms (FUN_1403c12f0).
         let ab = &player.abilities;
-        rt.sora.mods = combat::AttackerMods {
+        vitals.attacker.mods = combat::AttackerMods {
             player_type: true,
             mp_charging: player.mp_charging,
             berserk_strength: ab.berserk_strength as i32,
@@ -9981,10 +10257,13 @@ fn combat_tick(game: &mut Game, tick: u64) {
         };
         if !counted {
             // Recorded but not counted: no damage and no reaction.
-        } else if let Some(damage) =
-            rt.enemy
-                .hit(dir.to_array(), high, &attack, &rt.sora, rt.difficulty)
-        {
+        } else if let Some(damage) = rt.enemy.hit(
+            dir.to_array(),
+            high,
+            &attack,
+            &vitals.attacker,
+            rt.difficulty,
+        ) {
             // FUN_140411300: the Shadow remembers who hit it last.
             rt.last_attacker = party_room::Attacker::Sora;
             // FUN_1403d12c0: the attacker's obj+0x120 bit 25, which lets
@@ -10137,7 +10416,7 @@ fn combat_tick(game: &mut Game, tick: u64) {
                 };
                 (rt.ids.allocate(), group)
             });
-            let sora_has = rt.sora_record.has(aid);
+            let sora_has = vitals.record.has(aid);
             let group_id = rt.instance_ids[&instance].1;
             for (i, &(b, offset, radius)) in rt.claws.get(&group).into_iter().flatten().enumerate()
             {
@@ -10202,7 +10481,7 @@ fn combat_tick(game: &mut Game, tick: u64) {
             *m.reflected.entry(k).or_insert(0) += 1;
         }
         if let Some(&(aid, _)) = rt.instance_ids.get(&instance) {
-            rt.sora_record.mark(aid);
+            vitals.record.mark(aid);
         }
         // FUN_1403d61d0 first sets obj+0x120 bit 25 ("connected").
         player.connected = true;
@@ -10227,7 +10506,7 @@ fn combat_tick(game: &mut Game, tick: u64) {
             {
                 *action_started = tick;
             }
-            rt.sora_invulnerable = 80.;
+            vitals.invulnerable = 80.;
             "guard"
         } else {
             // Bounce (motion 41 + slide 50) is not loaded in this room.
@@ -10251,8 +10530,8 @@ fn combat_tick(game: &mut Game, tick: u64) {
             let _ = std::io::Write::write_all(file, b"\n");
         }
     }
-    rt.sora_invulnerable = (rt.sora_invulnerable - 1.).max(0.);
-    if debug_blow && rt.sora_hp > 0 {
+    vitals.invulnerable = (vitals.invulnerable - 1.).max(0.);
+    if debug_blow && vitals.hp > 0 {
         // Reaction 4 with KB1 and KB2 both 0 (the SSTM blow), away from
         // the enemy; no damage.
         let d = ((sora_at - enemy_at) * Vec3::new(1., 0., 1.)).normalize_or(Vec3::Z);
@@ -10276,15 +10555,15 @@ fn combat_tick(game: &mut Game, tick: u64) {
     }
     // Aerial Recovery's range 27 (obj+0x18c bit 22) takes no damage.
     if player.range_invulnerable(clips) || cheats.invincible {
-        rt.sora_invulnerable = rt.sora_invulnerable.max(1.);
+        vitals.invulnerable = vitals.invulnerable.max(1.);
     }
     if let Some((instance, atkp, _, _)) = sora_hit
-        && rt.sora_invulnerable > 0.
+        && vitals.invulnerable > 0.
     {
         // FUN_1403d65a0: no damage while +0xd70 runs (the hit is still
         // recorded).
         if let Some(&(aid, group)) = rt.instance_ids.get(&instance) {
-            rt.sora_record.hit(aid, group, false, |_| (0, 0));
+            vitals.record.hit(aid, group, false, |_| (0, 0));
         }
         let record = serde_json::json!({"event":"sora_hit_invulnerable","tick":tick,"atkp":atkp});
         if let Some(file) = log.as_mut() {
@@ -10294,12 +10573,12 @@ fn combat_tick(game: &mut Game, tick: u64) {
     } else if let Some((instance, atkp, high, (claw_at, body_at, body_radius))) = sora_hit
         && let Some(rows) = rt.steps.get(&(atkp, 0))
         && let Some(&(aid, group)) = rt.instance_ids.get(&instance)
-        && rt.sora_hp > 0
+        && vitals.hp > 0
     {
         // FUN_1403cf600 on Sora's record (obj+0xc98): a player-type object
         // locks out other attack groups for 30 ticks.
         let cure = matches!(rows[0].kind, 5 | 6);
-        let (counted, row) = rt.sora_record.hit(aid, group, cure, |count| {
+        let (counted, row) = vitals.record.hit(aid, group, cure, |count| {
             let r = data::battle_tables::step_index(rows, count);
             (r, rows[r].interval)
         });
@@ -10336,7 +10615,7 @@ fn combat_tick(game: &mut Game, tick: u64) {
         }
         let ab = &player.abilities;
         let state = combat::TargetState {
-            hp: rt.sora_hp,
+            hp: vitals.hp,
             player_type: true,
             defender: ab.defender as i32,
             damage_control: ab.damage_control,
@@ -10347,19 +10626,14 @@ fn combat_tick(game: &mut Game, tick: u64) {
             *hero_hit_tick = Some(tick);
         }
         let damage = if counted {
-            combat::damage_with(&rt.shadow_attacker, &attack, &rt.sora_target, &state)
+            combat::damage_with(&rt.shadow_attacker, &attack, &vitals.target, &state)
         } else {
             0
         };
         // FUN_1403d6670: Second Chance (ability 127) and Once More (128).
-        let veto = combat::sora_veto(ab.has(127), ab.has(128), rt.sora_hp, 0, in_damage_motion);
-        rt.sora_hp = combat::apply_damage(
-            rt.sora_hp,
-            0,
-            rt.sora_target.max_hp,
-            damage,
-            veto && counted,
-        );
+        let veto = combat::sora_veto(ab.has(127), ab.has(128), vitals.hp, 0, in_damage_motion);
+        vitals.hp =
+            combat::apply_damage(vitals.hp, 0, vitals.target.max_hp, damage, veto && counted);
 
         let d = (sora_at - enemy_at) * Vec3::new(1., 0., 1.);
         let dir = d.normalize_or(Vec3::Z);
@@ -10384,37 +10658,37 @@ fn combat_tick(game: &mut Game, tick: u64) {
         let damage_drive = player.abilities.damage_drive;
         player
             .drive
-            .damaged(damage, rt.sora_target.max_hp, damage_drive);
+            .damaged(damage, vitals.target.max_hp, damage_drive);
         // MP Rage (FUN_1403d5e50): damage taken outside MP Charge gives
         // MP by its share of max HP × the ability's value.
         if damage > 0 && !player.mp.charging() && player.abilities.mp_rage > 0. {
             let gain =
-                (damage as f32 / rt.sora_target.max_hp as f32 * player.abilities.mp_rage) as i32;
+                (damage as f32 / vitals.target.max_hp as f32 * player.abilities.mp_rage) as i32;
             if gain > 0 {
                 player.mp.add(gain);
             }
         }
         // FUN_140404d60: HP 0 plays DEAD.
-        if rt.sora_hp == 0 && player.die(clips).is_some() {
+        if vitals.hp == 0 && player.die(clips).is_some() {
             *action_started = tick;
         }
         let record = serde_json::json!({"event":"sora_hit","tick":tick,"atkp":atkp,"damage":damage,
-            "counted":counted,"step":row,"sora_hp":rt.sora_hp,"reaction":format!("{started:?}")});
+            "counted":counted,"step":row,"sora_hp":vitals.hp,"reaction":format!("{started:?}")});
         if let Some(file) = log.as_mut() {
             let _ = serde_json::to_writer(&mut *file, &record);
             let _ = std::io::Write::write_all(file, b"\n");
         }
     }
-    if rt.sora_hp == 0 {
-        rt.ko_ticks += 1;
-        if rt.ko_ticks >= 120 {
+    if vitals.hp == 0 {
+        vitals.ko_ticks += 1;
+        if vitals.ko_ticks >= 120 {
             // [test-room] No game-over flow: stand up with full HP.
-            rt.sora_hp = rt.sora_target.max_hp;
-            rt.ko_ticks = 0;
+            vitals.hp = vitals.target.max_hp;
+            vitals.ko_ticks = 0;
         }
     }
     // Healed while dead (the camp, a Cure): FUN_1403c3c30 stands him up.
-    if player.dead() && rt.sora_hp > 0 {
+    if player.dead() && vitals.hp > 0 {
         player.revive();
         *action_started = tick;
     }
@@ -10584,24 +10858,28 @@ fn first_person_fade(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn camera_control(
     motion: Res<AccumulatedMouseMotion>,
+    windows: Query<&Window, With<bevy::window::PrimaryWindow>>,
+    controls: Res<input::Controls>,
     mut rig: ResMut<CameraRig>,
     mut camera: Query<(&mut Transform, &mut Projection), CameraOnly>,
     talk: Option<Res<Talk>>,
     settings: Res<settings_room::SettingsRes>,
     game: Res<Game>,
 ) {
-    // Mouse-look turns the camera (the PC layer feeds mouse motion to the
-    // right stick; its sensitivity is unresolved): 0.1 at Camera Speed 5.
-    let speed = settings.current.camera_factor();
-    rig.pending_turn = (rig.pending_turn + motion.delta.x * speed).clamp(-30., 30.);
-    // First person's pitch takes the vertical drag (up looks up).
-    if rig.camera.first_person {
-        rig.pending_look = (rig.pending_look + motion.delta.y * speed).clamp(-30., 30.);
-    } else {
-        rig.pending_look = 0.;
+    // Mouse-look (input::mouse_look): the PC version reads the mouse while
+    // its window is active with the cursor inside (FUN_140105810), and not
+    // in an instance given a controller alone. The room's Camera Speed
+    // scales it, 5 as the PC version.
+    let inside = windows
+        .single()
+        .is_ok_and(|w| w.focused && w.cursor_position().is_some());
+    if inside && controls.devices.keyboard() {
+        rig.mouse_counts += motion.delta;
     }
+    rig.mouse_gain = controls.bindings.mouse_gain() * settings.current.camera_factor();
     // The party-animation tour frames Donald and Goofy from the follow
     // camera's side, close enough to see their motions.
     let party_view = (game.party_anim_tour && game.party.len() >= 2).then(|| {
@@ -10634,7 +10912,7 @@ fn camera_control(
     // as the follow camera's is (FUN_140164940 from the target). [I] The
     // camera system's own test for event cameras (FUN_1401780d0) is taken
     // to be that one.
-    let (pose, fov) = match game.overlay_camera {
+    let (pose, fov) = match game.overlay_camera.or(game.duel_camera) {
         Some(v) => {
             let mut eye = v.eye;
             if v.collision {
@@ -10665,6 +10943,26 @@ fn camera_control(
     }
 }
 
+/// The devices this instance reads in its window's title, when they are
+/// not all of them (two windows on one PC).
+fn show_devices(
+    controls: Res<input::Controls>,
+    mut windows: Query<&mut Window, With<bevy::window::PrimaryWindow>>,
+    mut base: Local<Option<String>>,
+) {
+    if !controls.is_changed() {
+        return;
+    }
+    let Ok(mut w) = windows.single_mut() else {
+        return;
+    };
+    let base = base.get_or_insert_with(|| w.title.clone());
+    w.title = match controls.devices {
+        input::Devices::Both => base.clone(),
+        d => format!("[{}] {base}", d.label()),
+    };
+}
+
 /// The skateboard's fixed step: start a ride on the room's collision, step
 /// the Skate 3 skater and put Sora where it is. An area change ends the ride.
 fn skate_tick(
@@ -10688,12 +10986,12 @@ fn skate_tick(
     }
     if skate.wants_start() {
         let triangles = game.world.skate_triangles();
-        let position = Vec3::from_array(game.player.position);
-        skate.start(&triangles, position, game.player.yaw);
+        let position = Vec3::from_array(game.sora.player.position);
+        skate.start(&triangles, position, game.sora.player.yaw);
     }
     if let Some(ride) = skate.step() {
-        game.player.position = ride.position.to_array();
-        game.player.yaw = ride.yaw;
+        game.sora.player.position = ride.position.to_array();
+        game.sora.player.yaw = ride.yaw;
     }
 }
 
@@ -11055,7 +11353,7 @@ fn present(
     mut meshes: ResMut<Assets<Mesh>>,
     mut shown_target: Local<ShownTarget>,
 ) {
-    let action = game.player.action;
+    let action = game.sora.player.action;
     let started = game.action_started;
     let previous = game.shown_action;
     if game.shown_action != Some((action, started)) {
@@ -11065,8 +11363,8 @@ fn present(
         }
         game.shown_action = Some((action, started));
     }
-    let frame = game.player.motion_frame(&game.clips) as usize;
-    let clip = game.poses[&(action, game.player.armed)];
+    let frame = game.sora.player.motion_frame(&game.clips) as usize;
+    let clip = game.poses[&(action, game.sora.player.armed)];
     let skin = game.clip_poses[clip].skin.clone();
     let target_joints = game.clip_poses[clip].rootless_joints(frame);
     // The skinned target is kept while the kit, clip and frame stay (the
@@ -11110,7 +11408,7 @@ fn present(
             fixed.overstep_fraction()
         };
         let elapsed = (game.tick - start) as f32 + overstep;
-        let blend = game.player.blend;
+        let blend = game.sora.player.blend;
         let weight = if blend > 2. {
             ((elapsed + 3.) / blend).clamp(0., 1.)
         } else {
@@ -11165,7 +11463,7 @@ fn present(
     if let Ok((mut transform, mut visibility)) = hands.single_mut() {
         *transform = hand;
         // The Keyblade is drawn only in battle mode.
-        *visibility = if game.player.armed {
+        *visibility = if game.sora.player.armed {
             Visibility::Inherited
         } else {
             Visibility::Hidden
@@ -11178,7 +11476,7 @@ fn present(
         visual::room::set_positions(&mut meshes, &handle.0, positions);
     }
     if let Some((from, jump, from_frame)) = switched {
-        let (tick, blend) = (game.tick, game.player.blend);
+        let (tick, blend) = (game.tick, game.sora.player.blend);
         game.event(serde_json::json!({"event":"pose_switch","tick":tick,"from":from,
             "to":format!("{action:?}"),"jump":jump,"blend":blend,"from_frame":from_frame,"frame":frame}));
     }
@@ -11191,7 +11489,7 @@ fn present(
             .map(|(a, b)| a.distance(*b))
             .fold(0f32, f32::max);
         if jump > POSE_JUMP_LOG {
-            let (tick, frame, blend) = (game.tick, frame, game.player.blend);
+            let (tick, frame, blend) = (game.tick, frame, game.sora.player.blend);
             game.event(
                 serde_json::json!({"event":"pose_jump","tick":tick,"action":format!("{action:?}"),
                 "frame":frame,"jump":jump,"blend":blend}),
@@ -11212,8 +11510,8 @@ fn present(
         }
     }
     if let Ok(mut root) = roots.single_mut() {
-        root.translation = Vec3::from_array(game.player.position);
-        root.rotation = Quat::from_rotation_y(game.player.yaw);
+        root.translation = Vec3::from_array(game.sora.player.position);
+        root.rotation = Quat::from_rotation_y(game.sora.player.yaw);
         // Stitch's limit draws Sora in camera space (FUN_1403cbfc0 with
         // Stitch's second matrix).
         if let Some((at, turn)) = summon::sora_camera_pose(&game) {
@@ -11274,7 +11572,7 @@ fn finish(
         time.pause();
         let index = game.captures_taken;
         let path = dir.join(format!("test-room-{index:02}.png"));
-        let action = format!("{:?}", game.player.action);
+        let action = format!("{:?}", game.sora.player.action);
         let tick = game.tick;
         commands.spawn(Screenshot::primary_window()).observe(
             move |event: On<ScreenshotCaptured>,
@@ -11356,11 +11654,11 @@ fn finish(
         let expected = game
             .ability_source
             .build(&tour.expected_slots, &game.equipment);
-        let pass = game.player.abilities == expected;
+        let pass = game.sora.player.abilities == expected;
         game.autoplay_failed |= !pass;
         let verdict = serde_json::json!({"event":"ability_tour_verdict","pass":pass,
-            "growth":game.player.abilities.growth,"ground_combo":game.player.abilities.ground_combo,
-            "air_combo":game.player.abilities.air_combo,"finishers":game.player.abilities.finishers});
+            "growth":game.sora.player.abilities.growth,"ground_combo":game.sora.player.abilities.ground_combo,
+            "air_combo":game.sora.player.abilities.air_combo,"finishers":game.sora.player.abilities.finishers});
         game.event(verdict);
     }
     if autoplay_done && game.exit_code.is_none() && game.party_camp_tour {
@@ -11744,10 +12042,12 @@ fn field_running(
     game_over: Option<Res<game_over::GameOverRes>>,
     game: Res<Game>,
 ) -> bool {
-    camp.is_none_or(|c| !c.menu_up())
-        && !debug.open
-        && game_over.is_none_or(|g| g.field_runs())
-        && game.field_step
+    // A duel never pauses: the other player keeps playing.
+    game.field_step
+        && (game.duel
+            || camp.is_none_or(|c| !c.menu_up())
+                && !debug.open
+                && game_over.is_none_or(|g| g.field_runs()))
 }
 
 /// START (logical 0x2 in the field's pad mode) opens the camp
@@ -11766,20 +12066,28 @@ fn camp_tick(
     mut images: ResMut<Assets<Image>>,
     mut settings: ResMut<settings_room::SettingsRes>,
     debug: Res<debug_menu::DebugMenu>,
+    controls: Res<input::Controls>,
 ) {
     let Some(mut c) = camp else { return };
     let c = &mut *c;
-    let (data, keyboard, glyph) = input::read_devices(&keys, &mouse, 0., &pads);
+    let (data, keyboard, glyph) = input::read_devices(&keys, &mouse, 0., &pads, &controls);
     if keyboard {
         c.keyboard_last = true;
     } else if glyph.is_some() {
         c.keyboard_last = false;
     }
-    let g = if c.keyboard_last {
+    let mut g = if c.keyboard_last {
         0
     } else {
         glyph.map_or(c.glyph, usize::from)
     };
+    // A window given a controller alone shows a pad's glyphs from the start.
+    if g == 0
+        && let Some(f) = input::pad_family(&pads, &controls)
+    {
+        c.keyboard_last = false;
+        g = usize::from(f);
+    }
     if c.art[g].is_some() {
         c.glyph = g;
     }
@@ -11791,17 +12099,19 @@ fn camp_tick(
     };
     // Level-ups change the Status numbers and teach abilities.
     let gear = game.gear;
-    if let Some(rt) = game.enemy.as_mut()
+    let g = &mut *game;
+    if let Some(rt) = g.enemy.as_mut()
         && rt.numbers_dirty
     {
         rt.numbers_dirty = false;
-        if let Some(row) = rt.sora_levels.get(rt.level as usize - 1) {
+        let v = &g.sora.vitals;
+        if let Some(row) = rt.sora_levels.get(v.level as usize - 1) {
             let n = &mut c.source.numbers;
-            n.level = rt.level;
+            n.level = v.level;
             n.next_exp = row.exp.saturating_sub(rt.exp_total);
-            n.strength = rt.sora.strength - i32::from(gear.strength);
-            n.magic = rt.sora.magic - i32::from(gear.magic);
-            n.defense = rt.sora_target.defense - i32::from(gear.defense);
+            n.strength = v.attacker.strength - i32::from(gear.strength);
+            n.magic = v.attacker.magic - i32::from(gear.magic);
+            n.defense = v.target.defense - i32::from(gear.defense);
         }
         for id in rt.learned.drain(..) {
             if !c.ability_slots.iter().any(|&s| s & 0x7fff == id)
@@ -11820,6 +12130,9 @@ fn camp_tick(
         } else if game.magic_tour || game.sephiroth_tour {
             // The magic and Sephiroth tours never open the camp.
             0
+        } else if game.duel {
+            // The duel's screens: their script's keys.
+            std::mem::take(&mut game.duel_camp_press)
         } else {
             AUTOPLAY_CAMP
                 .iter()
@@ -11838,6 +12151,9 @@ fn camp_tick(
     if debug.open {
         return;
     }
+    if game.duel && c.open.is_none() && game.duel_camp.is_none() && c.pad.pressed & 0x2 != 0 {
+        game.duel_start = true;
+    }
     if save_menu_tick(c, &mut game, &mut audio, &mut frame, &mut images) {
         return;
     }
@@ -11846,17 +12162,17 @@ fn camp_tick(
     // Test-room values: no munny, level 1, the room's HP/MP; the clock is
     // the room's frame count.
     let (hp, max_hp, mp, max_mp) = match (&game.enemy, &hud) {
-        (Some(rt), Some(_)) => (
-            rt.sora_hp,
-            rt.sora_target.max_hp,
-            game.player.mp.cur,
-            game.player.mp.max,
+        (Some(_), Some(_)) => (
+            game.sora.vitals.hp,
+            game.sora.vitals.target.max_hp,
+            game.sora.player.mp.cur,
+            game.sora.player.mp.max,
         ),
         (None, Some(h)) => (
             h.stats.hp,
             h.stats.max_hp,
-            game.player.mp.cur,
-            game.player.mp.max,
+            game.sora.player.mp.cur,
+            game.sora.player.mp.max,
         ),
         _ => (1, 1, 0, 1),
     };
@@ -11880,7 +12196,12 @@ fn camp_tick(
         time_frames: tick as u32,
         members: std::iter::once(pause_menu::Member {
             name: c.source.name.clone(),
-            level: 1,
+            // The room's Sora shows level 1 [I]; a duel's is its level 99.
+            level: if game.duel {
+                i32::from(game.sora.vitals.level)
+            } else {
+                1
+            },
             hp,
             max_hp,
             mp,
@@ -11988,7 +12309,10 @@ fn camp_tick(
         }
         if menu.closed {
             settings.save_if_changed();
-            c.memory = menu.memory;
+            // A duel screen's cursor places are not the player's own menu's.
+            if menu.data.duel.is_none() {
+                c.memory = menu.memory;
+            }
             c.config_flags = menu.data.config_flags;
             game.config_flags = c.config_flags;
             c.stock = menu.data.items.counts.clone();
@@ -12047,10 +12371,10 @@ fn camp_tick(
             // In a Drive form the form's own slots are linked as well.
             let slots = c.ability_slots.clone();
             drive_room::rebuild_abilities(&mut game, Some(&slots));
-            let equipped = serde_json::json!({"event":"equipped_abilities","growth":game.player.abilities.growth,
-                "ground_combo":game.player.abilities.ground_combo,"air_combo":game.player.abilities.air_combo,
-                "finishers":game.player.abilities.finishers,"combo_boost":game.player.abilities.combo_boost,
-                "air_combo_boost":game.player.abilities.air_combo_boost,"reaction_boost":game.player.abilities.reaction_boost});
+            let equipped = serde_json::json!({"event":"equipped_abilities","growth":game.sora.player.abilities.growth,
+                "ground_combo":game.sora.player.abilities.ground_combo,"air_combo":game.sora.player.abilities.air_combo,
+                "finishers":game.sora.player.abilities.finishers,"combo_boost":game.sora.player.abilities.combo_boost,
+                "air_combo_boost":game.sora.player.abilities.air_combo_boost,"reaction_boost":game.sora.player.abilities.reaction_boost});
             game.event(equipped);
             // Owned spell levels (the element items), the shortcut slots
             // and the MP-charge toggles follow the camp.
@@ -12118,17 +12442,17 @@ fn camp_tick(
             }
             // Items used in the camp change the room's HP / MP.
             if let Some(sora) = menu.data.panels.members.first() {
-                if let Some(rt) = game.enemy.as_mut() {
-                    rt.sora_hp = sora.hp;
+                if game.enemy.is_some() {
+                    game.sora.vitals.hp = sora.hp;
                 }
                 if let Some(h) = hud.as_mut() {
                     h.stats.hp = sora.hp;
                 }
                 // Items used in the camp restore MP through the charge
                 // rules (FUN_1403c0890).
-                let delta = sora.mp - game.player.mp.cur;
+                let delta = sora.mp - game.sora.player.mp.cur;
                 if delta != 0 {
-                    game.player.mp.add(delta);
+                    game.sora.player.mp.add(delta);
                 }
             }
             let kind = menu.journal;
@@ -12181,12 +12505,39 @@ fn camp_tick(
             }
             game.event(serde_json::json!({"event":"camp_open","tick":tick}));
         }
-    } else if c.curtain.is_none() && c.pad.pressed & 0x2 != 0 && !game.talking {
-        let (menu, s) = Camp::open(
-            layout,
-            camp_data(c, panels, game.items.as_ref(), &settings, &side),
-            c.memory,
-        );
+    } else if c.curtain.is_none()
+        && (c.pad.pressed & 0x2 != 0 || std::mem::take(&mut game.duel_open_camp))
+        && !game.talking
+        && (!game.duel || game.duel_camp.is_some())
+    {
+        let mut data = camp_data(c, panels, game.items.as_ref(), &settings, &side);
+        // A duel screen (duel_camp.rs): its entries (the camp's own by id)
+        // and its pages on the Config screen, the cursor on its first entry.
+        let (menu, s) = if let Some(req) = game.duel_camp.take() {
+            data.entries = req
+                .entries
+                .iter()
+                .filter_map(|e| match e {
+                    duel_camp::Item::Own(id) => data.entries.iter().find(|x| x.id == *id).cloned(),
+                    duel_camp::Item::New(e) => Some(e.clone()),
+                })
+                .collect();
+            data.duel = Some(req.pages);
+            data.settings = None;
+            let memory = pause_menu::Memory {
+                entry: data.entries.first().map_or(0, |e| e.id),
+                config_page: 0,
+                config_row: 0,
+                ..c.memory
+            };
+            if req.on_config {
+                (Camp::open_on_config(layout, data, memory, 0), Vec::new())
+            } else {
+                Camp::open(layout, data, memory)
+            }
+        } else {
+            Camp::open(layout, data, c.memory)
+        };
         c.open = Some(menu);
         sounds = s;
         game.tick += 1;
@@ -12570,6 +12921,7 @@ fn camp_data(
         },
         settings: Some(settings.current.clone()),
         languages: settings.languages.clone(),
+        duel: None,
     }
 }
 
@@ -12774,7 +13126,7 @@ fn save_snapshot(game: &Game) -> save::data::SaveData {
         d.set_u8(field::WORLD, world);
         d.set_u8(field::AREA, area);
     }
-    let level = game.enemy.as_ref().map_or(1, |rt| rt.level);
+    let level = game.sora.vitals.level;
     d.set_u8(field::PARTY + field::RECORD_LEVEL, level);
     d.set_u32(field::PLAY_FRAMES, game.tick as u32);
     let difficulty = game.enemy.as_ref().map_or(1, |rt| rt.difficulty as u32);
@@ -13071,6 +13423,10 @@ fn music_tick(music: Option<ResMut<MusicRes>>, mut game: ResMut<Game>, audio: Re
         }
     }
     let Some(output) = &audio.output else { return };
+    // The duel's music has the voices (duel_music.rs).
+    if game.duel_music {
+        return;
+    }
     // Room entry: the field track at full level, no fade.
     if !m.started
         && let Some(field) = &m.clips[0]
@@ -13093,7 +13449,7 @@ fn music_tick(music: Option<ResMut<MusicRes>>, mut game: ResMut<Game>, audio: Re
         return;
     }
     // FUN_1403ab6f0: the target state and its hysteresis.
-    let p = game.player.position;
+    let p = game.sora.player.position;
     let target = game.enemy.as_ref().is_some_and(|rt| {
         let e = rt.enemy.position;
         !matches!(
@@ -13191,6 +13547,26 @@ fn run(mut args: Vec<PathBuf>) -> Result<AppExit, Box<dyn std::error::Error>> {
     let mut show_collision = false;
     let mut perf_overlay = false;
     let mut basic_fk = false;
+    let mut rival_script = false;
+    let mut duel_bench = false;
+    let mut duel_magic = false;
+    let mut duel_shots = false;
+    let mut duel_forfeit = false;
+    let mut duel_quick = false;
+    let mut duel_wisdom = false;
+    let mut duel_no_mirage = false;
+    let mut duel_idle = false;
+    // The LAN duel (duel_net.rs): host or join, the port, the name shown
+    // to the other player, the link simulator and the overlay.
+    let mut net_host = false;
+    let mut net_join: Option<String> = None;
+    let mut net_port = net::DEFAULT_PORT;
+    let mut net_bind = std::net::Ipv4Addr::UNSPECIFIED;
+    let mut net_name: Option<String> = None;
+    let mut net_sim = net::link::Conditions::default();
+    let mut net_overlay = false;
+    let mut input_assign = input::Assign::Auto;
+    let mut duel_rules = duel_rules::MatchRules::default();
     let mut ability_tour = false;
     let mut gear_tour = false;
     let mut gear_tour_quick = false;
@@ -13248,6 +13624,124 @@ fn run(mut args: Vec<PathBuf>) -> Result<AppExit, Box<dyn std::error::Error>> {
             Some("--show-collision") => show_collision = true,
             Some("--perf-overlay") => perf_overlay = true,
             Some("--basic-fk") => basic_fk = true,
+            Some("--rival-script") => rival_script = true,
+            Some("--duel-bench") => duel_bench = true,
+            Some("--duel-magic") => duel_magic = true,
+            Some("--duel-shots") => duel_shots = true,
+            Some("--duel-forfeit") => duel_forfeit = true,
+            Some("--duel-quick") => duel_quick = true,
+            Some("--duel-wisdom") => duel_wisdom = true,
+            Some("--duel-no-mirage") => duel_no_mirage = true,
+            Some("--duel-idle") => duel_idle = true,
+            Some("--host") => net_host = true,
+            Some("--join") => {
+                net_join = Some(
+                    options
+                        .next()
+                        .and_then(|v| v.to_str())
+                        .ok_or("host address absent")?
+                        .to_owned(),
+                );
+            }
+            Some("--port") => {
+                net_port = options
+                    .next()
+                    .and_then(|v| v.to_str())
+                    .ok_or("port absent")?
+                    .parse::<u16>()?;
+            }
+            Some("--name") => {
+                net_name = Some(
+                    options
+                        .next()
+                        .and_then(|v| v.to_str())
+                        .ok_or("name absent")?
+                        .to_owned(),
+                );
+            }
+            Some("--input") => {
+                let v = options
+                    .next()
+                    .and_then(|v| v.to_str())
+                    .ok_or("input devices absent")?;
+                input_assign =
+                    input::Assign::parse(v).ok_or("--input takes auto, kbm, pad, pad:N or both")?;
+            }
+            Some("--net-sim") => {
+                net_sim = duel_net::parse_conditions(
+                    options
+                        .next()
+                        .and_then(|v| v.to_str())
+                        .ok_or("link conditions absent")?,
+                )?;
+            }
+            Some("--net-overlay") => net_overlay = true,
+            Some("--duel-damage") => {
+                duel_rules.damage = options
+                    .next()
+                    .and_then(|v| v.to_str())
+                    .ok_or("duel damage absent")?
+                    .parse::<f32>()?
+                    .clamp(duel_rules::DAMAGE_RANGE.0, duel_rules::DAMAGE_RANGE.1);
+            }
+            Some("--duel-magic-damage") => {
+                duel_rules.magic = options
+                    .next()
+                    .and_then(|v| v.to_str())
+                    .ok_or("duel magic damage absent")?
+                    .parse::<f32>()?
+                    .clamp(duel_rules::DAMAGE_RANGE.0, duel_rules::DAMAGE_RANGE.1);
+            }
+            Some("--duel-hit-cap") => {
+                let cap = options
+                    .next()
+                    .and_then(|v| v.to_str())
+                    .ok_or("duel hit cap absent")?
+                    .parse::<u8>()?;
+                if !duel_rules::HIT_CAPS.contains(&cap) {
+                    return Err(format!(
+                        "duel hit cap: one of {:?} percent (100: none)",
+                        duel_rules::HIT_CAPS
+                    )
+                    .into());
+                }
+                duel_rules.hit_cap = cap;
+            }
+            Some("--duel-arena") => {
+                let name = options
+                    .next()
+                    .and_then(|v| v.to_str())
+                    .ok_or("duel arena absent")?;
+                duel_rules.arena = duel_arena::named(name).ok_or("duel arena: mirage or room")?;
+            }
+            Some("--duel-mode") => {
+                let name = options
+                    .next()
+                    .and_then(|v| v.to_str())
+                    .ok_or("duel mode absent")?;
+                duel_rules.mode =
+                    duel_rules::mode_named(name).ok_or("duel mode: stock, best3 or time")?;
+            }
+            Some("--duel-time") => {
+                let seconds = options
+                    .next()
+                    .and_then(|v| v.to_str())
+                    .ok_or("duel time absent")?
+                    .parse::<u16>()?;
+                if !duel_rules::TIME_LIMITS.contains(&seconds) {
+                    return Err(
+                        format!("duel time: one of {:?} seconds", duel_rules::TIME_LIMITS).into(),
+                    );
+                }
+                duel_rules.time_limit = seconds;
+            }
+            Some("--bind") => {
+                net_bind = options
+                    .next()
+                    .and_then(|v| v.to_str())
+                    .ok_or("bind address absent")?
+                    .parse()?;
+            }
             Some("--enemy-audit") if enemy_audit.is_none() => {
                 enemy_audit = Some(options.next().cloned().ok_or("enemy audit output absent")?);
             }
@@ -13804,6 +14298,17 @@ fn run(mut args: Vec<PathBuf>) -> Result<AppExit, Box<dyn std::error::Error>> {
     if let Some(h) = &loaded.hud {
         player.mp = magic::Mp::new(h.stats.1);
     }
+    // The rivals' kit: the room's starting one, shared with the room Sora.
+    let base_clip_poses = Arc::new(std::mem::take(&mut loaded.kit.clip_poses));
+    let rival_kit = Arc::new(rival::RivalKit {
+        params: loaded.params,
+        clips: loaded.kit.clips.clone(),
+        poses: poses.clone(),
+        clip_poses: base_clip_poses.clone(),
+        target_shape: loaded.kit.target_shape,
+        body: loaded.kit.body.clone(),
+        target_radius: loaded.kit.target_radius,
+    });
     let spell_fx_resource =
         spell_fx::SpellFx::new(loaded.magic.as_ref().and_then(|m| m.texcommon.clone()));
     // The room's stock with every Keyblade, armor and accessory it owns.
@@ -13840,9 +14345,48 @@ fn run(mut args: Vec<PathBuf>) -> Result<AppExit, Box<dyn std::error::Error>> {
         params: loaded.params,
         clips: loaded.kit.clips,
         world: loaded.world,
-        player,
+        sora: fighter::Fighter::new(player),
+        rivals: Vec::new(),
+        rival_kit: Some(rival_kit),
+        rival_script,
+        duel_bench,
+        duel_magic,
+        duel_idle,
+        room_start: (loaded.spawn.to_array(), loaded.yaw),
+        duel_arena: duel_arena::TEST_ROOM,
+        duel_rules,
+        duel: rival_script,
+        local_slot: 0,
+        net_client: false,
+        net_pad: rival::RivalPad::default(),
+        duel_events: Vec::new(),
+        net_overlay: false,
+        net_simulated: None,
+        duel_frozen: false,
+        duel_test_vote: false,
+        duel_open_camp: false,
+        duel_camp: None,
+        duel_start: false,
+        duel_vote_up: false,
+        // [Test] `--duel-no-mirage`: this install acts as one without
+        // Birth by Sleep.
+        mirage: if duel_no_mirage {
+            mirage_arena::Avail::Missing("left out for a test (--duel-no-mirage)".into())
+        } else {
+            mirage_arena::Avail::Unknown
+        },
+        duel_music: false,
+        duel_camp_press: 0,
+        duel_shots,
+        duel_forfeit,
+        duel_quick,
+        duel_wisdom,
+        duel_shot_keys: std::collections::HashSet::new(),
+        duel_match: false,
+        duel_dealt: [0; 2],
+        duel_landed: [0; 2],
         poses,
-        clip_poses: loaded.kit.clip_poses,
+        clip_poses: base_clip_poses,
         part_indices: Vec::new(),
         display_frame: 0,
         tick: 0,
@@ -14043,6 +14587,7 @@ fn run(mut args: Vec<PathBuf>) -> Result<AppExit, Box<dyn std::error::Error>> {
         battle_won: false,
         camera_watch: None,
         overlay_camera: None,
+        duel_camera: None,
         overlay_blur: None,
         screen_fade: Fade::default(),
         enemy_voice_banks: HashMap::new(),
@@ -14074,11 +14619,11 @@ fn run(mut args: Vec<PathBuf>) -> Result<AppExit, Box<dyn std::error::Error>> {
         if let Some(p) = loaded.kit.pax.take() {
             d.paxes.insert(0, Arc::new(p));
         }
-        game.player.drive.max = drive_room::ROOM_DRIVE_MAX;
+        game.sora.player.drive.max = drive_room::ROOM_DRIVE_MAX;
         // Test-room choice: the gauge starts full (FUN_1403c2020), so every
         // owned form can be tried at once; unattended runs keep it empty.
         if game.autoplay.is_none() {
-            game.player.drive.refill();
+            game.sora.player.drive.refill();
         }
         game.event(serde_json::json!({"event":"drive_forms","form_objects":d.src.form_objects,
             "commands":d.src.form_command,"owned":d.forms.owned,
@@ -14189,6 +14734,7 @@ fn run(mut args: Vec<PathBuf>) -> Result<AppExit, Box<dyn std::error::Error>> {
                 "weapon_elements":e.weapon.elements.len(),"enemy_pax":e.enemy.as_ref().map(|p| p.name.clone()),
                 "atlas_size":e.atlas.size,"atlas_texels":e.atlas.texel_size,"atlas_hd":e.atlas.hd,
                 "atlas_alignment":e.atlas.alignment}));
+            let weapon = Arc::new(e.weapon);
             let size = if e.atlas.hd {
                 e.atlas.size
             } else {
@@ -14197,7 +14743,8 @@ fn run(mut args: Vec<PathBuf>) -> Result<AppExit, Box<dyn std::error::Error>> {
             game.enemy_voice_banks = e.enemy_voices.clone();
             (
                 Effects {
-                    weapon: { Some(Arc::new(e.weapon)) },
+                    weapon: Some(Arc::clone(&weapon)),
+                    room_weapon: Some(weapon),
                     enemy: e.enemy.map(Arc::new),
                     enemy_paxes: e
                         .enemy_paxes
@@ -14219,6 +14766,7 @@ fn run(mut args: Vec<PathBuf>) -> Result<AppExit, Box<dyn std::error::Error>> {
         None => (
             Effects {
                 weapon: None,
+                room_weapon: None,
                 enemy: None,
                 enemy_paxes: HashMap::new(),
                 enemy_banks: HashMap::new(),
@@ -14260,6 +14808,12 @@ fn run(mut args: Vec<PathBuf>) -> Result<AppExit, Box<dyn std::error::Error>> {
             "claw_windows":e.clips.0.iter().filter(|(_, c)| !c.windows.is_empty()).map(|(s, c)| (s.to_string(), c.windows.clone())).collect::<HashMap<_, _>>(),
             "sora_hit_spheres":e.sora_body.len(),"target_reach":e.target_reach,"sora_target":format!("{:?}", e.sora_target),"shadow_attacker":format!("{:?}", e.shadow_attacker)}));
         enemy_model = Some(e.model);
+        game.sora.vitals = fighter::Vitals {
+            attacker: e.sora,
+            target: e.sora_target,
+            hp: e.sora_target.max_hp,
+            ..fighter::Vitals::default()
+        };
         game.enemy = Some(EnemyRuntime {
             sora_target_radius: e.sora_target_radius,
             enabled: !game.enemy_battle_tour && !game.sephiroth,
@@ -14280,29 +14834,23 @@ fn run(mut args: Vec<PathBuf>) -> Result<AppExit, Box<dyn std::error::Error>> {
             steps: e.steps,
             atkp: e.atkp,
             difficulty: e.difficulty,
-            sora: e.sora,
             enemy,
             rng: ScriptRandom::default(),
             claws: e.claws,
             shadow_attacker: e.shadow_attacker,
-            sora_target: e.sora_target,
             sora_body: e.sora_body,
             target_reach: e.target_reach,
             claws_now: Vec::new(),
             last_attacker: party_room::Attacker::Sora,
             hits_landed: 0,
-            sora_record: combat::HitRecord::new(true),
             ids: combat::AttackIds::default(),
             instance_ids: HashMap::new(),
             instance_seen: HashMap::new(),
             next_group: 0x100,
             claw_previous: HashMap::new(),
-            sora_hp: e.sora_target.max_hp,
-            ko_ticks: 0,
             exp_rule: e.exp,
             prize: e.prize,
             sora_levels: e.sora_levels,
-            level: 1,
             exp_total: 0,
             munny: 0,
             orbs: Vec::new(),
@@ -14320,22 +14868,82 @@ fn run(mut args: Vec<PathBuf>) -> Result<AppExit, Box<dyn std::error::Error>> {
             hit_sounds: e.hit_sounds,
             hit_effects: e.hit_effects,
             rows: e.rows,
-            sora_invulnerable: 0.,
             sound_tick: None,
         });
         // The combat numbers start without the equipment's share: add it.
         game.gear = player::equipment_stats::Totals::start(0, 0, 0, 0);
         game.refresh_gear();
     }
+    // A LAN duel: the two Soras and nothing else (duel_net.rs).
+    let net_setup = match (net_host, net_join) {
+        (true, Some(_)) => return Err("--host and --join exclude each other".into()),
+        (true, None) => Some(duel_net::Setup {
+            role: net::Role::Host,
+            bind: net_bind,
+            port: net_port,
+            host: None,
+            name: net_name.clone().unwrap_or_else(duel_net::default_name),
+            conditions: net_sim,
+            overlay: net_overlay,
+        }),
+        (false, Some(address)) => Some(duel_net::Setup {
+            role: net::Role::Join,
+            bind: net_bind,
+            port: net_port,
+            host: Some(duel_net::parse_address(&address)?),
+            name: net_name.clone().unwrap_or_else(duel_net::default_name),
+            conditions: net_sim,
+            overlay: net_overlay,
+        }),
+        (false, None) => None,
+    };
+    // The duel's baseline (duel_loadout.rs), for a session or the scripted
+    // rival; the room's own build comes back when the session ends.
+    let mut duel_loadout = duel_loadout::DuelLoadout::default();
+    if net_setup.is_some() || rival_script {
+        let record = duel_loadout::apply(&mut game, &mut duel_loadout)?;
+        game.event(record);
+    }
+    // Unattended runs keep no duel prefs (duel_prefs.rs).
+    let duel_unattended = game.autoplay.is_some();
+    let duel_session = match &net_setup {
+        Some(setup) => {
+            let session = duel_net::DuelNet::start(setup)?;
+            game.duel = true;
+            game.local_slot = duel_net::local_slot(setup.role);
+            game.net_client = setup.role == net::Role::Join;
+            game.net_overlay = setup.overlay;
+            // [Duel rule] Sora alone: magic, items and Drive forms are the
+            // host's to run for both (duel_sync); the second deck's limits,
+            // the summons, the party and the Shadow are off.
+            game.second_deck = None;
+            game.summons = None;
+            game.party.clear();
+            if let Some(rt) = game.enemy.as_mut() {
+                rt.enabled = false;
+            }
+            game.event(serde_json::json!({"event":"duel_session",
+                "role":format!("{:?}", setup.role),"port":setup.port,
+                "host":setup.host.map(|h| h.to_string()),"name":setup.name,
+                "conditions":[setup.conditions.latency_ms, setup.conditions.jitter_ms],
+                "loss":setup.conditions.loss_percent}));
+            Some(session)
+        }
+        None => None,
+    };
     let rig = CameraRig {
         camera: FollowCamera::new(
             follow_camera::OUTDOOR,
-            &camera_input(&game.player, game.player.position, game.params.run_speed),
+            &camera_input(
+                &game.sora.player,
+                game.sora.player.position,
+                game.params.run_speed,
+            ),
         ),
-        previous_position: game.player.position,
-        pending_turn: 0.,
+        previous_position: game.sora.player.position,
+        mouse_counts: Vec2::ZERO,
+        mouse_gain: 1.,
         recenter_queued: false,
-        pending_look: 0.,
         was_first_person: false,
         was_aiming: false,
         fade: FadeRamp::SHOWN,
@@ -14426,6 +15034,35 @@ fn run(mut args: Vec<PathBuf>) -> Result<AppExit, Box<dyn std::error::Error>> {
     }
     #[cfg(feature = "perf-diag")]
     app.add_plugins(crate::perf::PerfPlugin { dir: perf_dir });
+    if let Some(session) = duel_session {
+        app.insert_resource(session);
+        app.insert_resource(duel_prefs::DuelPrefs::load(&args[1], duel_unattended));
+        app.init_resource::<duel_lobby_room::LobbyRoom>();
+        app.init_resource::<duel_vote::VoteRoom>();
+        app.init_resource::<duel_match_room::MatchRoom>();
+        app.init_resource::<duel_music::DuelMusic>();
+        // The Birth by Sleep arena reads the install's BBS package, bound
+        // by a manifest kept beside the KH2 one.
+        app.insert_resource(mirage_arena::MirageArena::new(
+            args[0].clone(),
+            data::bbs_source::manifest_beside(&args[1]),
+        ));
+        app.add_systems(
+            Update,
+            (
+                mirage_arena::tick,
+                mirage_arena::show,
+                mirage_arena::follow_sky,
+                mirage_arena::scroll,
+            )
+                .chain(),
+        );
+    }
+    app.insert_resource(duel_loadout);
+    // The PC version's key bindings; unattended runs keep the exe's
+    // defaults so they read the same on any PC.
+    app.insert_resource(crate::pc_controls::load(input_assign, duel_unattended));
+    app.add_systems(Update, show_devices);
     Ok(app
         .insert_resource(game)
         .insert_resource(Startup {
@@ -14448,6 +15085,7 @@ fn run(mut args: Vec<PathBuf>) -> Result<AppExit, Box<dyn std::error::Error>> {
             sum: 0.,
             worst: 0.,
             slow: 0,
+            times: Vec::with_capacity(600),
         })
         .insert_resource(BoardModels {
             keyblades: loaded.keyblades,
@@ -14500,15 +15138,30 @@ fn run(mut args: Vec<PathBuf>) -> Result<AppExit, Box<dyn std::error::Error>> {
         .add_plugins(SkatePlugins)
         .add_systems(
             Startup,
-            (setup, pause_for_autoplay, camp_setup, game_over::setup),
+            (
+                setup,
+                pause_for_autoplay,
+                camp_setup,
+                game_over::setup,
+                rival::script_setup,
+            ),
         )
         .add_systems(Update, crate::skate::toggle)
         .add_systems(Update, settings_room::apply_settings)
         .add_systems(Update, rumble_output)
+        .add_systems(Last, duel_net::close_on_exit)
         .add_systems(
             FixedUpdate,
             (
-                read_pad,
+                (
+                    duel_net::begin,
+                    read_pad,
+                    duel_lobby_room::tick,
+                    duel_vote::tick,
+                    duel_match_room::tick,
+                    duel_music::tick.run_if(resource_exists::<duel_music::DuelMusic>),
+                )
+                    .chain(),
                 camp_tick,
                 game_over::tick,
                 command_layout::follow,
@@ -14516,8 +15169,15 @@ fn run(mut args: Vec<PathBuf>) -> Result<AppExit, Box<dyn std::error::Error>> {
                 (
                     // The command manager's reaction search and Triangle
                     // (FUN_1403b2340) run before Sora's update.
-                    reaction_command::tick,
-                    simulate,
+                    (duel_sync::join_apply, reaction_command::tick).chain(),
+                    (
+                        simulate,
+                        duel_sync::join_send,
+                        duel_sync::host_take_inputs,
+                        rival::tick,
+                        duel_hits::tick,
+                    )
+                        .chain(),
                     summon::tick,
                     skate_tick,
                     area_tick,
@@ -14529,15 +15189,15 @@ fn run(mut args: Vec<PathBuf>) -> Result<AppExit, Box<dyn std::error::Error>> {
                     field_npc_tick,
                     talk_tick,
                     effects_tick,
-                    drive_fx::tick,
+                    (duel_fx::host_effects, drive_fx::tick).chain(),
                     spell_fx::tick,
                     hud_tick,
-                    play_sounds,
-                    music_tick,
+                    (duel_fx::host_sounds, play_sounds).chain(),
+                    (music_tick, duel_sync::host_send).chain(),
                 )
                     .chain()
                     .run_if(field_running),
-                keep_weapon_pose,
+                (keep_weapon_pose, duel_net::end).chain(),
             )
                 .chain(),
         )
@@ -14565,7 +15225,7 @@ fn run(mut args: Vec<PathBuf>) -> Result<AppExit, Box<dyn std::error::Error>> {
                 .chain(),
             (
                 drive_room::present,
-                present,
+                (present, rival::spawn_drawing, rival::present).chain(),
                 drive_room::thrown_keyblade,
                 skate_present,
                 present_enemy,
@@ -14587,6 +15247,8 @@ fn run(mut args: Vec<PathBuf>) -> Result<AppExit, Box<dyn std::error::Error>> {
                     game_over::snap,
                     perf_overlay::sample,
                     perf_overlay::present,
+                    duel_net::sample,
+                    duel_net::present,
                 )
                     .chain(),
                 finish,

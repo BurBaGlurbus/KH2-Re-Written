@@ -2734,6 +2734,7 @@ dependencies = [
  "event",
  "fontdue",
  "image",
+ "net",
  "player",
  "save",
  "serde",
@@ -2906,6 +2907,13 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ee6cda3051665f1fb8d9e08fc35c96d5a244fb1be711a03b71118828afc9a873"
 dependencies = [
  "jni-sys 0.3.1",
+]
+
+[[package]]
+name = "net"
+version = "0.1.2"
+dependencies = [
+ "renet",
 ]
 
 [[package]]
@@ -3295,6 +3303,12 @@ dependencies = [
  "objc2-core-location",
  "objc2-foundation 0.2.2",
 ]
+
+[[package]]
+name = "octets"
+version = "0.3.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4d59d30d3ad7f7e1c9a66e51c9cb71ae1c794b28ffe7053fd785defb0d180069"
 
 [[package]]
 name = "offset-allocator"
@@ -3714,6 +3728,17 @@ name = "renderdoc-sys"
 version = "1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "19b30a45b0cd0bcca8037f3d0dc3421eaf95327a17cad11964fb8179b4fc4832"
+
+[[package]]
+name = "renet"
+version = "2.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8535f2f4b5afe5e31fc37be4b8a1f167e61177f356b1c6ee8456b7045d6c74c0"
+dependencies = [
+ "bytes",
+ "log",
+ "octets",
+]
 
 [[package]]
 name = "robust"

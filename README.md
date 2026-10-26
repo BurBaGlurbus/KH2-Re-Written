@@ -67,6 +67,10 @@ cargo run -p main --bin KH2RW --locked -- room '<selected-install-root>' '<priva
 | Move | WASD | Left stick |
 | Walk | Hold Left Alt | Tilt the stick slightly |
 | Camera | Mouse | Right stick |
+| Recentre the camera | Middle click, Right Alt | Right stick click |
+| First-person view | N, 3 | Back / Select |
+| Menu | M, 4 | Start |
+| Command menu | Arrows, mouse wheel, mouse side buttons (left/right) | D-pad |
 | Lock on / release | R | RB |
 | Cycle locked target | | Hold RT and tilt right stick left/right |
 | Attack | Enter, left click | A |
@@ -79,6 +83,17 @@ cargo run -p main --bin KH2RW --locked -- room '<selected-install-root>' '<priva
 | Debug options, summons and Scan | F3 | |
 | Leave the test | Esc | |
 
+The keyboard and mouse follow the PC version 1:1: its default bindings, or your own from the PC version's key
+configuration (`config1525.dat` under Documents\My Games\KINGDOM HEARTS HD 1.5+2.5 ReMIX, read only), and its
+mouse-look, which works while the window is active with the cursor inside it. The Camera Speed setting scales
+mouse-look (5 is the PC version's speed).
+
+**Two windows on one PC:** `--input kbm` makes a window read only the keyboard and mouse, `--input pad` (or
+`pad:2` for the second controller) only a controller, even while another window has the focus; `--input both`
+reads everything. The launcher's Multiplayer screen has the same choice (Controls). Its default, Auto, splits
+them by itself when a duel's two players are on the same PC: the host gets the keyboard and mouse and the
+joiner the controller. Each window's title and the lobby's Match page say which it reads.
+
 In the generated arena, F3 → Summon enemies → Summoned actors lets you enable
 AI and combat for ordinary Shadow, Dusk and Soldier. Other enemies currently
 support animation inspection. F3's Scan option toggles the learned ability;
@@ -86,6 +101,126 @@ equipping it shows the selected enemy's live HP in the original Scan gauge at th
 top right. While locked on, the camera follows the original lock-on camera
 (right stick still turns and zooms it). The lock-on reticle sprite is not drawn
 yet. Full roster combat and installed-game comparisons remain unfinished.
+
+## LAN duel (in progress)
+
+Two players on the same network can each run the game and fight each other's Sora in the test room. This is
+the first step of a 1v1 duel mode: the lobby, the duel loadout, the countdown and the match result are still to
+come. Each player needs their own Steam copy of Kingdom Hearts II Final Mix, because the game reads its data
+from the install and checks it; the launcher on its own is not enough. Both players need the same launcher
+build: another one is refused with a message.
+
+**Host or join from the launcher:** choose *Multiplayer*. *Host a duel* waits for a player. Hosts on the same
+network appear in the list by name: pick one to join. Or choose *Join by address* and type the host's IP
+address. *Name* is the name the other player sees (your Windows user name until you change it; the launcher
+keeps it).
+
+**Firewall:** the first time the game hosts or joins, Windows asks whether to allow it on networks. Allow it on
+private networks (your home Wi-Fi), or the other player cannot reach you.
+
+**From a command line**, add these to a test-room command (`room <Steam-root> <manifest> <config>`):
+
+| Option | What it does |
+|---|---|
+| `--host` | Host and wait for a player (UDP port 47620) |
+| `--port N` | Host on, or join, another port |
+| `--bind IP` | Host on one address only (`127.0.0.1` for two instances on one PC) |
+| `--join HOST[:PORT]` | Join the host at that address |
+| `--name NAME` | The name the other player sees |
+| `--net-sim LATENCY,JITTER,LOSS` | Add latency (ms), jitter (ms) and loss (%) to what this instance sends |
+| `--net-overlay` | Show the network overlay |
+| `--duel-damage N` | Host: multiply the damage of attacks (hits on Strength) by N (0.5 to 10, default 3) |
+| `--duel-magic-damage N` | Host: multiply the damage of magic (spells, Reflect's counter, form magic) by N (0.5 to 10, default 1.5) |
+| `--duel-hit-cap PCT` | Host: no single hit takes more than PCT % of max HP (20, 25, 30, 35, 40, 50, 60, 75; 100 for none; default 40) |
+| `--duel-arena mirage\|room` | Host: fight in the Mirage Arena (default) or the test room's arena |
+| `--rival-script` | No network: a second Sora run by a test script, to try the duel alone. With `--join`: the script presses the joiner's buttons (attacks, Fire, Thunder, a Potion, Valor Form) |
+
+In the room, F3 → Sora has *Network overlay* (ping, loss, data rates, buffered snapshots and warnings, top
+right), *Simulated network* (Off, Wi-Fi, Busy Wi-Fi, Bad link) and, outside a session, *Scripted rival Sora*.
+
+**Two instances on one PC:** start one with `--host --bind 127.0.0.1` and the other with `--join 127.0.0.1`,
+or host from one launcher window and join *127.0.0.1* from a second. The window in the background draws at 30
+FPS, but its game still runs at 60 ticks a second. To try Wi-Fi conditions, choose the same *Simulated network*
+on both.
+
+**How it works:** the host runs the game for both Soras on the fixed 60 Hz tick. The joiner sends its buttons
+every tick (repeating the last six, so a lost packet costs nothing) and draws the host's snapshots two ticks
+behind to ride out jitter. Hit sounds, sparks, guard clashes and knock-outs reach the joiner as reliable events
+and play there; nothing cosmetic is streamed. Spells, items and Drive forms work the same way: the joiner's
+command goes to the host with its buttons, the host runs it, and the effects it starts reach the joiner as events
+naming the effect file, so each side draws them from its own install. Esc leaves; the other side sees "Opponent
+left" (or a timeout after five seconds) and the host waits for the next player.
+
+**The lobby:** when the other player joins, the game's own pause menu opens on its *Duel* pages (L2/R2 turn
+the pages, Up/Down choose a row, Left/Right change it; the help line says what a row does, and where the other
+player is shows on each page):
+
+1. *Match*: the host sets the mode (*One KO*, *Best of 3*, *Time limit*, where the larger share of HP left wins
+   at time up), *Damage* (attacks), *Magic damage*, *Hit cap* and the time limit. The joiner sees them and
+   cannot change them.
+2. *Bans*: each player bans up to two abilities for this match and confirms (no ban is a choice too). A ban
+   takes the ability away from both players; the other player's bans show below.
+3. *Ready*: each player picks a Keyblade (any of the 24, each with its own stats and ability) and sees the AP
+   used against the limit. While the builds are made the menu's own *Abilities* (up to 166 AP, level 99 with
+   every AP Boost the game allows) and *Items* (Equip and the item slots) are on the top level. The host checks
+   every build; a refusal shows on the help line.
+4. *Ready* on both starts the match. A rule change takes Ready back. Start toggles Ready from anywhere in the
+   lobby's menu while the builds are made.
+
+The lobby's menu also has *Leave* (back to the Multiplayer screen), and the other player's row shows where they
+are and their round trip in ms. The host's rules and each player's last readied build (Keyblade, abilities,
+items) are kept for the next duel in `duel-prefs.json` beside the source manifest; anything the next duel does
+not allow is left out.
+
+**The arena:** by default the match is fought in the **Mirage Arena** from Birth by Sleep Final Mix, read
+from your own install (the same Steam collection holds both games): its round stage, its sky and its walls,
+scaled to KH2's size. The host can pick the test room's arena on the lobby's Match page instead. Both players
+need Birth by Sleep in their install for the Mirage Arena; if either install cannot show it, the duel stays in
+the test room's arena and the lobby says why. The first time, only the parts of Birth by Sleep's package the
+arena reads are recorded (a few megabytes, no full scan); later sessions check them. Both Soras start 600 units apart, facing each
+other, with the camera behind each player's Sora. There are no enemies, no talk and no exits during a duel.
+
+**The music:** while you are in the duel's arena (the lobby, the countdown and the fight) one of the game's
+battle themes plays, a new one each match and the same on both PCs; it fades out at the result.
+
+**The match:** a short shot of both Soras, then 3, 2, 1 and GO on both screens at the same moment; nobody
+moves before GO. A knock-out ends a round (a knocked-out Sora stays down). *One KO* is one round; *Best of 3*
+goes until someone wins two (the round and score show at the top); *Time limit* shows the clock, and at time
+up the larger share of HP left wins. Between rounds both Soras are refilled and put back at the start. At the
+end each screen shows VICTORY, DEFEAT or DRAW and how it was decided over the field, and the pause menu with
+*Rematch*, *Leave* and *Results* (the rounds, the match time, the damage dealt and the hits landed); the
+winner's camera pushes in, the loser's rises behind his Sora. *Rematch* on both
+goes back to the lobby (new bans, the builds where they were); *Quick rematch* on both starts the next match
+at once with the same builds and bans (either player's plain *Rematch* goes to the lobby); *Leave* closes the duel, and the launcher comes
+back on its Multiplayer screen. If the other player leaves in the lobby or the camp, the camp closes without
+keeping the duel's build and the room's own comes back. If the other player
+leaves during a match, it is your win. Start during a match opens *Keep fighting* / *Forfeit* (the fight goes
+on meanwhile); *Forfeit* asks once more, then gives the match to the other player. From a command line the host can set `--duel-mode stock|best3|time` and
+`--duel-time 60|90|120|180|300`.
+
+F3 → Sora → Duel → *Test vote* (host) tries the vote both players will use for later choices, in the pause
+menu: different answers go to a coin flip on the host that both screens show on the help line.
+
+**The duel build:** for a session both Soras fight at level 99 with every bonus level's HP, MP, Drive bars,
+item slots and abilities, the top level of every spell, Valor, Wisdom, Master and Final Form at their level cap
+(Limit Form is off), a full Drive gauge, and 99 of every consumable (Potion to Megalixir; the stat boosts, Tents
+and Drive Recoveries are left out). Nothing is read from or written to a save; the room's own build comes back
+when the session ends. Damage between the two Soras is the game's formula times the host's rules: attacks ×3
+by default (`--duel-damage N` or F3 → Sora → Duel), magic ×1.5 (`--duel-magic-damage N`), and no single hit
+takes more than 40 % of max HP (`--duel-hit-cap PCT`). The formula is Strength or Magic minus Defence, so at
+level 99 the Keyblade's stats count for a lot: with the defaults a Thundaga does 24 on the Kingdom Key and 90 on
+the Keyblade with the most Magic, and neither takes a full bar in one cast. The other Sora's HP stays on the target gauge (top right) for
+the whole duel. The lobby's Keyblade, abilities and item slots go on top of it.
+
+**Known limitations:**
+
+- Limits, summons, Limit Form, Donald and Goofy, and the room's Shadow are switched off in a session.
+- The other player's weapon trail is not drawn yet; Wisdom Form's shots show their effect on the host only.
+- The joiner sees its own Sora about one round trip late (one or two ticks on home Wi-Fi): there is no
+  prediction yet. The host has no delay.
+- Sora has no victory motion in the duel yet; the result's camera frames him as he stands.
+- LAN only: no internet play. Discovery uses a broadcast that guest networks and some routers block; join by
+  address then.
 
 ## Build and check
 

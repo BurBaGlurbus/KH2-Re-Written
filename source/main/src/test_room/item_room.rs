@@ -14,6 +14,9 @@ const ITEM_FX: u64 = 1 << 55;
 /// One consumable's 03system record fields.
 #[derive(Clone, Copy, Debug)]
 pub struct ItemInfo {
+    /// +2: the category (0 a consumable, 1 a boost, Tent or Drive
+    /// Recovery).
+    pub kind: u8,
     /// +4: the amount, in percent of max HP / MP.
     pub amount: u16,
     /// +0x10: the command that uses it.
@@ -22,6 +25,7 @@ pub struct ItemInfo {
     pub effect: u16,
 }
 
+#[derive(Clone)]
 pub struct ItemSource {
     pub items: HashMap<u16, ItemInfo>,
     /// Every item's treasure box style (record byte +0x16).
@@ -38,6 +42,7 @@ pub fn load(system: &[u8]) -> Result<ItemSource, Box<dyn std::error::Error>> {
             (
                 r.id,
                 ItemInfo {
+                    kind: r.kind,
                     amount: r.amount,
                     command: r.command,
                     effect: r.weapon_stats,
@@ -123,7 +128,7 @@ impl ItemRt {
 /// when Sora can take the command.
 pub fn request(game: &mut Game, slot: usize, tick: u64) {
     let Game {
-        player,
+        sora: Fighter { player, .. },
         clips,
         items,
         action_started,
@@ -145,7 +150,7 @@ pub fn request(game: &mut Game, slot: usize, tick: u64) {
 /// heals land.
 pub fn tick(game: &mut Game, tick: u64) {
     let Game {
-        player,
+        sora: Fighter { player, vitals, .. },
         items,
         enemy,
         log,
@@ -204,29 +209,32 @@ pub fn tick(game: &mut Game, tick: u64) {
                 anchor: drive_fx::Anchor::Sora,
             });
         }
-        let Some(e) = enemy.as_mut() else { continue };
+        if enemy.is_none() {
+            continue;
+        }
+        let e = &mut *vitals;
         // FUN_1403c4b80: percent of the maxima, Item Boost adding to 100.
         let pct = 100 + player.abilities.item_boost as i32;
         let amount = info.amount as i32;
         let share = |max: i32| (max * amount * pct + 9999) / 10000;
-        let hp = share(e.sora_target.max_hp);
+        let hp = share(e.target.max_hp);
         let mp = share(player.mp.max);
         let (heal_hp, heal_mp) = match id {
             1 | 2 | 5 => (hp, 0),
             3 | 6 => (0, mp),
             4 | 7 => (hp, mp),
-            0x83 => (e.sora_target.max_hp, mp),
+            0x83 => (e.target.max_hp, mp),
             _ => (0, 0),
         };
         if heal_hp > 0 {
-            e.sora_hp = (e.sora_hp + heal_hp).min(e.sora_target.max_hp);
+            e.hp = (e.hp + heal_hp).min(e.target.max_hp);
         }
         if heal_mp > 0 {
             player.mp.add(heal_mp);
         }
         let mut records = vec![
             serde_json::json!({"event":"item_heal","tick":tick,"item":id,
-            "hp":heal_hp,"mp":heal_mp,"sora_hp":e.sora_hp,"mp_now":player.mp.cur}),
+            "hp":heal_hp,"mp":heal_mp,"sora_hp":e.hp,"mp_now":player.mp.cur}),
         ];
         // FUN_1403c4ab0: 5..7 and 0x83 heal every member of the party too
         // (no range), each by its own maxima with the user's Item Boost,

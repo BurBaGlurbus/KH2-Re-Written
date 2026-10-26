@@ -26,6 +26,7 @@ inside the visual folder because it draws what the game produces.
 | `source/visual/` | Rendering, menus, HUD, controller input and scene presentation | `visual` |
 | `source/visual/effect/` | Particle and model effect execution | `effect` |
 | `source/audio/` | Mixing and Windows sound output | `audio` |
+| `source/net/` | LAN sessions: UDP socket, hello and build check, renet channels, discovery, link simulator | `net` |
 | `source/data/` | Bounded readers for game packages, models, motion, images, text and sound | `data` |
 | `validation/` | Selected-install validation, hashing and manifest tools | `validation` |
 | `source/extras/` | Existing optional skateboard extension and its license boundary | See its README |

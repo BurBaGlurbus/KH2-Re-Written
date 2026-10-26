@@ -117,6 +117,8 @@ struct Frames {
     /// Battle actors by gallery id (their root and heading) and their bones.
     actors: HashMap<u64, MemberFrame>,
     actor_bones: HashMap<u64, super::enemy_combat::ActorBones>,
+    /// The duel's other Soras' own frames, by slot.
+    rivals: Vec<(u8, Frames)>,
 }
 
 /// A party member's frame of this tick: origin, facing, the staff's top as
@@ -132,16 +134,16 @@ struct MemberFrame {
 
 impl Frames {
     fn of(game: &Game) -> Frames {
-        let p = game.player.position;
+        let p = game.sora.player.position;
         let root = Mat4::from_rotation_translation(
-            Quat::from_rotation_y(game.player.yaw),
+            Quat::from_rotation_y(game.sora.player.yaw),
             Vec3::from_array(p),
         );
         let clip = game
             .poses
-            .get(&(game.player.action, game.player.armed))
+            .get(&(game.sora.player.action, game.sora.player.armed))
             .and_then(|&c| game.clip_poses.get(c));
-        let frame = game.player.motion_frame(&game.clips) as usize;
+        let frame = game.sora.player.motion_frame(&game.clips) as usize;
         let hand = clip.and_then(|c| c.weapon.get(frame.min(c.weapon.len().saturating_sub(1))));
         let bones = clip
             .and_then(|c| c.body.get(frame.min(c.body.len().saturating_sub(1))))
@@ -221,11 +223,32 @@ impl Frames {
             summon,
             actors,
             actor_bones: game.actor_bones.clone(),
+            rivals: Vec::new(),
         }
+    }
+
+    /// The room Sora's frames, and each rival's (his state swapped in for
+    /// a moment, so his own kit and pose give them).
+    fn with_rivals(game: &mut Game) -> Frames {
+        let mut frames = Frames::of(game);
+        let mut rivals = std::mem::take(&mut game.rivals);
+        for r in &mut rivals {
+            super::rival::swap(game, r);
+            frames.rivals.push((r.slot, Frames::of(game)));
+            super::rival::swap(game, r);
+        }
+        game.rivals = rivals;
+        frames
     }
 
     /// The bound object's bone matrix (FUN_1403b50f0), in the scene space.
     fn bone(&self, anchor: Anchor, bone: i16) -> Mat4 {
+        if let Anchor::Rival(slot) = anchor {
+            return match self.rivals.iter().find(|r| r.0 == slot) {
+                Some((_, f)) => f.bone(Anchor::Caster, bone),
+                None => self.root,
+            };
+        }
         let member = match anchor {
             Anchor::Party(i) if i > 0 => self.members.get(i - 1),
             Anchor::Summon => self.summon.as_ref(),
@@ -370,7 +393,7 @@ impl SpellFx {
 pub fn tick(mut game: ResMut<Game>, rig: Res<CameraRig>, mut fx: ResMut<SpellFx>) {
     let calls = std::mem::take(&mut game.fx_calls);
     let tick = game.tick;
-    let frames = Frames::of(&game);
+    let frames = Frames::with_rivals(&mut game);
     let mut sounds = Vec::new();
     let mut log = Vec::new();
     let mut live: HashMap<u64, FxLive> = HashMap::new();
@@ -795,6 +818,7 @@ mod tests {
 
     fn frames() -> Frames {
         Frames {
+            rivals: Vec::new(),
             root: Mat4::from_rotation_translation(
                 Quat::from_rotation_y(std::f32::consts::FRAC_PI_2),
                 Vec3::new(100., 0., 50.),

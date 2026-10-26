@@ -847,8 +847,8 @@ pub fn start(game: &mut Game, command: u16, tick: u64) -> Result<(), String> {
     if l.own {
         sora.entry_id = LIMIT_FORM_OBJECT;
     }
-    sora.position = game.player.position;
-    sora.yaw = game.player.yaw;
+    sora.position = game.sora.player.position;
+    sora.yaw = game.sora.player.yaw;
     // His heading turns toward `obj_wish_dir` (+0x7a8) at his PRTY turn
     // speed per tick (the sysobj steps twice its rate).
     sora.turn_rate = game.params.turn_speed * 0.5;
@@ -916,8 +916,8 @@ pub fn start(game: &mut Game, command: u16, tick: u64) -> Result<(), String> {
         empty: ClipView::default(),
         stick: [0.; 3],
         enemy,
-        player: game.player.position,
-        player_yaw: game.player.yaw,
+        player: game.sora.player.position,
+        player_yaw: game.sora.player.yaw,
         enemy_reach: game.enemy.as_ref().map(|rt| rt.target_reach),
         selected: game.selected_target.is_some(),
         locked: game.target_locked,
@@ -940,10 +940,11 @@ pub fn start(game: &mut Game, command: u16, tick: u64) -> Result<(), String> {
         scene.trace();
     }
     // FUN_1403d8b40: all of Sora's MP (MP Charge starts), the others fade.
-    game.player
+    game.sora
+        .player
         .mp
         .change(-i32::from(cost), player::magic::CHARGE_LENGTH);
-    game.player.mp_charging = game.player.mp.charging();
+    game.sora.player.mp_charging = game.sora.player.mp.charging();
     let mut faded = Vec::new();
     for (i, m) in game.party.iter_mut().enumerate() {
         if !m.stored && !members.iter().any(|&(j, _)| j == i) {
@@ -994,7 +995,7 @@ pub fn tick(
     let source = game.party_limits.clone();
     let l = &source.limits[run.limit];
     let enemy = room_enemy(game);
-    let can_command = game.player.can_command(&game.clips);
+    let can_command = game.sora.player.can_command(&game.clips);
     let status = {
         let env = RoomEnv {
             world: &game.world,
@@ -1003,8 +1004,8 @@ pub fn tick(
             empty: ClipView::default(),
             stick,
             enemy,
-            player: game.player.position,
-            player_yaw: game.player.yaw,
+            player: game.sora.player.position,
+            player_yaw: game.sora.player.yaw,
             enemy_reach: game.enemy.as_ref().map(|rt| rt.target_reach),
             selected: game.selected_target.is_some(),
             locked: game.target_locked,
@@ -1228,9 +1229,9 @@ pub fn tick(
     // Sora stands and plays where the scene has him.
     let proxy = run.scene.player();
     let slot = proxy.motion.slot;
-    game.player.position = proxy.position;
-    game.player.yaw = proxy.yaw;
-    game.player.action = if l.own && slot != 0 {
+    game.sora.player.position = proxy.position;
+    game.sora.player.yaw = proxy.yaw;
+    game.sora.player.action = if l.own && slot != 0 {
         // Limit Form's: his own motion by its id.
         match slot {
             1 => Action::Walk,
@@ -1261,8 +1262,8 @@ pub fn tick(
             d.tint_step = 0.;
         }
     }
-    game.player.frame = proxy.motion.tick;
-    game.player.armed = true;
+    game.sora.player.frame = proxy.motion.tick;
+    game.sora.player.armed = true;
     // Each motion the scene starts is a new attack for his swing volumes
     // (their hit records are the motion's, FUN_1403c88c0).
     if proxy.motion.serial != run.motion_serial {
@@ -1324,7 +1325,7 @@ pub fn tick(
         game.event(
             serde_json::json!({"event":"party_limit_tick","tick":tick,"time":limit.time,
             "pending":limit.pending,"sora_motion":slot,"offers":run.offers,
-            "position":game.player.position,"missing":run.scene.missing().len(),
+            "position":game.sora.player.position,"missing":run.scene.missing().len(),
             "friends":run.members.iter().filter_map(|m| run.scene.object(m.1)
                 .map(|o| (o.sys.motion.slot, o.sys.motion.tick, o.sys.event_parameter,
                     o.sys.motion.flags.word))).collect::<Vec<_>>(),
@@ -1397,7 +1398,7 @@ fn land_attacks(game: &mut Game, run: &mut Running, strikes: &[Strike], tick: u6
                     },
                 },
             ),
-            None => (usize::MAX, "sora", rt.sora),
+            None => (usize::MAX, "sora", game.sora.vitals.attacker),
         };
         let key = FX_KEY | 1 << 58 | serial;
         let v = player::magic::Volume {
@@ -1411,7 +1412,8 @@ fn land_attacks(game: &mut Game, run: &mut Running, strikes: &[Strike], tick: u6
             moving: None,
             role: player::magic::Role::Damage,
         };
-        let facing = bevy::math::Vec3::new(game.player.yaw.sin(), 0., game.player.yaw.cos());
+        let facing =
+            bevy::math::Vec3::new(game.sora.player.yaw.sin(), 0., game.sora.player.yaw.cos());
         let landed = super::party_room::land_volume(
             rt,
             index,
@@ -1442,8 +1444,8 @@ fn end(game: &mut Game, run: Running, tick: u64) {
     for &i in &run.faded {
         game.party[i].stored = false;
     }
-    game.player.action = Action::Idle;
-    game.player.frame = 0;
+    game.sora.player.action = Action::Idle;
+    game.sora.player.frame = 0;
     // FUN_1403d83e0: Limit Form's tint ramps out over 30 frames.
     if player::limit_form::LIMITS.contains(&run.command)
         && let Some(d) = game.drive.as_mut()

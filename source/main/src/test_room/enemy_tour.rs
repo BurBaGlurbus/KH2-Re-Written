@@ -46,7 +46,7 @@ pub fn tick(
                 e.model_name == *preferred && e.model_available && e.motions_available
             });
             if let Some(index) = found {
-                let at = Vec3::from_array(game.player.position) + Vec3::new(x, 0., 350.);
+                let at = Vec3::from_array(game.sora.player.position) + Vec3::new(x, 0., 350.);
                 gallery.queue_summon(index, at, std::f32::consts::PI);
             } else {
                 game.autoplay_failed = true;
