@@ -74,6 +74,9 @@ mod deck_tour;
 mod drive_fx;
 mod drive_room;
 mod duel_hits;
+mod duel_net;
+mod duel_sync;
+mod duel_wire;
 mod enemy_battle;
 mod enemy_battle_hits;
 mod enemy_battle_tour;
@@ -1097,6 +1100,15 @@ struct Game {
     duel: bool,
     /// The room Sora's slot (0 the host's, 1 the joiner's).
     local_slot: u8,
+    /// The LAN duel's joiner: the host simulates; this instance sends its
+    /// buttons (`net_pad`, this tick's) and shows the host's snapshots.
+    net_client: bool,
+    net_pad: rival::RivalPad,
+    /// What the host's tick did that the joiner shows itself: sounds,
+    /// sparks, knock-outs (sent and cleared by duel_sync).
+    duel_events: Vec<duel_wire::DuelEvent>,
+    /// The network overlay (F3 > Sora > Display, `--net-overlay`).
+    net_overlay: bool,
     poses: HashMap<(Action, bool), usize>,
     clip_poses: Arc<Vec<ClipPoses>>,
     part_indices: Vec<Vec<u32>>,
@@ -7514,6 +7526,11 @@ fn simulate(
         summon::decide(&mut game, tick, if rc { Some(1) } else { decide });
         if summon::sora_in_limit(&mut game) {
             player::Step::default()
+        } else if game.net_client {
+            // The joiner's Sora is the host's to move: his buttons go to
+            // the host (duel_sync), and the host's snapshots place him.
+            game.net_pad = rival::RivalPad::of(&input);
+            player::Step::default()
         } else {
             let Game {
                 sora,
@@ -7534,122 +7551,125 @@ fn simulate(
             start_map_effects(&mut game, &pax, a.bg_mask, None);
         }
     }
-    magic_room::tick(&mut game, tick);
-    // Wisdom's shots join the spell volumes before the hits are tested.
-    drive_room::shots(&mut game);
-    item_room::tick(&mut game, tick);
-    // The area's zone task (FUN_1403a4f90, priority 12000) runs after the
-    // objects: exits are tested against Sora's new position.
-    if let Some(a) = area.as_deref_mut()
-        && a.pending.is_none()
-        && a.transition.is_none()
-    {
-        let moving = (direction.length() > 0.).then(|| direction.normalize().to_array());
-        let running = stick.length() >= WALK_THRESHOLD;
-        let probe = area::probe(
-            Vec3::from_array(game.sora.player.position),
-            game.sora.player.yaw,
-            moving,
-            running,
-        );
-        // A disable reason stays for 6 s (FUN_140167ef0 param 6.0).
-        if a.guide_hold > 0 {
-            a.guide_hold -= 1;
-        } else {
-            a.guide = None;
-        }
-        let blocked = a.source.blocked_destinations();
-        let is_blocked = |w: u8, d: u8| blocked.contains(&(w, d));
-        for request in area::requests(&mut a.current.state, &probe, is_blocked) {
-            if let ::area::Request::Blocked { world, area: dest } = &request {
-                a.guide = a.source.blocked_text(*world, *dest);
-                a.guide_hold = 360;
+    // The joiner simulates nothing: the host's snapshots carry it all.
+    if !game.net_client {
+        magic_room::tick(&mut game, tick);
+        // Wisdom's shots join the spell volumes before the hits are tested.
+        drive_room::shots(&mut game);
+        item_room::tick(&mut game, tick);
+        // The area's zone task (FUN_1403a4f90, priority 12000) runs after the
+        // objects: exits are tested against Sora's new position.
+        if let Some(a) = area.as_deref_mut()
+            && a.pending.is_none()
+            && a.transition.is_none()
+        {
+            let moving = (direction.length() > 0.).then(|| direction.normalize().to_array());
+            let running = stick.length() >= WALK_THRESHOLD;
+            let probe = area::probe(
+                Vec3::from_array(game.sora.player.position),
+                game.sora.player.yaw,
+                moving,
+                running,
+            );
+            // A disable reason stays for 6 s (FUN_140167ef0 param 6.0).
+            if a.guide_hold > 0 {
+                a.guide_hold -= 1;
+            } else {
+                a.guide = None;
             }
-            if let ::area::Request::Guide {
-                world, area: dest, ..
-            } = &request
-            {
-                let known = a.visited.contains(&(*world, *dest));
-                a.guide = if known {
-                    a.source.place_name(*world, *dest).cloned()
-                } else {
-                    Some(a.source.unknown_place.clone())
-                };
-            }
-            if let ::area::Request::Jump {
-                world,
-                area,
-                entrance,
-                ..
-            } = request
-            {
-                game.event(serde_json::json!({"event":"exit","tick":tick,"world":world,
-                    "area":area,"entrance":entrance}));
-                if a.transition.is_none() {
-                    a.transition = Some(Transition {
-                        stage: Stage::Closing,
-                        iris: None,
-                        fade: Fade::default(),
-                        target: (world, area, entrance),
-                        job: start_area_job(&a.source, (world, area, entrance)),
-                    });
+            let blocked = a.source.blocked_destinations();
+            let is_blocked = |w: u8, d: u8| blocked.contains(&(w, d));
+            for request in area::requests(&mut a.current.state, &probe, is_blocked) {
+                if let ::area::Request::Blocked { world, area: dest } = &request {
+                    a.guide = a.source.blocked_text(*world, *dest);
+                    a.guide_hold = 360;
                 }
-            } else if let ::area::Request::BgGroups { on, off } = request {
-                for (bit, state) in [(on, true), (off, false)] {
-                    if let Some(bit) = bit {
-                        if state {
-                            a.bg_mask |= 1 << bit;
-                        } else {
-                            a.bg_mask &= !(1u64 << bit);
-                        }
-                        if let RoomWorld::Map(w) = &mut game.world {
-                            w.set_group(bit, state);
-                        }
-                        // FUN_140162a00 spawns the group's elements,
-                        // FUN_1401629b0 destroys them.
-                        if state {
-                            if let Some(pax) = a.current.pax.clone() {
-                                start_map_effects(&mut game, &pax, 1 << bit, Some(bit));
+                if let ::area::Request::Guide {
+                    world, area: dest, ..
+                } = &request
+                {
+                    let known = a.visited.contains(&(*world, *dest));
+                    a.guide = if known {
+                        a.source.place_name(*world, *dest).cloned()
+                    } else {
+                        Some(a.source.unknown_place.clone())
+                    };
+                }
+                if let ::area::Request::Jump {
+                    world,
+                    area,
+                    entrance,
+                    ..
+                } = request
+                {
+                    game.event(serde_json::json!({"event":"exit","tick":tick,"world":world,
+                    "area":area,"entrance":entrance}));
+                    if a.transition.is_none() {
+                        a.transition = Some(Transition {
+                            stage: Stage::Closing,
+                            iris: None,
+                            fade: Fade::default(),
+                            target: (world, area, entrance),
+                            job: start_area_job(&a.source, (world, area, entrance)),
+                        });
+                    }
+                } else if let ::area::Request::BgGroups { on, off } = request {
+                    for (bit, state) in [(on, true), (off, false)] {
+                        if let Some(bit) = bit {
+                            if state {
+                                a.bg_mask |= 1 << bit;
+                            } else {
+                                a.bg_mask &= !(1u64 << bit);
                             }
-                        } else {
-                            game.fx_clear_map.push(Some(bit));
+                            if let RoomWorld::Map(w) = &mut game.world {
+                                w.set_group(bit, state);
+                            }
+                            // FUN_140162a00 spawns the group's elements,
+                            // FUN_1401629b0 destroys them.
+                            if state {
+                                if let Some(pax) = a.current.pax.clone() {
+                                    start_map_effects(&mut game, &pax, 1 << bit, Some(bit));
+                                }
+                            } else {
+                                game.fx_clear_map.push(Some(bit));
+                            }
                         }
                     }
                 }
             }
         }
-    }
-    wall_hit::tick(&mut game, tick);
-    combat_tick(&mut game, tick);
-    prize_room::tick(&mut game, tick);
-    if game.magic_tour
-        && let Some((member, spell, heal)) = magic_tour::party_cast(tick, game.magic_shift)
-    {
-        let ordered = party_room::order_cast(&mut game, member, spell, heal);
-        game.event(
-            serde_json::json!({"event":"party_cast_order","tick":tick,"member":member,
+        wall_hit::tick(&mut game, tick);
+        combat_tick(&mut game, tick);
+        prize_room::tick(&mut game, tick);
+        if game.magic_tour
+            && let Some((member, spell, heal)) = magic_tour::party_cast(tick, game.magic_shift)
+        {
+            let ordered = party_room::order_cast(&mut game, member, spell, heal);
+            game.event(
+                serde_json::json!({"event":"party_cast_order","tick":tick,"member":member,
             "spell":format!("{spell:?}"),"heal":heal,"ordered":ordered}),
-        );
-    }
-    if game.party_hit_tour {
-        party_hit_tour::drive(&mut game, tick);
-    }
-    if game.party_anim_tour {
-        party_anim_tour::drive(&mut game, tick);
-    }
-    party_room::tick(&mut game, tick);
-    // Drive: requests, the form change, the form gauge (after the player
-    // tick, like FUN_1403a92c0 / FUN_140404a40).
-    {
-        let mut slots = camp.as_deref_mut().map(|c| &mut c.ability_slots);
-        let exp = game
-            .drive
-            .as_mut()
-            .map_or(0, |d| std::mem::take(&mut d.pending_exp));
-        drive_room::add_form_exp(&mut game, exp, slots.as_deref_mut());
-        drive_room::tick(&mut game, slots.as_deref().map(|s| s.as_slice()));
-        drive_room::limit_tick(&mut game);
-        drive_room::motion_effects(&mut game);
+            );
+        }
+        if game.party_hit_tour {
+            party_hit_tour::drive(&mut game, tick);
+        }
+        if game.party_anim_tour {
+            party_anim_tour::drive(&mut game, tick);
+        }
+        party_room::tick(&mut game, tick);
+        // Drive: requests, the form change, the form gauge (after the player
+        // tick, like FUN_1403a92c0 / FUN_140404a40).
+        {
+            let mut slots = camp.as_deref_mut().map(|c| &mut c.ability_slots);
+            let exp = game
+                .drive
+                .as_mut()
+                .map_or(0, |d| std::mem::take(&mut d.pending_exp));
+            drive_room::add_form_exp(&mut game, exp, slots.as_deref_mut());
+            drive_room::tick(&mut game, slots.as_deref().map(|s| s.as_slice()));
+            drive_room::limit_tick(&mut game);
+            drive_room::motion_effects(&mut game);
+        }
     }
     // Camera inputs: Q/E or J/L and the right stick turn, -/= zoom, C
     // recenters (test-room bindings for the original's camera buttons).
@@ -12667,6 +12687,15 @@ fn run(mut args: Vec<PathBuf>) -> Result<AppExit, Box<dyn std::error::Error>> {
     let mut perf_overlay = false;
     let mut basic_fk = false;
     let mut rival_script = false;
+    // The LAN duel (duel_net.rs): host or join, the port, the name shown
+    // to the other player, the link simulator and the overlay.
+    let mut net_host = false;
+    let mut net_join: Option<String> = None;
+    let mut net_port = net::DEFAULT_PORT;
+    let mut net_bind = std::net::Ipv4Addr::UNSPECIFIED;
+    let mut net_name: Option<String> = None;
+    let mut net_sim = net::link::Conditions::default();
+    let mut net_overlay = false;
     let mut ability_tour = false;
     let mut gear_tour = false;
     let mut gear_tour_quick = false;
@@ -12725,6 +12754,48 @@ fn run(mut args: Vec<PathBuf>) -> Result<AppExit, Box<dyn std::error::Error>> {
             Some("--perf-overlay") => perf_overlay = true,
             Some("--basic-fk") => basic_fk = true,
             Some("--rival-script") => rival_script = true,
+            Some("--host") => net_host = true,
+            Some("--join") => {
+                net_join = Some(
+                    options
+                        .next()
+                        .and_then(|v| v.to_str())
+                        .ok_or("host address absent")?
+                        .to_owned(),
+                );
+            }
+            Some("--port") => {
+                net_port = options
+                    .next()
+                    .and_then(|v| v.to_str())
+                    .ok_or("port absent")?
+                    .parse::<u16>()?;
+            }
+            Some("--name") => {
+                net_name = Some(
+                    options
+                        .next()
+                        .and_then(|v| v.to_str())
+                        .ok_or("name absent")?
+                        .to_owned(),
+                );
+            }
+            Some("--net-sim") => {
+                net_sim = duel_net::parse_conditions(
+                    options
+                        .next()
+                        .and_then(|v| v.to_str())
+                        .ok_or("link conditions absent")?,
+                )?;
+            }
+            Some("--net-overlay") => net_overlay = true,
+            Some("--bind") => {
+                net_bind = options
+                    .next()
+                    .and_then(|v| v.to_str())
+                    .ok_or("bind address absent")?
+                    .parse()?;
+            }
             Some("--enemy-audit") if enemy_audit.is_none() => {
                 enemy_audit = Some(options.next().cloned().ok_or("enemy audit output absent")?);
             }
@@ -13326,6 +13397,10 @@ fn run(mut args: Vec<PathBuf>) -> Result<AppExit, Box<dyn std::error::Error>> {
         rival_script,
         duel: rival_script,
         local_slot: 0,
+        net_client: false,
+        net_pad: rival::RivalPad::default(),
+        duel_events: Vec::new(),
+        net_overlay: false,
         poses,
         clip_poses: base_clip_poses,
         part_indices: Vec::new(),
@@ -13804,6 +13879,57 @@ fn run(mut args: Vec<PathBuf>) -> Result<AppExit, Box<dyn std::error::Error>> {
         game.gear = player::equipment_stats::Totals::start(0, 0, 0, 0);
         game.refresh_gear();
     }
+    // A LAN duel: the two Soras and nothing else (duel_net.rs).
+    let net_setup = match (net_host, net_join) {
+        (true, Some(_)) => return Err("--host and --join exclude each other".into()),
+        (true, None) => Some(duel_net::Setup {
+            role: net::Role::Host,
+            bind: net_bind,
+            port: net_port,
+            host: None,
+            name: net_name.clone().unwrap_or_else(duel_net::default_name),
+            conditions: net_sim,
+            overlay: net_overlay,
+        }),
+        (false, Some(address)) => Some(duel_net::Setup {
+            role: net::Role::Join,
+            bind: net_bind,
+            port: net_port,
+            host: Some(duel_net::parse_address(&address)?),
+            name: net_name.clone().unwrap_or_else(duel_net::default_name),
+            conditions: net_sim,
+            overlay: net_overlay,
+        }),
+        (false, None) => None,
+    };
+    let duel_session = match &net_setup {
+        Some(setup) => {
+            let session = duel_net::DuelNet::start(setup)?;
+            game.duel = true;
+            game.local_slot = duel_net::local_slot(setup.role);
+            game.net_client = setup.role == net::Role::Join;
+            game.net_overlay = setup.overlay;
+            // [Duel, Phase 1] Only movement, guard and the Attack command
+            // are shared: the commands, forms and party that would need
+            // more of the game replicated are off, and so is the Shadow.
+            game.magic = None;
+            game.items = None;
+            game.drive = None;
+            game.second_deck = None;
+            game.summons = None;
+            game.party.clear();
+            if let Some(rt) = game.enemy.as_mut() {
+                rt.enabled = false;
+            }
+            game.event(serde_json::json!({"event":"duel_session",
+                "role":format!("{:?}", setup.role),"port":setup.port,
+                "host":setup.host.map(|h| h.to_string()),"name":setup.name,
+                "conditions":[setup.conditions.latency_ms, setup.conditions.jitter_ms],
+                "loss":setup.conditions.loss_percent}));
+            Some(session)
+        }
+        None => None,
+    };
     let rig = CameraRig {
         camera: FollowCamera::new(
             follow_camera::OUTDOOR,
@@ -13904,6 +14030,9 @@ fn run(mut args: Vec<PathBuf>) -> Result<AppExit, Box<dyn std::error::Error>> {
     }
     #[cfg(feature = "perf-diag")]
     app.add_plugins(crate::perf::PerfPlugin { dir: perf_dir });
+    if let Some(session) = duel_session {
+        app.insert_resource(session);
+    }
     Ok(app
         .insert_resource(game)
         .insert_resource(Startup {
@@ -13984,10 +14113,11 @@ fn run(mut args: Vec<PathBuf>) -> Result<AppExit, Box<dyn std::error::Error>> {
         .add_systems(Update, crate::skate::toggle)
         .add_systems(Update, settings_room::apply_settings)
         .add_systems(Update, rumble_output)
+        .add_systems(Last, duel_net::close_on_exit)
         .add_systems(
             FixedUpdate,
             (
-                read_pad,
+                (duel_net::begin, read_pad).chain(),
                 camp_tick,
                 game_over::tick,
                 command_layout::follow,
@@ -13995,8 +14125,15 @@ fn run(mut args: Vec<PathBuf>) -> Result<AppExit, Box<dyn std::error::Error>> {
                 (
                     // The command manager's reaction search and Triangle
                     // (FUN_1403b2340) run before Sora's update.
-                    reaction_command::tick,
-                    (simulate, rival::tick, duel_hits::tick).chain(),
+                    (duel_sync::join_apply, reaction_command::tick).chain(),
+                    (
+                        simulate,
+                        duel_sync::join_send,
+                        duel_sync::host_take_inputs,
+                        rival::tick,
+                        duel_hits::tick,
+                    )
+                        .chain(),
                     summon::tick,
                     skate_tick,
                     area_tick,
@@ -14012,11 +14149,11 @@ fn run(mut args: Vec<PathBuf>) -> Result<AppExit, Box<dyn std::error::Error>> {
                     spell_fx::tick,
                     hud_tick,
                     play_sounds,
-                    music_tick,
+                    (music_tick, duel_sync::host_send).chain(),
                 )
                     .chain()
                     .run_if(field_running),
-                keep_weapon_pose,
+                (keep_weapon_pose, duel_net::end).chain(),
             )
                 .chain(),
         )
@@ -14066,6 +14203,8 @@ fn run(mut args: Vec<PathBuf>) -> Result<AppExit, Box<dyn std::error::Error>> {
                     game_over::snap,
                     perf_overlay::sample,
                     perf_overlay::present,
+                    duel_net::sample,
+                    duel_net::present,
                 )
                     .chain(),
                 finish,

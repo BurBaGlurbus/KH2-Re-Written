@@ -6,6 +6,7 @@
 //!
 //! Runs on the host (or with a scripted rival), after every Sora moved.
 
+use super::duel_wire::DuelEvent;
 use super::*;
 
 /// Who a body belongs to: the room's Sora or the rival at an index.
@@ -113,7 +114,7 @@ fn in_cone(row: &data::battle_tables::Attack, facing: Vec3, v: Vec3) -> bool {
 }
 
 pub(crate) fn tick(mut game: ResMut<Game>, mut previous: Local<HashMap<(u64, usize), Vec3>>) {
-    if game.rivals.is_empty() {
+    if game.rivals.is_empty() || game.net_client {
         return;
     }
     let game = &mut *game;
@@ -356,6 +357,8 @@ fn land(
             id: 11,
             at: hit.contact,
         });
+        game.duel_events
+            .push(DuelEvent::Guard(hit.contact.to_array()));
         game.event(serde_json::json!({"event":"duel_guard","tick":tick,
             "attacker":attacker_slot,"victim":victim_slot,"atkp":hit.atkp}));
         return;
@@ -405,18 +408,33 @@ fn land(
         set_started(game, hit.victim, tick);
     }
     fighter(game, kit, hit.attacker).0.player.connected = true;
+    // Played here and sent to the joiner, who plays the same (duel_sync).
+    let mut events = Vec::new();
     if let Some(id) = hit_sound.filter(|&id| id >= 0) {
         game.sound_queue.push((id as u32, "duel_hit"));
+        events.push(DuelEvent::Sound(id as u32));
     }
     if let Some((effect, random)) = spark.filter(|s| s.0 != 0) {
+        let own = (hit.instance >> 5) & 3 == 2;
         game.effect_queue.push(EffectRequest::Hit {
             effect,
             random,
             contact: hit.contact,
             direction: away,
-            own: (hit.instance >> 5) & 3 == 2,
+            own,
+        });
+        events.push(DuelEvent::Spark {
+            effect,
+            random,
+            contact: hit.contact.to_array(),
+            direction: away.to_array(),
+            own,
         });
     }
+    if hp == 0 {
+        events.push(DuelEvent::KnockOut(victim_slot));
+    }
+    game.duel_events.extend(events);
     game.event(
         serde_json::json!({"event":"duel_hit","tick":tick,"attacker":attacker_slot,
         "victim":victim_slot,"atkp":hit.atkp,"step":row,"damage":damage,"hp":hp}),
@@ -445,6 +463,7 @@ fn knock_outs(game: &mut Game, tick: u64) {
         }
     }
     for slot in stood {
+        game.duel_events.push(DuelEvent::StoodUp(slot));
         game.event(serde_json::json!({"event":"duel_stood_up","tick":tick,"slot":slot}));
     }
 }

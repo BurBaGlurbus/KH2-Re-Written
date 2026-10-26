@@ -14,6 +14,8 @@ mod paint;
 mod test_configs;
 
 use bevy::app::AppExit;
+use bevy::input::ButtonState;
+use bevy::input::keyboard::{Key, KeyboardInput};
 use bevy::input::mouse::{MouseScrollUnit, MouseWheel};
 use bevy::prelude::*;
 use bevy::window::{FileDragAndDrop, PrimaryWindow, WindowResolution};
@@ -64,8 +66,27 @@ enum Action {
     Guide,
     /// Leave the guide.
     CloseGuide,
+    /// The LAN duel screen.
+    Multiplayer,
+    /// Host a duel and wait for a player.
+    HostDuel,
+    /// Type the host's address, then join it.
+    JoinAddress,
+    /// Type the name the other player sees.
+    EditName,
     Quit,
 }
+
+/// A text field being typed into.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Field {
+    Name,
+    Address,
+}
+
+/// Longest name and address typed.
+const NAME_LIMIT: usize = 24;
+const ADDRESS_LIMIT: usize = 40;
 
 #[derive(Clone)]
 struct Item {
@@ -128,6 +149,8 @@ enum Screen {
     BrowseIso(Option<PathBuf>, Bound),
     Check(Job),
     Tests(Bound),
+    /// The LAN duel: host, join, the player's name.
+    Multiplayer(Bound),
     Loading(Running, Bound),
     Problem {
         title: String,
@@ -156,6 +179,8 @@ struct Launcher {
     repeat: Option<(i32, f32)>,
     mouse: Option<Vec2>,
     paint: Option<Paint>,
+    /// The field being typed into and its text so far.
+    editing: Option<(Field, String)>,
 }
 
 impl Launcher {
@@ -214,6 +239,10 @@ impl Launcher {
                     .enumerate()
                     .map(|(i, t)| Item::new(t.name, Action::Run(i)).detail(t.blurb))
                     .collect();
+                items.push(
+                    Item::new("Multiplayer", Action::Multiplayer)
+                        .detail("A duel against another player on the same network"),
+                );
                 items.extend(self.viewers.iter().enumerate().map(|(i, v)| {
                     Item::new(v.label.clone(), Action::View(i))
                         .detail("Developer tool, slow to start")
@@ -227,6 +256,26 @@ impl Launcher {
                 items.push(Item::new("Quick start guide", Action::Guide));
                 items.push(Item::new("Quit", Action::Quit));
                 items
+            }
+            Screen::Multiplayer(b) => {
+                let typing = |field: Field| match &self.editing {
+                    Some((f, text)) if *f == field => Some(format!("{text}_")),
+                    _ => None,
+                };
+                let name = typing(Field::Name).unwrap_or_else(|| self.player_name());
+                let address = typing(Field::Address).unwrap_or_else(|| {
+                    self.settings
+                        .last_host
+                        .clone()
+                        .unwrap_or_else(|| "Type the host's IP address".into())
+                });
+                vec![
+                    Item::new("Host a duel", Action::HostDuel)
+                        .detail("Wait for a player on this network"),
+                    Item::new("Join by address", Action::JoinAddress).detail(address),
+                    Item::new("Name", Action::EditName).detail(name),
+                    Item::new("Back", Action::UseFolder(b.folder.clone())),
+                ]
             }
             Screen::Guide(_) => vec![Item::new("Continue", Action::CloseGuide)],
             Screen::Problem { retry, .. } => {
@@ -694,6 +743,142 @@ fn act(l: &mut Launcher, action: Action, exit: &mut MessageWriter<AppExit>) {
                 launch(l, &action, b);
             }
         }
+        Action::Multiplayer => {
+            if let Screen::Tests(b) = &l.screen {
+                let b = b.clone();
+                l.go(Screen::Multiplayer(b));
+            }
+        }
+        Action::HostDuel => {
+            let name = l.player_name();
+            duel(l, vec!["--host".into(), "--name".into(), name]);
+        }
+        Action::JoinAddress => {
+            let text = l.settings.last_host.clone().unwrap_or_default();
+            l.edit(Field::Address, text);
+        }
+        Action::EditName => {
+            let text = l.player_name();
+            l.edit(Field::Name, text);
+        }
+    }
+}
+
+impl Launcher {
+    /// The name the other player sees: the saved one, else the Windows
+    /// user name.
+    fn player_name(&self) -> String {
+        self.settings
+            .player_name
+            .clone()
+            .filter(|n| !n.trim().is_empty())
+            .or_else(|| std::env::var("USERNAME").ok())
+            .unwrap_or_else(|| "Player".into())
+    }
+
+    fn edit(&mut self, field: Field, text: String) {
+        self.editing = Some((field, text));
+        self.refresh();
+    }
+
+    /// Rebuilds the rows in place (the cursor stays).
+    fn refresh(&mut self) {
+        self.items = self.build_items();
+        self.glow.resize(self.items.len(), 0.);
+        self.cursor = self.cursor.min(self.items.len().saturating_sub(1));
+    }
+}
+
+/// Typing into a field: characters, Backspace, Enter to keep, Esc to drop.
+/// Returns true while the field takes the keys.
+fn type_text(
+    l: &mut Launcher,
+    keys: &ButtonInput<KeyCode>,
+    typed: &mut MessageReader<KeyboardInput>,
+) -> bool {
+    let Some((field, mut text)) = l.editing.take() else {
+        typed.clear();
+        return false;
+    };
+    let limit = match field {
+        Field::Name => NAME_LIMIT,
+        Field::Address => ADDRESS_LIMIT,
+    };
+    for event in typed.read() {
+        if event.state != ButtonState::Pressed {
+            continue;
+        }
+        match &event.logical_key {
+            Key::Character(chars) => {
+                for c in chars.chars().filter(|c| !c.is_control()) {
+                    let allowed = match field {
+                        Field::Name => c != '"',
+                        Field::Address => c.is_ascii_alphanumeric() || ".:-".contains(c),
+                    };
+                    if allowed && text.chars().count() < limit {
+                        text.push(c);
+                    }
+                }
+            }
+            Key::Space if field == Field::Name && text.chars().count() < limit => {
+                text.push(' ');
+            }
+            Key::Backspace => {
+                text.pop();
+            }
+            _ => {}
+        }
+    }
+    if keys.just_pressed(KeyCode::Escape) {
+        l.refresh();
+        return true;
+    }
+    if keys.any_just_pressed([KeyCode::Enter, KeyCode::NumpadEnter]) {
+        let text = text.trim().to_owned();
+        match field {
+            Field::Name => {
+                if !text.is_empty() {
+                    l.settings.player_name = Some(text);
+                }
+                if let Err(e) = install::save_settings(&l.dir, &l.settings) {
+                    eprintln!("Launcher settings not saved: {e}");
+                }
+                l.refresh();
+            }
+            Field::Address if !text.is_empty() => {
+                l.settings.last_host = Some(text.clone());
+                if let Err(e) = install::save_settings(&l.dir, &l.settings) {
+                    eprintln!("Launcher settings not saved: {e}");
+                }
+                let name = l.player_name();
+                duel(l, vec!["--join".into(), text, "--name".into(), name]);
+            }
+            Field::Address => l.refresh(),
+        }
+        return true;
+    }
+    l.editing = Some((field, text));
+    l.refresh();
+    true
+}
+
+/// Starts the test room as a duel host or joiner with `session` options.
+fn duel(l: &mut Launcher, session: Vec<String>) {
+    let Screen::Multiplayer(b) = &l.screen else {
+        return;
+    };
+    let b = b.clone();
+    let started = install::duel_args(&l.dir, &b, &session).and_then(|args| {
+        let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+        spawn("Multiplayer".into(), exe, args)
+    });
+    match started {
+        Ok(running) => l.go(Screen::Loading(running, b)),
+        Err(why) => l.go(Screen::Problem {
+            title: "The duel could not start".into(),
+            lines: vec![why],
+            retry: Some(b),
+        }),
     }
 }
 
@@ -726,6 +911,7 @@ fn back(l: &mut Launcher, exit: &mut MessageWriter<AppExit>) {
         Screen::Pick => l.settings.game_folder.clone().map(Action::UseFolder),
         Screen::Problem { retry: Some(b), .. } => Some(Action::UseFolder(b.folder.clone())),
         Screen::Tests(_) => Some(Action::Quit),
+        Screen::Multiplayer(b) => Some(Action::UseFolder(b.folder.clone())),
         Screen::Guide(_) => Some(Action::CloseGuide),
         _ => None,
     };
@@ -787,6 +973,7 @@ fn update(
     mut drops: MessageReader<FileDragAndDrop>,
     mut windows: Query<&mut Window, With<PrimaryWindow>>,
     mut winit: ResMut<WinitSettings>,
+    mut typed: MessageReader<KeyboardInput>,
     mut exit: MessageWriter<AppExit>,
 ) {
     let l = &mut *l;
@@ -918,6 +1105,10 @@ fn update(
         checked(l, result, &folder);
     }
 
+    // A field being typed into takes the keyboard.
+    if type_text(l, &keys, &mut typed) {
+        return;
+    }
     // Input on lists.
     if l.items.is_empty() {
         return;
@@ -1031,6 +1222,7 @@ fn draw(
             .map_or_else(|| "Find your Skate 3 ISO".into(), plain),
         Screen::Check(_) => "Checking the game folder".into(),
         Screen::Tests(_) => "Choose a test".into(),
+        Screen::Multiplayer(_) => "Multiplayer".into(),
         Screen::Loading(run, _) => format!("Loading {}", run.name),
         Screen::Problem { title, .. } => title.clone(),
     };
@@ -1211,6 +1403,9 @@ fn footer(l: &Launcher, p: &mut Paint, f: &mut Ui2dFrame) {
         }
         Screen::Pick => "Enter / A  select      F1 / Back  guide      Esc / B  back",
         Screen::Guide(_) => "Enter / A  continue      F1 / Back  open this guide again later",
+        Screen::Multiplayer(_) if l.editing.is_some() => {
+            "Type, then Enter to keep      Esc  cancel"
+        }
         _ => "Enter / A  select      Esc / B  back",
     };
     p.text(
@@ -1409,6 +1604,7 @@ pub fn main() -> std::process::ExitCode {
             repeat: None,
             mouse: None,
             paint: None,
+            editing: None,
         })
         .insert_resource(ClearColor(Color::BLACK))
         .insert_resource(WinitSettings::game())

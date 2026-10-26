@@ -34,10 +34,27 @@ pub(crate) struct RivalPad {
     pub guard_held: bool,
 }
 
+impl RivalPad {
+    /// The buttons of a room Sora's input, for the host to replay.
+    pub(crate) fn of(input: &Input) -> RivalPad {
+        RivalPad {
+            direction: input.direction,
+            jump: input.jump,
+            jump_held: !input.jump_up,
+            attack: input.attack,
+            guard: input.guard,
+            guard_held: input.guard_held,
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Control {
     /// The built-in test script (`--rival-script`, F3 > Sora).
     Script,
+    /// The other player's buttons (the host) or the host's snapshots (the
+    /// joiner), set each tick by duel_sync.
+    Remote,
 }
 
 pub(crate) struct Rival {
@@ -113,6 +130,40 @@ pub(crate) fn spawn_scripted(game: &mut Game) -> bool {
     true
 }
 
+/// Where the joiner's Sora starts: this far in front of the host's, facing
+/// him.
+const DUEL_DISTANCE: f32 = 500.;
+
+/// The other player's Sora joins (duel_net): on the host in front of the
+/// room Sora, facing him; on the joiner wherever the first snapshot puts
+/// him.
+pub(crate) fn spawn_remote(game: &mut Game, slot: u8) {
+    game.rivals.retain(|r| r.slot != slot);
+    let p = game.sora.player.position;
+    let yaw = game.sora.player.yaw;
+    let at = [
+        p[0] + yaw.sin() * DUEL_DISTANCE,
+        p[1],
+        p[2] + yaw.cos() * DUEL_DISTANCE,
+    ];
+    let mut player = Player::new(at, yaw + std::f32::consts::PI);
+    player.abilities = game.sora.player.abilities.clone();
+    player.fmab = game.sora.player.fmab.clone();
+    player.mp = game.sora.player.mp;
+    let mut vitals = game.sora.vitals.clone();
+    vitals.hp = vitals.target.max_hp;
+    vitals.ko_ticks = 0;
+    vitals.record = combat::HitRecord::new(true);
+    game.rivals
+        .push(Rival::new(slot, player, vitals, Control::Remote));
+    game.rivals.sort_by_key(|r| r.slot);
+    let tick = game.tick;
+    game.event(
+        serde_json::json!({"event":"rival_spawn","tick":tick,"slot":slot,
+        "position":at,"control":"remote"}),
+    );
+}
+
 /// `--rival-script`: the scripted rival is there from the start.
 pub(crate) fn script_setup(mut game: ResMut<Game>) {
     if game.rival_script {
@@ -186,7 +237,8 @@ pub(crate) fn target_centre(kit: &RivalKit, player: &Player) -> [f32; 3] {
 /// One simulation tick of every rival, after the room Sora's (FixedUpdate,
 /// in the field chain).
 pub(crate) fn tick(mut game: ResMut<Game>) {
-    if game.rivals.is_empty() {
+    // The joiner's rivals stand where the host's snapshots put them.
+    if game.rivals.is_empty() || game.net_client {
         return;
     }
     let game = &mut *game;

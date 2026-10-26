@@ -27,6 +27,8 @@
 !/source/data/src/**/*.rs
 !/source/audio/Cargo.toml
 !/source/audio/src/**/*.rs
+!/source/net/Cargo.toml
+!/source/net/src/**/*.rs
 !/source/visual/effect/Cargo.toml
 !/source/visual/effect/src/**/*.rs
 !/source/game/*/Cargo.toml

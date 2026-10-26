@@ -398,6 +398,7 @@ enum Action {
     /// The duel's test script: a second Sora that fights the room's.
     SpawnRival,
     RemoveRival,
+    ToggleNetOverlay,
     RemoveActor,
     ClearActors,
     Warp(u8, u8),
@@ -472,6 +473,7 @@ impl Action {
             Self::TogglePerfOverlay => "FPS, frame times, GPU and entities at the top left.",
             Self::SpawnRival => "A second Sora, run by a test script, to try the duel alone.",
             Self::RemoveRival => "Remove the scripted second Sora.",
+            Self::ToggleNetOverlay => "Ping, loss, data rates and warnings at the top right.",
             Self::RemoveActor => "Remove this enemy from the room.",
             Self::ClearActors => "Remove every summoned enemy.",
             Self::Warp(..) => "Warp to this room.",
@@ -1135,6 +1137,10 @@ fn rows(
                 Row {
                     value: on_off(game.perf_overlay),
                     ..row("Performance overlay", Action::TogglePerfOverlay, true)
+                },
+                Row {
+                    value: on_off(game.net_overlay),
+                    ..row("Network overlay", Action::ToggleNetOverlay, game.duel)
                 },
                 section("Duel"),
                 row(
@@ -1858,6 +1864,10 @@ fn act(
         }
         Action::TogglePerfOverlay => {
             game.perf_overlay = !game.perf_overlay;
+            None
+        }
+        Action::ToggleNetOverlay => {
+            game.net_overlay = !game.net_overlay;
             None
         }
         Action::SpawnRival => {
