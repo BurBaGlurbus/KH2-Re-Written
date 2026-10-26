@@ -87,6 +87,60 @@ top right. While locked on, the camera follows the original lock-on camera
 (right stick still turns and zooms it). The lock-on reticle sprite is not drawn
 yet. Full roster combat and installed-game comparisons remain unfinished.
 
+## LAN duel (in progress)
+
+Two players on the same network can each run the game and fight each other's Sora in the test room. This is
+the first step of a 1v1 duel mode: the lobby, the duel loadout, the countdown and the match result are still to
+come. Each player needs their own Steam copy of Kingdom Hearts II Final Mix, because the game reads its data
+from the install and checks it; the launcher on its own is not enough. Both players need the same launcher
+build: another one is refused with a message.
+
+**Host or join from the launcher:** choose *Multiplayer*. *Host a duel* waits for a player. Hosts on the same
+network appear in the list by name: pick one to join. Or choose *Join by address* and type the host's IP
+address. *Name* is the name the other player sees (your Windows user name until you change it; the launcher
+keeps it).
+
+**Firewall:** the first time the game hosts or joins, Windows asks whether to allow it on networks. Allow it on
+private networks (your home Wi-Fi), or the other player cannot reach you.
+
+**From a command line**, add these to a test-room command (`room <Steam-root> <manifest> <config>`):
+
+| Option | What it does |
+|---|---|
+| `--host` | Host and wait for a player (UDP port 47620) |
+| `--port N` | Host on, or join, another port |
+| `--bind IP` | Host on one address only (`127.0.0.1` for two instances on one PC) |
+| `--join HOST[:PORT]` | Join the host at that address |
+| `--name NAME` | The name the other player sees |
+| `--net-sim LATENCY,JITTER,LOSS` | Add latency (ms), jitter (ms) and loss (%) to what this instance sends |
+| `--net-overlay` | Show the network overlay |
+| `--rival-script` | No network: a second Sora run by a test script, to try the duel alone |
+
+In the room, F3 → Sora has *Network overlay* (ping, loss, data rates, buffered snapshots and warnings, top
+right), *Simulated network* (Off, Wi-Fi, Busy Wi-Fi, Bad link) and, outside a session, *Scripted rival Sora*.
+
+**Two instances on one PC:** start one with `--host --bind 127.0.0.1` and the other with `--join 127.0.0.1`,
+or host from one launcher window and join *127.0.0.1* from a second. The window in the background draws at 30
+FPS, but its game still runs at 60 ticks a second. To try Wi-Fi conditions, choose the same *Simulated network*
+on both.
+
+**How it works:** the host runs the game for both Soras on the fixed 60 Hz tick. The joiner sends its buttons
+every tick (repeating the last six, so a lost packet costs nothing) and draws the host's snapshots two ticks
+behind to ride out jitter. Hit sounds, sparks, guard clashes and knock-outs reach the joiner as reliable events
+and play there; nothing cosmetic is streamed. Esc leaves; the other side sees "Opponent left" (or a timeout after
+five seconds) and the host waits for the next player.
+
+**Known limitations:**
+
+- Only movement, jumping, guarding and the Attack command are shared. Magic, items, Drive forms, limits,
+  summons, Donald and Goofy, and the room's Shadow are switched off in a session.
+- The joiner sees its own Sora about one round trip late (one or two ticks on home Wi-Fi): there is no
+  prediction yet. The host has no delay.
+- A knocked-out Sora stands up after two seconds (the test room's rule). There is no match result yet.
+- The other player's Sora makes no footstep or swing sounds; hit sounds and sparks play on both sides.
+- LAN only: no internet play. Discovery uses a broadcast that guest networks and some routers block; join by
+  address then.
+
 ## Build and check
 
 `build.bat` builds the optimized launcher (`KH2RW Launcher.exe`, with the model and image viewers inside it)
