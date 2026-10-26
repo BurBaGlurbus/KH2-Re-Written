@@ -27,6 +27,11 @@ pub const SUMMON: u32 = 0xffff_0002;
 pub const SAVE_POINT: u32 = 0xffff_0100;
 /// Command 0x37 "Save" (exec 0x37).
 const SAVE_COMMAND: u16 = 0x37;
+/// Effect owners of the save points' glow (element 1, started with the
+/// object, FUN_140418e30) and of the pulse while Save heals (element 2 with
+/// se000 #29, FUN_140418a00).
+pub const SAVE_GLOW: u8 = 0xf7;
+pub const SAVE_PULSE: u8 = 0xf6;
 /// FUN_140418f30: the heal's step (DAT_140717480, 1.0 a frame) and the
 /// timer it fires at (DAT_140623b18, 2.0).
 const SAVE_HEAL_STEP: f32 = 1.;
@@ -172,6 +177,10 @@ pub struct State {
     pub captor: Option<u32>,
     /// The save point's heal timer (+0xc0c).
     pub save_timer: f32,
+    /// The area whose save points have their glow started, and whether the
+    /// pulse element runs (the save point's +0xc08).
+    pub glow_area: Option<(u8, u8)>,
+    pub pulse: bool,
     /// Sora asked for a command since the last tick (his update's request).
     pub request_made: bool,
 }
@@ -189,6 +198,8 @@ impl Default for State {
             marker_logged: 0,
             captor: None,
             save_timer: 0.,
+            glow_area: None,
+            pulse: false,
             request_made: false,
         }
     }
@@ -414,9 +425,11 @@ pub fn tick(
         .map(|s| (s.target(), s.centre))
         .collect();
     // FUN_140408520: while "Save" shows usable, FUN_140418f30 heals.
-    if state.slot.shown.command == SAVE_COMMAND && state.slot.shown.mode < 4 {
+    let healing = state.slot.shown.command == SAVE_COMMAND && state.slot.shown.mode < 4;
+    if healing {
         save_heal(&mut game, &mut state.save_timer);
     }
+    save_point_effects(&mut game, &mut state, area.as_deref(), healing, offer);
     if offer.map(|o| o.command()) != state.offer.map(|o| o.command()) {
         if offer.is_some() {
             game.offers_seen += 1;
@@ -895,6 +908,75 @@ pub fn menu_reaction(game: &Game) -> Option<field_command_menu::Reaction> {
         flag3: row.flags & 8 != 0,
         restart: c.flags & 2 != 0,
     })
+}
+
+/// The save points' effects: each starts its element 1 when the area loads
+/// (FUN_140418e30); while the heal sets a save point's pulse (+0xc08,
+/// FUN_140418f30) FUN_140418a00 keeps its element 2 running (se000 #29) and
+/// ends it once the pulse is gone. An area change ends them all.
+fn save_point_effects(
+    game: &mut Game,
+    state: &mut State,
+    area: Option<&AreaRes>,
+    healing: bool,
+    offer: Option<rc::Offer>,
+) {
+    let place = area.map(|a| (a.current.world, a.current.area));
+    if place != state.glow_area {
+        if state.glow_area.is_some() {
+            game.fx_release.extend([SAVE_GLOW, SAVE_PULSE]);
+        }
+        state.glow_area = place;
+        state.pulse = false;
+        if let Some(a) = area
+            && let Some(pax) = &a.current.save_point_pax
+        {
+            for &(at, _) in &a.current.save_points {
+                game.fx_queue.push(drive_fx::Placed {
+                    req: drive_fx::FxRequest {
+                        pax: pax.clone(),
+                        id: 1,
+                        owner: SAVE_GLOW,
+                    },
+                    anchor: drive_fx::Anchor::World {
+                        at,
+                        pitch: 0.,
+                        yaw: 0.,
+                    },
+                });
+            }
+        }
+    }
+    let point = offer
+        .map(|o| o.candidate.target.owner)
+        .filter(|&o| o >= SAVE_POINT)
+        .and_then(|o| area?.current.save_points.get((o - SAVE_POINT) as usize))
+        .map(|&(at, _)| at);
+    let pulse = healing && point.is_some();
+    if pulse
+        && !state.pulse
+        && let (Some(at), Some(pax)) = (point, area.and_then(|a| a.current.save_point_pax.clone()))
+    {
+        game.fx_queue.push(drive_fx::Placed {
+            req: drive_fx::FxRequest {
+                pax,
+                id: 2,
+                owner: SAVE_PULSE,
+            },
+            anchor: drive_fx::Anchor::World {
+                at,
+                pitch: 0.,
+                yaw: 0.,
+            },
+        });
+        let tick = game.tick;
+        game.event(serde_json::json!({"event":"save_point_pulse","tick":tick,"on":true}));
+    } else if !pulse && state.pulse {
+        game.fx_release.push(SAVE_PULSE);
+        let tick = game.tick;
+        game.event(serde_json::json!({"event":"save_point_pulse","tick":tick,"on":false}));
+    }
+    state.pulse = pulse;
 }
 
 /// FUN_140418f30: the save point's heal. Its timer gains 1.0 a frame; at

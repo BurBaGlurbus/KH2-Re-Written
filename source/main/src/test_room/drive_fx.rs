@@ -296,6 +296,10 @@ pub fn tick(
     for owner in std::mem::take(&mut game.fx_release) {
         for r in fx.running.iter_mut().filter(|r| r.owner == owner) {
             r.instance.release();
+            // The save point's loop (se000 #29) ends with its element.
+            if let Some(id) = r.sound_id.take() {
+                game.sound_stops.push(id);
+            }
         }
     }
     // A Wisdom bullet's element: killed with a hit, faded over 8 frames when
@@ -490,7 +494,10 @@ pub fn tick(
                     _ => None,
                 },
                 group: matches!(anchor, Anchor::Map { .. }).then_some(element.group),
-                sound_id: sound.filter(|_| matches!(anchor, Anchor::Map { .. })),
+                sound_id: sound.filter(|_| {
+                    matches!(anchor, Anchor::Map { .. })
+                        || req.owner == super::reaction_command::SAVE_PULSE
+                }),
                 sound: sound.filter(|_| wait > 0.),
                 sound_wait: wait,
             });

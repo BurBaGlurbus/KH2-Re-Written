@@ -46,11 +46,12 @@ its `--autoplay-savepoint` capture.
 
 ## Uncertainty
 
-- [I] Field save points are taken to have no World Map row (`world_map: false`); which save
-  points offer it in the original was not traced.
+- Field save points have no World Map row (`world_map: false`): the save point object opens the
+  menu with mode 2, which hides it, and only WORLD_POINT uses 0 (`FUN_1402eb490`, private
+  `save-20261016/save-spec.md` §4-5).
 - Title Screen and World Map answers close the menu and are only logged: the room cannot go back
   to the title or jump to the world map.
-- The message window is still the plain panel (#80). The save point's glow is not drawn (#139).
+- The message window is still the plain panel (#80). The save point's glow came in T252.
 - Only the card's fields are captured; loading such a save restores nothing yet (#79).
 - Not compared with the installed game.
 
