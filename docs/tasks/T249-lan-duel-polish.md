@@ -156,3 +156,26 @@ a tick since (`Time<Fixed>::overstep_fraction`) for the fades and the coin, so t
 
 Checks: fmt, clippy, `cargo test` (1,102 passed), tours (`a2-*`: talk identical; magic, deck, party-hit the
 known noise), loopback (`anim1`, `anim2`): PASS.
+
+## 7. Smaller messages
+
+- **Snapshots** (host to joiner, every tick): positions stay f32 (they place the Soras); the yaw goes as a turn in
+  65536 steps (to (-pi, pi]), the blend in 1/256 frame, invulnerability in 1/16 frame, HP, max HP and MP as 16
+  bits, the frame as 16 bits, the action's start as ticks before the snapshot (32 bits). The joiner sets these
+  as they come (no interpolation reads them), so the picture is the same.
+- **Input** (joiner to host, every tick, the last six ticks repeated): the stick's axes as 16 bits each, every
+  tick after the first as its step in a byte (a step too long for a byte sends the newest run alone).
+- Tests: the numbers' precision (yaw within 1e-4, clamps), snapshot and input round trips, a tick gap.
+
+Two instances, uncapped, host bench against an idle joiner, after tick 1200 (`netA` before, `netB` snapshots
+trimmed, `netD` both):
+
+| Run | Host sends | Joiner sends | Host fight FPS / 1% low | Joiner fight FPS / 1% low |
+| --- | --- | --- | --- | --- |
+| `netA` | 11.63 KB/s | 6.68 KB/s | 177.9 / 87.2 | 180.5 / 81.1 |
+| `netB` | 9.08 KB/s | 6.68 KB/s | 176.5 / 80.8 | 196.3 / 105.5 |
+| `netD` | 9.06 KB/s | 4.33 KB/s | 172.8 / 73.0 | 196.8 / 98.1 |
+
+The FPS columns move within the runs' spread (two instances on one GPU); the bytes are the change: 22% less from
+the host, 35% less from the joiner. `netE` (the joiner's bench Sora driven through the trimmed input against an
+idle host): closes in and wins by knock-out, 5 hits. Checks: fmt, clippy, the wire tests: PASS.

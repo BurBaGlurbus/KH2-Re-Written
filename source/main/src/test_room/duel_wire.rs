@@ -87,9 +87,18 @@ pub(crate) fn action_from(code: u8, arg: u16) -> Option<Action> {
     })
 }
 
+/// The stick's axes (-1..=1) in 16 bits each [T249].
+fn axis_bits(v: f32) -> u16 {
+    (v.clamp(-1., 1.) * 32767.).round() as i16 as u16
+}
+
+fn axis_of(bits: u16) -> f32 {
+    f32::from(bits as i16) / 32767.
+}
+
 fn put_pad(w: &mut Writer, pad: &RivalPad) {
-    w.f32(pad.direction[0]);
-    w.f32(pad.direction[1]);
+    w.u16(axis_bits(pad.direction[0]));
+    w.u16(axis_bits(pad.direction[1]));
     let bits = u8::from(pad.jump)
         | u8::from(pad.jump_held) << 1
         | u8::from(pad.attack) << 2
@@ -107,10 +116,7 @@ fn put_pad(w: &mut Writer, pad: &RivalPad) {
 }
 
 fn get_pad(r: &mut Reader) -> Option<RivalPad> {
-    let direction = [r.f32()?, r.f32()?];
-    if !direction.iter().all(|v| v.is_finite()) {
-        return None;
-    }
+    let direction = [axis_of(r.u16()?), axis_of(r.u16()?)];
     let bits = r.u8()?;
     let (tag, arg) = (r.u8()?, r.u8()?);
     let command = match tag {
@@ -132,14 +138,26 @@ fn get_pad(r: &mut Reader) -> Option<RivalPad> {
 }
 
 /// The joiner's buttons of its newest ticks, oldest first: (joiner tick,
-/// pad).
+/// pad). The first tick is whole, each next one its step from the last (the
+/// newest run whose steps fit a byte).
 pub(crate) fn encode_input(recent: &[(u32, RivalPad)]) -> Vec<u8> {
     let mut w = Writer::default();
     w.u8(INPUT);
-    let recent = &recent[recent.len().saturating_sub(INPUT_REDUNDANCY)..];
+    let mut recent = &recent[recent.len().saturating_sub(INPUT_REDUNDANCY)..];
+    while let Some(i) = recent
+        .windows(2)
+        .rposition(|p| p[1].0.wrapping_sub(p[0].0) > u32::from(u8::MAX))
+    {
+        recent = &recent[i + 1..];
+    }
     w.u8(recent.len() as u8);
+    let mut last = None;
     for (tick, pad) in recent {
-        w.u32(*tick);
+        match last {
+            None => w.u32(*tick),
+            Some(t) => w.u8(tick.wrapping_sub(t) as u8),
+        }
+        last = Some(*tick);
         put_pad(&mut w, pad);
     }
     w.finish()
@@ -154,9 +172,13 @@ pub(crate) fn decode_input(bytes: &[u8]) -> Option<Vec<(u32, RivalPad)>> {
     if n > INPUT_REDUNDANCY {
         return None;
     }
-    let mut out = Vec::with_capacity(n);
+    let mut out: Vec<(u32, RivalPad)> = Vec::with_capacity(n);
     for _ in 0..n {
-        out.push((r.u32()?, get_pad(&mut r)?));
+        let tick = match out.last() {
+            None => r.u32()?,
+            Some(&(t, _)) => t.wrapping_add(u32::from(r.u8()?)),
+        };
+        out.push((tick, get_pad(&mut r)?));
     }
     r.is_empty().then_some(out)
 }
@@ -192,6 +214,37 @@ pub(crate) const MAX_BULLETS: usize = 16;
 /// The most item slots a snapshot carries.
 pub(crate) const MAX_ITEM_SLOTS: usize = 8;
 
+/// Snapshot numbers in fewer bytes [duel choice, T249]: positions stay
+/// f32 (they move the Soras); the yaw is a turn in 65536 steps, the blend
+/// and invulnerability in 1/256 and 1/16 frame, HP and MP as 16 bits, the
+/// frame as 16 bits, the action's start as ticks before the snapshot.
+fn yaw_bits(yaw: f32) -> u16 {
+    let turn = yaw.rem_euclid(std::f32::consts::TAU) / std::f32::consts::TAU;
+    ((turn * 65536.).round() as u32 & 0xffff) as u16
+}
+
+fn yaw_of(bits: u16) -> f32 {
+    let yaw = f32::from(bits) / 65536. * std::f32::consts::TAU;
+    // (-pi, pi], as the field keeps it.
+    if yaw > std::f32::consts::PI {
+        yaw - std::f32::consts::TAU
+    } else {
+        yaw
+    }
+}
+
+fn fixed_bits(v: f32, scale: f32) -> u16 {
+    (v * scale).round().clamp(0., 65535.) as u16
+}
+
+fn small(v: i32) -> u16 {
+    v.clamp(i32::from(i16::MIN), i32::from(i16::MAX)) as i16 as u16
+}
+
+fn small_of(bits: u16) -> i32 {
+    i32::from(bits as i16)
+}
+
 /// The host's picture of one tick.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct Snapshot {
@@ -209,20 +262,20 @@ pub(crate) fn encode_snapshot(s: &Snapshot) -> Vec<u8> {
         for v in f.position {
             w.f32(v);
         }
-        w.f32(f.yaw);
+        w.u16(yaw_bits(f.yaw));
         let (code, arg) = action_code(f.action);
         w.u8(code);
         w.u16(arg);
-        w.u32(f.frame);
+        w.u16(f.frame.min(0xffff) as u16);
         w.u8(u8::from(f.armed));
-        w.f32(f.blend);
-        w.u64(f.started);
-        w.i32(f.hp);
-        w.i32(f.max_hp);
-        w.i32(f.mp[0]);
-        w.i32(f.mp[1]);
+        w.u16(fixed_bits(f.blend, 256.));
+        w.u32(s.tick.saturating_sub(f.started).min(u64::from(u32::MAX)) as u32);
+        w.u16(small(f.hp));
+        w.u16(small(f.max_hp));
+        w.u16(small(f.mp[0]));
+        w.u16(small(f.mp[1]));
         w.bytes(&f.drive);
-        w.f32(f.invulnerable);
+        w.u16(fixed_bits(f.invulnerable, 16.));
         w.u8(f.form);
         let items = &f.items[..f.items.len().min(MAX_ITEM_SLOTS)];
         w.u8(items.len() as u8);
@@ -255,17 +308,17 @@ pub(crate) fn decode_snapshot(bytes: &[u8]) -> Option<Snapshot> {
     for _ in 0..n {
         let slot = r.u8()?;
         let position = [r.f32()?, r.f32()?, r.f32()?];
-        let yaw = r.f32()?;
+        let yaw = yaw_of(r.u16()?);
         let action = action_from(r.u8()?, r.u16()?)?;
-        let frame = r.u32()?;
+        let frame = u32::from(r.u16()?);
         let armed = r.u8()? != 0;
-        let blend = r.f32()?;
-        let started = r.u64()?;
-        let hp = r.i32()?;
-        let max_hp = r.i32()?;
-        let mp = [r.i32()?, r.i32()?];
+        let blend = f32::from(r.u16()?) / 256.;
+        let started = tick.saturating_sub(u64::from(r.u32()?));
+        let hp = small_of(r.u16()?);
+        let max_hp = small_of(r.u16()?);
+        let mp = [small_of(r.u16()?), small_of(r.u16()?)];
         let drive = r.array()?;
-        let invulnerable = r.f32()?;
+        let invulnerable = f32::from(r.u16()?) / 16.;
         let form = r.u8()?;
         let count = r.u8()? as usize;
         if count > MAX_ITEM_SLOTS {
@@ -285,7 +338,7 @@ pub(crate) fn decode_snapshot(bytes: &[u8]) -> Option<Snapshot> {
             }
             bullets.push((key, [v[0], v[1], v[2]], [v[3], v[4], v[5]]));
         }
-        if !position.iter().chain([&yaw, &blend]).all(|v| v.is_finite()) {
+        if !position.iter().all(|v| v.is_finite()) {
             return None;
         }
         fighters.push(FighterState {
@@ -626,7 +679,8 @@ mod tests {
 
     fn pad(n: u8) -> RivalPad {
         RivalPad {
-            direction: [0.25 * f32::from(n), -0.5],
+            // On the wire's steps, so they come back the same.
+            direction: [0.1 * f32::from(n) - 0.5, -0.5].map(|v| axis_of(axis_bits(v))),
             jump: n & 1 != 0,
             jump_held: n & 2 != 0,
             attack: n & 4 != 0,
@@ -680,6 +734,26 @@ mod tests {
         assert_eq!(decode_input(&encode_input(&[])).unwrap(), Vec::new());
         let bytes = encode_input(&recent);
         assert_eq!(decode_input(&bytes[..bytes.len() - 1]), None);
+        // A step too long for a byte: the newest run alone.
+        let gap = [(1, pad(1)), (2, pad(2)), (900, pad(3)), (901, pad(4))];
+        assert_eq!(
+            decode_input(&encode_input(&gap)).unwrap(),
+            gap[2..].to_vec()
+        );
+        assert_eq!(axis_of(axis_bits(2.)), 1.);
+    }
+
+    #[test]
+    fn snapshot_numbers_keep_their_precision() {
+        for yaw in [-3.1, -1., 0., 0.25, 3.] {
+            let back = yaw_of(yaw_bits(yaw));
+            assert!((back - yaw).abs() < 1e-4, "{yaw} -> {back}");
+        }
+        assert!((yaw_of(yaw_bits(7.)) - (7. - std::f32::consts::TAU)).abs() < 1e-4);
+        assert_eq!(f32::from(fixed_bits(2.5, 256.)) / 256., 2.5);
+        assert_eq!(fixed_bits(-1., 16.), 0);
+        assert_eq!(small_of(small(-35)), -35);
+        assert_eq!(small_of(small(1 << 20)), i32::from(i16::MAX));
     }
 
     #[test]
@@ -690,7 +764,8 @@ mod tests {
                 FighterState {
                     slot: 0,
                     position: [1.5, -2., 300.25],
-                    yaw: 3.1,
+                    // Values the snapshot's steps hold exactly.
+                    yaw: yaw_of(0xc000),
                     action: Action::Attack(4),
                     frame: 17,
                     armed: true,
