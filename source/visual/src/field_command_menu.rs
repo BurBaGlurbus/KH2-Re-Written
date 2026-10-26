@@ -438,6 +438,21 @@ impl CommandMenu {
         opens.get(row).copied().flatten()
     }
 
+    /// [Rewrite choice] A room with no second deck (a duel turns it off):
+    /// the swap is refused and its pointer hidden as FUN_1403b2780's lock
+    /// does, and a menu on the second deck goes back to the first. Without
+    /// this a swap showed an empty deck, with no rows and no Attack.
+    pub fn hold_first_deck(&mut self) {
+        self.locked = true;
+        if self.kind == SECOND_DECK {
+            self.kind = FIRST_DECK;
+            self.sub = None;
+            if self.cursor >= self.items.len() {
+                self.cursor = 0;
+            }
+        }
+    }
+
     /// Opens the submenu of `kind` on top of the top level.
     pub fn open_sub(&mut self, kind: usize, items: Vec<Item>) {
         self.sub = Some(Sub {
@@ -1393,6 +1408,28 @@ mod tests {
         menu.locked = true;
         assert_eq!(menu.press(left), Decision::None);
         assert_eq!(menu.kind, FIRST_DECK);
+    }
+
+    #[test]
+    fn without_a_second_deck_the_first_stays_shown() {
+        let mut menu = bare(
+            vec![row(1, 0), row(2, 5), row(3, 0), row(4, 5)],
+            vec![None, Some(1), Some(2), None],
+        );
+        let left = Buttons {
+            left: true,
+            ..Buttons::default()
+        };
+        // The duel's empty second deck: a swap leaves no rows and no Attack.
+        assert_eq!(menu.press(left), Decision::Toggled);
+        assert!(menu.rows().is_empty());
+        assert_eq!(menu.input(false, false, true), Decision::None);
+        // Held on the first deck: it comes back, and left no longer swaps.
+        menu.hold_first_deck();
+        assert_eq!((menu.kind, menu.rows().len()), (FIRST_DECK, 4));
+        assert_eq!(menu.press(left), Decision::None);
+        assert_eq!(menu.kind, FIRST_DECK);
+        assert_eq!(menu.input(false, false, true), Decision::Execute(0));
     }
 
     #[test]

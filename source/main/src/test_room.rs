@@ -7300,6 +7300,11 @@ fn simulate(
         // style 1 while the battle flag is on (DAT_142a11404).
         let deck_room = second_deck::room(&game, world_index);
         second_deck::refresh(&game, &mut m.menu, &deck_room);
+        if game.second_deck.is_none() {
+            m.menu.hold_first_deck();
+        } else {
+            m.menu.locked = false;
+        }
         m.menu.style = usize::from(second_deck::battle(&game));
         // A party limit's commands (FUN_1403b0f20 with FUN_1403b2660): record
         // 0 takes the row of the Attack kind (icon 1), record 2 the Limit
