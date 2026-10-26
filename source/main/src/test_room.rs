@@ -3351,6 +3351,15 @@ fn load(
     timer.mark("objects and room start");
     let battle = read_archive(source, &config.battle)?;
     // The effect containers and the enemies' sound banks likewise.
+    // The party limits' files (rooms with a fight), likewise: Sora's kit
+    // waits for their motions.
+    let limits_job = config.enemy.is_some().then(|| {
+        let (source, battle) = (source.clone(), battle.clone());
+        std::thread::spawn(move || {
+            let mut library = data::path_lookup::Library::open(&source).ok()?;
+            Some(party_limit::load(&source, &mut library, &battle, "us"))
+        })
+    });
     let effects_job = config.effects.clone().map(|e| {
         let source = source.clone();
         std::thread::spawn(move || read_effect_sources(&source, &e))
@@ -3598,10 +3607,9 @@ fn load(
     // The party limits' files: Sora's motions join his kit, the friends'
     // their motion tables.
     timer.mark("effects");
-    let mut limit_source = match (&config.enemy, data::path_lookup::Library::open(source)) {
-        (Some(_), Ok(mut library)) => party_limit::load(source, &mut library, &battle, "us"),
-        _ => party_limit::LimitSource::default(),
-    };
+    let mut limit_source = limits_job
+        .and_then(|job| job.join().expect("party limits thread"))
+        .unwrap_or_default();
     timer.mark("limits");
     // Donald's and Goofy's limit motions, for their motion tables. The
     // party (rooms with a fight to join) loads on a thread of its own while
