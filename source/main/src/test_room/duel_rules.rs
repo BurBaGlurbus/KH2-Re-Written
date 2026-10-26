@@ -144,19 +144,6 @@ impl MatchRules {
     pub(crate) fn mode_from(code: u8) -> Option<Mode> {
         MODES.get(code as usize).map(|m| m.mode)
     }
-
-    /// The lobby's lines for the rules: mode, damage and, when timed, the
-    /// time limit.
-    pub(crate) fn lines(&self) -> Vec<(&'static str, String)> {
-        let mut out = vec![
-            ("Mode", self.info().name.to_string()),
-            ("Damage", format!("x{}", self.damage)),
-        ];
-        if self.info().timed {
-            out.push(("Time limit", clock(u32::from(self.time_limit) * 60)));
-        }
-        out
-    }
 }
 
 /// `m:ss` for a count of ticks (60 a second), rounded up to the second.
@@ -204,7 +191,6 @@ mod tests {
         r.cycle_time(1);
         assert_eq!(r.time_limit, 60);
         assert!(r.valid());
-        assert_eq!(r.lines().len(), 3, "the timed mode shows its limit");
         assert_eq!(MatchRules::mode_from(r.mode_code()), Some(r.mode));
         assert!(!MatchRules { time_limit: 7, ..r }.valid());
         assert_eq!(mode_named("best3"), Some(Mode::BestOf3));

@@ -4,7 +4,8 @@
 //! instances read it on the host's clock (the joiner on the snapshot it
 //! shows), hold the Soras still outside the fight, play its sounds as they
 //! see it change, and draw it: the countdown, the clock, each round's end
-//! and the result with Rematch and Leave.
+//! and the result: its title over the field and, in the game's pause menu,
+//! Rematch, Leave and the match's numbers (duel_camp.rs).
 
 use super::duel_lobby::Stage;
 use super::duel_lobby_room::LobbyRoom;
@@ -48,6 +49,9 @@ const RESULT_SHOT: u64 = 150;
 const UP: u64 = 0x10;
 const DOWN: u64 = 0x20;
 const DECIDE: u64 = 0x4;
+/// The result's entries in the pause menu.
+const ENTRY_REMATCH: u8 = pause_menu::CALLER_ENTRY;
+const ENTRY_LEAVE: u8 = pause_menu::CALLER_ENTRY + 1;
 
 #[derive(Resource, Default)]
 pub(crate) struct MatchRoom {
@@ -125,6 +129,7 @@ pub(crate) fn tick(
     mut exits: MessageWriter<AppExit>,
     mut audio: ResMut<Audio>,
     gallery: Res<enemy_gallery::EnemyGallery>,
+    mut camp: Option<ResMut<CampRes>>,
     mut game: ResMut<Game>,
 ) {
     let (Some(mut net), Some(mut lobby), Some(mut room)) = (net, lobby, room) else {
@@ -252,36 +257,112 @@ pub(crate) fn tick(
     game.duel_match = room.m.is_some();
     game.duel_frozen = lobby.up || room.m.is_some_and(|m| !m.fighting());
     sounds(room, seat, now, game);
+    // [Test] `--duel-shots`: the countdown's names and numeral, and GO.
+    if let Some(m) = room.m
+        && matches!(
+            (m.phase, now.saturating_sub(m.since)),
+            (Phase::Countdown, 100) | (Phase::Fight, 20)
+        )
+    {
+        duel_camp::shot(game, 0);
+    }
     let fov = rig.camera.vertical_fov();
-    game.duel_camera =
-        shot(room.m.as_ref(), seat, now, game, fov).or_else(|| lobby.preview(game, fov));
-    // The result screen: Rematch or Leave.
+    game.duel_camera = shot(room.m.as_ref(), seat, now, game, fov);
+    // The result screen: Rematch or Leave, in the game's pause menu when
+    // its art is loaded (else on the labels, with the pad).
+    let over = room.m.is_some_and(|m| m.phase == Phase::Over);
+    let mut pick = None;
+    if let Some(camp) = camp.as_deref_mut() {
+        let want = room
+            .m
+            .filter(|_| over && !game.duel_vote_up)
+            .map(|m| m.began as u32);
+        let text = room.m.map(|m| result_text(&m, seat, net, game));
+        let them = net.peer.clone().unwrap_or_else(|| "Opponent".into());
+        let menu = duel_camp::hold(camp, game, duel_camp::RESULT, want, || {
+            let (pages, help) = text.clone().unwrap_or_default();
+            let mut entries = Vec::new();
+            if playing {
+                entries.push(duel_camp::entry(ENTRY_REMATCH, "Rematch", &help));
+            }
+            entries.push(duel_camp::entry(
+                ENTRY_LEAVE,
+                "Leave",
+                "Back to the Multiplayer screen.",
+            ));
+            entries.push(duel_camp::entry(7, "Results", "The match's numbers."));
+            duel_camp::Request {
+                entries,
+                on_config: false,
+                pages,
+            }
+        });
+        if let (Some(menu), Some(m)) = (menu, room.m.as_ref()) {
+            let (_, help) = text.unwrap_or_default();
+            let status = if m.rematch[seat] {
+                format!("{help} Waiting for {them}.")
+            } else if m.rematch[1 - seat] {
+                format!("{help} {them} wants a rematch.")
+            } else {
+                help
+            };
+            duel_camp::set_help(menu, ENTRY_REMATCH, &status);
+            pick = duel_camp::picked(menu);
+        }
+    }
     let Some(m) = room.m.as_mut() else { return };
     if m.phase != Phase::Over {
         return;
     }
-    let pressed = if game.autoplay.is_some() {
-        // [Test] Unattended: both ask for a rematch two seconds in.
-        if playing && now.saturating_sub(m.since) >= 120 && !m.rematch[seat] {
-            DECIDE
-        } else {
-            0
+    if game.autoplay.is_some() {
+        // [Test] Unattended: both ask for a rematch two seconds in. On the
+        // way the result is captured (`--duel-shots`), then the cursor goes
+        // down to Results and opens it, and that is captured too.
+        let t = now.saturating_sub(m.since);
+        let rematch_at = if game.duel_shots { 240 } else { 120 };
+        if playing && t >= rematch_at && !m.rematch[seat] {
+            pick = Some(ENTRY_REMATCH);
         }
-    } else {
-        game.pad.pressed | game.pad.repeat & (UP | DOWN)
-    };
-    if pressed & (UP | DOWN) != 0 {
-        room.cursor = 1 - room.cursor;
-        game.sound_queue.push((SE_CURSOR, "result"));
+        if game.duel_shots {
+            if t == 40 || t == 150 {
+                duel_camp::shot(game, 0);
+            }
+            let on = camp.as_deref().and_then(|c| c.open.as_ref()).filter(|o| {
+                o.data
+                    .duel
+                    .as_ref()
+                    .is_some_and(|d| d.owner.0 == duel_camp::RESULT)
+            });
+            if let Some(o) = on
+                && (70..104).contains(&t)
+                && t.is_multiple_of(6)
+                && o.state == pause_menu::State::Top
+            {
+                game.duel_camp_press = if o.top_entry() == Some(7) { 0x4 } else { 0x20 };
+            }
+        }
+    } else if camp.is_none() {
+        let pressed = game.pad.pressed | game.pad.repeat & (UP | DOWN);
+        if pressed & (UP | DOWN) != 0 {
+            room.cursor = 1 - room.cursor;
+            game.sound_queue.push((SE_CURSOR, "result"));
+        }
+        if pressed & DECIDE != 0 {
+            game.sound_queue.push((SE_GO, "result"));
+            pick = Some(if room.cursor == 1 || !playing {
+                ENTRY_LEAVE
+            } else {
+                ENTRY_REMATCH
+            });
+        }
     }
-    if pressed & DECIDE != 0 {
-        game.sound_queue.push((SE_GO, "result"));
-        if room.cursor == 1 || !playing {
+    match pick {
+        Some(ENTRY_LEAVE) => {
             // Leave: the duel closes and the launcher comes back on its
-            // Multiplayer screen; the other player
-            // sees "left".
+            // Multiplayer screen; the other player sees "left".
             exits.write(AppExit::Success);
-        } else {
+        }
+        Some(ENTRY_REMATCH) if playing => {
             let want = !m.rematch[seat];
             m.rematch[seat] = want;
             if !host {
@@ -291,7 +372,78 @@ pub(crate) fn tick(
                 net.session.send(RELIABLE, w.finish());
             }
         }
+        _ => {}
     }
+}
+
+/// The result's title, its colour and why the match ended.
+fn result_head(m: &Match, seat: usize, net: &DuelNet) -> (&'static str, [f32; 4], String) {
+    let me = net.name.as_str();
+    let them = net.peer.as_deref().unwrap_or("Opponent");
+    let name = |s: usize| if s == seat { me } else { them };
+    let (title, colour) = match m.winner {
+        Some(w) if usize::from(w) == seat => ("VICTORY", GOLD),
+        Some(_) => ("DEFEAT", RED),
+        None => ("DRAW", WHITE),
+    };
+    let why = match (m.why, m.winner) {
+        (Some(Why::Left), _) => format!("{them} left the duel"),
+        (Some(Why::Time), _) => "Time up: the larger share of HP left".to_string(),
+        (_, Some(w)) => format!("{} wins by knock-out", name(usize::from(w))),
+        _ => "Both knocked out".to_string(),
+    };
+    (title, colour, why)
+}
+
+/// The result's numbers: (label, this player's - the other's).
+fn result_rows(m: &Match, seat: usize, game: &Game) -> Vec<(&'static str, String)> {
+    let mut rows = Vec::new();
+    if duel_match::wins_needed(&game.duel_rules) > 1 {
+        rows.push(("Rounds", format!("{} - {}", m.wins[seat], m.wins[1 - seat])));
+    }
+    rows.push((
+        "Match time",
+        duel_rules::clock(m.since.saturating_sub(m.began) as u32),
+    ));
+    rows.push((
+        "Damage dealt",
+        format!("{} - {}", m.dealt[seat], m.dealt[1 - seat]),
+    ));
+    rows.push((
+        "Hits landed",
+        format!("{} - {}", m.hits[seat], m.hits[1 - seat]),
+    ));
+    rows
+}
+
+/// The result in the pause menu: its Results page and Rematch's help.
+fn result_text(
+    m: &Match,
+    seat: usize,
+    net: &DuelNet,
+    game: &Game,
+) -> (pause_menu::DuelPages, String) {
+    let (title, _, why) = result_head(m, seat, net);
+    let mut rows = vec![duel_camp::info_row(
+        "Result",
+        &format!("{}{}", &title[..1], title[1..].to_lowercase()),
+        &format!("{why}."),
+    )];
+    let note = "Yours first, then the other player's.";
+    rows.extend(
+        result_rows(m, seat, game)
+            .into_iter()
+            .map(|(label, value)| duel_camp::info_row(label, &value, note)),
+    );
+    let pages = pause_menu::DuelPages {
+        names: vec![pause_menu::encode_text("Results")],
+        rows: vec![rows],
+        ..pause_menu::DuelPages::default()
+    };
+    (
+        pages,
+        format!("{why}. Play again: new bans, the same rules."),
+    )
 }
 
 /// The match's sounds, played as this instance sees the match change.
@@ -455,7 +607,8 @@ fn label(text: &str, centre: [f32; 2], size: f32, colour: [f32; 4]) -> Label {
 }
 
 /// The match's display this frame (worked out from the host's clock).
-pub(crate) fn labels(room: &MatchRoom, net: &DuelNet, game: &Game) -> Vec<Label> {
+/// `in_camp`: the pause menu shows the result's choices and numbers.
+pub(crate) fn labels(room: &MatchRoom, net: &DuelNet, game: &Game, in_camp: bool) -> Vec<Label> {
     let Some(m) = room.m else {
         return Vec::new();
     };
@@ -532,40 +685,26 @@ pub(crate) fn labels(room: &MatchRoom, net: &DuelNet, game: &Game) -> Vec<Label>
             };
             out.push(label(&line, [256., 205.], 16., WHITE));
         }
+        Phase::Over if in_camp => {
+            // The title over the field, right of the menu's entries; the
+            // menu holds the rest.
+            let (title, colour, why) = result_head(&m, seat, net);
+            let k = (t as f32 / 30.).min(1.);
+            out.push(label(title, [320., 100.], 44. + 16. * (1. - k), colour));
+            out.push(label(&why, [320., 136.], 14., WHITE));
+        }
         Phase::Over => {
-            let (title, colour) = match m.winner {
-                Some(w) if usize::from(w) == seat => ("VICTORY", GOLD),
-                Some(_) => ("DEFEAT", RED),
-                None => ("DRAW", WHITE),
-            };
+            let (title, colour, why) = result_head(&m, seat, net);
             let k = (t as f32 / 30.).min(1.);
             // The title above, the numbers and choices below: the shot of
             // the Sora shows between them.
             out.push(label(title, [256., 64.], 44. + 16. * (1. - k), colour));
-            let why = match (m.why, m.winner) {
-                (Some(Why::Left), _) => format!("{them} left the duel"),
-                (Some(Why::Time), _) => "Time up: the larger share of HP left".to_string(),
-                (_, Some(w)) => format!("{} wins by knock-out", name(usize::from(w))),
-                _ => "Both knocked out".to_string(),
-            };
             let mut rows = vec![why];
-            if best_of {
-                rows.push(format!("Rounds   {} - {}", m.wins[seat], m.wins[1 - seat]));
-            }
-            rows.push(format!(
-                "Match time   {}",
-                duel_rules::clock(m.since.saturating_sub(m.began) as u32)
-            ));
-            rows.push(format!(
-                "Damage dealt   {} - {}",
-                m.dealt[seat],
-                m.dealt[1 - seat]
-            ));
-            rows.push(format!(
-                "Hits landed   {} - {}",
-                m.hits[seat],
-                m.hits[1 - seat]
-            ));
+            rows.extend(
+                result_rows(&m, seat, game)
+                    .into_iter()
+                    .map(|(l, v)| format!("{l}   {v}")),
+            );
             for (i, r) in rows.iter().enumerate() {
                 let mut l = label(r, [256., 292. + 16. * i as f32], 13., WHITE);
                 l.backed = true;

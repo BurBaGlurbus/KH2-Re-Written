@@ -2,7 +2,10 @@
 //! (the party, the arena, the rules, later). Each player casts a ballot;
 //! the same choice wins, different choices go to the host's coin flip,
 //! sent over the reliable channel with its seed so both screens play the
-//! same flip. Only the F3 test vote uses it for now.
+//! same flip. On screen the vote is the game's pause menu (duel_camp.rs):
+//! the choices are its entries and the help line says where the vote
+//! stands, the coin's face as it spins. Only the F3 test vote uses it for
+//! now.
 
 use super::duel_net::{DuelNet, Status};
 use super::duel_wire::{BALLOT, VOTE};
@@ -196,6 +199,8 @@ pub(crate) struct VoteRoom {
     decided_at: Option<u64>,
     /// Host: the vote the joiner has.
     sent: Option<Vote>,
+    /// Votes this instance has seen (the pause menu's version).
+    serial: u32,
 }
 
 /// The F3 test vote's topic.
@@ -213,6 +218,7 @@ impl VoteRoom {
     pub(crate) fn start(&mut self, vote: Vote) {
         *self = VoteRoom {
             vote: Some(vote),
+            serial: self.serial + 1,
             ..VoteRoom::default()
         };
     }
@@ -227,6 +233,7 @@ fn seat_of(net: &DuelNet) -> usize {
 pub(crate) fn tick(
     net: Option<ResMut<DuelNet>>,
     room: Option<ResMut<VoteRoom>>,
+    mut camp: Option<ResMut<CampRes>>,
     mut game: ResMut<Game>,
 ) {
     let (Some(mut net), Some(mut room)) = (net, room) else {
@@ -234,7 +241,14 @@ pub(crate) fn tick(
     };
     let (net, room, game) = (&mut *net, &mut *room, &mut *game);
     if !matches!(net.status, Status::Playing) {
-        *room = VoteRoom::default();
+        *room = VoteRoom {
+            serial: room.serial,
+            ..VoteRoom::default()
+        };
+        game.duel_vote_up = false;
+        if let Some(c) = camp.as_deref_mut() {
+            duel_camp::hold(c, game, duel_camp::VOTE, None, || unreachable!());
+        }
         return;
     }
     let seat = seat_of(net);
@@ -263,6 +277,7 @@ pub(crate) fn tick(
                     {
                         room.cursor = 0;
                         room.decided_at = None;
+                        room.serial += 1;
                     }
                     room.vote = Some(v);
                 }
@@ -270,14 +285,46 @@ pub(crate) fn tick(
             _ => net.inbox.push(m),
         }
     }
+    // The pause menu: the vote's choices, its state on the help line.
+    game.duel_vote_up = room.vote.is_some();
+    // [Test] `--duel-shots`: the coin as it spins.
+    if room.decided_at.is_some_and(|at| game.tick == at + 60) {
+        duel_camp::shot(game, 0);
+    }
+    let mut picked = None;
+    if let Some(c) = camp.as_deref_mut() {
+        let want = room.vote.as_ref().map(|_| room.serial);
+        let status = status(room, net, game);
+        let options = room
+            .vote
+            .as_ref()
+            .map(|v| v.options.clone())
+            .unwrap_or_default();
+        let menu = duel_camp::hold(c, game, duel_camp::VOTE, want, || duel_camp::Request {
+            entries: options
+                .iter()
+                .enumerate()
+                .map(|(i, o)| duel_camp::entry(pause_menu::CALLER_ENTRY + i as u8, o, &status))
+                .collect(),
+            on_config: false,
+            pages: pause_menu::DuelPages::default(),
+        });
+        if let Some(menu) = menu {
+            for i in 0..options.len() {
+                duel_camp::set_help(menu, pause_menu::CALLER_ENTRY + i as u8, &status);
+            }
+            picked = duel_camp::picked(menu).map(|id| usize::from(id - pause_menu::CALLER_ENTRY));
+        }
+    }
     let Some(vote) = room.vote.as_mut() else {
         return;
     };
     // This player's ballot.
     if vote.ballots[seat].is_none() {
-        let pressed = if game.autoplay.is_some() {
+        let pressed = if game.autoplay.is_some() || camp.is_some() {
             // [Test] Unattended: the host takes the first choice, the
-            // joiner the second (a tie, so the coin flips).
+            // joiner the second (a tie, so the coin flips). With the pause
+            // menu, its pick is the ballot.
             0
         } else {
             game.pad.pressed | game.pad.repeat & (UP | DOWN)
@@ -285,6 +332,8 @@ pub(crate) fn tick(
         let n = vote.options.len();
         let choice = if game.autoplay.is_some() {
             Some(seat.min(n - 1))
+        } else if picked.is_some() {
+            picked.filter(|&c| c < n)
         } else if pressed & UP != 0 {
             room.cursor = (room.cursor + n - 1) % n;
             game.sound_queue.push((SE_MOVE, "vote"));
@@ -358,6 +407,53 @@ pub(crate) fn tick(
             room.vote = None;
             room.decided_at = None;
         }
+    }
+}
+
+/// Where the vote stands, for the pause menu's help line.
+fn status(room: &VoteRoom, net: &DuelNet, game: &Game) -> String {
+    let Some(v) = &room.vote else {
+        return String::new();
+    };
+    let seat = seat_of(net);
+    let them = net.peer.as_deref().unwrap_or("Opponent");
+    match (v.outcome, room.decided_at) {
+        (Some(o), Some(at)) => {
+            let t = game.tick - at;
+            match o.flip {
+                Some(seed) if t < FLIP_TICKS => {
+                    let (a, b) = (v.ballots[0].unwrap_or(0), v.ballots[1].unwrap_or(0));
+                    let face = flip_face(seed, a, b, t);
+                    format!(
+                        "A tie: the coin decides... {}",
+                        v.options[usize::from(face)]
+                    )
+                }
+                Some(_) => format!(
+                    "{}: {}, by coin flip.",
+                    v.question,
+                    v.options[usize::from(o.choice)]
+                ),
+                None => format!("{}: {}.", v.question, v.options[usize::from(o.choice)]),
+            }
+        }
+        _ => match v.ballots[seat] {
+            None => {
+                let theirs = if v.ballots[1 - seat].is_some() {
+                    "has voted"
+                } else {
+                    "is voting"
+                };
+                format!(
+                    "{}: choose one. {them} {theirs}. A tie goes to a coin flip.",
+                    v.question
+                )
+            }
+            Some(c) => format!(
+                "You chose {}. Waiting for {them}.",
+                v.options[usize::from(c)]
+            ),
+        },
     }
 }
 

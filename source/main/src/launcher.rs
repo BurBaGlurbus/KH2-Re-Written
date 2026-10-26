@@ -48,6 +48,21 @@ const LIST_TOP: f32 = 196.;
 const LIST_BOTTOM: f32 = 630.;
 const LIST_WIDTH: f32 = 620.;
 const GUIDE_LIST_TOP: f32 = 572.;
+/// The Multiplayer screen in the pause menu's (the camp's) layout: its
+/// entry boxes at the top left under the header, the help box and the
+/// panel at the bottom [launcher drawing after the camp's look; the game's
+/// own menu art is not loaded here].
+const MP_ROW_X: f32 = 200.;
+const MP_ROW_TOP: f32 = 132.;
+const MP_ROW_W: f32 = 340.;
+const MP_ROW_BOTTOM: f32 = 540.;
+const MP_BAND: f32 = 112.;
+const MP_PANEL_TOP: f32 = 560.;
+const MP_HELP_X: f32 = 400.;
+const MP_BLUE: u32 = 0x1530ff;
+const MP_HELP: u32 = 0x48b4ff;
+const MP_ORANGE: u32 = 0xff7a1a;
+const MP_YELLOW: u32 = 0xffcc33;
 
 #[derive(Clone, Debug, PartialEq)]
 enum Action {
@@ -657,6 +672,7 @@ fn read_input(
 /// Rows of the current list: height, gap, label size.
 fn row_metrics(l: &Launcher) -> (f32, f32, f32) {
     match l.screen {
+        Screen::Multiplayer(_) => (44., 4., 24.),
         Screen::Browse(_) | Screen::BrowseIso(..) => (40., 4., 20.),
         _ if l.items.iter().any(|i| i.detail.is_some()) => (66., 6., 24.),
         _ => (48., 6., 24.),
@@ -665,13 +681,23 @@ fn row_metrics(l: &Launcher) -> (f32, f32, f32) {
 
 fn visible_rows(l: &Launcher) -> usize {
     let (h, gap, _) = row_metrics(l);
-    (((LIST_BOTTOM - list_top(l) + gap) / (h + gap)) as usize).max(1)
+    let bottom = if matches!(l.screen, Screen::Multiplayer(_)) {
+        MP_ROW_BOTTOM
+    } else {
+        LIST_BOTTOM
+    };
+    (((bottom - list_top(l) + gap) / (h + gap)) as usize).max(1)
 }
 
 fn row_rect(l: &Launcher, i: usize) -> [f32; 4] {
     let (h, gap, _) = row_metrics(l);
     let k = i as f32 - l.scroll as f32;
-    [MARGIN, list_top(l) + k * (h + gap), LIST_WIDTH, h]
+    let (x, w) = if matches!(l.screen, Screen::Multiplayer(_)) {
+        (MP_ROW_X, MP_ROW_W)
+    } else {
+        (MARGIN, LIST_WIDTH)
+    };
+    [x, list_top(l) + k * (h + gap), w, h]
 }
 
 fn move_cursor(l: &mut Launcher, by: i32) {
@@ -1280,6 +1306,20 @@ fn draw(
     }
     let mut paint = l.paint.take().expect("paint");
     let (p, f) = (&mut paint, &mut *frame);
+    if matches!(l.screen, Screen::Multiplayer(_)) {
+        multiplayer(l, p, f);
+        if l.fade > 0. {
+            p.rect(
+                f,
+                [0., 0., paint::W, paint::H],
+                [rgba(0x000000, l.fade); 4],
+                false,
+            );
+        }
+        p.flush(&mut images, f);
+        l.paint = Some(paint);
+        return;
+    }
     let (top, bottom) = (rgba(0x0b0f1a, 1.), rgba(0x05070c, 1.));
     p.rect(
         f,
@@ -1400,6 +1440,7 @@ fn list_top(l: &Launcher) -> f32 {
     match &l.screen {
         Screen::Problem { lines, .. } => LIST_TOP + 26. * lines.len() as f32 + 24.,
         Screen::Guide(_) => GUIDE_LIST_TOP,
+        Screen::Multiplayer(_) => MP_ROW_TOP,
         _ => LIST_TOP,
     }
 }
@@ -1466,6 +1507,211 @@ fn list(l: &Launcher, p: &mut Paint, f: &mut Ui2dFrame) {
             [[mid - 9., y - 4.], [mid + 9., y - 4.], [mid, y + 5.]],
             c,
         );
+    }
+}
+
+/// The Multiplayer screen in the camp's look: the header band and its
+/// MENU-style title, the entries as the camp's boxes (red for the cursor's,
+/// the pointer beside it), the bottom panel with the player's name and the
+/// hosts found, and the help box with the cursor's entry's line.
+fn multiplayer(l: &Launcher, p: &mut Paint, f: &mut Ui2dFrame) {
+    let blue = rgba(MP_BLUE, 1.);
+    let (top, bottom) = (rgba(0x030a2e, 1.), rgba(0x01030f, 1.));
+    p.rect(
+        f,
+        [0., 0., paint::W, paint::H],
+        [top, top, bottom, bottom],
+        false,
+    );
+    // The header band, its frame lines and the title's plate.
+    let (band_top, band_bottom) = (rgba(0x020a3a, 1.), rgba(0x010628, 1.));
+    p.rect(
+        f,
+        [0., 0., paint::W, MP_BAND],
+        [band_top, band_top, band_bottom, band_bottom],
+        false,
+    );
+    p.rect(f, [0., MP_BAND, paint::W, 4.], [blue; 4], false);
+    for x in [218., 236.] {
+        p.rect(f, [x, 0., 3., MP_BAND], [blue; 4], false);
+    }
+    let (pill_top, pill_bottom) = (rgba(0x2040e0, 1.), rgba(0x0a1890, 1.));
+    p.plate(
+        f,
+        [128., 14., 272., 44.],
+        22.,
+        0.,
+        [pill_top, pill_top, pill_bottom, pill_bottom],
+        false,
+    );
+    p.text(
+        f,
+        Face::Heading,
+        30.,
+        [264., 16.],
+        0.5,
+        "MULTIPLAYER",
+        [rgba(TEXT, 1.); 2],
+        0.,
+    );
+    // The entries.
+    let (h, _, size) = row_metrics(l);
+    let rows = visible_rows(l);
+    for i in l.scroll..(l.scroll + rows).min(l.items.len()) {
+        let item = &l.items[i];
+        let on = i == l.cursor;
+        let [x, y, w, _] = row_rect(l, i);
+        let (edge, fill_top, fill_bottom, ink) = match (on, item.action.is_some()) {
+            (true, _) => (0xff2a1a, 0x7a0a08, 0x220000, TEXT),
+            (false, true) => (0x4a5060, 0x2a2e36, 0x0e1014, 0xb4b8c0),
+            (false, false) => (0x353a46, 0x1c1f26, 0x0a0b0e, FAINT),
+        };
+        p.plate(
+            f,
+            [x - 2., y - 2., w + 4., h + 4.],
+            12.,
+            0.,
+            [rgba(edge, 1.); 4],
+            false,
+        );
+        let (a, b) = (rgba(fill_top, 1.), rgba(fill_bottom, 1.));
+        p.plate(f, [x, y, w, h], 10., 0., [a, a, b, b], false);
+        let tag_w = item.tag.map_or(0., |t| p.measure(Face::Body, 15., t) + 20.);
+        let label = p.fit(Face::Body, size, &item.label, w - 32. - tag_w);
+        let label_y = y + (h - size * 1.33) / 2.;
+        p.text(
+            f,
+            Face::Body,
+            size,
+            [x + 22., label_y],
+            0.,
+            &label,
+            [rgba(ink, 1.); 2],
+            0.,
+        );
+        if let Some(tag) = item.tag {
+            p.text(
+                f,
+                Face::Body,
+                15.,
+                [x + w - 14., y + (h - 20.) / 2.],
+                1.,
+                tag,
+                [rgba(GOLD, 1.); 2],
+                0.,
+            );
+        }
+        if on {
+            let cy = y + h / 2.;
+            triangle(
+                f,
+                p,
+                [[x - 34., cy - 11.], [x - 34., cy + 11.], [x - 10., cy]],
+                rgba(TEXT, 1.),
+            );
+        }
+    }
+    // The bottom panels: the player's name and the hosts found, then the
+    // help box.
+    let (panel_top, panel_bottom) = (rgba(0x000528, 1.), rgba(0x000214, 1.));
+    let fill = [panel_top, panel_top, panel_bottom, panel_bottom];
+    let panel_h = paint::H - MP_PANEL_TOP;
+    p.rect(f, [0., MP_PANEL_TOP, MP_HELP_X - 16., panel_h], fill, false);
+    p.rect(
+        f,
+        [MP_HELP_X, MP_PANEL_TOP, paint::W - MP_HELP_X, panel_h],
+        fill,
+        false,
+    );
+    p.rect(f, [0., MP_PANEL_TOP, MP_HELP_X - 16., 4.], [blue; 4], false);
+    p.rect(
+        f,
+        [MP_HELP_X - 19., MP_PANEL_TOP, 3., panel_h],
+        [blue; 4],
+        false,
+    );
+    p.rect(
+        f,
+        [MP_HELP_X, MP_PANEL_TOP, paint::W - MP_HELP_X, 4.],
+        [blue; 4],
+        false,
+    );
+    p.rect(f, [MP_HELP_X, MP_PANEL_TOP, 3., panel_h], [blue; 4], false);
+    let name = p.fit(Face::Body, 26., &l.player_name(), 300.);
+    let hosts = l.found.iter().filter(|h| h.compatible && h.open).count();
+    for (label, value, colour, y) in [
+        ("NAME", name, MP_ORANGE, MP_PANEL_TOP + 16.),
+        ("HOSTS", hosts.to_string(), 0x2ad4ff, MP_PANEL_TOP + 80.),
+    ] {
+        p.text(
+            f,
+            Face::Heading,
+            22.,
+            [40., y],
+            0.,
+            label,
+            [rgba(colour, 1.); 2],
+            0.,
+        );
+        p.text(
+            f,
+            Face::Body,
+            26.,
+            [MP_HELP_X - 50., y + 26.],
+            1.,
+            &value,
+            [rgba(MP_YELLOW, 1.); 2],
+            0.,
+        );
+    }
+    let help = l
+        .items
+        .get(l.cursor)
+        .map(|i| {
+            i.detail
+                .clone()
+                .unwrap_or_else(|| multiplayer_help(&i.label))
+        })
+        .unwrap_or_default();
+    let mut y = MP_PANEL_TOP + 18.;
+    for line in wrap(p, Face::Body, 26., &help, paint::W - MP_HELP_X - 60.)
+        .into_iter()
+        .take(2)
+    {
+        p.text(
+            f,
+            Face::Body,
+            26.,
+            [MP_HELP_X + 25., y],
+            0.,
+            &line,
+            [rgba(MP_HELP, 1.); 2],
+            0.,
+        );
+        y += 36.;
+    }
+    let hints = if l.editing.is_some() {
+        "Type, then Enter to keep      Esc  cancel"
+    } else {
+        "Enter / A  select      Esc / B  back"
+    };
+    p.text(
+        f,
+        Face::Body,
+        15.,
+        [MP_HELP_X + 25., paint::H - 34.],
+        0.,
+        hints,
+        [rgba(FAINT, 1.); 2],
+        0.,
+    );
+}
+
+/// The help line of a Multiplayer entry with no detail of its own.
+fn multiplayer_help(label: &str) -> String {
+    match label {
+        "Back" => "Back to the test list.".into(),
+        _ => String::new(),
     }
 }
 

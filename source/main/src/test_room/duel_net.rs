@@ -23,12 +23,9 @@ const RIGHT: f32 = 590.;
 const TOP: f32 = 46.;
 const TEXT: [f32; 4] = [1.6, 1.6, 1.6, 1.];
 const WARN: [f32; 4] = [1.8, 1.3, 0.5, 1.];
-/// The lobby's list: size, line height, top, and the cursor row's colour.
+/// The vote's list: size, line height, and the cursor row's colour.
 const LOBBY_SIZE: f32 = 12.;
 const LOBBY_LINE: f32 = 15.;
-const LOBBY_TOP: f32 = 24.;
-/// The panel's left edge (top left, clear of the overlay and the list).
-const LOBBY_LEFT: f32 = -20.;
 const CURSOR: [f32; 4] = [1.9, 1.6, 0.7, 1.];
 /// The vote's panel top.
 const VOTE_TOP: f32 = 290.;
@@ -335,7 +332,8 @@ pub(crate) fn begin(
                     serde_json::json!({"event":"net_disconnected","tick":tick,"reason":reason}),
                 );
                 game.rivals.clear();
-                let text = match (net.role, net.peer.take()) {
+                // The name stays for the result screen ("X left the duel").
+                let text = match (net.role, net.peer.clone()) {
                     // The host keeps listening for the next player.
                     (Role::Host, who) => format!(
                         "{} left: {reason}. Waiting for a player",
@@ -358,6 +356,7 @@ pub(crate) fn begin(
     {
         let port = net.session.local_addr().map(|a| a.port()).unwrap_or(0);
         net.status = Status::Waiting(port);
+        net.peer = None;
     }
 }
 
@@ -534,9 +533,9 @@ fn faded_backing(
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn present(
     net: Option<ResMut<DuelNet>>,
-    lobby: Option<Res<duel_lobby_room::LobbyRoom>>,
     vote: Option<Res<duel_vote::VoteRoom>>,
     duel_match: Option<Res<duel_match_room::MatchRoom>>,
+    camp: Option<Res<CampRes>>,
     game: Res<Game>,
     hud: Option<Res<Hud>>,
     mut frame: ResMut<Ui2dFrame>,
@@ -577,51 +576,25 @@ pub(crate) fn present(
             field_command_menu::text_quads_sized(&encoded, [x, BANNER_Y], TEXT, &f, BANNER_SIZE),
         ));
     }
-    // The lobby's panel at the top left, the cursor's row in gold; it fades
-    // in with each stage.
-    let fade = lobby.as_ref().map_or(1., |l| l.fade());
-    let lobby_lines = lobby
-        .map(|l| duel_lobby_room::lines(&l, &net, &game))
-        .unwrap_or_default();
-    if !lobby_lines.is_empty() {
-        let width = lobby_lines
-            .iter()
-            .map(|(l, _, _)| field_command_menu::text_width(l, &f, LOBBY_SIZE))
-            .fold(0., f32::max);
-        let x = LOBBY_LEFT;
-        frame.draws.push(faded_backing(
-            white,
-            [
-                x - 10.,
-                LOBBY_TOP - 6.,
-                x + width + 10.,
-                LOBBY_TOP + LOBBY_LINE * lobby_lines.len() as f32 + 4.,
-            ],
-            fade,
-        ));
-        let mut quads = Vec::new();
-        for (n, (line, on, warn)) in lobby_lines.iter().enumerate() {
-            let [r, g, b, a] = if *warn {
-                WARN
-            } else if *on {
-                CURSOR
-            } else {
-                TEXT
-            };
-            let colour = [r, g, b, a * fade];
-            quads.extend(field_command_menu::text_quads_sized(
-                line,
-                [x, LOBBY_TOP + n as f32 * LOBBY_LINE],
-                colour,
-                &f,
-                LOBBY_SIZE,
-            ));
-        }
-        frame.draws.push((sheet, quads));
-    }
-    // The match: countdown, clock, rounds and the result, centred.
+    // The match: countdown, clock, rounds and the result, centred (with the
+    // pause menu's art the result's choices and a vote are in the menu).
+    let in_camp = camp.is_some();
+    // The match's text is over the field, and over the result's own top
+    // level; any other menu covers it.
+    let covered = camp
+        .as_ref()
+        .and_then(|c| c.open.as_ref())
+        .is_some_and(|m| {
+            let result = m
+                .data
+                .duel
+                .as_ref()
+                .is_some_and(|d| d.owner.0 == duel_camp::RESULT);
+            !(result && m.state == pause_menu::State::Top)
+        });
     let labels = duel_match
-        .map(|m| duel_match_room::labels(&m, &net, &game))
+        .filter(|_| !covered)
+        .map(|m| duel_match_room::labels(&m, &net, &game, in_camp))
         .unwrap_or_default();
     for l in &labels {
         let width = field_command_menu::text_width(&l.text, &f, l.size);
@@ -638,8 +611,9 @@ pub(crate) fn present(
             field_command_menu::text_quads_sized(&l.text, [x, y], l.colour, &f, l.size),
         ));
     }
-    // A vote: its own panel below the lobby's place.
+    // A vote without the pause menu's art: its own panel.
     let vote_lines: Vec<(Vec<u8>, bool)> = vote
+        .filter(|_| !in_camp)
         .map(|v| duel_vote::lines(&v, &net, &game))
         .unwrap_or_default()
         .into_iter()

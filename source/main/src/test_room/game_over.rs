@@ -329,28 +329,6 @@ pub struct GameOverRes {
 }
 
 impl GameOverRes {
-    /// The pause list's art for another menu (the duel's lobby): its
-    /// sequence, the art and font sheets, and the font.
-    pub(crate) fn list_art(&self) -> (&data::sprite_sequence::Sequence, usize, usize, &SystemFont) {
-        (
-            &self.src.pause.layout.sequences[0],
-            self.art,
-            self.font,
-            &self.src.font,
-        )
-    }
-
-    /// The game-over list's definition with other rows (results 1..=n):
-    /// the same boxes, glove and light, no backdrop.
-    pub(crate) fn list_definition(&self, n: usize) -> Definition {
-        let mut d = self.src.definition.clone();
-        d.items = (1..=n as u16)
-            .map(|result| pause_definition::Item { result, message: 0 })
-            .collect();
-        d.backdrop = -1;
-        d
-    }
-
     pub fn new(src: Source, start: ([f32; 3], f32), tour: bool) -> Self {
         Self {
             src,

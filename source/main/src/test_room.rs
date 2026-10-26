@@ -74,6 +74,7 @@ mod deck_tour;
 mod drive_fx;
 mod drive_room;
 mod duel_arena;
+mod duel_camp;
 mod duel_fx;
 mod duel_hits;
 mod duel_loadout;
@@ -1141,12 +1142,20 @@ struct Game {
     net_simulated: Option<usize>,
     /// The duel's lobby (or countdown) holds both Soras still.
     duel_frozen: bool,
-    /// The duel's lobby lets the camp open (the builds).
-    duel_camp: bool,
     /// F3 asked the host for a test vote.
     duel_test_vote: bool,
-    /// The duel's lobby asked the camp to open (its list's row).
+    /// A duel screen asks the camp to open (duel_camp.rs), with its
+    /// entries and pages.
     duel_open_camp: bool,
+    duel_camp: Option<duel_camp::Request>,
+    /// A vote is open: the other duel screens give it the camp.
+    duel_vote_up: bool,
+    /// [Test] The duel's unattended script: menu keys (mode 7) for the
+    /// camp this tick.
+    duel_camp_press: u64,
+    /// [Test] `--duel-shots`: the duel's screens add captures of
+    /// themselves.
+    duel_shots: bool,
     /// A match is running: a knocked-out Sora stays down for the round.
     duel_match: bool,
     /// Damage dealt and hits landed this match, by the attacker's slot.
@@ -11831,6 +11840,9 @@ fn camp_tick(
         } else if game.magic_tour || game.sephiroth_tour {
             // The magic and Sephiroth tours never open the camp.
             0
+        } else if game.duel {
+            // The duel's screens: their script's keys.
+            std::mem::take(&mut game.duel_camp_press)
         } else {
             AUTOPLAY_CAMP
                 .iter()
@@ -11888,7 +11900,12 @@ fn camp_tick(
         time_frames: tick as u32,
         members: std::iter::once(pause_menu::Member {
             name: c.source.name.clone(),
-            level: 1,
+            // The room's Sora shows level 1 [I]; a duel's is its level 99.
+            level: if game.duel {
+                i32::from(game.sora.vitals.level)
+            } else {
+                1
+            },
             hp,
             max_hp,
             mp,
@@ -11996,7 +12013,10 @@ fn camp_tick(
         }
         if menu.closed {
             settings.save_if_changed();
-            c.memory = menu.memory;
+            // A duel screen's cursor places are not the player's own menu's.
+            if menu.data.duel.is_none() {
+                c.memory = menu.memory;
+            }
             c.config_flags = menu.data.config_flags;
             game.config_flags = c.config_flags;
             c.stock = menu.data.items.counts.clone();
@@ -12165,13 +12185,36 @@ fn camp_tick(
     } else if c.curtain.is_none()
         && (c.pad.pressed & 0x2 != 0 || std::mem::take(&mut game.duel_open_camp))
         && !game.talking
-        && (!game.duel || game.duel_camp)
+        && (!game.duel || game.duel_camp.is_some())
     {
-        let (menu, s) = Camp::open(
-            layout,
-            camp_data(c, panels, game.items.as_ref(), &settings, &side),
-            c.memory,
-        );
+        let mut data = camp_data(c, panels, game.items.as_ref(), &settings, &side);
+        // A duel screen (duel_camp.rs): its entries (the camp's own by id)
+        // and its pages on the Config screen, the cursor on its first entry.
+        let (menu, s) = if let Some(req) = game.duel_camp.take() {
+            data.entries = req
+                .entries
+                .iter()
+                .filter_map(|e| match e {
+                    duel_camp::Item::Own(id) => data.entries.iter().find(|x| x.id == *id).cloned(),
+                    duel_camp::Item::New(e) => Some(e.clone()),
+                })
+                .collect();
+            data.duel = Some(req.pages);
+            data.settings = None;
+            let memory = pause_menu::Memory {
+                entry: data.entries.first().map_or(0, |e| e.id),
+                config_page: 0,
+                config_row: 0,
+                ..c.memory
+            };
+            if req.on_config {
+                (Camp::open_on_config(layout, data, memory, 0), Vec::new())
+            } else {
+                Camp::open(layout, data, memory)
+            }
+        } else {
+            Camp::open(layout, data, c.memory)
+        };
         c.open = Some(menu);
         sounds = s;
         game.tick += 1;
@@ -12547,6 +12590,7 @@ fn camp_data(
         },
         settings: Some(settings.current.clone()),
         languages: settings.languages.clone(),
+        duel: None,
     }
 }
 
@@ -13018,6 +13062,7 @@ fn run(mut args: Vec<PathBuf>) -> Result<AppExit, Box<dyn std::error::Error>> {
     let mut rival_script = false;
     let mut duel_bench = false;
     let mut duel_magic = false;
+    let mut duel_shots = false;
     let mut duel_idle = false;
     // The LAN duel (duel_net.rs): host or join, the port, the name shown
     // to the other player, the link simulator and the overlay.
@@ -13089,6 +13134,7 @@ fn run(mut args: Vec<PathBuf>) -> Result<AppExit, Box<dyn std::error::Error>> {
             Some("--rival-script") => rival_script = true,
             Some("--duel-bench") => duel_bench = true,
             Some("--duel-magic") => duel_magic = true,
+            Some("--duel-shots") => duel_shots = true,
             Some("--duel-idle") => duel_idle = true,
             Some("--host") => net_host = true,
             Some("--join") => {
@@ -13782,9 +13828,12 @@ fn run(mut args: Vec<PathBuf>) -> Result<AppExit, Box<dyn std::error::Error>> {
         net_overlay: false,
         net_simulated: None,
         duel_frozen: false,
-        duel_camp: false,
         duel_test_vote: false,
         duel_open_camp: false,
+        duel_camp: None,
+        duel_vote_up: false,
+        duel_camp_press: 0,
+        duel_shots,
         duel_match: false,
         duel_dealt: [0; 2],
         duel_landed: [0; 2],
@@ -14611,7 +14660,6 @@ fn run(mut args: Vec<PathBuf>) -> Result<AppExit, Box<dyn std::error::Error>> {
                     perf_overlay::sample,
                     perf_overlay::present,
                     duel_net::sample,
-                    duel_lobby_room::present,
                     duel_net::present,
                 )
                     .chain(),
