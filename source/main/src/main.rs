@@ -13,6 +13,7 @@
 #![cfg_attr(windows, windows_subsystem = "windows")]
 mod area;
 mod cutscene;
+mod early_renderer;
 mod image_inspector;
 mod keyblade_board;
 mod launcher;

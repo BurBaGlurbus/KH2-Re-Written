@@ -12725,6 +12725,8 @@ fn run(mut args: Vec<PathBuf>) -> Result<AppExit, Box<dyn std::error::Error>> {
         args = launch_file_args("launch-talk")?;
     }
     let started = Instant::now();
+    // The GPU device starts while the data decodes (used by the app below).
+    let early_renderer = crate::early_renderer::EarlyRenderer::start();
     if args.len() < 3 {
         return Err("usage: room <Steam-root> <manifest> <test-room-config> [--log new.jsonl] [--frames N] [--autoplay <new-capture-dir> | --ability-tour <new-capture-dir> | --gear-tour <new-capture-dir> | --enemy-tour <new-capture-dir>] [--enemy-audit <new-private-report.json>] [--gamepad] [--show-collision] [--basic-fk] [--uncapped | --frame-cap N] [--perf-overlay]".into());
     }
@@ -13997,18 +13999,22 @@ fn run(mut args: Vec<PathBuf>) -> Result<AppExit, Box<dyn std::error::Error>> {
         .init_resource::<enemy_target::Targeting>()
         .insert_resource(Time::<Fixed>::from_hz(60.))
         .insert_resource(ClearColor(Color::srgb(0.06, 0.07, 0.09)))
-        .add_plugins(DefaultPlugins.set(WindowPlugin {
-            primary_window: Some(Window {
-                title: "Kingdom Hearts II Re:Written (test room; quarantined source) | WASD move, Space jump, Enter/LMB attack, RMB guard, F talk, M menu, F3 debug, Esc".into(),
-                resolution: (1280, 720).into(),
-                ..default()
-            }),
-            // Closing the window goes through finish() so the exit code and
-            // log record reflect an unfinished unattended run.
-            exit_condition: bevy::window::ExitCondition::DontExit,
-            close_when_requested: false,
-            ..default()
-        }))
+        .add_plugins(
+            DefaultPlugins
+                .set(WindowPlugin {
+                    primary_window: Some(Window {
+                        title: "Kingdom Hearts II Re:Written (test room; quarantined source) | WASD move, Space jump, Enter/LMB attack, RMB guard, F talk, M menu, F3 debug, Esc".into(),
+                        resolution: (1280, 720).into(),
+                        ..default()
+                    }),
+                    // Closing the window goes through finish() so the exit code
+                    // and log record reflect an unfinished unattended run.
+                    exit_condition: bevy::window::ExitCondition::DontExit,
+                    close_when_requested: false,
+                    ..default()
+                })
+                .set(early_renderer.plugin()),
+        )
         .add_plugins(FogPlugin)
         .add_plugins(visual::frame_limit::FrameLimitPlugin)
         .add_plugins(visual::texel_upload::TexelUploadPlugin)
