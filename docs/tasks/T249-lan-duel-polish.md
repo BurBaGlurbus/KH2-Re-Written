@@ -179,3 +179,21 @@ trimmed, `netD` both):
 The FPS columns move within the runs' spread (two instances on one GPU); the bytes are the change: 22% less from
 the host, 35% less from the joiner. `netE` (the joiner's bench Sora driven through the trimmed input against an
 idle host): closes in and wins by knock-out, 5 hits. Checks: fmt, clippy, the wire tests: PASS.
+
+## 8. Host list ping, button prompts; what was measured and left
+
+- **Host list**: it already asked every second and dropped a silent host after 3.5 s, with "Looking for hosts on
+  this network..." while none answer. Each host's row now also shows its round trip ("192.168.1.5, 3 ms": the
+  answer's time since the ask, smoothed; only answers inside the ask's second count). The list redraws when a
+  ping moves by 5 ms. Test: the browser finds a local host and knows its ping.
+- **Button prompts**: the lobby's help lines name the buttons of the device last used (the camp's glyph family):
+  keyboard M / Left arrow / Right arrow (the room's default bindings), Xbox Menu, PlayStation Options, other
+  pads Start, with Left and Right.
+- **Warm-up (not done, measured)**: a traced loopback (`trace3`) at the match's start shows the long frames
+  spread over many systems at once again (the two instances), the one-off costs being the lobby's Start tick
+  (about 49 ms in the traced build: both builds go on) and the joiner's first spell effect (55-58 ms,
+  `warm0`). Warming every spell and form effect would mean running each offscreen in the lobby; not done
+  for so small a gain.
+- **Rejoin (not done)**: holding a dropped joiner's place for 30 s needs the host to go back to waiting with the
+  match kept and the joiner to come back into it; the session ends on a drop today. Left for its own task.
+- **Slow motion at a K.O. (not done)**: see section 6.

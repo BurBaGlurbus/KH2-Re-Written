@@ -132,6 +132,42 @@ pub(crate) fn shot(game: &mut Game, key: (u8, u64, u64)) {
     game.captures.insert(i, at);
 }
 
+/// The buttons the duel's help lines name, for the device last used (the
+/// camp's glyph family: keyboard, Xbox, PlayStation, other) [duel choice;
+/// the keyboard's are the room's default bindings, visual::input].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct Prompts {
+    pub start: &'static str,
+    /// Left and right on the D-pad.
+    pub left: &'static str,
+    pub right: &'static str,
+}
+
+impl Default for Prompts {
+    fn default() -> Self {
+        Prompts {
+            start: "M",
+            left: "Left arrow",
+            right: "Right arrow",
+        }
+    }
+}
+
+pub(crate) fn prompts(camp: &CampRes) -> Prompts {
+    let pad = |start| Prompts {
+        start,
+        left: "Left",
+        right: "Right",
+    };
+    match camp.glyph {
+        _ if camp.keyboard_last => Prompts::default(),
+        1 => pad("Menu"),
+        2 => pad("Options"),
+        3 => pad("Start"),
+        _ => Prompts::default(),
+    }
+}
+
 /// The caller's pick on the camp's top level, taken.
 pub(crate) fn picked(menu: &mut Camp) -> Option<u8> {
     menu.data.duel.as_mut().and_then(|d| d.picked.take())

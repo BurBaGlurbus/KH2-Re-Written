@@ -598,6 +598,8 @@ pub struct Found {
     pub compatible: bool,
     /// The host still waits for a player.
     pub open: bool,
+    /// How long its answer to our last ask took (ms, smoothed).
+    pub ping_ms: Option<u32>,
     last_seen: Duration,
 }
 
@@ -658,12 +660,20 @@ impl Browser {
                         open,
                     }) = Datagram::decode(&buffer[..n])
                     {
+                        // The answer's time since the last ask (asks go out a
+                        // second apart, so a later answer is no measure).
+                        let ping = self
+                            .last_probe
+                            .map(|t| now.saturating_sub(t))
+                            .filter(|d| *d < PROBE_EVERY)
+                            .map(|d| d.as_millis() as u32);
                         self.note(
                             now,
                             from,
                             name,
                             protocol == PROTOCOL && build == self.build,
                             open,
+                            ping,
                         );
                     }
                 }
@@ -687,14 +697,16 @@ impl Browser {
         name: String,
         compatible: bool,
         open: bool,
+        ping: Option<u32>,
     ) {
         // One host answers both the broadcast and the loopback probe: keep
         // one row per name and port, preferring the LAN address.
-        let row = Found {
+        let mut row = Found {
             name,
             addr,
             compatible,
             open,
+            ping_ms: ping,
             last_seen: now,
         };
         match self
@@ -703,6 +715,11 @@ impl Browser {
             .find(|f| f.addr == addr || (f.name == row.name && f.addr.port() == addr.port()))
         {
             Some(f) => {
+                // A steadier number: three parts the last, one the new.
+                row.ping_ms = match (f.ping_ms, ping) {
+                    (Some(old), Some(new)) => Some((old * 3 + new).div_ceil(4)),
+                    (old, new) => new.or(old),
+                };
                 let keep_lan = f.addr.ip().is_loopback() && !addr.ip().is_loopback();
                 let addr = if keep_lan || !f.addr.ip().is_loopback() {
                     if keep_lan { addr } else { f.addr }
@@ -906,6 +923,8 @@ mod tests {
         assert_eq!(found.len(), 1, "{found:?}");
         assert_eq!(found[0].name, "Host");
         assert!(found[0].compatible && found[0].open);
+        // Answered within the ask's second: its round trip is known.
+        assert!(found[0].ping_ms.is_some_and(|ms| ms < 1000), "{found:?}");
     }
 
     #[test]

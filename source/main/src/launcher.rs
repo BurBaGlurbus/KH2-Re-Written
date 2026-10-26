@@ -323,7 +323,10 @@ impl Launcher {
                         item.detail(format!("{}: already in a duel", host.addr.ip()))
                             .disabled()
                     } else {
-                        item.detail(host.addr.ip().to_string())
+                        item.detail(match host.ping_ms {
+                            Some(ms) => format!("{}, {ms} ms", host.addr.ip()),
+                            None => host.addr.ip().to_string(),
+                        })
                     });
                 }
                 if self.found.is_empty() && self.browser.is_some() {
@@ -1207,10 +1210,14 @@ fn update(
     // The LAN search: new or vanished hosts rebuild the list.
     if let Some(browser) = l.browser.as_mut() {
         browser.update();
-        // (When each host was last heard is not part of the rows.)
+        // (When each host was last heard is not part of the rows; its ping
+        // is, to 5 ms.)
         let rows = |f: &[net::Found]| -> Vec<_> {
             f.iter()
-                .map(|h| (h.name.clone(), h.addr, h.compatible, h.open))
+                .map(|h| {
+                    let ping = h.ping_ms.map(|ms| ms.div_ceil(5));
+                    (h.name.clone(), h.addr, h.compatible, h.open, ping)
+                })
                 .collect()
         };
         if rows(browser.found()) != rows(&l.found) {

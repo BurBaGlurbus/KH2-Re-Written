@@ -119,6 +119,8 @@ pub(crate) struct LobbyRoom {
     ready_kept: bool,
     /// The kept build was put on for this session's first builds.
     kept_applied: bool,
+    /// The buttons the help lines name (the device last used).
+    prompts: duel_camp::Prompts,
 }
 
 impl LobbyRoom {
@@ -573,6 +575,8 @@ fn run_camp(
     prefs: Option<&DuelPrefs>,
     game: &mut Game,
 ) {
+    room.prompts = duel_camp::prompts(camp);
+    let keys = room.prompts;
     let builds = room.lobby.stage == Stage::Loadout;
     // One version of the lobby's camp a match and stage (the builds add
     // the camp's Abilities and Items); a vote takes the camp meanwhile.
@@ -616,7 +620,10 @@ fn run_camp(
         let mut entries = vec![duel_camp::entry(
             7,
             "Duel",
-            "The match's rules, the bans and Ready. Start: Ready.",
+            &format!(
+                "The match's rules, the bans and Ready. {}: Ready.",
+                keys.start
+            ),
         )];
         if builds {
             entries.extend([duel_camp::Item::Own(0), duel_camp::Item::Own(1)]);
@@ -999,7 +1006,10 @@ fn pages(room: &LobbyRoom, net: &DuelNet, game: &Game, ap: i32) -> Pages {
             &format!("Ban {}", i + 1),
             choices,
             selected,
-            help("An ability neither player can equip this match. Left and Right choose."),
+            help(&format!(
+                "An ability neither player can equip this match. {} and {} choose.",
+                room.prompts.left, room.prompts.right
+            )),
             !choosing,
         ));
         k.push(RowKind::Ban(i));
@@ -1008,7 +1018,10 @@ fn pages(room: &LobbyRoom, net: &DuelNet, game: &Game, ap: i32) -> Pages {
         "Bans",
         vec![text(if mine.bans_done { "Chosen" } else { "Confirm" })],
         0,
-        help("Right confirms your bans. None is a choice too."),
+        help(&format!(
+            "{} confirms your bans. None is a choice too.",
+            room.prompts.right
+        )),
         !choosing,
     ));
     k.push(RowKind::ConfirmBans);
@@ -1067,9 +1080,10 @@ fn pages(room: &LobbyRoom, net: &DuelNet, game: &Game, ap: i32) -> Pages {
                 "Ready",
                 vec![text("Not yet"), text("Ready")],
                 usize::from(mine.ready),
-                help(
-                    "Right, or Start, when your build is done. The match starts when both are ready.",
-                ),
+                help(&format!(
+                    "{}, or {}, when your build is done. The match starts when both are ready.",
+                    room.prompts.right, room.prompts.start
+                )),
                 false,
             ),
         ];
