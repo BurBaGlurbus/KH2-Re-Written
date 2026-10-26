@@ -11450,10 +11450,9 @@ struct CampRes {
     notice_sheets: HashMap<String, usize>,
     /// The menus' language code (`menu/<lang>/` notice and photo files).
     lang: String,
-    /// The save point's file menu (save.2ld), read the first time it opens,
-    /// its sheets and the panel's white sheet; the install it saves beside.
+    /// The save point's file menu (save.2ld), read the first time it opens
+    /// with its sheets; the install it saves beside.
     files: Option<crate::save_files::Files>,
-    files_white: usize,
     steam_root: PathBuf,
 }
 
@@ -12653,7 +12652,6 @@ fn save_menu_tick(
                                 .push(frame.add_sheet(images, t.rgba, t.size, t.texel_scale));
                         }
                     }
-                    c.files_white = frame.add_sheet(images, vec![255; 4], [1, 1], 1.);
                     c.files = Some(f);
                 }
                 Err(e) => {
@@ -12908,22 +12906,7 @@ fn camp_present(
                 frame.draws.push((sheet, quads));
             }
         }
-        for (i, (sheet, quads)) in d.sheets.into_iter().enumerate() {
-            // [Not the original's art] The message window is a plain panel
-            // (issue #80).
-            if let Some((at, [x0, y0, x1, y1])) = d.panel
-                && at == i
-            {
-                frame.draws.push((
-                    c.files_white,
-                    vec![data::sprite_sequence::Quad {
-                        corners: [[x0, y0], [x1, y0], [x0, y1], [x1, y1]],
-                        uv: [0, 0, 1, 1],
-                        colors: [[0., 0., 0., 0.8]; 4],
-                        blend: 0,
-                    }],
-                ));
-            }
+        for (sheet, quads) in d.sheets {
             let slot = match sheet {
                 visual::sprite_player::Sheet::Art(image) => f.sheets.get(image).copied(),
                 visual::sprite_player::Sheet::Font => Some(c.font_sheet),
@@ -14388,7 +14371,6 @@ fn run(mut args: Vec<PathBuf>) -> Result<AppExit, Box<dyn std::error::Error>> {
             notice_sheets: HashMap::new(),
             lang: settings.loaded_or("us"),
             files: None,
-            files_white: 0,
             steam_root: args[0].clone(),
         });
     }

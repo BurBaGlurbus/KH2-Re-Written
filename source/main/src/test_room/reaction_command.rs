@@ -41,7 +41,7 @@ const SAVE_HEAL_AT: f32 = 2.;
 /// tick 20 with 1 MP (and the party at 1 HP), and presses Triangle at 240;
 /// the file menu opens, Save, up to an empty slot, save there, back out.
 /// [Tour setup.]
-pub const SAVE_TOUR_CAPTURES: [u64; 7] = [30, 120, 245, 290, 350, 410, 520];
+pub const SAVE_TOUR_CAPTURES: [u64; 8] = [30, 120, 245, 290, 350, 410, 436, 520];
 pub const SAVE_TOUR_END: u64 = 640;
 /// The tour's presses in the file menu (pad mode 7 logical bits).
 const SAVE_TOUR_MENU: [(u64, u64); 5] =

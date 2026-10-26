@@ -95,14 +95,19 @@ const TAB: [usize; 3] = [52, 54, 53];
 const TOP_ROW: [usize; 4] = [79, 81, 80, 78];
 const CARD: [usize; 4] = [86, 88, 87, 85];
 const CHOICE: [usize; 4] = [25, 27, 26, 24];
+/// The message window (open, idle, close).
+const WINDOW: [usize; 3] = [4, 5, 6];
 /// Where the rows and cards sit.
 const TOP_PITCH: f32 = 34.;
 const CARD_PITCH: f32 = 72.;
 /// The card group's own translation (its y, 0x1405ba..: A213 T=(244,106)).
 const CARD_ORIGIN_Y: f32 = 106.;
 const TEXT_SIZE: f32 = 15.;
-/// Centre of the message window (the talk window sits at 256, 336).
-const DIALOG_AT: [f32; 2] = [256., 200.];
+/// Centre of the message window's box (its parts span -191..194 and
+/// -91..95 around the group's translation, 256, 192).
+const DIALOG_AT: [f32; 2] = [257.5, 194.];
+/// The size the font's widths are given for (`sprite_player`).
+const FONT_REFERENCE: f32 = 18.;
 const CARD_TEXT_SIZE: f32 = 13.;
 /// Card text slots (x, y, align) from table 0x1405bbbd0: level, munny,
 /// difficulty, place, time, message.
@@ -157,8 +162,6 @@ pub struct FileMenu {
     s4: Sprites,
     dialog_seq: Sequence,
     widths: Vec<u8>,
-    /// The message panel (x0, y0, x1, y1) while a dialog is up.
-    panel: Option<[f32; 4]>,
     help: Option<Id>,
     frames: u32,
 }
@@ -174,8 +177,6 @@ struct Card {
 pub struct Draw {
     pub art: Vec<(usize, Vec<Quad>)>,
     pub sheets: Vec<(Sheet, Vec<Quad>)>,
-    /// A translucent black panel to draw before `sheets[panel_at..]`.
-    pub panel: Option<(usize, [f32; 4])>,
 }
 
 impl FileMenu {
@@ -211,7 +212,6 @@ impl FileMenu {
             s4: Sprites::default(),
             dialog_seq: layout.sequences[0].clone(),
             widths,
-            panel: None,
             help: None,
             frames: 0,
         }
@@ -263,7 +263,6 @@ impl FileMenu {
             self.s4.kill(id);
         }
         self.dialog_key = None;
-        self.panel = None;
     }
 
     /// One frame: the player's presses in, the menu's events out.
@@ -593,20 +592,31 @@ impl FileMenu {
             Dialog::Info { message } | Dialog::Notice { message } => (message, false),
         };
         if message_id != 0 {
-            // The message window: a plain dark panel sized to the message
-            // (the original box groups of save.2ld are not identified yet),
-            // its lines drawn from a text-only sprite.
+            // The message window: sequence 0's groups 4 (open), 5 (idle)
+            // and 6 (close) from the file module's window table (0x1405ba528,
+            // FUN_140322dd0 → FUN_140300620). Its parts are a fixed box that
+            // the group's own translation centres on (256, 192); the lines
+            // are drawn from a text-only sprite.
             let bytes = self.texts.message(message_id);
             let (w, h) = crate::dialogue::measure(&bytes, &self.widths);
-            self.panel = Some([
-                DIALOG_AT[0] - w as f32 / 2. - 16.,
-                DIALOG_AT[1] - h as f32 / 2. - 12.,
-                DIALOG_AT[0] + w as f32 / 2. + 16.,
-                DIALOG_AT[1] + h as f32 / 2. + 12.,
-            ]);
+            let id = self.s3.create(
+                &self.dialog_seq,
+                PRIO_DIALOG,
+                0,
+                WINDOW[0],
+                Some(WINDOW[1]),
+                None,
+            );
+            self.dialog.push(id);
+            // `measure` is in the font's reference units; the lines are drawn
+            // at TEXT_SIZE.
+            let k = TEXT_SIZE / FONT_REFERENCE;
             let mut t = Self::text(bytes, TEXT_SIZE, 0);
             t.anim_colour = false;
-            t.offset = [DIALOG_AT[0] - w as f32 / 2., DIALOG_AT[1] - h as f32 / 2.];
+            t.offset = [
+                DIALOG_AT[0] - w as f32 * k / 2.,
+                DIALOG_AT[1] - h as f32 * k / 2.,
+            ];
             let text = self.s4.create(seq2, PRIO_DIALOG + 1, 2, 0, None, Some(t));
             self.dialog_text.push(text);
         }
@@ -657,8 +667,7 @@ impl FileMenu {
         sheets.extend(self.s0.draw(&layout.sequences[0], font));
         sheets.extend(self.s2.draw(&layout.sequences[2], font));
         sheets.extend(self.s3.draw(&self.dialog_seq, font));
-        let panel = self.panel.map(|r| (sheets.len(), r));
         sheets.extend(self.s4.draw(&layout.sequences[2], font));
-        Draw { art, sheets, panel }
+        Draw { art, sheets }
     }
 }
