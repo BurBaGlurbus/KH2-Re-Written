@@ -62,7 +62,7 @@ Measured 2026-10-26 on the same PC, scenes, window and settings, uncapped. "Befo
 uncommitted patch that keeps the models', maps', map objects' and effects' original textures (the HUD's
 HD images are required by the source check). Three alternating runs per build and scene; medians unless
 a range is given. Discord, a browser and other sessions were running; the no-HD batch ran later and was
-slower across the board, so its frame rates are not compared. Raw records: `kh2-perf-out2-*`.
+slower across the board, so its frame rates are not compared. Raw records stay private in the output folder outside the checkout (`f2-*`).
 
 | | Test room before | after | no 3D HD | Twilight Town before | after | no 3D HD |
 |---|---|---|---|---|---|---|
