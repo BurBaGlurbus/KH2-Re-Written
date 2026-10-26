@@ -197,3 +197,15 @@ idle host): closes in and wins by knock-out, 5 hits. Checks: fmt, clippy, the wi
 - **Rejoin (not done)**: holding a dropped joiner's place for 30 s needs the host to go back to waiting with the
   match kept and the joiner to come back into it; the session ends on a drop today. Left for its own task.
 - **Slow motion at a K.O. (not done)**: see section 6.
+
+## Release build and verdict
+
+`tools\Build-Launcher.ps1 -Skate3` built `target\release\KH2RW Launcher.exe` at 85881f2. A loopback duel with
+it (`final`: host bench, joiner `--duel-wisdom`, damage x10) ran through the lobby, the vote and the match,
+with both trails and the Wisdom shots on both screens. When the host's run ends first, the unattended joiner
+falls back to the room's own autoplay camp script once the session has ended, and that script closes it before
+its last capture (also `warm0`, `anim2`; a run-harness matter, not what a player sees: the joiner shows "the host
+left").
+
+Verdict: items 1-8 PASS as recorded; warm-up, rejoin and a K.O. slow motion NOT RUN (sections 6 and 8). Two
+instances on one PC remain the only measure of speed here; two PCs were not available.
