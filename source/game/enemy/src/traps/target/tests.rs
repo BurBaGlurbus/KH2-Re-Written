@@ -185,3 +185,23 @@ fn an_invalid_target_is_searched_again_only_by_an_enemy() {
         assert_eq!(world.objects[1].as_ref().unwrap().sys.target.id, expected);
     }
 }
+
+#[test]
+fn a_null_object_only_clears_the_gone_entries() {
+    // A serial search that found nothing leaves the AI object's handle 0
+    // (FUN_1403b41e0); FUN_14040c9d0 clears the gone entries and stops.
+    let mut world = world_with(&[0., 10.]);
+    register(&mut world, 1, 4);
+    world.objects[1].as_mut().unwrap().sys.gone = true;
+    let mut f = frame();
+    let mut me = Object::bare(0);
+    let ai = f.inst.work_base();
+    call(
+        &mut world,
+        &mut me,
+        &mut f,
+        target_set_before_player,
+        &[Slot::address(ai), Slot::int(0)],
+    );
+    assert!(world.battle_targets.iter().all(|t| t.object.is_none()));
+}

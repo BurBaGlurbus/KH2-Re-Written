@@ -34,7 +34,7 @@ impl ContactState {
 
 /// Something of an enemy that can hit Sora this frame: a motion attack window
 /// or an attack object its script placed. Shapes are (kind, ordinal, centre,
-/// radius, the previous centre to sweep from).
+/// radius, height, the previous centre to sweep from).
 struct Candidate {
     window: usize,
     atkp: u16,
@@ -42,7 +42,7 @@ struct Candidate {
     script_slot: Option<usize>,
     /// Applied by `attack_strike`: no hit callback runs for it.
     direct: bool,
-    shapes: Vec<(u8, usize, Vec3, f32, Option<Vec3>)>,
+    shapes: Vec<(u8, usize, Vec3, f32, f32, Option<Vec3>)>,
 }
 
 /// Script attack objects use window numbers from here up so they never collide
@@ -68,20 +68,24 @@ struct Volume {
 }
 type VolumeCentre = (Vec3, f32, f32, Option<Vec3>);
 
+/// FUN_1403c94c0 between an attack volume (a sphere, else a round kind-0
+/// shape) and a target shape of kind 0, 1 or 3.
 fn overlap(centre: Vec3, radius: f32, height: f32, sphere: bool, target: &WorldShape) -> bool {
-    if sphere && target.shape == 3 {
-        combat::spheres_overlap(
-            centre.to_array(),
+    use player::body_push::{CYLINDER, SPHERE, Shape, overlap};
+    overlap(
+        &Shape {
+            kind: if sphere { SPHERE } else { CYLINDER },
+            centre: centre.to_array(),
             radius,
-            target.centre.to_array(),
-            target.radius,
-        )
-    } else {
-        let delta = target.centre - centre;
-        let r = radius + target.radius;
-        let h = height + target.height;
-        (delta.x / r).powi(2) + (delta.y / h).powi(2) + (delta.z / r).powi(2) < 1.
-    }
+            height,
+        },
+        &Shape {
+            kind: target.shape,
+            centre: target.centre.to_array(),
+            radius: target.radius,
+            height: target.height,
+        },
+    )
 }
 
 fn allocate(ids: &mut combat::AttackIds, next_group: &mut i32, combo: u8) -> (u8, i32) {
@@ -331,7 +335,58 @@ pub fn tick(game: &mut Game, actors: &mut [GalleryActor], tick: u64) {
                 radius: 40.,
             });
         }
-        if battle.contacts.defeat_reward(battle.brain.hp()) {
+        // A script scatters its own prize row when its death act asks
+        // (`obj_scatter_prize`); the hand ports drop the bound row at the
+        // kill.
+        let mut scatter: Vec<(data::battle_tables::Prize, [f32; 3])> = match &mut battle.brain {
+            super::enemy_battle::Brain::Script(a) => std::mem::take(&mut a.prizes)
+                .into_iter()
+                .filter_map(|(id, at)| Some((battle.assets.prize_row(id)?, at)))
+                .collect(),
+            _ => Vec::new(),
+        };
+        let defeated = battle.contacts.defeat_reward(battle.brain.hp());
+        if defeated
+            && !matches!(battle.brain, super::enemy_battle::Brain::Script(_))
+            && let Some(prize) = battle.assets.prize
+        {
+            scatter.push((prize, battle.brain.position()));
+        }
+        for (prize, at) in scatter {
+            let floor = world
+                .floor(at[0], at[2], at[1] + 30.)
+                .unwrap_or(at[1].max(0.));
+            for (kind, count) in player::enemy_prizes::drops(
+                &prize.counts,
+                1. + player.abilities.jackpot,
+                player.abilities.drive_converter,
+            ) {
+                for _ in 0..count {
+                    let random = [
+                        rt.rng.range(0., 1.),
+                        rt.rng.range(0., 1.),
+                        rt.rng.range(0., 1.),
+                    ];
+                    rt.orbs.push(player::enemy_prizes::Orb::spawn(
+                        kind,
+                        [at[0], floor.max(at[1]) + 20., at[2]],
+                        random,
+                    ));
+                }
+            }
+            for (item, chance) in prize.items {
+                if item != 0
+                    && rt.rng.range(0., 100.)
+                        < (chance as f32 * (1. + player.abilities.lucky_lucky))
+                {
+                    event(
+                        log,
+                        serde_json::json!({"event":"gallery_item_drop","tick":tick,"actor":actor.id,"item":item}),
+                    );
+                }
+            }
+        }
+        if defeated {
             let low = vitals.hp * 2 <= vitals.target.max_hp;
             let exp = player::enemy_prizes::kill_exp(
                 battle.assets.exp.0,
@@ -347,41 +402,6 @@ pub fn tick(game: &mut Game, actors: &mut [GalleryActor], tick: u64) {
                 && d.active
             {
                 d.pending_exp += player::forms::kill_exp(d.form, battle.assets.character);
-            }
-            if let Some(prize) = battle.assets.prize {
-                let at = battle.brain.position();
-                let floor = world
-                    .floor(at[0], at[2], at[1] + 30.)
-                    .unwrap_or(at[1].max(0.));
-                for (kind, count) in player::enemy_prizes::drops(
-                    &prize.counts,
-                    1. + player.abilities.jackpot,
-                    player.abilities.drive_converter,
-                ) {
-                    for _ in 0..count {
-                        let random = [
-                            rt.rng.range(0., 1.),
-                            rt.rng.range(0., 1.),
-                            rt.rng.range(0., 1.),
-                        ];
-                        rt.orbs.push(player::enemy_prizes::Orb::spawn(
-                            kind,
-                            [at[0], floor.max(at[1]) + 20., at[2]],
-                            random,
-                        ));
-                    }
-                }
-                for (item, chance) in prize.items {
-                    if item != 0
-                        && rt.rng.range(0., 100.)
-                            < (chance as f32 * (1. + player.abilities.lucky_lucky))
-                    {
-                        event(
-                            log,
-                            serde_json::json!({"event":"gallery_item_drop","tick":tick,"actor":actor.id,"item":item}),
-                        );
-                    }
-                }
             }
             event(
                 log,
@@ -425,8 +445,11 @@ pub fn tick(game: &mut Game, actors: &mut [GalleryActor], tick: u64) {
                     combat::swept(centre.to_array(), previous.map(|p| p.to_array()), *radius)
                 };
                 for c in swept {
+                    // Only shapes whose group is on (FUN_1403ba550) are hit.
+                    let groups = battle.assets.default_groups;
                     if let Some(shape) = battle.pose.body.iter().find(|s| {
-                        overlap(Vec3::from_array(c), *radius, *height, *radius == *height, s)
+                        battle.brain.group_on(s.group, groups)
+                            && overlap(Vec3::from_array(c), *radius, *height, *radius == *height, s)
                     }) {
                         outgoing = Some((v.clone(), shape.clone(), Vec3::from_array(c)));
                         break;
@@ -661,7 +684,7 @@ pub fn tick(game: &mut Game, actors: &mut [GalleryActor], tick: u64) {
                     .get(&w.group)
                     .into_iter()
                     .flatten()
-                    .map(|s| (s.shape, s.ordinal, s.centre, s.radius, None))
+                    .map(|s| (s.shape, s.ordinal, s.centre, s.radius, s.height, None))
                     .collect(),
             })
             .collect();
@@ -684,6 +707,7 @@ pub fn tick(game: &mut Game, actors: &mut [GalleryActor], tick: u64) {
                     0,
                     Vec3::from_array(a.position),
                     a.radius,
+                    a.radius,
                     a.previous.map(Vec3::from_array),
                 )],
             });
@@ -704,7 +728,7 @@ pub fn tick(game: &mut Game, actors: &mut [GalleryActor], tick: u64) {
                 sub,
                 script_slot: Some(slot),
                 direct: true,
-                shapes: vec![(3, 0, body, 0., None)],
+                shapes: vec![(3, 0, body, 0., 0., None)],
             });
         }
         // The spheres of this actor's attacks, for the party members.
@@ -739,11 +763,7 @@ pub fn tick(game: &mut Game, actors: &mut [GalleryActor], tick: u64) {
             };
             // The sweep's start is kept for every sphere, whoever it hits.
             let mut priors: Vec<Option<Vec3>> = Vec::with_capacity(cand.shapes.len());
-            for &(shape_kind, ordinal, centre, radius, forced_prior) in &cand.shapes {
-                if shape_kind != 3 {
-                    priors.push(None);
-                    continue;
-                }
+            for &(_, ordinal, centre, radius, _, forced_prior) in &cand.shapes {
                 let prior = battle
                     .contacts
                     .previous
@@ -771,17 +791,27 @@ pub fn tick(game: &mut Game, actors: &mut [GalleryActor], tick: u64) {
                 continue;
             }
             let mut blocked = false;
-            for (shape_index, &(shape_kind, _, centre, radius, _)) in cand.shapes.iter().enumerate()
+            for (shape_index, &(shape_kind, _, centre, radius, height, _)) in
+                cand.shapes.iter().enumerate()
             {
                 if blocked {
                     break;
                 }
-                if shape_kind != 3 {
-                    let error = "native non-sphere melee attack sweep is unqualified".to_string();
-                    battle.error = Some(error.clone());
-                    actor.error = Some(error);
-                    continue;
-                }
+                // Each shape by its own kind (FUN_1403c94c0: 0 round, 1 an
+                // upright cylinder, 3 a sphere) against Sora's spheres.
+                // [I] Every kind is swept between ticks as the spheres are.
+                let attack = |c: [f32; 3]| player::body_push::Shape {
+                    kind: shape_kind,
+                    centre: c,
+                    radius,
+                    height,
+                };
+                let sphere = |c: Vec3, r: f32| player::body_push::Shape {
+                    kind: player::body_push::SPHERE,
+                    centre: c.to_array(),
+                    radius: r,
+                    height: r,
+                };
                 let prior = priors[shape_index];
                 for c in combat::swept(centre.to_array(), prior.map(|p| p.to_array()), radius) {
                     let centre = Vec3::from_array(c);
@@ -792,11 +822,9 @@ pub fn tick(game: &mut Game, actors: &mut [GalleryActor], tick: u64) {
                             continue;
                         }
                         for &(guard_at, guard_radius, _, _) in &guard.centres {
-                            if !combat::spheres_overlap(
-                                c,
-                                radius,
-                                guard_at.to_array(),
-                                guard_radius,
+                            if !player::body_push::overlap(
+                                &attack(c),
+                                &sphere(guard_at, guard_radius),
                             ) {
                                 continue;
                             }
@@ -865,7 +893,7 @@ pub fn tick(game: &mut Game, actors: &mut [GalleryActor], tick: u64) {
                         && *hero_hit_tick != Some(tick)
                         && let Some(&(body, body_radius, high)) =
                             sora_body.iter().find(|(body, body_r, _)| {
-                                combat::spheres_overlap(c, radius, body.to_array(), *body_r)
+                                player::body_push::overlap(&attack(c), &sphere(*body, *body_r))
                             })
                     {
                         incoming = Some((

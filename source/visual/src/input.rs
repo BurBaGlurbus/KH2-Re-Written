@@ -52,12 +52,14 @@ pub enum Assign {
 }
 
 impl Assign {
-    /// `auto`, `kbm`, `pad`, `pad:N` (the Nth controller from 1), `both`.
+    /// `auto`, `kbm`, `pad`, `pad:N` (the Nth controller from 1), `both`,
+    /// `none`.
     pub fn parse(s: &str) -> Option<Assign> {
         Some(match s {
             "auto" => Assign::Auto,
             "kbm" | "keyboard" => Assign::Fixed(Devices::KeyboardMouse),
             "pad" | "controller" => Assign::Fixed(Devices::Pad(None)),
+            "none" => Assign::Fixed(Devices::None),
             "both" => Assign::Fixed(Devices::Both),
             _ => {
                 let n: u8 = s.strip_prefix("pad:")?.parse().ok()?;
@@ -73,6 +75,7 @@ impl Assign {
             Assign::Fixed(Devices::Both) => "both".into(),
             Assign::Fixed(Devices::Pad(None)) => "pad".into(),
             Assign::Fixed(Devices::Pad(Some(n))) => format!("pad:{}", n + 1),
+            Assign::Fixed(Devices::None) => "none".into(),
         }
     }
 }
@@ -85,15 +88,18 @@ pub enum Devices {
     KeyboardMouse,
     /// A controller: any, or the one at this index.
     Pad(Option<u8>),
+    /// Nothing: an unattended run, which controllers in use by other
+    /// programs must not reach.
+    None,
 }
 
 impl Devices {
     pub fn keyboard(self) -> bool {
-        !matches!(self, Devices::Pad(_))
+        !matches!(self, Devices::Pad(_) | Devices::None)
     }
 
     pub fn pad(self) -> bool {
-        self != Devices::KeyboardMouse
+        !matches!(self, Devices::KeyboardMouse | Devices::None)
     }
 
     /// For the window title and the lobby.
@@ -103,6 +109,7 @@ impl Devices {
             Devices::KeyboardMouse => "keyboard and mouse".into(),
             Devices::Pad(None) => "controller".into(),
             Devices::Pad(Some(n)) => format!("controller {}", n + 1),
+            Devices::None => "no devices".into(),
         }
     }
 }
@@ -428,7 +435,7 @@ pub fn read_devices(
     }
     let mut glyph = None;
     let pad = match controls.devices {
-        Devices::KeyboardMouse => None,
+        Devices::KeyboardMouse | Devices::None => None,
         Devices::Pad(Some(n)) => pads.iter().nth(usize::from(n)),
         Devices::Pad(None) | Devices::Both => pads.iter().next(),
     };

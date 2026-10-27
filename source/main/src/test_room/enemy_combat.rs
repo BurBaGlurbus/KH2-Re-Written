@@ -155,6 +155,8 @@ pub struct EnemyCombat {
     pub exp: (u16, u16),
     pub prize: Option<battle_tables::Prize>,
     atkp: Vec<u8>,
+    /// The przt table, for the rows a script scatters.
+    przt: std::sync::Arc<Vec<u8>>,
     /// The objentry type byte (+4): 3 is the boss class.
     pub object_type: u8,
     /// The collision table's REACTION shapes (kind, argument) and its
@@ -177,16 +179,18 @@ pub struct EnemyCombat {
     pub weight: f32,
 }
 
-/// The map body of a boss-class object (objentry type 3): FUN_1403b3200
-/// reads the first collision entry of kind 0 or 4, and the boss
-/// constructor (FUN_1403f8da0 -> FUN_140411700) sets class 1, or 2 when the
-/// object entry's +0x48 bit 3 is set.
+/// The map body of a battle object: FUN_1403b3200 reads the first
+/// collision entry of kind 0 or 4, and FUN_140411700 sets class 1, or 2
+/// when the object entry's +0x48 bit 3 is set. FUN_1403df930 builds
+/// objentry types 3 and 12 (bosses, FUN_1403f8da0), 4 and 21 (ordinary
+/// enemies, FUN_140419e30 / FUN_14041ab50) on FUN_1403db840 and type 13 on
+/// FUN_14041a210, which all start with FUN_140411700.
 fn map_body(
     collision: &[object_collision::Entry],
     object_type: u8,
     flags: u16,
 ) -> Option<enemy::env::MapBody> {
-    if object_type != 3 {
+    if !matches!(object_type, 3 | 4 | 12 | 13 | 21) {
         return None;
     }
     let e = collision.iter().find(|e| e.kind == 0 || e.kind == 4)?;
@@ -432,6 +436,7 @@ impl EnemyCombat {
             exp: (enemy.exp, row.exp),
             prize,
             atkp,
+            przt: std::sync::Arc::new(payload(&battle, b"przt")?.to_vec()),
             object_type: object.object_type,
             reactions,
             default_groups,
@@ -442,6 +447,13 @@ impl EnemyCombat {
             obj_shapes,
             weight,
         })
+    }
+
+    /// The przt row a script's `obj_scatter_prize` names (FUN_1403dc170 ->
+    /// FUN_1403ecc70, whose absent rows fall back to 0x48). The scripts test
+    /// the id is not negative before they call it.
+    pub fn prize_row(&self, id: i32) -> Option<battle_tables::Prize> {
+        battle_tables::prize(&self.przt, u16::try_from(id).ok()?).ok()
     }
 
     pub fn attack_steps(&self, id: u16, sub: u8) -> Result<Vec<battle_tables::Attack>> {
@@ -462,11 +474,9 @@ impl EnemyCombat {
             let id = range.parameters[0] as u16;
             let group = u8::try_from(range.parameters[1])
                 .map_err(|_| "attack collision group outside byte range")?;
-            if !self.attacks.contains_key(&group) {
-                return Err(format!(
-                    "source attack window group {group} has no supported collision shapes"
-                ));
-            }
+            // A window may name a group the collision table has no ATTACK
+            // shape in (M_EX540's group 3): the attack test walks the
+            // table's shapes of that group, so the window hits nothing.
             self.attack_steps(id, 0)?;
             let start = range.start_frame as u16 as f32;
             let end = range.end_frame as u16 as f32;
@@ -734,7 +744,8 @@ fn collision_shapes(entries: &[object_collision::Entry], bones: usize) -> Result
         if bone != 0x4000 && bone >= bones {
             return Err(format!("collision shape {ordinal} bone outside skeleton"));
         }
-        if !matches!(e.shape, 0 | object_collision::SPHERE) || e.radius <= 0 || e.height <= 0 {
+        // FUN_1403c94c0 knows kinds 0, 1 (an upright cylinder) and 3.
+        if !matches!(e.shape, 0 | 1 | object_collision::SPHERE) || e.radius <= 0 || e.height <= 0 {
             return Err(format!("collision shape {ordinal} geometry unsupported"));
         }
         if e.parts != 0 {
@@ -743,11 +754,8 @@ fn collision_shapes(entries: &[object_collision::Entry], bones: usize) -> Result
                 e.parts
             ));
         }
-        if e.kind == object_collision::HIT && e.group != 0 {
-            return Err(format!(
-                "collision shape {ordinal} requires unresolved HIT-group activation"
-            ));
-        }
+        // HIT shapes of any group are kept: the hit test asks the object
+        // which groups are on (FUN_1403ba550).
         let shape = HitShape {
             ordinal,
             group: e.group,
@@ -861,6 +869,7 @@ mod tests {
             exp: (0, 0),
             prize: None,
             atkp: Vec::new(),
+            przt: Default::default(),
             object_type: 4,
             reactions: Vec::new(),
             default_groups: 1,

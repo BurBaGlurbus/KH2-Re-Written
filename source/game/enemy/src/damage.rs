@@ -234,9 +234,20 @@ impl Object {
     /// act `dead` starts by name when the table has it, then the dead mark),
     /// and for the boss class FUN_1403f8c60: element 0 of its own effects
     /// starts on it and the event signal 4 is posted with its entry id
-    /// (FUN_1403aabe0), which the mission script turns into the clear. [U]
-    /// EXP, the bonus and the prize of the ENMP row are the host's.
+    /// (FUN_1403aabe0), which the mission script turns into the clear. An
+    /// ordinary enemy (YS::ENEMY, objentry types 4 and 21) posts event signal
+    /// 0x4b with its spawn record's serial first (FUN_140419d10, its
+    /// vt+0xb0, through FUN_1403b5bf0). [U] FUN_140419d10 also plays motion
+    /// 16 when the handle at +0xc names a type-0x17 record, which is not
+    /// identified. EXP, the bonus and the prize of the ENMP row are the
+    /// host's.
     pub fn die(&mut self, world: &mut World, env: Option<&dyn Env>) {
+        if self.sys.class_flags & class_flag::ZAKO != 0 {
+            world.events.push(Event::Signal {
+                code: 0x4b,
+                argument: i32::from(self.sys.spawn_serial),
+            });
+        }
         if self.acts.find(b"dead").is_some() {
             let actions = self.acts.start(b"dead");
             match env {
@@ -449,6 +460,28 @@ mod tests {
         assert_eq!(
             o.take_hit(&mut world, &NullEnv, &hit(&finisher, &SORA, true)),
             None
+        );
+    }
+
+    #[test]
+    fn an_ordinary_enemys_death_posts_its_spawn_serial() {
+        // FUN_140419d10: signal 0x4b with the spawn record's serial; the
+        // boss's signal 4 is not posted.
+        let (mut world, mut o) = boss(10);
+        o.sys.class_flags = 0;
+        o.sys.set_class(4);
+        o.sys.spawn_serial = 7;
+        o.take_hit(&mut world, &NullEnv, &hit(&strong(0x20, 3), &SORA, true));
+        assert_eq!(o.sys.hp, 0);
+        assert!(world.events.contains(&Event::Signal {
+            code: 0x4b,
+            argument: 7
+        }));
+        assert!(
+            !world
+                .events
+                .iter()
+                .any(|e| matches!(e, Event::Signal { code: 4, .. }))
         );
     }
 

@@ -7094,11 +7094,7 @@ fn simulate(
     } else if game.sephiroth_tour {
         sephiroth::tour_input(&game, tick)
     } else if game.enemy_battle_tour {
-        (
-            Vec2::ZERO,
-            false,
-            (700..1300).contains(&tick) && tick.is_multiple_of(20),
-        )
+        (Vec2::ZERO, false, enemy_battle_tour::attack_pressed(tick))
     } else if game.enemy_tour {
         (Vec2::ZERO, false, false)
     } else if game.party_anim_tour {
@@ -12208,8 +12204,9 @@ fn camp_tick(
             tour.logical(game.tick)
         } else if game.save_point_tour {
             reaction_command::save_tour_logical(tick)
-        } else if game.magic_tour || game.sephiroth_tour {
-            // The magic and Sephiroth tours never open the camp.
+        } else if game.magic_tour || game.sephiroth_tour || game.enemy_battle_tour {
+            // The magic, Sephiroth and enemy combat tours never open the
+            // camp (the enemy roster runs past the camp check's ticks).
             0
         } else if game.duel {
             // The duel's screens: their script's keys.
@@ -14308,7 +14305,7 @@ fn run(mut args: Vec<PathBuf>) -> Result<AppExit, Box<dyn std::error::Error>> {
     } else if sephiroth_tour {
         sephiroth::tour_captures()
     } else if enemy_battle_tour {
-        enemy_battle_tour::CAPTURES.to_vec()
+        enemy_battle_tour::captures()
     } else if enemy_tour {
         enemy_tour::CAPTURES.to_vec()
     } else {
@@ -14355,7 +14352,7 @@ fn run(mut args: Vec<PathBuf>) -> Result<AppExit, Box<dyn std::error::Error>> {
     } else if sephiroth_tour {
         sephiroth::tour_end()
     } else if enemy_battle_tour {
-        enemy_battle_tour::END
+        enemy_battle_tour::end()
     } else if enemy_tour {
         enemy_tour::END
     } else {
@@ -14396,6 +14393,7 @@ fn run(mut args: Vec<PathBuf>) -> Result<AppExit, Box<dyn std::error::Error>> {
         spell_fx::SpellFx::new(loaded.magic.as_ref().and_then(|m| m.texcommon.clone()));
     // The room's stock with every Keyblade, armor and accessory it owns.
     let owned_stock = gear::with_owned_equipment(room_stock(), &loaded.abilities.owned);
+    let unattended = autoplay.is_some();
     let mut game = Game {
         ability_source: loaded.abilities,
         equipment,
@@ -15148,7 +15146,13 @@ fn run(mut args: Vec<PathBuf>) -> Result<AppExit, Box<dyn std::error::Error>> {
     }
     app.insert_resource(duel_loadout);
     // The PC version's key bindings; unattended runs keep the exe's
-    // defaults so they read the same on any PC.
+    // defaults so they read the same on any PC, and read no device at all
+    // (a controller reaches every window, focused or not).
+    let input_assign = if duel_unattended {
+        input::Assign::Fixed(input::Devices::None)
+    } else {
+        input_assign
+    };
     app.insert_resource(crate::pc_controls::load(input_assign, duel_unattended));
     app.add_systems(Update, show_devices);
     Ok(app
@@ -15199,6 +15203,14 @@ fn run(mut args: Vec<PathBuf>) -> Result<AppExit, Box<dyn std::error::Error>> {
                     primary_window: Some(Window {
                         title: "Kingdom Hearts II Re:Written (test room; quarantined source) | WASD move, Space jump, Enter/LMB attack, RMB guard, F talk, M menu, F3 debug, Esc".into(),
                         resolution: (1280, 720).into(),
+                        // An unattended run stays behind the owner's windows
+                        // and does not take the keyboard from them.
+                        focused: !unattended,
+                        window_level: if unattended {
+                            bevy::window::WindowLevel::AlwaysOnBottom
+                        } else {
+                            bevy::window::WindowLevel::Normal
+                        },
                         ..default()
                     }),
                     // Closing the window goes through finish() so the exit code

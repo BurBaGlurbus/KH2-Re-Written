@@ -52,15 +52,23 @@ impl Body {
     }
 }
 
-/// FUN_1403c94c0 for the cylinder and sphere kinds: two spheres compare
-/// the distance with the summed radii, otherwise the centres' offset over
-/// the summed radii and heights lies inside the unit sphere.
+/// Kind 1: an upright cylinder of half height `height` (FUN_1403c94c0's
+/// own branch and FUN_1403c9780). [`CYLINDER`] (kind 0) is tested as an
+/// ellipsoid of the two half axes.
+pub const UPRIGHT: u8 = 1;
+
+/// FUN_1403c94c0 by the two kinds: two spheres compare the distance with
+/// the summed radii; kinds 0 and 3 otherwise test the centres' offset over
+/// the summed radii and heights against the unit sphere (FUN_1403c9890);
+/// two upright cylinders their vertical gap and horizontal distance; an
+/// upright cylinder against kind 0 or 3 is FUN_1403c9780.
 pub fn overlap(a: &Shape, b: &Shape) -> bool {
     let d = [
         b.centre[0] - a.centre[0],
         b.centre[1] - a.centre[1],
         b.centre[2] - a.centre[2],
     ];
+    let flat = d[0] * d[0] + d[2] * d[2];
     match (a.kind, b.kind) {
         (SPHERE, SPHERE) => {
             let r = a.radius + b.radius;
@@ -71,8 +79,31 @@ pub fn overlap(a: &Shape, b: &Shape) -> bool {
             let n = [d[0] / r, d[1] / h, d[2] / r];
             n[0] * n[0] + n[1] * n[1] + n[2] * n[2] < 1.
         }
+        (UPRIGHT, UPRIGHT) => {
+            let r = a.radius + b.radius;
+            d[1].abs() < a.height + b.height && flat < r * r
+        }
+        (CYLINDER | SPHERE, UPRIGHT) => cylinder_overlap(a, b, d[1].abs(), flat),
+        (UPRIGHT, CYLINDER | SPHERE) => cylinder_overlap(b, a, d[1].abs(), flat),
         _ => false,
     }
+}
+
+/// FUN_1403c9780: the round shape `e` against the upright cylinder `c`,
+/// `dy` and `flat` the centres' vertical gap and squared horizontal
+/// distance. Above the cylinder's half height the round shape's horizontal
+/// reach narrows as an ellipse's.
+fn cylinder_overlap(e: &Shape, c: &Shape, dy: f32, flat: f32) -> bool {
+    if e.height + c.height <= dy {
+        return false;
+    }
+    let reach = if dy <= c.height {
+        e.radius
+    } else {
+        let t = (dy - c.height) / e.height;
+        (1. - t * t).abs().sqrt() * e.radius
+    } + c.radius;
+    flat < reach * reach
 }
 
 /// FUN_1403c90b0: the offset from `a` toward `b` that takes them apart
@@ -166,5 +197,30 @@ mod tests {
         let mut far = body(200., 100.);
         let mut sora = body(0., 100.);
         assert_eq!(resolve(&mut sora, &mut far, [0.; 3]), ([0.; 3], [0.; 3]));
+    }
+
+    #[test]
+    fn upright_cylinders_test_their_gap_and_reach() {
+        let shape = |kind, centre, radius, height| Shape {
+            kind,
+            centre,
+            radius,
+            height,
+        };
+        // Two cylinders (r 10, half height 50): a vertical gap under the
+        // summed half heights and a reach under the summed radii.
+        let a = shape(UPRIGHT, [0., 0., 0.], 10., 50.);
+        assert!(overlap(&a, &shape(UPRIGHT, [19., 99., 0.], 10., 50.)));
+        assert!(!overlap(&a, &shape(UPRIGHT, [19., 100., 0.], 10., 50.)));
+        assert!(!overlap(&a, &shape(UPRIGHT, [20., 0., 0.], 10., 50.)));
+        // A sphere (r 20) beside the cylinder's side reaches 30 out; above
+        // its top (dy 60, 10 into the sphere's 20) only 10 + 20·√0.75.
+        let s = |x, y| shape(SPHERE, [x, y, 0.], 20., 20.);
+        assert!(overlap(&s(29., 40.), &a));
+        assert!(!overlap(&s(30., 40.), &a));
+        let reach = 10. + 20. * 0.75f32.sqrt();
+        assert!(overlap(&a, &s(reach - 0.1, 60.)));
+        assert!(!overlap(&a, &s(reach + 0.1, 60.)));
+        assert!(!overlap(&a, &s(0., 70.)));
     }
 }

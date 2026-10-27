@@ -464,6 +464,9 @@ pub struct ScriptBrain {
     pub voices: Vec<(i32, i32)>,
     /// Sound effects the script asked for (`obj_play_se`): id and place.
     pub sounds: Vec<(i32, Vec3)>,
+    /// Prize rows the script scattered (`obj_scatter_prize`) and where the
+    /// scattering object stood.
+    pub prizes: Vec<(i32, Vec3)>,
     /// Names of the engine services the script called that are not translated.
     pub unsupported: std::collections::BTreeSet<&'static str>,
     /// Names of the requests the script made of subsystems this host does not
@@ -599,6 +602,7 @@ impl ScriptBrain {
             effects: Vec::new(),
             voices: Vec::new(),
             sounds: Vec::new(),
+            prizes: Vec::new(),
             unsupported: Default::default(),
             services: Default::default(),
             reported: Default::default(),
@@ -1017,6 +1021,13 @@ impl ScriptBrain {
                     self.fx.calls.push((self.object.id, fx));
                 }
                 Event::Voice { id, arg, .. } => self.voices.push((id, arg)),
+                // FUN_1403b6170: the prize table row the script scatters
+                // (Soldier's death act passes the row its init stored).
+                Event::ScatterPrize { object, count } => {
+                    if let Some(at) = self.object_position(object) {
+                        self.prizes.push((count, at));
+                    }
+                }
                 Event::Unsupported(name) => {
                     self.unsupported.insert(name);
                 }
@@ -1323,6 +1334,12 @@ impl ScriptBrain {
         s.reaction_groups
             .offered(s.script_group_bits(), default_groups, command, group)
     }
+    /// FUN_1403ba550: whether the object's collision group is on.
+    pub fn group_on(&self, group: i32, default_groups: u32) -> bool {
+        let s = &self.object.sys;
+        s.reaction_groups
+            .group_on(s.script_group_bits(), default_groups, group)
+    }
     /// The engine state a boss run logs: the revenge gauge and its limit,
     /// the active state pattern, the bound sheet and the class bits.
     pub fn boss_state(&self) -> serde_json::Value {
@@ -1343,6 +1360,10 @@ impl ScriptBrain {
     }
     pub fn hp(&self) -> i32 {
         self.object.sys.hp
+    }
+    /// The ENMP row `btlobj_set_sheet` bound (0 before any).
+    pub fn sheet(&self) -> i32 {
+        self.object.sys.sheet
     }
     pub fn alive(&self) -> bool {
         !self.object.sys.gone && !self.object.acts.locked()

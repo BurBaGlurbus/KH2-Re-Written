@@ -109,6 +109,14 @@ impl Brain {
             _ => false,
         }
     }
+    /// FUN_1403ba550: whether collision group `group` is on (the hand ports
+    /// keep the table's default groups).
+    pub fn group_on(&self, group: u8, default_groups: u32) -> bool {
+        match self {
+            Self::Script(a) => a.group_on(i32::from(group), default_groups),
+            _ => group < 32 && default_groups >> group & 1 != 0,
+        }
+    }
     /// FUN_1403ba600: whether a REACTION shape of `group` offers `command`.
     pub fn reaction_offered(&self, command: i32, group: i32, default_groups: u32) -> bool {
         match self {
@@ -669,14 +677,24 @@ impl VoiceSlot {
 }
 /// The ENMP row Sephiroth's script binds.
 pub const SEPHIROTH_SHEET: u16 = 140;
+/// The row `btlobj_set_sheet` falls back to (FUN_1403ebf30): the host's
+/// stand-in until the object's own script binds its sheet.
+const FALLBACK_SHEET: u16 = 0x45;
+/// Objects that can fight in the room: Sephiroth, and every ordinary enemy
+/// (objentry types 4 and 21, OpenKH Objentry.cs's normal enemies), each run
+/// by its own object script.
 pub fn supported(e: &Entry) -> bool {
-    matches!(
-        (e.object_id, e.model_name.as_str(), e.character),
-        (301, "M_EX010", 1000)
-            | (302, "M_EX020", 1001)
-            | (318, "M_EX990", 3000)
-            | (SEPHIROTH, "N_HB630", 5044)
-    )
+    (e.object_id, e.model_name.as_str()) == (SEPHIROTH, "N_HB630")
+        || matches!(e.object_type, 4 | 21)
+}
+/// The hand-written Soldier, Shadow and Dusk brains, kept for comparison
+/// runs only (`KH2RW_ENEMY_AI=port`).
+fn hand_port(e: &Entry) -> bool {
+    std::env::var("KH2RW_ENEMY_AI").is_ok_and(|v| v == "port")
+        && matches!(
+            (e.object_id, e.model_name.as_str(), e.character),
+            (301, "M_EX010", 1000) | (302, "M_EX020", 1001) | (318, "M_EX990", 3000)
+        )
 }
 pub fn target_params(source: &ProbeSource) -> Result<player::targeting::Params, String> {
     source.verify_session().map_err(|e| e.to_string())?;
@@ -773,6 +791,8 @@ pub(super) fn build_clips(
             },
             |r| r.raw_header_words[4],
         );
+        // Clock 0 is the motion's first key, which can be negative (Air
+        // Pirate's slot 241 starts at -10): the evaluated sampler takes it.
         let loop_top = (repeat - start) * 60. / fps;
         if duration == 0
             || duration > 4096
@@ -781,12 +801,12 @@ pub(super) fn build_clips(
             || loop_top > duration as f32
             || loop_top.fract() != 0.
             || !start.is_finite()
-            || start < 0.
             || !fps.is_finite()
             || fps <= 0.
         {
             return Err(format!(
-                "slot {} native clock outside admitted profile",
+                "slot {} native clock outside admitted profile (start {start}, fps {fps}, \
+                 return {repeat}, length {duration})",
                 m.slot
             ));
         }
@@ -857,18 +877,27 @@ impl BattleActor {
     ) -> Result<Self, String> {
         if !supported(entry) {
             return Err(
-                "AI translation is available for ordinary Soldier, Shadow and Dusk only".into(),
+                "only ordinary enemies (objentry types 4 and 21) and Sephiroth fight".into(),
             );
         }
         if kind.variants {
             return Err("contextual motion variants are not qualified for battle".into());
         }
+        let port = hand_port(entry);
         let binding = if entry.object_id == SEPHIROTH {
             // His OBJ_INIT binds ENMP row 140 (`btlobj_set_sheet(self, 140,
             // 0)`, FUN_140411350); the host builds the same sheet up front so
             // his attacks on Sora use its strength.
             EnemyBinding {
                 enmp_id: SEPHIROTH_SHEET,
+                prize_id: None,
+            }
+        } else if !port {
+            // An ordinary enemy's init binds its own row (Soldier 33, Shadow
+            // 34, Dusk 41); the assets are read again with that row once the
+            // script has run.
+            EnemyBinding {
+                enmp_id: FALLBACK_SHEET,
                 prize_id: None,
             }
         } else if entry.character == 3000 {
@@ -887,12 +916,10 @@ impl BattleActor {
                 prize_id: Some(2),
             }
         };
-        let assets = EnemyCombat::load(source, entry, kind, binding, level, difficulty)?;
+        let mut assets = EnemyCombat::load(source, entry, kind, binding, level, difficulty)?;
         let clips = Arc::new(build_clips(kind, |m| assets.windows(m))?);
-        let brain = if entry.object_id == SEPHIROTH
-            || std::env::var("KH2RW_ENEMY_AI").is_ok_and(|v| v == "script")
-        {
-            Brain::Script(Box::new(super::enemy_script::ScriptBrain::load(
+        let brain = if !port {
+            let brain = super::enemy_script::ScriptBrain::load(
                 source,
                 &entry.model_name,
                 position.to_array(),
@@ -906,7 +933,20 @@ impl BattleActor {
                     sheets: Some(assets.sheets.clone()),
                     patn: assets.patn.clone(),
                 },
-            )?))
+            )?;
+            // The row the script bound (0: it bound none, the stand-in
+            // stays). Its EXP, prize and strength are the host's.
+            if let Ok(sheet) = u16::try_from(brain.sheet())
+                && sheet != 0
+                && sheet != binding.enmp_id
+            {
+                let binding = EnemyBinding {
+                    enmp_id: sheet,
+                    prize_id: None,
+                };
+                assets = EnemyCombat::load(source, entry, kind, binding, level, difficulty)?;
+            }
+            Brain::Script(Box::new(brain))
         } else if entry.character == 1000 {
             Brain::Soldier(Box::new(soldier::Soldier::new(
                 position.to_array(),

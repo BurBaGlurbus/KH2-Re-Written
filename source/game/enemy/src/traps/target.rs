@@ -212,13 +212,20 @@ fn usable(ctx: &mut Ctx<'_>, id: ObjId) -> bool {
 /// 1:162 FUN_1404304b0 -> FUN_1403bd410 -> FUN_14040c9d0: put the object in the
 /// battle target table with a priority. Entries whose object has become
 /// unusable are cleared first; the object keeps its slot if it has one, else
-/// takes the last free (or unusable) slot.
+/// takes the last free (or unusable) slot. A null object (a search that found
+/// nothing, FUN_1403b41e0) fails FUN_1403ba720 after the clearing.
 fn target_set_before_player(
     ctx: &mut Ctx<'_>,
     m: &mut Memory<'_>,
     args: &mut Args,
 ) -> Result<(), Fault> {
-    let id = ctx.sys_of_ai(m, args[0].value)?;
+    let ai = args[0].value;
+    let handle = ctx.read_u32(m, ai + 4).ok_or(Fault::Memory(ai))?;
+    let id = if handle == 0 {
+        None
+    } else {
+        Some(ctx.sys_of(handle)?)
+    };
     let priority = args[1].as_int();
     for k in 0..BATTLE_TARGET_SLOTS {
         if let Some(o) = ctx.world.battle_targets[k].object
@@ -227,9 +234,9 @@ fn target_set_before_player(
             ctx.world.battle_targets[k].object = None;
         }
     }
-    if !usable(ctx, id) {
+    let Some(id) = id.filter(|&id| usable(ctx, id)) else {
         return Ok(());
-    }
+    };
     let mut slot = None;
     for k in 0..BATTLE_TARGET_SLOTS {
         let held = ctx.world.battle_targets[k].object;
