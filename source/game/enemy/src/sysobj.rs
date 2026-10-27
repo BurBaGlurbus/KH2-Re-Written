@@ -66,6 +66,10 @@ impl Motion {
 /// (DAT_140623bac, per tick).
 pub const LEAVE_SPEED_CAP: f32 = 8.;
 
+/// FUN_1403b9090: an edge probe reaches this share of the body radius past
+/// the move (DAT_14074b060).
+pub const EDGE_PROBE: f32 = 0.2;
+
 /// FUN_1403b9090's two ground transitions.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Ground {
@@ -1013,9 +1017,44 @@ impl Sysobj {
         [self.yaw.sin(), 0., self.yaw.cos()]
     }
 
+    /// FUN_1403bab20: a grounded object that may not step off an edge: range
+    /// 0x1d (`+0x18c` bit 23), or a battle object still knocked back
+    /// (`+0xd30` > 0). [U] Riding another object (+0x9d8) and the mode
+    /// FUN_1403b5dc0 calls 0xf are not modelled.
+    fn refuses_edges(&self) -> bool {
+        self.motion.flags.word & 0x80_0000 != 0
+            || self.class_flags & class_flag::BATTLE != 0
+                && self.knock.is_some_and(|k| k.speed > 0.)
+    }
+
     /// Applies a requested displacement through the collision world.
     fn apply_movement(&mut self, wished: Vec3, env: &dyn Env) {
         let from = self.position;
+        let mut wished = wished;
+        // FUN_1403b9090's grounded step: an object that refuses edges probes
+        // its move lengthened by 0.2 x its body radius (DAT_14074b060) with a
+        // body solve (FUN_1403ba750); no floor there, and it stays where it is
+        // and a battle object's knock-back (+0xd24..+0xd30) ends. [I] The
+        // probe is the horizontal move, not its projection on the floor.
+        if let Some(body) = self.map_body.as_ref()
+            && !self.air_query()
+            && self.refuses_edges()
+        {
+            let len = hlen(wished);
+            if len > 0. {
+                let k = (EDGE_PROBE * body.radius + len) / len;
+                let probe = [wished[0] * k, 0., wished[2] * k];
+                if env
+                    .collide(body, from, probe, false, self.floor_normal)
+                    .is_some_and(|m| m.no_floor)
+                {
+                    if self.class_flags & class_flag::BATTLE != 0 {
+                        self.knock = None;
+                    }
+                    wished = [0.; 3];
+                }
+            }
+        }
         let solved = self
             .map_body
             .as_ref()

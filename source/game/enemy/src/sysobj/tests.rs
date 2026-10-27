@@ -483,3 +483,26 @@ fn walking_off_the_floor_carries_the_move_into_the_fall_capped_at_8() {
     let (_, v) = s.jump.expect("falling");
     assert!((v[0] - 8.).abs() < 1e-4 && v[1].abs() < 1e-4, "{v:?}");
 }
+
+#[test]
+fn an_edge_refusing_object_does_not_step_where_the_probe_finds_no_floor() {
+    // FUN_1403b9090 with FUN_1403bab20 / FUN_1403ba750: the move of 5 is
+    // probed 0.2 x 150 further (to x = 125, past the floor's end at 100).
+    let walk = |range_1d: bool| {
+        let mut s = Sysobj::bare();
+        s.map_body = Some(BODY);
+        s.position = [90., 0., 0.];
+        s.move_direction = [1., 0., 0.];
+        s.move_speed = 5.;
+        if range_1d {
+            s.motion.flags.word |= 0x80_0000;
+        }
+        s.end_tick(&BodyFloor);
+        s
+    };
+    let held = walk(true);
+    assert!(close(held.position[0], 90.) && !held.is_jump());
+    // Without range 0x1d the step is taken (the floor is still under it).
+    let free = walk(false);
+    assert!(close(free.position[0], 95.) && !free.is_jump());
+}
