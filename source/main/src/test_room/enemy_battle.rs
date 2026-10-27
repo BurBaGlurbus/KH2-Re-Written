@@ -774,9 +774,6 @@ pub(super) fn build_clips(
         .filter(|(_, m)| m.status.is_none())
     {
         let motion = kind.load_motion(choice).map_err(|e| e.to_string())?;
-        if motion.motion.raw.is_some() {
-            return Err("raw native combat pose sampling is not qualified".into());
-        }
         // An absent type-16 entry means no events, including the ordinary
         // Shadow/Soldier idle clips. It is not a malformed event table.
         if motion.triggers.len() > 1
@@ -820,16 +817,21 @@ pub(super) fn build_clips(
         }
         let mut roots = Vec::new();
         for t in 0..=duration {
-            let pose = motion_eval::evaluate(
-                &kind.model.skinning.bones,
-                &motion.motion,
-                t as f32 + start * 60. / fps,
-            )
-            .map_err(|e| e.to_string())?;
-            if pose.root_translation.iter().any(|v| !v.is_finite()) {
+            let key = t as f32 + start * 60. / fps;
+            // A raw-matrix motion (No. 4, B_EX210, B_EX380) carries its root
+            // in its own table; the pose is sampled the same way when shown.
+            let root = match &motion.motion.raw {
+                Some(raw) => raw.sample(key).map_err(|e| e.to_string())?.1,
+                None => {
+                    motion_eval::evaluate(&kind.model.skinning.bones, &motion.motion, key)
+                        .map_err(|e| e.to_string())?
+                        .root_translation
+                }
+            };
+            if root.iter().any(|v| !v.is_finite()) {
                 return Err("nonfinite root motion".into());
             }
-            roots.push(pose.root_translation);
+            roots.push(root);
         }
         let windows = windows(&motion)?;
         let events = enemy::motion::MotionEvents {

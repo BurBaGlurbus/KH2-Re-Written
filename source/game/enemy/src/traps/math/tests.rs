@@ -239,3 +239,21 @@ fn an_engine_offset_under_an_engine_heading_lands_as_the_scene_places_it() {
         assert!((native_yaw(native_yaw(psi)) - psi).abs() < 1e-5);
     }
 }
+
+#[test]
+fn vector_to_angle_gives_pitch_and_yaw_and_zeroes_nan_lanes() {
+    // FUN_1403b7710: pitch atan2(-y, |xz|), yaw atan2(x, z); FUN_14041d980
+    // zeroes the argument's NaN lanes in place first.
+    let mut world = World::default();
+    let base = crate::script::WORK_SEGMENT;
+    let (r, work) = call(
+        vector_to_angle,
+        &mut world,
+        &[0., -1., 1., f32::NAN],
+        &[Slot::address(base)],
+    );
+    let a = read_static(&world, r.value);
+    assert!((a[0] - std::f32::consts::FRAC_PI_4).abs() < 1e-6, "{a:?}");
+    assert_eq!([a[1], a[2], a[3]], [0., 0., 1.]);
+    assert_eq!(work[3], 0.);
+}

@@ -774,9 +774,8 @@ fn collision_shapes(entries: &[object_collision::Entry], bones: usize) -> Result
             _ => attacks.entry(e.group).or_default().push(shape),
         }
     }
-    if body.is_empty() || targets.is_empty() {
-        return Err("enemy has no enabled primary HIT/TARGET shapes".into());
-    }
+    // An object without HIT shapes (B_EX220, No. 13) cannot be struck on its
+    // body, and one without TARGET shapes cannot be locked on: both are kept.
     Ok((body, targets, attacks))
 }
 

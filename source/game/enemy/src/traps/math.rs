@@ -35,6 +35,7 @@ pub fn lookup(table: u16, index: u16) -> Option<TrapFn> {
         36 => vector_mul,
         37 => vector_div,
         42 => vector_atan_xz,
+        102 => vector_to_angle,
         43 => fix_rad,
         45 => vector_addf,
         _ => return None,
@@ -512,6 +513,15 @@ fn vector_div(ctx: &mut Ctx<'_>, m: &mut Memory<'_>, args: &mut Args) -> Result<
     let v = read_vec(ctx, m, args[0].value)?;
     let r = 1.0 / args[1].as_float();
     return_vector(ctx, m, 37, v.map(|lane| lane * r), args)
+}
+
+/// 0:102 FUN_14041d980 -> FUN_1403b7710: the vector's NaN lanes are zeroed in place,
+/// then its angles (pitch `atan2(-y, |xz|)`, yaw `atan2(x, z)`, 0, 1) go to
+/// the trap's static vector (DAT_1407535c8).
+fn vector_to_angle(ctx: &mut Ctx<'_>, m: &mut Memory<'_>, args: &mut Args) -> Result<(), Fault> {
+    let v = read_sanitized(ctx, m, args[0].value)?;
+    let pitch = (-v[1]).atan2((v[0] * v[0] + v[2] * v[2]).sqrt());
+    return_vector(ctx, m, 102, [pitch, v[0].atan2(v[2]), 0., 1.], args)
 }
 
 /// 0:42 FUN_14041d250: `atan2f(x, z)`.
