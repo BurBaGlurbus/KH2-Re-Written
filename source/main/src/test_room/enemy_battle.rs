@@ -196,6 +196,14 @@ impl Brain {
             Self::Soldier(_) => 1.,
         }
     }
+    /// The new motion's share of the shown pose while its blend runs (the
+    /// hand ports show the new motion's start frame).
+    pub fn blend_weight(&self) -> Option<f32> {
+        match self {
+            Self::Script(a) => a.blend_weight(),
+            _ => None,
+        }
+    }
     pub fn blend(&self) -> f32 {
         match self {
             Self::Script(a) => a.blend(),
@@ -1160,8 +1168,15 @@ pub fn tick(mut game: ResMut<Game>, mut gallery: ResMut<EnemyGallery>) {
                 }
                 actor.position = Vec3::from_array(battle.brain.position());
                 actor.yaw = battle.brain.yaw();
-                if let Err(e) = actor.battle_pose(choice, key, forward_kinematics_only) {
-                    actor.error = Some(e)
+                match actor.battle_pose(choice, key, forward_kinematics_only) {
+                    Err(e) => actor.error = Some(e),
+                    Ok(Some(jump)) if game.autoplay.is_some() => {
+                        let blend = actor.battle.as_ref().and_then(|b| b.brain.blend_weight());
+                        game.event(serde_json::json!({"event":"enemy_pose_switch","tick":tick,
+                            "actor":actor.id,"motion":actor.battle.as_ref().map(|b| b.brain.motion()),
+                            "jump":jump,"blend_weight":blend}));
+                    }
+                    Ok(_) => {}
                 }
                 super::enemy_motion_fx::scan(&mut game, actor);
                 if let Some(battle) = actor.battle.as_mut() {

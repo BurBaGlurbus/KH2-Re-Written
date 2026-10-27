@@ -1394,6 +1394,9 @@ impl ScriptBrain {
     pub fn scale_y(&self) -> f32 {
         self.object.sys.scale[1]
     }
+    pub fn blend_weight(&self) -> Option<f32> {
+        self.object.sys.motion.blend_weight()
+    }
     pub fn blend(&self) -> f32 {
         self.object.sys.motion.blend
     }

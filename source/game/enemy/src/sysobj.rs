@@ -42,12 +42,24 @@ pub struct Motion {
     pub serial: u64,
     /// Remaining blend, in motion-clock ticks (0 = none).
     pub blend: f32,
+    /// While a blend runs: +0x44, the clock (2 at the start), and +0x48,
+    /// the blend's length.
     blend_elapsed: u32,
-    blend_duration: u32,
+    blend_duration: f32,
     /// +0x34.. : the event flags (see [`crate::motion`]).
     pub flags: Flags,
     /// Root displacement of this tick's clock step, in model space.
     pub root_step: Vec3,
+}
+
+impl Motion {
+    /// While a blend runs, the new motion's share of the shown pose: the
+    /// clock over the blend (FUN_1403c73c0 mixes the pose the switch left
+    /// with the new motion held at its start frame).
+    pub fn blend_weight(&self) -> Option<f32> {
+        (self.blend > 0. && self.blend_duration > 0.)
+            .then(|| (self.blend_elapsed as f32 / self.blend_duration).clamp(0., 1.))
+    }
 }
 
 /// Reaction states the engine holds between a hit and returning to the script.
@@ -825,7 +837,10 @@ impl Sysobj {
     }
 
     /// FUN_1403c86a0 / FUN_1403c88c0: begin a motion. A blend of at most two
-    /// ticks takes the immediate path.
+    /// ticks takes the immediate path; a longer one (FUN_1403c8a40) sets
+    /// the clock to 2 and holds the new motion at its start frame until the
+    /// clock reaches the blend. [U] The blend also needs +0x168 bit 0, which
+    /// every object here is taken to have.
     pub fn motion_start(&mut self, slot: usize, blend: f32, clips: &dyn Clips) -> bool {
         if clips.length(slot) == 0 {
             return false;
@@ -834,9 +849,9 @@ impl Sysobj {
         m.slot = slot;
         m.tick = 0;
         m.serial = m.serial.wrapping_add(1);
-        m.blend = if blend <= 2. { 0. } else { blend };
-        m.blend_duration = m.blend as u32;
-        m.blend_elapsed = 0;
+        m.blend_duration = if blend <= 2. { 0. } else { blend };
+        m.blend_elapsed = 2;
+        m.blend = (m.blend_duration - 2.).max(0.);
         m.root_step = [0.; 3];
         // FUN_1403c8a40 rewrites the flag word when a motion starts, so the end
         // pulse of the previous motion does not carry over to the new one.
@@ -1038,18 +1053,18 @@ impl Sysobj {
         let old = m.tick;
         let mut stepped = false;
         if m.blend > 0. {
-            m.blend_elapsed = if m.blend_elapsed == 0 {
-                2
-            } else {
-                m.blend_elapsed.saturating_add(1)
-            };
-            if m.blend_elapsed >= m.blend_duration {
-                m.tick = m.blend_elapsed - m.blend_duration;
+            // FUN_1403c6740: the clock steps on; once it reaches the blend
+            // the motion continues from its start frame plus the overshoot.
+            // [I] The clock is kept in whole ticks: a fractional blend's
+            // overshoot is dropped.
+            m.blend_elapsed = m.blend_elapsed.saturating_add(1);
+            if m.blend_elapsed as f32 >= m.blend_duration {
+                m.tick = 0;
                 m.blend = 0.;
                 m.blend_elapsed = 0;
                 stepped = true;
             } else {
-                m.blend = (m.blend_duration - m.blend_elapsed) as f32;
+                m.blend = m.blend_duration - m.blend_elapsed as f32;
             }
         } else {
             m.tick = clips.advance(m.slot, m.tick);

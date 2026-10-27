@@ -445,3 +445,27 @@ fn a_queued_motion_starts_at_the_end_with_the_end_bit_still_set() {
     s.begin_tick(&Flat);
     assert!(!s.motion_ended());
 }
+
+#[test]
+fn a_blend_starts_its_clock_at_two_and_holds_the_start_frame() {
+    // FUN_1403c8a40 sets the clock to 2 for a blend over 2 ticks; each
+    // advance (FUN_1403c6740) adds one, and the clock reaching the blend
+    // lets the motion run from its start frame.
+    let mut s = Sysobj::bare();
+    s.motion_start(5, 8., &Thirty);
+    assert_eq!(s.motion.blend_weight(), Some(0.25));
+    for clock in 3..8 {
+        s.begin_tick(&Flat);
+        assert_eq!(s.motion.tick, 0);
+        assert_eq!(s.motion.blend_weight(), Some(clock as f32 / 8.));
+    }
+    s.begin_tick(&Flat);
+    assert_eq!(s.motion.blend_weight(), None);
+    assert_eq!(s.motion.tick, 0);
+    // The plain step from 0 belongs to the host's clips (0 -> 2 there).
+    s.begin_tick(&Flat);
+    assert_eq!(s.motion.tick, 1);
+    // A blend of 2 or less starts at once.
+    s.motion_start(6, 2., &Thirty);
+    assert_eq!(s.motion.blend_weight(), None);
+}

@@ -8,7 +8,7 @@ use super::{
     spawn_model,
 };
 use bevy::prelude::*;
-use data::{model_pose::ModelPose, motion, probe_source::ProbeSource};
+use data::{model_pose::ModelPose, motion, motion_eval, probe_source::ProbeSource};
 use std::sync::Arc;
 use visual::area_fog::{AddFogged, FogMaterial};
 
@@ -70,6 +70,12 @@ pub struct GalleryActor {
     revision: u64,
     /// Optional source-resolved idle after a one-shot appearance preview.
     preview_idle: Option<usize>,
+    /// The joints last shown (root motion taken out), and the pose a
+    /// running blend started from with the motion serial it belongs to.
+    shown_joints: Vec<motion_eval::World>,
+    blend_from: Option<(u64, Vec<motion_eval::World>)>,
+    /// The motion serial of the shown battle pose.
+    shown_serial: Option<u64>,
 }
 
 /// A motion's playable range, in source key frames.
@@ -96,9 +102,66 @@ impl GalleryActor {
         choice: usize,
         key: f32,
         forward_kinematics_only: bool,
-    ) -> Result<(), String> {
-        let motion = self.battle.as_ref().ok_or("battle absent")?.motion.clone();
-        let sampled = sample(&self.kind, &motion, key, false, forward_kinematics_only)?;
+    ) -> Result<Option<f32>, String> {
+        let battle = self.battle.as_ref().ok_or("battle absent")?;
+        let motion = battle.motion.clone();
+        // `KH2RW_ENEMY_NO_BLEND` shows the held start frame instead, for
+        // comparison runs.
+        let weight = battle
+            .brain
+            .blend_weight()
+            .filter(|_| std::env::var_os("KH2RW_ENEMY_NO_BLEND").is_none());
+        let serial = battle.brain.serial();
+        let sampled = if forward_kinematics_only {
+            self.shown_joints.clear();
+            sample(&self.kind, &motion, key, false, true)?
+        } else {
+            let (sampled, joints) = sample_joints(&self.kind, &motion, key)?;
+            // FUN_1403c73c0: while the motion's blend runs, the pose the
+            // switch left turns toward the new motion's start frame, joint
+            // by joint (FUN_1401c3a30, as Sora's and the party's).
+            // A new motion's blend starts from what was last shown (a
+            // blend cut short by another included).
+            if weight.is_none() {
+                self.blend_from = None;
+            } else if self.blend_from.as_ref().is_none_or(|(s, _)| *s != serial) {
+                self.blend_from = Some((serial, std::mem::take(&mut self.shown_joints)));
+            }
+            let shown = match (&self.blend_from, weight) {
+                (Some((_, from)), Some(w)) if from.len() == joints.len() && !joints.is_empty() => {
+                    Some(motion_eval::blend_poses_with_helpers(
+                        &bone_parents(&self.kind),
+                        &bone_helpers(&self.kind),
+                        from,
+                        &joints,
+                        w,
+                    ))
+                }
+                _ => None,
+            };
+            match shown {
+                Some(shown) => {
+                    let sampled = skin_joints(&self.kind, &shown)?;
+                    self.shown_joints = shown;
+                    sampled
+                }
+                None => {
+                    self.shown_joints = joints;
+                    sampled
+                }
+            }
+        };
+        // How far the shown pose moved on a motion switch (the farthest
+        // vertex), for the unattended logs.
+        let jump = (self.shown_serial != Some(serial) && self.pose.len() == sampled.points.len())
+            .then(|| {
+                self.pose
+                    .iter()
+                    .zip(&sampled.points)
+                    .map(|(a, b)| a.distance(*b))
+                    .fold(0f32, f32::max)
+            });
+        self.shown_serial = Some(serial);
         self.pose = sampled.points;
         self.joints = sampled.joints;
         self.motion_choice = Some(choice);
@@ -106,7 +169,7 @@ impl GalleryActor {
         self.frame = key;
         self.revision += 1;
         self.dirty = false;
-        Ok(())
+        Ok(jump)
     }
 }
 
@@ -670,6 +733,9 @@ fn summon(
         dirty: false,
         revision: 0,
         preview_idle: None,
+        shown_joints: Vec::new(),
+        blend_from: None,
+        shown_serial: None,
     });
     gallery.selected = Some(id);
     gallery.status = format!("Summoned inspection actor {id}; select a source motion slot");
@@ -826,6 +892,61 @@ fn skeleton_mesh(links: &[(usize, usize)], joints: &[Vec3]) -> Mesh {
     visual::room::line_mesh(positions, colors)
 }
 
+/// Each bone's parent (bone record +4).
+fn bone_parents(kind: &Kind) -> Vec<i32> {
+    kind.model
+        .skinning
+        .bones
+        .iter()
+        .map(|b| b.header_i32[1])
+        .collect()
+}
+
+/// The helper joints (bone record +0xc bit 0) the blend steps over.
+fn bone_helpers(kind: &Kind) -> Vec<bool> {
+    kind.model
+        .skinning
+        .bones
+        .iter()
+        .map(|b| b.header_i32[3] & 1 != 0)
+        .collect()
+}
+
+/// The evaluated pose at `frame` with its root motion taken out, and its
+/// joints moved the same way (none for a raw-matrix motion).
+fn sample_joints(
+    kind: &Kind,
+    motion: &motion::SelectedMotion,
+    frame: f32,
+) -> Result<(Sampled, Vec<motion_eval::World>), String> {
+    let (pose, evaluated) = kind
+        .model
+        .skinning
+        .sample_evaluated(&motion.motion, frame)
+        .map_err(|e| e.to_string())?;
+    let root = evaluated.root_translation;
+    let joints = evaluated
+        .joints
+        .iter()
+        .take(kind.model.skinning.bones.len())
+        .map(|w| motion_eval::World {
+            translation: [0, 1, 2].map(|k| w.translation[k] - root[k]),
+            ..*w
+        })
+        .collect();
+    Ok((finish(kind, &pose, Vec3::from_array(root))?, joints))
+}
+
+/// Skins joints that already have their root motion taken out.
+fn skin_joints(kind: &Kind, joints: &[motion_eval::World]) -> Result<Sampled, String> {
+    let pose = kind
+        .model
+        .skinning
+        .pose_from_worlds(joints)
+        .map_err(|e| e.to_string())?;
+    finish(kind, &pose, Vec3::ZERO)
+}
+
 pub(super) fn sample(
     kind: &Kind,
     motion: &motion::SelectedMotion,
@@ -854,10 +975,14 @@ pub(super) fn sample(
             .map_err(|e| e.to_string())?;
         (pose, Vec3::from_array(evaluated.root_translation))
     };
+    finish(kind, &pose, if apply_root { Vec3::ZERO } else { root })
+}
+
+/// A skinned pose's points and joints, moved back by `offset`.
+fn finish(kind: &Kind, pose: &ModelPose, offset: Vec3) -> Result<Sampled, String> {
     if pose.position_bits.len() != kind.model.poses[0].position_bits.len() {
         return Err("motion pose vertex count differs from model".into());
     }
-    let offset = if apply_root { Vec3::ZERO } else { root };
     let points: Vec<Vec3> = pose
         .position_bits
         .iter()
@@ -866,7 +991,7 @@ pub(super) fn sample(
     if points.iter().any(|p| !p.is_finite()) {
         return Err("motion produced a nonfinite vertex".into());
     }
-    let joints = joint_origins(&pose, offset);
+    let joints = joint_origins(pose, offset);
     if joints.iter().any(|p| !p.is_finite()) {
         return Err("motion produced a nonfinite joint".into());
     }
@@ -1192,6 +1317,9 @@ mod tests {
             dirty: false,
             revision: 0,
             preview_idle: None,
+            shown_joints: Vec::new(),
+            blend_from: None,
+            shown_serial: None,
         }
     }
 
