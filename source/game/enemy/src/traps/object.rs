@@ -419,14 +419,16 @@ fn get_wish_movement(ctx: &mut Ctx<'_>, m: &mut Memory<'_>, args: &mut Args) -> 
     own_vector(ctx, m, 64, [v[0], v[1], v[2]], args)
 }
 
-/// 1:65 FUN_14042f220: flag 0x4000000 asks the engine to start a fall.
+/// 1:65 FUN_14042f220: `+0x120` bit 26, the script has taken over leaving the ground:
+/// FUN_1403b9090 runs no more of its leave branch (the engine's fall).
 fn exec_fall(ctx: &mut Ctx<'_>, m: &mut Memory<'_>, args: &mut Args) -> Result<(), Fault> {
     let id = ctx.sys_of_ai(m, args[0].value)?;
     ctx.object(id)?.sys.flags |= 0x400_0000;
     Ok(())
 }
 
-/// 1:66 FUN_14042f250: flag 0x8000000 asks the engine to land.
+/// 1:66 FUN_14042f250: `+0x120` bit 27, the script has taken over the landing:
+/// FUN_1403b9090 runs no more of its land branch.
 fn exec_land(ctx: &mut Ctx<'_>, m: &mut Memory<'_>, args: &mut Args) -> Result<(), Fault> {
     let id = ctx.sys_of_ai(m, args[0].value)?;
     ctx.object(id)?.sys.flags |= 0x800_0000;
