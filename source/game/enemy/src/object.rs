@@ -404,7 +404,40 @@ impl Object {
         self.tick_friend(world, env);
         self.tick_script(world, env);
         self.tick_threads(world, env);
+        self.sys.defer_ground = true;
         self.sys.end_tick(env);
+        self.finish_ground(world, env);
+    }
+
+    /// FUN_1403b9090's ground transition, after the solve: the act manager's
+    /// event (FUN_1403ca1d0: 1 leaving the ground, 2 landing), then the
+    /// script's trigger 0xd or 0xe (FUN_1403e1840, no arguments), then the
+    /// engine's own leave or land, each only while `+0x120` bit 26 (leave) or
+    /// 27 (land) stays clear: `obj_exec_fall` and `obj_exec_land` set them
+    /// when the script has done the move itself (Soldier's OBJ_FALL jumps
+    /// with height 0 and plays its fall motion).
+    fn finish_ground(&mut self, world: &mut World, env: &dyn Env) {
+        let Some(ground) = self.sys.ground.take() else {
+            return;
+        };
+        let (landing, bit, trigger) = match ground {
+            crate::sysobj::Ground::Leave => (false, 0x400_0000, 0xd),
+            crate::sysobj::Ground::Land => (true, 0x800_0000, 0xe),
+        };
+        let actions = self.acts.ground_event(landing);
+        self.apply_actions(Some((world, env)), actions);
+        if self.sys.flags & bit == 0 {
+            self.fire(world, env, trigger, &[]);
+        }
+        if self.sys.flags & bit == 0 {
+            let clips = env.clips(self.sys.model);
+            if landing {
+                self.sys.land(clips);
+            } else {
+                self.sys.finish_leave(clips);
+            }
+        }
+        self.sys.leave_velocity = None;
     }
 
     /// One step of each side thread of this object's program (the magic

@@ -35,8 +35,12 @@ pub struct Entry {
     pub start: u16,
     /// +0x18: three-argument event callback.
     pub event: u16,
-    /// +0xc, +0xe, +0x12: registered but not read by any caller found so far.
-    pub unused: [u16; 3],
+    /// +0xc: leaving the ground (FUN_1403b9090's act event 1).
+    pub leave: u16,
+    /// +0xe: landing (act event 2).
+    pub land: u16,
+    /// +0x12: registered but not read by any caller found so far.
+    pub unused: u16,
 }
 
 /// Manager flags at +0x12c.
@@ -121,6 +125,24 @@ impl Manager {
     /// FUN_1403ca700: the first table entry with this name.
     pub fn find(&self, name: &[u8]) -> Option<usize> {
         self.table.iter().position(|e| e.name == name)
+    }
+
+    /// FUN_1403ca1d0(n) for the ground events of FUN_1403b9090: the running
+    /// act's word at +0xa + 2n (1 leaving the ground, 2 landing) runs with
+    /// the AI object, unless no act runs or its first run is still gated.
+    pub fn ground_event(&self, landing: bool) -> Vec<Action> {
+        let Some(i) = self.current.filter(|_| self.flags & GATED == 0) else {
+            return Vec::new();
+        };
+        let e = &self.table[i];
+        let word = if landing { e.land } else { e.leave };
+        if word == 0 {
+            return Vec::new();
+        }
+        vec![Action::Callback {
+            word,
+            argument: Argument::Object,
+        }]
     }
 
     /// FUN_1403ca0e0: a same-named entry is overwritten, else the first free

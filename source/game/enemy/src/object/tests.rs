@@ -255,3 +255,53 @@ fn range_28_turns_sora_toward_his_target_by_its_degrees_beyond_50_units() {
     assert!((turn(false) - 15f32.to_radians()).abs() < 1e-5);
     assert_eq!(turn(true), 0.);
 }
+
+/// A program with OBJ_INIT (exit) and, when `fall_handler`, trigger 0xd:
+/// `obj_exec_fall(W0)` (1:65), the AI object at work word 0.
+fn fall_program(fall_handler: bool) -> Vec<u8> {
+    const START: u32 = 18;
+    let mut b = vec![0u8; 16];
+    b[..4].copy_from_slice(b"test");
+    for v in [64u32, 64, 64] {
+        b.extend(v.to_le_bytes());
+    }
+    let handler = if fall_handler { 0xd } else { 0x7f };
+    for v in [0u32, START, handler, START + 1, 0, 0] {
+        b.extend(v.to_le_bytes());
+    }
+    // OBJ_INIT: exit; trigger: push.wp W0, syscall 1:65, exit.
+    for w in [0x0049u16, 0x0060, 0, 0x004a, 65, 0x0049] {
+        b.extend(w.to_le_bytes());
+    }
+    b
+}
+
+fn left_in_the_air(fall_handler: bool) -> Object {
+    let mut world = World::default();
+    let mut obj = Object::spawn(
+        &mut world,
+        &NullEnv,
+        0,
+        &fall_program(fall_handler),
+        Sysobj::bare(),
+    )
+    .unwrap();
+    let handle = crate::world::object_handle(obj.id);
+    obj.script.instance.work[4..8].copy_from_slice(&handle.to_le_bytes());
+    obj.sys.position = [0., 100., 0.];
+    obj.tick(&mut world, &NullEnv);
+    obj
+}
+
+#[test]
+fn leaving_the_ground_runs_trigger_0xd_before_the_engine_falls() {
+    // FUN_1403b9090: script event 0xd runs first; `obj_exec_fall` (+0x120
+    // bit 26) means the script did the fall itself, so the engine's leave
+    // handler does not run.
+    let handled = left_in_the_air(true);
+    assert_ne!(handled.sys.flags & 0x400_0000, 0);
+    assert!(!handled.sys.is_jump());
+    // Without the trigger the engine falls.
+    let plain = left_in_the_air(false);
+    assert!(plain.sys.is_jump());
+}

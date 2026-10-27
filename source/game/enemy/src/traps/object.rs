@@ -166,7 +166,9 @@ fn act_table_add(ctx: &mut Ctx<'_>, m: &mut Memory<'_>, args: &mut Args) -> Resu
         timeout: word(9),
         start: word(10),
         event: word(11),
-        unused: [word(5), word(6), word(8)],
+        leave: word(5),
+        land: word(6),
+        unused: word(8),
     });
     Ok(())
 }

@@ -62,6 +62,19 @@ impl Motion {
     }
 }
 
+/// FUN_1403b9090: the speed an object leaving the ground keeps, at most
+/// (DAT_140623bac, per tick).
+pub const LEAVE_SPEED_CAP: f32 = 8.;
+
+/// FUN_1403b9090's two ground transitions.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Ground {
+    /// Leaving the ground: act event 1, script event 0xd, `+0x120` bit 26.
+    Leave,
+    /// Landing: act event 2, script event 0xe, `+0x120` bit 27.
+    Land,
+}
+
 /// Reaction states the engine holds between a hit and returning to the script.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Reaction {
@@ -504,6 +517,14 @@ pub struct Sysobj {
     /// +0x9e8: the spawn point (unit) the object came from, which owns the
     /// walk paths its routes are made of.
     pub unit: Option<u32>,
+    /// A ground transition FUN_1403b9090 found this tick, left for the
+    /// object to finish after its act and script events (`defer_ground`,
+    /// set by an object with a script); otherwise it finishes at once.
+    pub ground: Option<Ground>,
+    pub defer_ground: bool,
+    /// The horizontal velocity FUN_1403b9090 gave an object leaving the
+    /// ground, for the fall that follows it this tick.
+    pub leave_velocity: Option<[f32; 2]>,
     /// +0xc28..: the routine action state.
     pub rtn: crate::rtn::Rtn,
     /// The object's sound bank (`obj_play_se` ids 500000..500999 take its
@@ -791,6 +812,9 @@ impl Sysobj {
             tex_fade: Fade::default(),
             route: None,
             unit: None,
+            ground: None,
+            defer_ground: false,
+            leave_velocity: None,
             rtn: Default::default(),
             bg_press: [0.; 4],
             reaction_groups: Default::default(),
@@ -1433,6 +1457,20 @@ impl Sysobj {
         if let Some(floor) = self.touchdown(d, env) {
             self.position[1] = floor;
             self.hop = None;
+            self.touch_down(clips);
+        }
+    }
+
+    /// FUN_1403b9090's land branch: `+0x120` bit 27 is cleared, then (for an
+    /// object with a script, after its act event 2 and script event 0xe,
+    /// unless either sets the bit again, `obj_exec_land`) the mode's slot 6.
+    /// [I] The jump or hop mode has already ended and the feet are on the
+    /// floor whether or not the landing goes on.
+    fn touch_down(&mut self, clips: &dyn Clips) {
+        self.flags &= !0x800_0000;
+        if self.defer_ground {
+            self.ground = Some(Ground::Land);
+        } else {
             self.land(clips);
         }
     }
@@ -1440,7 +1478,7 @@ impl Sysobj {
     /// FUN_1403cb940 (mode slot 6): touching down plays the land motion with
     /// idle queued behind it (FUN_1403c8310(motion 0)) and returns to the
     /// ground mode.
-    fn land(&mut self, clips: &dyn Clips) {
+    pub fn land(&mut self, clips: &dyn Clips) {
         self.airborne = false;
         self.sampler = actor_physics::Sampler::default();
         self.state_flags &= !(1 << 27);
@@ -1510,7 +1548,7 @@ impl Sysobj {
         if let Some(floor) = self.touchdown(d, env) {
             self.position[1] = floor;
             self.jump = None;
-            self.land(clips);
+            self.touch_down(clips);
         }
     }
 
@@ -1695,7 +1733,28 @@ impl Sysobj {
         if on_floor || w & 0x80_0000 != 0 {
             return;
         }
+        // The velocity (+0x20) becomes this tick's move, its length capped at
+        // 8 a tick (DAT_140623bac): the fall the script or the engine starts
+        // next carries it.
+        let d = self.moved;
+        let len = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt();
+        if len > 0. {
+            let k = len.min(LEAVE_SPEED_CAP) / len;
+            self.velocity = [d[0] * k, d[1] * k, d[2] * k, 1.];
+            self.leave_velocity = Some([d[0] * k, d[2] * k]);
+        }
         self.flags &= !0x400_0000;
+        if self.defer_ground {
+            self.ground = Some(Ground::Leave);
+            return;
+        }
+        self.finish_leave(clips);
+    }
+
+    /// FUN_1403b9090's leave branch after the act event and script event
+    /// 0xd, unless either set `+0x120` bit 26 (`obj_exec_fall`): the mode's
+    /// slot 5 and the class's leave handler.
+    pub fn finish_leave(&mut self, clips: &dyn Clips) {
         if self.class_flags & class_flag::SUMMON != 0 && self.motion.flags.word3 & 0x10 == 0 {
             self.motion_change(4, 16., clips);
         }
@@ -1773,7 +1832,7 @@ impl Sysobj {
         self.hop = None;
         self.jump = Some((
             actor_physics::Arc::fall(self.position[1], vertical_up),
-            [0.; 2],
+            self.leave_velocity.take().unwrap_or([0.; 2]),
         ));
         self.sampler.reset();
         self.airborne = true;

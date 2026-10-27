@@ -469,3 +469,17 @@ fn a_blend_starts_its_clock_at_two_and_holds_the_start_frame() {
     s.motion_start(6, 2., &Thirty);
     assert_eq!(s.motion.blend_weight(), None);
 }
+
+#[test]
+fn walking_off_the_floor_carries_the_move_into_the_fall_capped_at_8() {
+    // FUN_1403b9090's leave branch: velocity = this tick's move, its length
+    // at most 8 (DAT_140623bac); the fall keeps it.
+    let mut s = Sysobj::bare();
+    s.position = [0., 100., 0.];
+    s.move_direction = [1., 0., 0.];
+    s.move_speed = 12.;
+    s.end_tick(&crate::env::NullEnv);
+    assert!(s.is_jump());
+    let (_, v) = s.jump.expect("falling");
+    assert!((v[0] - 8.).abs() < 1e-4 && v[1].abs() < 1e-4, "{v:?}");
+}
