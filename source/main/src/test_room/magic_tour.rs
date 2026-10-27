@@ -11,8 +11,9 @@
 //! Attack is mashed after each cast to show whether the combo goes on.
 //! The moves come at the end (alone with `--form-moves`): a run, a walk, a
 //! jump, a mashed ground combo and air combo on the enemy, Square on the
-//! ground and in the air (the growth abilities), with a `move_probe` event
-//! every tick.
+//! ground and in the air (the growth abilities), a combo on an enemy 300
+//! ahead, then the ground and air combos again with the stick held to the
+//! right, with a `move_probe` event every tick.
 use player::magic;
 use player::party_members::Spell;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -139,7 +140,12 @@ const GLIDE_HOLD: (u64, u64) = (1190, 1270);
 /// approach records).
 const FAR_COMBO: u64 = 1350;
 const FAR_DISTANCE: f32 = 300.;
-const MOVES_LEN: u64 = 1650;
+/// The stick held to the right while Attack is mashed, the enemy 110
+/// ahead: on the ground, then after a jump (range 41 lets Wisdom's shots
+/// and Final Form's swings move with the stick).
+const STRAFE_COMBO: u64 = 1650;
+const STRAFE_AIR: u64 = 1900;
+const MOVES_LEN: u64 = 2150;
 
 /// The last tick of the schedule.
 pub fn end() -> u64 {
@@ -168,6 +174,8 @@ pub fn stick(tick: u64, shift: u64) -> [f32; 2] {
     match moves(tick, shift) {
         Some(m) if within(m, RUN) || within(m, SQUARE_RUN) => [1., 0.],
         Some(m) if within(m, WALK) => [0.5, 0.],
+        Some(m) if within(m, (STRAFE_COMBO, STRAFE_COMBO + 210)) => [1., 0.],
+        Some(m) if within(m, (STRAFE_AIR + 10, STRAFE_AIR + 200)) => [1., 0.],
         _ => [0.; 2],
     }
 }
@@ -222,7 +230,9 @@ pub fn place_distance(tick: u64, shift: u64) -> f32 {
     }
     let far = at(tick, shift).is_some_and(|t| {
         LOCK.iter().any(|l| l.0 == t + 2)
-            || t + 2 >= MOVES_START && ![GROUND_COMBO, AIR_COMBO].contains(&(t + 2 - MOVES_START))
+            || t + 2 >= MOVES_START
+                && ![GROUND_COMBO, AIR_COMBO, STRAFE_COMBO, STRAFE_AIR]
+                    .contains(&(t + 2 - MOVES_START))
     });
     if far { LOCK_DISTANCE } else { 110. }
 }
@@ -306,6 +316,8 @@ pub fn place(tick: u64, shift: u64) -> bool {
                 SQUARE_RUN.0,
                 SQUARE_AIR,
                 FAR_COMBO,
+                STRAFE_COMBO,
+                STRAFE_AIR,
             ]
             .map(|m| MOVES_START + m),
         );
@@ -320,6 +332,8 @@ pub fn attack(tick: u64, shift: u64) -> bool {
             (GROUND_COMBO, to),
             (AIR_COMBO + 10, AIR_MASH),
             (FAR_COMBO, to),
+            (STRAFE_COMBO, to),
+            (STRAFE_AIR + 10, AIR_MASH),
         ]
         .iter()
         .any(|&(b, to)| {
@@ -349,7 +363,14 @@ pub fn attack(tick: u64, shift: u64) -> bool {
 
 pub fn jump(tick: u64, shift: u64) -> bool {
     if let Some(m) = moves(tick, shift) {
-        return [STAND_JUMP, AIR_COMBO, SQUARE_AIR, SQUARE_AIR_PRESS[0]].contains(&m);
+        return [
+            STAND_JUMP,
+            AIR_COMBO,
+            SQUARE_AIR,
+            SQUARE_AIR_PRESS[0],
+            STRAFE_AIR,
+        ]
+        .contains(&m);
     }
     at(tick, shift).is_some_and(|t| {
         AIR_JUMPS.contains(&t)

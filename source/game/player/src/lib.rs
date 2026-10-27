@@ -119,6 +119,13 @@ pub struct Clip {
     /// Range trigger 42: mode 0 moves inertially (obj+0x190 bit 0,
     /// FUN_140422350 → FUN_1403b7ad0 with PRTY words 10/11).
     pub inertia: Vec<(u32, u32)>,
+    /// Range trigger 41 (obj+0x18c bit 31, FUN_14040d810 case 0x29): the
+    /// stick's move request survives a motion with no range 0–2
+    /// (FUN_1403a89a0 clears it only when bit 31 is clear), so the mode's
+    /// velocity follows the stick, while the stick no longer turns the
+    /// facing (FUN_1403d65f0 refuses it). Wisdom's shots and spells and
+    /// Final Form's swings carry it.
+    pub stick_move: Vec<(u32, u32)>,
     /// Range trigger 44 (obj+0x190 bit 1): the object weighs
     /// `DAT_1405b22e4` (10000) when pushing (FUN_1403b5e00).
     pub heavy: Vec<(u32, u32)>,
@@ -1337,6 +1344,37 @@ impl Player {
         Clip::within(&self.clip(clips).actionable, self.motion_frame(clips))
     }
 
+    /// Motion range 41 holds now (obj+0x18c bit 31): the stick moves the
+    /// player but does not turn him.
+    fn stick_held(&self, clips: &Clips) -> bool {
+        Clip::within(&self.clip(clips).stick_move, self.motion_frame(clips))
+    }
+
+    /// FUN_1403b89a0 → FUN_1403b7ca0: this tick's change of the motion's
+    /// root (obj+0x254), turned by the facing and added to the mode's
+    /// displacement in every mode, airborne ones included. Attacks and
+    /// casts only; the other motions with root motion add it in their own
+    /// branch.
+    fn root_delta(&self, clips: &Clips) -> Vec3 {
+        let (clip, root) = match self.action {
+            Action::Attack(i) | Action::AirAttack(i) => {
+                (&clips.attacks[i].clip, &clips.attacks[i].root)
+            }
+            Action::Cast(i) | Action::AirCast(i) => (&clips.spells[i].clip, &clips.spells[i].root),
+            _ => return [0.; 3],
+        };
+        let Some(before) = self.frame.checked_sub(1) else {
+            return [0.; 3];
+        };
+        let at = |f: u32| root.get(clip.held_frame(f) as usize).copied();
+        let (Some(now), Some(before)) = (at(self.frame), at(before)) else {
+            return [0.; 3];
+        };
+        let (s, c) = self.yaw.sin_cos();
+        let (dx, dz) = (now[0] - before[0], now[2] - before[2]);
+        [dx * c + dz * s, now[1] - before[1], -dx * s + dz * c]
+    }
+
     /// Motion range 26 (FUN_14040d810 case 0x1a: +0x18c bit 21 with its
     /// value in +0x638): the state a chained reaction command needs.
     pub fn reaction_state(&self, clips: &Clips) -> Option<u16> {
@@ -1809,14 +1847,9 @@ impl Player {
                 let clip = &clips.attacks[i].clip;
                 self.face_target(clip, input);
                 // Root motion: the attack's root-curve change this tick.
-                let root = &clips.attacks[i].root;
-                let at = |f: u32| root.get(clip.held_frame(f) as usize).copied();
-                if let (Some(now), Some(before)) = (at(self.frame), at(self.frame - 1)) {
-                    let (s, c) = self.yaw.sin_cos();
-                    let (dx, dz) = (now[0] - before[0], now[2] - before[2]);
-                    disp[0] += dx * c + dz * s;
-                    disp[2] += -dx * s + dz * c;
-                }
+                let root = self.root_delta(clips);
+                disp[0] += root[0];
+                disp[2] += root[2];
                 let recovery = self.frame >= clip.blend_to_idle.unwrap_or(clip.end);
                 let ready = self.command_window(clips);
                 // FUN_1403d6fc0 takes Square (FUN_1403a81f0) before the
@@ -1838,6 +1871,9 @@ impl Player {
             Action::Cast(i) => {
                 let clip = &clips.spells[i].clip;
                 self.face_target(clip, input);
+                let root = self.root_delta(clips);
+                disp[0] += root[0];
+                disp[2] += root[2];
                 self.release_if_due(clips, i);
                 // A spell is a combo hit: the next press may chain from the
                 // cast's combo window (range 11 / 35, finisher range 50).
@@ -1940,11 +1976,20 @@ impl Player {
                     disp = self.dead_fall(p);
                 }
             }
+            Action::AirAttack(_) | Action::AirCast(_) => {
+                // The motion's root moves an air attack or cast too
+                // (FUN_1403b7ca0), on top of mode 1's arc and drift.
+                let root = self.root_delta(clips);
+                disp = self.airborne(
+                    input, moving, magnitude, direction, height, p, clips, &mut step,
+                );
+                for (d, r) in disp.iter_mut().zip(root) {
+                    *d += r;
+                }
+            }
             Action::Jump
             | Action::HighJump
             | Action::Fall
-            | Action::AirAttack(_)
-            | Action::AirCast(_)
             | Action::Growth(_)
             | Action::Scripted(_) => {
                 disp = self.airborne(
@@ -1981,6 +2026,13 @@ impl Player {
                     }
                 }
             }
+        }
+        // FUN_1403a89a0 clears the stick's request (FUN_1403a8fa0) after the
+        // commands only when no range 0–2 and no range 41 holds: under
+        // range 41 (Wisdom's shots and spells, Final Form's swings) mode 0
+        // follows the stick while the motion plays.
+        if moving && !self.in_air() && self.stick_held(clips) {
+            ground_request = stick;
         }
         if !was_in_air && !self.in_air() {
             // Mode 0 (FUN_140422350) sampled by FUN_1403b89a0 every second
@@ -2157,8 +2209,9 @@ impl Player {
             None
         };
         // [test-room carry-over] The stick sets the facing an attack is
-        // chosen and swung along.
-        let facing_yaw = if moving {
+        // chosen and swung along, except out of a range 41, where the
+        // stick may not turn the player (FUN_1403d65f0).
+        let facing_yaw = if moving && !self.stick_held(clips) {
             direction[0].atan2(direction[1])
         } else {
             self.yaw
@@ -2664,10 +2717,14 @@ impl Player {
         // Mode 1 horizontal (FUN_1403cb360 → FUN_1403b7ad0 with 0.9, 0.95):
         // the velocity keeps 90% of itself and takes 10% of the stick
         // velocity, or decays ×0.95 without a stick. The stick only feeds it
-        // under an ANB range 0–2: JUMP from tick 8, FALL throughout, never
-        // during aerial attacks [I, as on the ground].
-        let steering = moving && self.actionable(clips);
-        if steering {
+        // under an ANB range 0–2 (JUMP from tick 8, FALL throughout) or a
+        // range 41, which keeps the request without letting the stick turn
+        // the facing (FUN_1403a89a0, FUN_1403d65f0): Wisdom's air shot and
+        // Final Form's air swings drift with the stick, other air attacks
+        // do not.
+        let held = self.stick_held(clips);
+        let steering = moving && (held || self.actionable(clips));
+        if steering && !held {
             self.turn_toward(direction, p.turn_speed);
         }
         let (dir, speed) = if !steering {
@@ -3980,6 +4037,84 @@ mod tests {
             player.position
         );
         assert!(player.position[2].abs() < 1e-3);
+    }
+
+    #[test]
+    fn range_41_lets_the_stick_move_an_attack_without_turning_it() {
+        let (p, w) = (params(), room());
+        let walk = |c: &Clips| {
+            let mut player = Player::new([0., 0., 0.], 0.);
+            player.tick(
+                &Input {
+                    attack: true,
+                    ..Input::default()
+                },
+                &p,
+                c,
+                &w,
+            );
+            assert_eq!(player.action, Action::Attack(1));
+            let stick = Input {
+                direction: [1., 0.],
+                ..Input::default()
+            };
+            for _ in 0..10 {
+                player.tick(&stick, &p, c, &w);
+            }
+            (player.action, player.position, player.yaw)
+        };
+        // Without range 41 the request is cleared: the swing stays put.
+        let c = clips();
+        let (action, at, _) = walk(&c);
+        assert_eq!(action, Action::Attack(1));
+        assert!(at[0].abs() < 1e-3, "{at:?}");
+        // With it the stick moves the swing sideways; the facing stays.
+        let mut c = clips();
+        c.attacks[1].clip.stick_move = vec![(0, 40)];
+        let (action, at, yaw) = walk(&c);
+        assert_eq!(action, Action::Attack(1));
+        assert!(at[0] > 10., "{at:?}");
+        assert!(yaw.abs() < 1e-4, "{yaw}");
+    }
+
+    #[test]
+    fn an_air_attack_moves_by_its_root_curve() {
+        let (p, mut c, w) = (params(), clips(), room());
+        c.attacks[3].root = (0..30).map(|f| [0., 0., f as f32 * 3.]).collect();
+        let mut player = Player::new([0., 0., 0.], std::f32::consts::FRAC_PI_2);
+        player.tick(
+            &Input {
+                jump: true,
+                ..Input::default()
+            },
+            &p,
+            &c,
+            &w,
+        );
+        for _ in 0..25 {
+            player.tick(&Input::default(), &p, &c, &w);
+        }
+        let x = player.position[0];
+        player.tick(
+            &Input {
+                attack: true,
+                ..Input::default()
+            },
+            &p,
+            &c,
+            &w,
+        );
+        assert_eq!(player.action, Action::AirAttack(3));
+        for _ in 0..10 {
+            player.tick(&Input::default(), &p, &c, &w);
+        }
+        // The hop has no target speed here: the 30 units are root motion.
+        assert!(
+            (player.position[0] - x - 30.).abs() < 1.,
+            "{} -> {}",
+            x,
+            player.position[0]
+        );
     }
 
     #[test]

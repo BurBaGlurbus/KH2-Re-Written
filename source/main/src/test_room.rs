@@ -1889,6 +1889,7 @@ fn clip_for(selected: &motion::SelectedMotion) -> Result<(Clip, u32), Box<dyn st
             // obj+0x194 bit 1 (FUN_14040d810 case 0x2e): no first person.
             46 => clip.no_first_person.push((start, stop)),
             27 => clip.invulnerable.push((start, stop)),
+            41 => clip.stick_move.push((start, stop)),
             42 => clip.inertia.push((start, stop)),
             44 => clip.heavy.push((start, stop)),
             31 => clip.fixed.push((start, stop)),
