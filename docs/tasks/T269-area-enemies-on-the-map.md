@@ -1,4 +1,4 @@
-# T267 — An area's own enemies on its map, with their spawn serials
+# T269 — An area's own enemies on its map, with their spawn serials
 
 Owner Claude, 2026-10-28, requested by burba in the project thread ("continue", after the proposal to run enemies
 in a real area). Gate: development of enemy AI in the test room; no final gate is inferred. Prerequisites: T262–T266,
@@ -51,7 +51,7 @@ outside the checkout (`hb08-01`, `combat-06`).
 
 ## Verdict
 
-PARTIAL. An area's own enemies fight on its map at their placements with their serials; the zone pop-in and the
+PARTIAL. (Committed first as T267 in a8c9900 / 331116c / d7251d8; that number is also the Journal record's.) An area's own enemies fight on its map at their placements with their serials; the zone pop-in and the
 encounter rules are not translated. Not compared with the installed game.
 
 ## Next
