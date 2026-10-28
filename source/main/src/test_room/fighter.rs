@@ -7,6 +7,10 @@ use player::combat;
 pub(crate) struct Fighter {
     pub(crate) player: Player,
     pub(crate) vitals: Vitals,
+    /// [KH3 ruleset] The KH3 layer's state (duel_kh3.rs), and a grand
+    /// magic's window: ticks left and the MP it keeps.
+    pub(crate) kh3: player::kh3::Kh3,
+    pub(crate) kh3_grand: Option<(u32, i32)>,
 }
 
 impl Fighter {
@@ -14,6 +18,8 @@ impl Fighter {
         Fighter {
             player,
             vitals: Vitals::default(),
+            kh3: player::kh3::Kh3::default(),
+            kh3_grand: None,
         }
     }
 }

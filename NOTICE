@@ -155,3 +155,12 @@ Kit by steferro78 (https://github.com/steferro78-HIV/kh2-combat-kit, MIT).
 No code or data from that project is copied. It was reviewed and used only as a
 cross-check for the variable-height jump and the Square-button moves (T105).
 The ported behaviour follows the decompiled exe routines cited in the code.
+
+The LAN duel's KH3 ruleset (player::kh3, T279) follows the behaviour described
+by kingdom-hearts-x-elden-ring by StrawHatPro
+(https://github.com/StrawHatPro/kingdom-hearts-x-elden-ring, MIT, Copyright (c)
+2026 StrawHatPro; the licence text is in CREDITS.md). Its movement, flowmotion,
+combo homing, focus and shotlock behaviour and tuning numbers were reimplemented
+in this project's code on KH2's own motions and effects. No code, data,
+executable addresses or research notes from that project were copied, and no
+KH3 data is in this repository.

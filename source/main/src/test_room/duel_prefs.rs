@@ -77,6 +77,7 @@ fn rules_json(r: &MatchRules) -> Value {
         "hit_cap": r.hit_cap,
         "time_limit": r.time_limit,
         "arena": ARENAS.get(usize::from(r.arena)).map(|a| a.key),
+        "ruleset": r.ruleset_name(),
     })
 }
 
@@ -116,6 +117,12 @@ fn rules_from(v: &Value) -> Option<MatchRules> {
         .position(|a| v["arena"].as_str() == Some(a.key))
     {
         r.arena = i as u8;
+    }
+    if let Some(&(ruleset, ..)) = duel_rules::RULESETS
+        .iter()
+        .find(|x| v["ruleset"].as_str() == Some(x.1))
+    {
+        r.ruleset = ruleset;
     }
     Some(r)
 }
@@ -177,6 +184,7 @@ mod tests {
             hit_cap: 75,
             time_limit: 90,
             arena: 1,
+            ruleset: duel_rules::Ruleset::Kh3,
             ..MatchRules::default()
         };
         assert_eq!(rules_from(&rules_json(&r)), Some(r));

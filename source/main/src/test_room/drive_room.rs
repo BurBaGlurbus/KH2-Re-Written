@@ -629,6 +629,18 @@ impl DriveRt {
         self.bullet_serial = (u64::from(slot) + 1) << 40;
     }
 
+    /// Wisdom Form's effects (its bullets' look) once its kit is loaded,
+    /// whether or not the form was ever taken: a joiner draws the other
+    /// Sora's bullets, and the KH3 ruleset's shotlock bolts ride them.
+    pub(crate) fn wisdom_pax(&mut self) -> Option<Arc<data::object_effect::Pax>> {
+        if let Some(p) = self.paxes.get(&forms::WISDOM) {
+            return Some(Arc::clone(p));
+        }
+        let p = Arc::new(self.ready.get_mut(&forms::WISDOM)?.pax.take()?);
+        self.paxes.insert(forms::WISDOM, Arc::clone(&p));
+        Some(p)
+    }
+
     /// Joiner: a Sora's bullets as the host's snapshot has them (key,
     /// position, direction). A new one starts its effect; one gone fades.
     pub(crate) fn show_bullets(
@@ -652,7 +664,7 @@ impl DriveRt {
             }
             self.bullets
                 .push(player::wisdom_form::Bullet::new(key, 0, pos, dir));
-            if let Some(pax) = self.paxes.get(&forms::WISDOM).cloned() {
+            if let Some(pax) = self.wisdom_pax() {
                 fx_queue.push(super::drive_fx::Placed {
                     req: super::drive_fx::FxRequest {
                         pax,
@@ -1755,13 +1767,16 @@ pub fn shots(game: &mut Game) {
         .and_then(|rt| enemy_targets(rt).first().map(|t| t.centre));
     let ends = &mut d.bullet_ends;
     d.bullets.retain_mut(|b| {
-        let live = b.step(target);
+        // [KH3 ruleset] A shotlock bolt is steered by its own layer.
+        let bolt = super::duel_kh3::is_bolt(b.key);
+        let live = b.step(if bolt { None } else { target });
         if !live {
             ends.push((b.key, true));
         }
         live
     });
-    for b in &d.bullets {
+    // A bolt still in its ring (not launched) hits nothing.
+    for b in d.bullets.iter().filter(|b| b.speed > 0.) {
         m.volumes.push(player::magic::Volume {
             key: b.key,
             atkp: player::wisdom_form::ATKP,

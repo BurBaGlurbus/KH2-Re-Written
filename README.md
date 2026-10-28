@@ -212,10 +212,28 @@ level 99 the Keyblade's stats count for a lot: with the defaults a Thundaga does
 the Keyblade with the most Magic, and neither takes a full bar in one cast. The other Sora's HP stays on the target gauge (top right) for
 the whole duel. The lobby's Keyblade, abilities and item slots go on top of it.
 
+**KH3 ruleset (multiplayer only):** the lobby's Match page has *Ruleset*: *KH2* (the game's own moves, the
+default) or *KH3*, set by the host (`--duel-ruleset kh2|kh3` from a command line). In *KH3* both Soras move and
+fight with Kingdom Hearts III's rules, played on KH2's own motions, effects and sounds: KH3's jump arc and
+gravity (a held jump goes higher; holding Jump after the top glides), *Doubleflight* (Jump again near the top),
+*Dodge Roll* and *Air Slide* (Guard with the stick), *Glide*, *Superslide*, and flowmotion: run or fall into a
+wall with the stick on it to run up or along it (Jump leaves with a flow jump, Guard kicks off into a
+Superslide, Attack is a flow attack), and poles where the arena has narrow pillars. Swings home in on the other
+Sora and air combos hover; Jump during a ground chain that has landed a hit launches into an air combo; a chain
+only goes on once one of its hits landed. Attack right after a successful guard or a dodge that met a hit is a
+counter. **Shotlock:** hold R2 (E on the keyboard) to aim. Locks build up while focus drains (the bar above your
+HP); Attack fires: a homing volley of up to 23 bolts, or *Ragnarok* at 24 locks. Guard while aiming airsteps
+to the other Sora, and Attack on arrival is a flow attack. Focus refills slowly and with hits given and taken.
+Enough style (hits and spells) offers a *Grand* spell: Triangle casts it without MP. *Test KH3 mode* on the
+launcher's Multiplayer screen (or `--kh3-test`) starts a local duel in the KH3 ruleset against a scripted Sora
+that goes through all of it. Left out: Attractions, Keyblade transformations and Formchanges, Links, team
+attacks, rail slides, Risk Dodge's enemy-offered moves and Final Blow; the numbers and what stands in for KH3's
+motions are listed in `docs/tasks/T279-kh3-duel-ruleset.md`.
+
 **Known limitations:**
 
 - Limits, summons, Limit Form, Donald and Goofy, and the room's Shadow are switched off in a session.
-- The other player's weapon trail is not drawn yet; Wisdom Form's shots show their effect on the host only.
+- The other player's weapon trail is not drawn yet.
 - The joiner sees its own Sora about one round trip late (one or two ticks on home Wi-Fi): there is no
   prediction yet. The host has no delay.
 - Sora has no victory motion in the duel yet; the result's camera frames him as he stands.

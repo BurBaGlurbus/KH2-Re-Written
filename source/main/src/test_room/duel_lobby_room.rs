@@ -55,6 +55,7 @@ struct SavedCamp {
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum RowKind {
     Arena,
+    Ruleset,
     Mode,
     Damage,
     Magic,
@@ -761,6 +762,7 @@ fn step(
             }
         }
         RowKind::Time => game.duel_rules.cycle_time(s),
+        RowKind::Ruleset => game.duel_rules.cycle_ruleset(s),
         RowKind::Ban(i) => {
             let n = room.limits.ban_pool().len() + 1;
             room.picks[i] = (room.picks[i] as i32 + s).rem_euclid(n as i32) as usize;
@@ -803,7 +805,8 @@ fn step(
         let rules = game.duel_rules;
         game.event(serde_json::json!({"event":"duel_rules","tick":tick,
             "mode":rules.info().name,"damage":rules.damage,"magic":rules.magic,
-            "hit_cap":rules.hit_cap,"time_limit":rules.time_limit}));
+            "hit_cap":rules.hit_cap,"time_limit":rules.time_limit,
+            "ruleset":rules.ruleset_name()}));
     }
 }
 
@@ -959,8 +962,21 @@ fn pages(room: &LobbyRoom, net: &DuelNet, game: &Game, ap: i32) -> Pages {
             !host,
         ),
     );
+    r.insert(
+        1,
+        row(
+            "Ruleset",
+            duel_rules::RULESETS.iter().map(|x| text(x.1)).collect(),
+            usize::from(rules.ruleset_code()),
+            help(&format!(
+                "KH2: the game's own moves. KH3: flowmotion, dodge roll, air slide, glide, focus and shotlock (hold R2).{by_host}"
+            )),
+            !host,
+        ),
+    );
     let mut k = vec![
         RowKind::Arena,
+        RowKind::Ruleset,
         RowKind::Mode,
         RowKind::Damage,
         RowKind::Magic,

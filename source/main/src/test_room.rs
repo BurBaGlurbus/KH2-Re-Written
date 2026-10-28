@@ -79,6 +79,7 @@ mod duel_arena;
 mod duel_camp;
 mod duel_fx;
 mod duel_hits;
+mod duel_kh3;
 mod duel_loadout;
 mod duel_lobby;
 mod duel_lobby_room;
@@ -1197,6 +1198,9 @@ struct Game {
     /// bench's swings (its shots).
     duel_wisdom: bool,
     duel_shot_keys: std::collections::HashSet<(u8, u64, u64)>,
+    /// [KH3 ruleset] The room collision's poles, kept by its triangle
+    /// counts (duel_kh3.rs).
+    kh3_poles: Option<duel_kh3::PoleCache>,
     /// A match is running: a knocked-out Sora stays down for the round.
     duel_match: bool,
     /// Damage dealt and hits landed this match, by the attacker's slot.
@@ -1415,6 +1419,9 @@ struct Game {
     /// presses (Triangle; decide, back or Triangle).
     talking: bool,
     rc_queued: bool,
+    /// [KH3 ruleset] Triangle for flowmotion (duel_kh3.rs): pressed since
+    /// the last tick.
+    flow_queued: bool,
     /// A save point's Save was chosen: the camp opens the file menu.
     save_menu_wanted: bool,
     /// Files the save point's menu wrote this run, and the world and area
@@ -6963,6 +6970,7 @@ fn read_pad(
     game.guard_queued |= p & 0x200 != 0;
     game.face_queued |= (p >> 24 & 0xf) as u8;
     game.rc_queued |= p & 0x400 != 0;
+    game.flow_queued |= p & 0x400 != 0;
     game.advance_queued |= p & 0x40c != 0;
     game.menu_up_queued |= p & 0x4000 != 0;
     game.menu_down_queued |= p & 0x8000 != 0;
@@ -7814,6 +7822,27 @@ fn simulate(
         Some(p) => (Vec2::from_array(p.direction), p.attack, false, false),
         None => (direction, attack, jump, guard),
     };
+    // [Test] The unattended KH3 test: the room Sora runs the KH3 script
+    // (duel_kh3.rs); otherwise R2 and Triangle are the KH3 buttons.
+    let kh3_script = duel_kh3::scripted_room_pad(&game, tick);
+    let (direction, attack, jump, guard, jump_up) = match kh3_script {
+        Some((p, _)) => (
+            Vec2::from_array(p.direction),
+            p.attack,
+            p.jump,
+            p.guard,
+            !p.jump_held,
+        ),
+        None => (direction, attack, jump, guard, jump_up),
+    };
+    let kh3_pad = match kh3_script {
+        Some((_, k)) => k,
+        None => duel_kh3::room_pad(&mut game),
+    };
+    let kh3_pad = player::kh3::Pad {
+        shotlock: kh3_pad.shotlock && !frozen,
+        situation: kh3_pad.situation && !frozen,
+    };
     let input = Input {
         direction: if frozen {
             [0.; 2]
@@ -7827,6 +7856,7 @@ fn simulate(
         // Square held (logical 0x200).
         guard_held: !frozen
             && (game.autoplay.is_none() && game.pad.held & 0x200 != 0
+                || kh3_script.is_some_and(|(p, _)| p.guard_held)
                 || game.magic_tour && magic_tour::guard(tick, game.magic_shift).1),
         target: target.map(|t| [t[0], t[2]]),
         hop_vector,
@@ -7899,6 +7929,7 @@ fn simulate(
         && !game.magic_tour
         && game.ability_tour.is_none()
         && game.autoplay_end != AUTOPLAY_TALK_END
+        && !duel_kh3::on(&game)
     {
         cast = match tick {
             700 => Some(magic::FIRE),
@@ -7916,6 +7947,7 @@ fn simulate(
         && !game.magic_tour
         && game.ability_tour.is_none()
         && game.autoplay_end != AUTOPLAY_TALK_END
+        && !duel_kh3::on(&game)
     {
         // The unattended run uses the Potion and the Ether.
         menu_item = match tick {
@@ -8022,6 +8054,9 @@ fn simulate(
         {
             let mp = game.sora.player.mp.cur;
             let ok = magic_room::request(&mut game, t, tick);
+            if ok && duel_kh3::on(&game) {
+                game.sora.kh3.spell_released(t);
+            }
             if game.duel {
                 let (slot, after) = (game.local_slot, game.sora.player.mp.cur);
                 let levels = game.magic.as_ref().map(|m| m.levels);
@@ -8086,6 +8121,8 @@ fn simulate(
             // the host (duel_sync), and the host's snapshots place him.
             game.net_pad = rival::RivalPad::of(&input);
             game.net_pad.command = net_command;
+            game.net_pad.shotlock_held = kh3_pad.shotlock;
+            game.net_pad.flow = kh3_pad.situation;
             // [Test] `--rival-script` on a joiner: the rival's test script
             // presses his buttons, against the host's Sora.
             if (game.rival_script || game.duel_bench || game.duel_magic || game.duel_wisdom)
@@ -8093,7 +8130,9 @@ fn simulate(
                 && let Some(foe) = game.rivals.first().map(|r| r.fighter.player.position)
             {
                 let me = game.sora.player.position;
-                game.net_pad = if game.duel_magic {
+                game.net_pad = if game.duel_rules.kh3() {
+                    rival::kh3_pad(tick, rival::KH3_SECOND, me, foe)
+                } else if game.duel_magic {
                     rival::magic_pad(tick, 100, me, foe)
                 } else if game.duel_wisdom {
                     let mut p = rival::bench_pad(tick, me, foe);
@@ -8109,14 +8148,35 @@ fn simulate(
             }
             player::Step::default()
         } else {
-            let Game {
-                sora,
-                params,
-                clips,
-                world,
-                ..
-            } = &mut *game;
-            sora.player.tick(&input, params, clips, world)
+            if duel_kh3::on(&game) {
+                // [KH3 ruleset] The layer over the KH2 controller.
+                let poles = duel_kh3::poles(&mut game);
+                let foe = duel_kh3::room_foe(&game);
+                let pad = kh3_pad;
+                let out = {
+                    let Game {
+                        sora,
+                        params,
+                        clips,
+                        world,
+                        ..
+                    } = &mut *game;
+                    let scene = player::kh3::Scene { foe, poles: &poles };
+                    duel_kh3::step(sora, &input, &pad, params, clips, &*world, &scene)
+                };
+                let slot = game.local_slot;
+                duel_kh3::after(&mut game, &out, slot);
+                out.step
+            } else {
+                let Game {
+                    sora,
+                    params,
+                    clips,
+                    world,
+                    ..
+                } = &mut *game;
+                sora.player.tick(&input, params, clips, world)
+            }
         }
     };
     if game.magic_tour && magic_tour::probing(tick, game.magic_shift) {
@@ -8140,6 +8200,11 @@ fn simulate(
     // The joiner simulates nothing: the host's snapshots carry it all.
     if !game.net_client {
         magic_room::tick(&mut game, tick);
+        // [KH3 ruleset] The shotlock bolts onto their bullets.
+        if duel_kh3::on(&game) {
+            let slot = game.local_slot;
+            duel_kh3::bolts(&mut game, slot);
+        }
         // Wisdom's shots join the spell volumes before the hits are tested.
         drive_room::shots(&mut game);
         item_room::tick(&mut game, tick);
@@ -10996,7 +11061,8 @@ fn camera_control(
     // as the follow camera's is (FUN_140164940 from the target). [I] The
     // camera system's own test for event cameras (FUN_1401780d0) is taken
     // to be that one.
-    let (pose, fov) = match game.overlay_camera.or(game.duel_camera) {
+    let kh3_view = duel_kh3::flow_view(&game, fov);
+    let (pose, fov) = match game.overlay_camera.or(game.duel_camera).or(kh3_view) {
         Some(v) => {
             let mut eye = v.eye;
             if v.collision {
@@ -11595,7 +11661,7 @@ fn present(
     }
     if let Ok(mut root) = roots.single_mut() {
         root.translation = Vec3::from_array(game.sora.player.position);
-        root.rotation = Quat::from_rotation_y(game.sora.player.yaw);
+        root.rotation = duel_kh3::turn(game.sora.player.yaw, &game.sora.kh3);
         // Stitch's limit draws Sora in camera space (FUN_1403cbfc0 with
         // Stitch's second matrix).
         if let Some((at, turn)) = summon::sora_camera_pose(&game) {
@@ -13736,6 +13802,12 @@ fn run(mut args: Vec<PathBuf>) -> Result<AppExit, Box<dyn std::error::Error>> {
             Some("--perf-overlay") => perf_overlay = true,
             Some("--basic-fk") => basic_fk = true,
             Some("--rival-script") => rival_script = true,
+            // The launcher's Test KH3 mode: a local duel in the KH3 ruleset
+            // against the scripted rival (duel_kh3.rs).
+            Some("--kh3-test") => {
+                rival_script = true;
+                duel_rules.ruleset = duel_rules::Ruleset::Kh3;
+            }
             Some("--duel-bench") => duel_bench = true,
             Some("--duel-magic") => duel_magic = true,
             Some("--duel-shots") => duel_shots = true,
@@ -13817,6 +13889,14 @@ fn run(mut args: Vec<PathBuf>) -> Result<AppExit, Box<dyn std::error::Error>> {
                     .into());
                 }
                 duel_rules.hit_cap = cap;
+            }
+            Some("--duel-ruleset") => {
+                let name = options
+                    .next()
+                    .and_then(|v| v.to_str())
+                    .ok_or("duel ruleset absent")?;
+                duel_rules.ruleset =
+                    duel_rules::ruleset_named(name).ok_or("duel ruleset: kh2 or kh3")?;
             }
             Some("--duel-arena") => {
                 let name = options
@@ -14498,6 +14578,7 @@ fn run(mut args: Vec<PathBuf>) -> Result<AppExit, Box<dyn std::error::Error>> {
         duel_quick,
         duel_wisdom,
         duel_shot_keys: std::collections::HashSet::new(),
+        kh3_poles: None,
         duel_match: false,
         duel_dealt: [0; 2],
         duel_landed: [0; 2],
@@ -14694,6 +14775,7 @@ fn run(mut args: Vec<PathBuf>) -> Result<AppExit, Box<dyn std::error::Error>> {
         party_push: Vec::new(),
         talking: false,
         rc_queued: false,
+        flow_queued: false,
         save_menu_wanted: false,
         files_saved: 0,
         save_place: None,
@@ -15051,6 +15133,16 @@ fn run(mut args: Vec<PathBuf>) -> Result<AppExit, Box<dyn std::error::Error>> {
         }
         None => None,
     };
+    // The launcher's Test KH3 mode is a duel as a session's is: Sora alone
+    // (duel_kh3.rs).
+    if duel_session.is_none() && rival_script && duel_rules.kh3() {
+        game.second_deck = None;
+        game.summons = None;
+        game.party.clear();
+        if let Some(rt) = game.enemy.as_mut() {
+            rt.enabled = false;
+        }
+    }
     let rig = CameraRig {
         camera: FollowCamera::new(
             follow_camera::OUTDOOR,
@@ -15271,6 +15363,7 @@ fn run(mut args: Vec<PathBuf>) -> Result<AppExit, Box<dyn std::error::Error>> {
         .init_resource::<enemy_battle_tour::Checks>()
         .init_resource::<area_enemies::AreaEnemies>()
         .init_resource::<sephiroth::Fight>()
+        .init_resource::<duel_kh3::Kh3Hud>()
         .add_plugins(SkatePlugins)
         .add_systems(
             Startup,
@@ -15386,6 +15479,7 @@ fn run(mut args: Vec<PathBuf>) -> Result<AppExit, Box<dyn std::error::Error>> {
                     perf_overlay::present,
                     duel_net::sample,
                     duel_net::present,
+                    duel_kh3::present,
                 )
                     .chain(),
                 finish,

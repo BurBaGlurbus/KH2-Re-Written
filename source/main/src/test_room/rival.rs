@@ -45,6 +45,10 @@ pub(crate) struct RivalPad {
     pub attack: bool,
     pub guard: bool,
     pub guard_held: bool,
+    /// [KH3 ruleset] The shotlock button (R2) is held, and the flowmotion
+    /// button (Triangle) was pressed this tick (duel_kh3.rs).
+    pub shotlock_held: bool,
+    pub flow: bool,
     pub command: Command,
 }
 
@@ -58,6 +62,8 @@ impl RivalPad {
             attack: input.attack,
             guard: input.guard,
             guard_held: input.guard_held,
+            shotlock_held: false,
+            flow: false,
             command: Command::None,
         }
     }
@@ -269,7 +275,12 @@ impl Rival {
         let kit = game.rival_kit.as_ref()?;
         Some(Rival {
             slot,
-            fighter: Fighter { player, vitals },
+            fighter: Fighter {
+                player,
+                vitals,
+                kh3: player::kh3::Kh3::default(),
+                kh3_grand: None,
+            },
             started: 0,
             control,
             pad: RivalPad::default(),
@@ -377,6 +388,85 @@ pub(crate) fn script_pad(tick: u64, me: [f32; 3], toward: [f32; 3]) -> RivalPad 
         _ if tick == 1200 => Command::Drive(player::forms::VALOR),
         _ => Command::None,
     };
+    pad
+}
+
+/// [KH3 ruleset] The second Sora's KH3 script runs this much later, so the
+/// two are not in step.
+pub(crate) const KH3_SECOND: u64 = 800;
+/// The KH3 script's cycle.
+const KH3_CYCLE: u64 = 1600;
+
+/// [Test] The KH3 ruleset's script (`--kh3-test`, the scripted rival, and
+/// the room Sora of an unattended KH3 run): a ground chain with the launch
+/// and an air combo, a jump with Doubleflight and a glide, a dodge roll, an
+/// air slide, a run along the X axis away from the arena's middle into its
+/// wall (wall runs, the kick, Superslide, Sonic Slash), a full shotlock
+/// (Ragnarok), then an airstep with its flow attack. Fixed by the tick so
+/// a run repeats.
+pub(crate) fn kh3_pad(tick: u64, offset: u64, me: [f32; 3], toward: [f32; 3]) -> RivalPad {
+    let d = Vec2::new(toward[0] - me[0], toward[2] - me[2]);
+    let distance = d.length();
+    let chase = d.normalize_or_zero();
+    let side = Vec2::new(-chase.y, chase.x);
+    let t = (tick + offset) % KH3_CYCLE;
+    let mut pad = RivalPad::default();
+    let mut stick = Vec2::ZERO;
+    // Outward along X: the arenas are round or square about the middle.
+    let outward = Vec2::new(if me[0] < 0. { -1. } else { 1. }, 0.);
+    match t {
+        // Close in, then the ground chain; Jump mid-chain launches.
+        0..230 => {
+            if distance > 170. {
+                stick = chase;
+            }
+            pad.attack = distance < 260. && t.is_multiple_of(14);
+            pad.jump = t == 215;
+        }
+        // The air combo after the launch.
+        230..300 => pad.attack = t.is_multiple_of(12),
+        // A jump, Doubleflight near the top of it, then the glide.
+        330 => pad.jump = true,
+        331..470 => {
+            pad.jump = t == 353;
+            pad.jump_held = t < 460;
+            stick = side * 0.9;
+        }
+        // A dodge roll to the side.
+        490 => {
+            pad.guard = true;
+            stick = side;
+        }
+        // A jump, then an air slide.
+        540 => pad.jump = true,
+        541..600 => {
+            pad.jump_held = t < 550;
+            if t == 556 {
+                pad.guard = true;
+                stick = -side;
+            }
+        }
+        // Out to the wall and up it; Guard kicks off into a Superslide,
+        // Attack in it is the Sonic Slash.
+        600..960 => {
+            stick = outward;
+            pad.guard = t == 940;
+        }
+        960..1000 => pad.attack = t == 975,
+        // A full shotlock: hold R2, fire at 24 locks (Ragnarok).
+        1010..1210 => {
+            pad.shotlock_held = t < 1190;
+            pad.attack = t == 1180;
+        }
+        // Aim again and airstep (Guard), then the flow attack on arrival.
+        1460..1540 => {
+            pad.shotlock_held = t < 1482;
+            pad.guard = t == 1478;
+            pad.attack = t > 1484 && t.is_multiple_of(3);
+        }
+        _ => {}
+    }
+    pad.direction = stick.clamp_length_max(1.).to_array();
     pad
 }
 
@@ -548,6 +638,8 @@ pub(crate) fn tick(mut game: ResMut<Game>) {
             let at = rival.fighter.player.position;
             rival.pad = if bench {
                 bench_pad(tick, at, sora_at)
+            } else if game.duel_rules.kh3() {
+                kh3_pad(tick, KH3_SECOND, at, sora_at)
             } else {
                 script_pad(tick, at, sora_at)
             };
@@ -572,6 +664,9 @@ pub(crate) fn tick(mut game: ResMut<Game>) {
             Command::Cast(t) => {
                 let mp = game.sora.player.mp.cur;
                 let ok = magic_room::request(game, t, tick);
+                if ok && super::duel_kh3::on(game) {
+                    game.sora.kh3.spell_released(t);
+                }
                 let after = game.sora.player.mp.cur;
                 let levels = game.magic.as_ref().map(|m| m.levels);
                 game.event(serde_json::json!({"event":"duel_cast","tick":tick,
@@ -584,6 +679,19 @@ pub(crate) fn tick(mut game: ResMut<Game>) {
                 }
             }
         }
+        // [KH3 ruleset] The layer over the KH2 controller (duel_kh3.rs).
+        let kh3 = super::duel_kh3::on(game);
+        let poles = if kh3 {
+            super::duel_kh3::poles(game)
+        } else {
+            Arc::default()
+        };
+        let kh3_pad = player::kh3::Pad {
+            shotlock: pad.shotlock_held,
+            situation: pad.flow,
+        };
+        let foe = sora_shape.map(|s| super::duel_kh3::foe(sora_at, s.centre));
+        let mut kh3_out = None;
         let step = {
             let Game {
                 sora,
@@ -593,16 +701,32 @@ pub(crate) fn tick(mut game: ResMut<Game>) {
                 ..
             } = &mut *game;
             let world = &*world;
+            let scene = player::kh3::Scene { foe, poles: &poles };
+            let mut run = |sora: &mut Fighter| {
+                if kh3 {
+                    let out =
+                        super::duel_kh3::step(sora, &input, &kh3_pad, params, clips, world, &scene);
+                    let step = out.step;
+                    kh3_out = Some(out);
+                    step
+                } else {
+                    sora.player.tick(&input, params, clips, world)
+                }
+            };
             match world {
                 RoomWorld::Map(map) => {
                     let room = map.swap_floor_state(rival.floor.unwrap_or(area::FLOOR_NONE));
-                    let step = sora.player.tick(&input, params, clips, world);
+                    let step = run(sora);
                     rival.floor = Some(map.swap_floor_state(room));
                     step
                 }
-                RoomWorld::Triangles(_) => sora.player.tick(&input, params, clips, world),
+                RoomWorld::Triangles(_) => run(sora),
             }
         };
+        if let Some(out) = &kh3_out {
+            super::duel_kh3::after(game, out, rival.slot);
+            super::duel_kh3::bolts(game, rival.slot);
+        }
         magic_room::tick(game, tick);
         drive_room::shots(game);
         item_room::tick(game, tick);
@@ -955,7 +1079,7 @@ pub(crate) fn present(
         for (root, mut transform) in &mut roots {
             if root.0 == rival.slot {
                 transform.translation = Vec3::from_array(p.position);
-                transform.rotation = Quat::from_rotation_y(p.yaw);
+                transform.rotation = super::duel_kh3::turn(p.yaw, &rival.fighter.kh3);
             }
         }
     }

@@ -85,6 +85,8 @@ enum Action {
     Multiplayer,
     /// Host a duel and wait for a player.
     HostDuel,
+    /// A local duel in the KH3 ruleset against the scripted Sora.
+    TestKh3,
     /// Join a host the LAN search found (index into the found list).
     JoinFound(usize),
     /// Type the host's address, then join it.
@@ -311,6 +313,8 @@ impl Launcher {
                 let mut items = vec![
                     Item::new("Host a duel", Action::HostDuel)
                         .detail("Wait for a player on this network"),
+                    Item::new("Test KH3 mode", Action::TestKh3)
+                        .detail("The KH3 ruleset against a scripted Sora on this PC"),
                 ];
                 for (i, host) in self.found.iter().enumerate() {
                     let item =
@@ -833,6 +837,7 @@ fn act(l: &mut Launcher, action: Action, exit: &mut MessageWriter<AppExit>) {
             let name = l.player_name();
             duel(l, vec!["--host".into(), "--name".into(), name]);
         }
+        Action::TestKh3 => duel(l, vec!["--kh3-test".into()]),
         Action::JoinFound(i) => {
             if let Some(host) = l.found.get(i) {
                 let address = host.addr.to_string();

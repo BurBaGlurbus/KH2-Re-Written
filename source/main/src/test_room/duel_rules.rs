@@ -53,6 +53,26 @@ pub(crate) fn mode_named(name: &str) -> Option<Mode> {
     }
 }
 
+/// Which game's moves both Soras fight with [duel choice, T279]: KH2's
+/// own controller, or the KH3 layer over it (`player::kh3`: KH3 movement,
+/// flowmotion, focus and shotlock, on KH2's motions and effects).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum Ruleset {
+    #[default]
+    Kh2,
+    Kh3,
+}
+
+/// The rulesets in the lobby's order: (ruleset, lobby name, command-line
+/// name).
+pub(crate) const RULESETS: [(Ruleset, &str, &str); 2] =
+    [(Ruleset::Kh2, "KH2", "kh2"), (Ruleset::Kh3, "KH3", "kh3")];
+
+/// A ruleset by its command-line name (`--duel-ruleset`).
+pub(crate) fn ruleset_named(name: &str) -> Option<Ruleset> {
+    RULESETS.iter().find(|r| r.2 == name).map(|r| r.0)
+}
+
 /// The time limits the host can pick, in seconds.
 pub(crate) const TIME_LIMITS: [u16; 5] = [60, 90, 120, 180, 300];
 const DEFAULT_TIME: u16 = 180;
@@ -92,6 +112,8 @@ pub(crate) struct MatchRules {
     pub time_limit: u16,
     /// The arena (a row of `duel_arena::ARENAS`).
     pub arena: u8,
+    /// KH2's moves or KH3's.
+    pub ruleset: Ruleset,
 }
 
 impl Default for MatchRules {
@@ -103,6 +125,7 @@ impl Default for MatchRules {
             hit_cap: DEFAULT_HIT_CAP,
             time_limit: DEFAULT_TIME,
             arena: 0,
+            ruleset: Ruleset::Kh2,
         }
     }
 }
@@ -165,6 +188,35 @@ impl MatchRules {
     pub(crate) fn cycle_arena(&mut self, step: i32) {
         let n = super::duel_arena::ARENAS.len() as i32;
         self.arena = (i32::from(self.arena) + step).rem_euclid(n) as u8;
+    }
+
+    /// The other ruleset.
+    pub(crate) fn cycle_ruleset(&mut self, step: i32) {
+        let at = self.ruleset_code() as i32;
+        let n = RULESETS.len() as i32;
+        self.ruleset = RULESETS[(at + step).rem_euclid(n) as usize].0;
+    }
+
+    /// The ruleset's wire code and back.
+    pub(crate) fn ruleset_code(&self) -> u8 {
+        RULESETS
+            .iter()
+            .position(|r| r.0 == self.ruleset)
+            .unwrap_or(0) as u8
+    }
+
+    pub(crate) fn ruleset_from(code: u8) -> Option<Ruleset> {
+        RULESETS.get(code as usize).map(|r| r.0)
+    }
+
+    /// The ruleset's lobby name.
+    pub(crate) fn ruleset_name(&self) -> &'static str {
+        RULESETS[self.ruleset_code() as usize].1
+    }
+
+    /// KH3's moves are on.
+    pub(crate) fn kh3(&self) -> bool {
+        self.ruleset == Ruleset::Kh3
     }
 
     /// The next (or previous) time limit in the table.
@@ -279,6 +331,17 @@ mod tests {
         assert_eq!(MatchRules::mode_from(r.mode_code()), Some(r.mode));
         assert!(!MatchRules { time_limit: 7, ..r }.valid());
         assert_eq!(mode_named("best3"), Some(Mode::BestOf3));
+        assert!(!r.kh3());
+        r.cycle_ruleset(1);
+        assert!(r.kh3() && r.ruleset_name() == "KH3");
+        assert_eq!(
+            MatchRules::ruleset_from(r.ruleset_code()),
+            Some(Ruleset::Kh3)
+        );
+        r.cycle_ruleset(1);
+        assert_eq!(r.ruleset, Ruleset::Kh2);
+        assert_eq!(ruleset_named("kh3"), Some(Ruleset::Kh3));
+        assert_eq!(ruleset_named("kh1"), None);
         assert_eq!(mode_named("rounds"), None);
     }
 

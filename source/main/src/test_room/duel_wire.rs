@@ -103,7 +103,9 @@ fn put_pad(w: &mut Writer, pad: &RivalPad) {
         | u8::from(pad.jump_held) << 1
         | u8::from(pad.attack) << 2
         | u8::from(pad.guard) << 3
-        | u8::from(pad.guard_held) << 4;
+        | u8::from(pad.guard_held) << 4
+        | u8::from(pad.shotlock_held) << 5
+        | u8::from(pad.flow) << 6;
     w.u8(bits);
     let (tag, arg) = match pad.command {
         Command::None => (0, 0),
@@ -133,6 +135,8 @@ fn get_pad(r: &mut Reader) -> Option<RivalPad> {
         attack: bits & 4 != 0,
         guard: bits & 8 != 0,
         guard_held: bits & 16 != 0,
+        shotlock_held: bits & 32 != 0,
+        flow: bits & 64 != 0,
         command,
     })
 }
@@ -204,12 +208,15 @@ pub(crate) struct FighterState {
     pub form: u8,
     /// His item slots (0 = used up).
     pub items: Vec<u16>,
-    /// His Wisdom bullets: key, position, direction.
+    /// His Wisdom bullets (and KH3 shotlock bolts): key, position,
+    /// direction.
     pub bullets: Vec<(u64, [f32; 3], [f32; 3])>,
+    /// [KH3 ruleset] What his HUD and model need of the KH3 layer.
+    pub kh3: Option<player::kh3::Shown>,
 }
 
 /// The most bullets a snapshot carries per fighter.
-pub(crate) const MAX_BULLETS: usize = 16;
+pub(crate) const MAX_BULLETS: usize = 32;
 
 /// The most item slots a snapshot carries.
 pub(crate) const MAX_ITEM_SLOTS: usize = 8;
@@ -235,6 +242,15 @@ fn yaw_of(bits: u16) -> f32 {
 
 fn fixed_bits(v: f32, scale: f32) -> u16 {
     (v * scale).round().clamp(0., 65535.) as u16
+}
+
+/// An angle in (-pi, pi] in 16 bits [T279].
+fn angle_bits(a: f32) -> u16 {
+    ((a / std::f32::consts::PI).clamp(-1., 1.) * 32767.).round() as i16 as u16
+}
+
+fn angle_of(bits: u16) -> f32 {
+    f32::from(bits as i16) / 32767. * std::f32::consts::PI
 }
 
 fn small(v: i32) -> u16 {
@@ -290,6 +306,22 @@ pub(crate) fn encode_snapshot(s: &Snapshot) -> Vec<u8> {
                 w.f32(*v);
             }
         }
+        match &f.kh3 {
+            None => w.u8(0),
+            Some(k) => {
+                w.u8(1);
+                w.bytes(&[
+                    k.focus,
+                    k.style,
+                    k.mode,
+                    k.locks,
+                    u8::from(k.aiming),
+                    k.offer,
+                ]);
+                w.u16(angle_bits(k.lean[0]));
+                w.u16(angle_bits(k.lean[1]));
+            }
+        }
     }
     w.finish()
 }
@@ -338,6 +370,22 @@ pub(crate) fn decode_snapshot(bytes: &[u8]) -> Option<Snapshot> {
             }
             bullets.push((key, [v[0], v[1], v[2]], [v[3], v[4], v[5]]));
         }
+        let kh3 = match r.u8()? {
+            0 => None,
+            1 => {
+                let b: [u8; 6] = r.array()?;
+                Some(player::kh3::Shown {
+                    focus: b[0],
+                    style: b[1],
+                    mode: b[2],
+                    locks: b[3],
+                    aiming: b[4] != 0,
+                    offer: b[5],
+                    lean: [angle_of(r.u16()?), angle_of(r.u16()?)],
+                })
+            }
+            _ => return None,
+        };
         if !position.iter().all(|v| v.is_finite()) {
             return None;
         }
@@ -358,6 +406,7 @@ pub(crate) fn decode_snapshot(bytes: &[u8]) -> Option<Snapshot> {
             form,
             items,
             bullets,
+            kh3,
         });
     }
     r.is_empty().then_some(Snapshot { tick, fighters })
@@ -373,6 +422,7 @@ pub(crate) fn encode_rules(rules: &MatchRules) -> Vec<u8> {
     w.u8(rules.hit_cap);
     w.u16(rules.time_limit);
     w.u8(rules.arena);
+    w.u8(rules.ruleset_code());
     w.finish()
 }
 
@@ -388,6 +438,7 @@ pub(crate) fn decode_rules(bytes: &[u8]) -> Option<MatchRules> {
         hit_cap: r.u8()?,
         time_limit: r.u16()?,
         arena: r.u8()?,
+        ruleset: MatchRules::ruleset_from(r.u8()?)?,
     };
     (r.is_empty() && rules.valid()).then_some(rules)
 }
@@ -686,6 +737,8 @@ mod tests {
             attack: n & 4 != 0,
             guard: n & 8 != 0,
             guard_held: n & 16 != 0,
+            shotlock_held: n & 32 != 0,
+            flow: n & 64 != 0,
             command: match n % 4 {
                 0 => Command::None,
                 1 => Command::Cast(n),
@@ -779,6 +832,15 @@ mod tests {
                     form: 1,
                     items: vec![1, 0, 5],
                     bullets: vec![(1 << 60 | 3, [1., 2., 3.], [0., 0., 1.])],
+                    kh3: Some(player::kh3::Shown {
+                        focus: 63,
+                        style: 40,
+                        mode: 12,
+                        locks: 9,
+                        aiming: true,
+                        offer: 1,
+                        lean: [angle_of(angle_bits(-1.5)), 0.],
+                    }),
                 },
                 FighterState {
                     slot: 1,
@@ -797,6 +859,7 @@ mod tests {
                     form: 0,
                     items: Vec::new(),
                     bullets: Vec::new(),
+                    kh3: None,
                 },
             ],
         };
@@ -817,6 +880,7 @@ mod tests {
             hit_cap: 50,
             time_limit: 90,
             arena: 1,
+            ruleset: super::super::duel_rules::Ruleset::Kh3,
         };
         assert_eq!(decode_rules(&encode_rules(&rules)), Some(rules));
         assert_eq!(decode_rules(&[RULES]), None);

@@ -22,6 +22,7 @@ fn merge(older: RivalPad, newer: RivalPad) -> RivalPad {
         jump: older.jump || newer.jump,
         attack: older.attack || newer.attack,
         guard: older.guard || newer.guard,
+        flow: older.flow || newer.flow,
         // A menu command is never dropped either.
         command: match newer.command {
             Command::None => older.command,
@@ -38,6 +39,7 @@ fn held(pad: RivalPad) -> RivalPad {
         jump: false,
         attack: false,
         guard: false,
+        flow: false,
         command: Command::None,
         ..pad
     }
@@ -109,11 +111,13 @@ const LATE_WARNING: u32 = 30;
 
 fn state_of(
     slot: u8,
-    (player, vitals): (&Player, &Vitals),
+    fighter: &Fighter,
+    kh3: bool,
     started: u64,
     drive: Option<&drive_room::DriveRt>,
     items: Option<&item_room::ItemRt>,
 ) -> FighterState {
+    let (player, vitals) = (&fighter.player, &fighter.vitals);
     FighterState {
         slot,
         position: player.position,
@@ -138,6 +142,7 @@ fn state_of(
         bullets: drive
             .map(|d| d.bullets.iter().map(|b| (b.key, b.pos, b.dir)).collect())
             .unwrap_or_default(),
+        kh3: kh3.then(|| fighter.kh3.shown()),
     }
 }
 
@@ -154,9 +159,11 @@ pub(crate) fn host_send(net: Option<ResMut<DuelNet>>, mut game: ResMut<Game>) {
         net.session
             .send(RELIABLE, duel_wire::encode_rules(&game.duel_rules));
     }
+    let kh3 = game.duel_rules.kh3();
     let mut fighters = vec![state_of(
         fighter_slots::HOST,
-        (&game.sora.player, &game.sora.vitals),
+        &game.sora,
+        kh3,
         game.action_started,
         game.drive.as_ref(),
         game.items.as_ref(),
@@ -164,7 +171,8 @@ pub(crate) fn host_send(net: Option<ResMut<DuelNet>>, mut game: ResMut<Game>) {
     fighters.extend(game.rivals.iter().map(|r| {
         state_of(
             r.slot,
-            (&r.fighter.player, &r.fighter.vitals),
+            &r.fighter,
+            kh3,
             r.started,
             r.own.drive.as_ref(),
             r.own.items.as_ref(),
@@ -184,7 +192,11 @@ pub(crate) fn host_send(net: Option<ResMut<DuelNet>>, mut game: ResMut<Game>) {
 
 /// Puts a snapshot's numbers on a Sora. Returns whether a new action began
 /// (the presenter restarts its blend).
-fn apply_state(s: &FighterState, player: &mut Player, vitals: &mut Vitals) -> bool {
+fn apply_state(s: &FighterState, fighter: &mut Fighter) -> bool {
+    if let Some(k) = &s.kh3 {
+        fighter.kh3.apply_shown(k);
+    }
+    let (player, vitals) = (&mut fighter.player, &mut fighter.vitals);
     let new_action = player.action != s.action || player.frame > s.frame;
     player.position = s.position;
     player.yaw = s.yaw;
@@ -327,7 +339,7 @@ pub(crate) fn join_apply(net: Option<ResMut<DuelNet>>, mut game: ResMut<Game>) {
             if let Some(d) = game.drive.as_mut() {
                 d.show_bullets(&s.bullets, &mut game.fx_queue);
             }
-            if apply_state(s, &mut game.sora.player, &mut game.sora.vitals) {
+            if apply_state(s, &mut game.sora) {
                 game.action_started = now;
             }
         } else if let Some(i) = game.rivals.iter().position(|r| r.slot == s.slot) {
@@ -338,7 +350,7 @@ pub(crate) fn join_apply(net: Option<ResMut<DuelNet>>, mut game: ResMut<Game>) {
             if let Some(d) = r.own.drive.as_mut() {
                 d.show_bullets(&s.bullets, &mut game.fx_queue);
             }
-            if apply_state(s, &mut r.fighter.player, &mut r.fighter.vitals) {
+            if apply_state(s, &mut r.fighter) {
                 r.started = now;
             }
             game.rivals.insert(i, r);
@@ -423,12 +435,14 @@ mod tests {
             attack: true,
             guard: true,
             guard_held: true,
+            shotlock_held: true,
+            flow: true,
             command: Command::Cast(1),
         };
         let h = held(p);
         assert_eq!(h.command, Command::None);
         assert_eq!(h.direction, p.direction);
-        assert!(h.jump_held && h.guard_held);
-        assert!(!h.jump && !h.attack && !h.guard);
+        assert!(h.jump_held && h.guard_held && h.shotlock_held);
+        assert!(!h.jump && !h.attack && !h.guard && !h.flow);
     }
 }

@@ -169,7 +169,7 @@ pub(crate) fn tick(mut game: ResMut<Game>, mut previous: Local<HashMap<(u64, usi
             who: Who::Room,
             slot: game.local_slot,
             at: Vec3::from_array(p.position),
-            turn: Quat::from_rotation_y(p.yaw),
+            turn: super::duel_kh3::turn(p.yaw, &game.sora.kh3),
             facing: Vec3::new(p.yaw.sin(), 0., p.yaw.cos()),
             started: game.action_started,
             cp: &game.clip_poses[clip],
@@ -194,7 +194,7 @@ pub(crate) fn tick(mut game: ResMut<Game>, mut previous: Local<HashMap<(u64, usi
             who: Who::Rival(i),
             slot: r.slot,
             at: Vec3::from_array(p.position),
-            turn: Quat::from_rotation_y(p.yaw),
+            turn: super::duel_kh3::turn(p.yaw, &r.fighter.kh3),
             facing: Vec3::new(p.yaw.sin(), 0., p.yaw.cos()),
             started: r.started,
             cp,
@@ -521,6 +521,13 @@ fn land(
         };
         a.vitals.attacker
     };
+    // [KH3 ruleset] A grand magic's spells hit twice as hard; a shotlock
+    // volley has its cap (duel_kh3.rs).
+    let (grand, volley_dealt) = {
+        let (a, _) = fighter(game, kit, hit.attacker);
+        (super::duel_kh3::grand(a), a.kh3.volley_dealt)
+    };
+    let bolt = hit.spell.is_some_and(super::duel_kh3::is_bolt);
     let (victim, clips) = fighter(game, kit, hit.victim);
     let refused = |game: &mut Game, why: &str| {
         game.event(serde_json::json!({"event":"duel_hit_refused","tick":tick,
@@ -559,6 +566,10 @@ fn land(
         return;
     }
     if victim.vitals.invulnerable > 0. || untouchable(&victim.player, clips) {
+        // [KH3 ruleset] A dodge that met a hit opens the counter window.
+        if rules.kh3() {
+            victim.kh3.dodged();
+        }
         victim.vitals.record.hit(aid, group, false, |_| (0, 0));
         let why = format!("invulnerable in {:?}", victim.player.action);
         refused(game, &why);
@@ -596,7 +607,23 @@ fn land(
     // Hits on Magic (spells, Reflect's counter, form magic) take the magic
     // multiplier; every hit stops at the rules' cap.
     let magic = attack.stat == 1;
-    let damage = rules.damage(formula, magic, victim.vitals.target.max_hp);
+    let mut damage = rules.damage(formula, magic, victim.vitals.target.max_hp);
+    if rules.kh3() {
+        if grand && hit.spell.is_some() && !bolt {
+            let doubled = (formula as f32 * player::kh3::tuning::GRAND_DAMAGE).round() as i32;
+            damage = rules.damage(doubled, magic, victim.vitals.target.max_hp);
+        }
+        if bolt {
+            let cap = victim.vitals.target.max_hp * player::kh3::tuning::VOLLEY_CAP_PERCENT / 100;
+            damage = damage.min((cap - volley_dealt).max(0));
+            if damage == 0 {
+                victim.vitals.record.mark(aid);
+                refused(game, "volley cap");
+                return;
+            }
+        }
+        victim.kh3.hit_taken();
+    }
     let damage_motion = (10..=39).contains(&victim.player.motion_id(clips));
     let veto = combat::sora_veto(ab.has(127), ab.has(128), victim.vitals.hp, 0, damage_motion);
     let max = victim.vitals.target.max_hp;
@@ -632,7 +659,10 @@ fn land(
             knockback: attack.knockback,
         },
     };
-    let mut started = victim.player.react(&reaction, &sstm, clips).is_some();
+    // [KH3 ruleset] Flow states shrug off light reactions (the damage
+    // stays).
+    let shrug = rules.kh3() && victim.kh3.shrugs(combat::reaction_class(reaction.reaction));
+    let mut started = !shrug && victim.player.react(&reaction, &sstm, clips).is_some();
     let hp = victim.vitals.hp;
     if hp == 0 && victim.player.die(clips).is_some() {
         started = true;
@@ -640,7 +670,17 @@ fn land(
     if started {
         set_started(game, hit.victim, tick);
     }
-    fighter(game, kit, hit.attacker).0.player.connected = true;
+    {
+        let a = fighter(game, kit, hit.attacker).0;
+        a.player.connected = true;
+        if rules.kh3() {
+            if bolt {
+                a.kh3.volley_dealt += taken as i32;
+            } else {
+                a.kh3.landed(hit.spell.is_none());
+            }
+        }
+    }
     // Played here and sent to the joiner, who plays the same (duel_sync).
     let mut events = Vec::new();
     if let Some(id) = hit_sound.filter(|&id| id >= 0) {
