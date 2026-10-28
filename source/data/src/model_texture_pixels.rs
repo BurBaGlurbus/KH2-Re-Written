@@ -23,8 +23,9 @@ pub struct DecodedTexture {
 }
 
 /// Reproduces the public Texture.GetData indexed branch within bounded inputs.
-/// PSM-zero requires complete pages; truncated public zero-filled tails are
-/// outside this profile. Nonzero upload values retain the public direct path.
+/// PSM-zero requires complete pages; `decode_images` zero-fills a tail the
+/// upload does not cover first. Nonzero upload values retain the public
+/// direct path.
 pub fn decode_stored_indices(
     data: &[u8],
     width: u32,
@@ -146,8 +147,13 @@ pub fn decode_images(bytes: &[u8]) -> io::Result<Vec<DecodedTexture>> {
     })?;
     let mut images = Vec::new();
     for image in layout.images {
+        // An image taller than its upload: the missing tail reads as zeros.
+        let declared = image.width as usize * image.height as usize
+            / (8 / image.indexed_bits_per_pixel) as usize;
+        let mut stored = bytes[image.data_offset..image.data_offset + image.data_length].to_vec();
+        stored.resize(declared.max(stored.len()), 0);
         let packed_indices = decode_stored_indices(
-            &bytes[image.data_offset..image.data_offset + image.data_length],
+            &stored,
             image.width,
             image.height,
             image.indexed_bits_per_pixel,

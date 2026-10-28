@@ -30,6 +30,8 @@ pub struct ImageView {
     pub indexed_bits_per_pixel: u32,
     pub upload_psm: u32,
     pub data_offset: usize,
+    /// The stored bytes: the declared size, or less when the image is
+    /// taller than its upload (the rest decodes as zeros).
     pub data_length: usize,
     pub stored_data_sha256: String,
     pub relative_clut_base: i32,
@@ -204,6 +206,19 @@ pub fn read_layout(bytes: &[u8]) -> io::Result<TextureLayout> {
             .ok_or_else(|| invalid("cumulative texture image reads exceed 128 MiB"))?;
         let data_offset = usize::try_from(transfer.data_offset)
             .map_err(|_| invalid("negative texture image pointer"))?;
+        // A texture taller than its upload whose declared size runs past the
+        // payload (WM_SYMBOL_CA: 128x256 over 1536 quadwords) keeps the
+        // bytes its transfer uploads; the decoder zero-fills the rest, as
+        // OpenKH's GetData does.
+        let available = bytes.len().saturating_sub(data_offset);
+        let data_length = if data_length <= available {
+            data_length
+        } else {
+            data_length.min(transfer.quad_word_count as usize * 16)
+        };
+        if data_length == 0 {
+            return Err(invalid("texture image has no uploaded bytes"));
+        }
         let data = range(bytes, data_offset, data_length)?;
         let relative_clut_base = tex0[7] as i32 - result.transfers[0].destination_base as i32;
         let cbp = usize::try_from(relative_clut_base)
@@ -325,6 +340,22 @@ mod tests {
         assert_eq!(image.clut_rgba.len(), 16);
         assert_eq!(image.clut_entry_offset, 1);
         assert_eq!(image.clut_source_indices[0], 8);
+    }
+    #[test]
+    fn an_image_taller_than_its_upload_keeps_the_uploaded_bytes() {
+        let mut bytes = fixture();
+        // The 16x16 image's transfer sits 128 bytes before the end and
+        // uploads 8 quadwords; the declared 256 bytes run past the payload.
+        let at = bytes.len() - 128;
+        bytes[184 + 116..184 + 120].copy_from_slice(&(at as i32).to_le_bytes());
+        bytes[184 + 96..184 + 100].copy_from_slice(&8u32.to_le_bytes());
+        let image = &read_layout(&bytes).unwrap().images[0];
+        assert_eq!((image.data_offset, image.data_length), (at, 128));
+        // Without the uploaded bytes in the payload it is still refused.
+        bytes[184 + 96..184 + 100].copy_from_slice(&9u32.to_le_bytes());
+        assert!(read_layout(&bytes).is_err());
+        bytes[184 + 96..184 + 100].copy_from_slice(&0u32.to_le_bytes());
+        assert!(read_layout(&bytes).is_err());
     }
     #[test]
     fn retains_footer_unknown_payload_and_uv_scroll_float_bits() {
