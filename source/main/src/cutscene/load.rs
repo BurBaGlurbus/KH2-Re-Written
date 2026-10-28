@@ -1,6 +1,7 @@
 //! Reads everything one event needs from the bound installation, by the
 //! names the event script itself gives.
 use data::{
+    bar,
     event_script::{self, Command, Load},
     model_inspection::{self, InspectionModel, ModelItem, ModelOptions},
     model_inspection_textures::{TextureMode, UvProfile},
@@ -8,10 +9,12 @@ use data::{
     motion::{self, InterpolatedMotion},
     motion_trigger, object_effect, objentry,
     path_lookup::Library,
+    pause_definition::{self, Definition},
     probe_source::ProbeSource,
 };
 use std::collections::{BTreeMap, HashMap};
 use visual::hud::{self, SystemFont};
+use visual::menu_screen::{self, Menu2ld};
 use visual::room::{self, LoadedRoom};
 
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
@@ -64,8 +67,8 @@ pub struct Loaded {
     pub messages: HashMap<u16, Vec<u8>>,
     /// Sound banks named by SeData (se/se<NNN>.win32.scd).
     pub banks: Vec<Vec<u8>>,
-    /// Pause menu rows: "Continue" and "Skip Scene" (sys.bar 0x8ab4, 0x8ab3).
-    pub pause_labels: [Vec<u8>; 2],
+    /// The pause menu (audio-spec section 5).
+    pub pause: PauseSource,
     pub font: SystemFont,
     /// ReadEffect PAX files and motion triggers for the effect player.
     pub paxes: EffectFiles,
@@ -75,6 +78,20 @@ pub struct Loaded {
 }
 
 const LANGUAGE: &str = "us";
+
+/// The event's pause menu: `FUN_1403ac5a0` pushes pause definition 4
+/// ("Continue" / "Skip Scene", 14mission.bar `slct`) for an event whose
+/// `evtp` flags have bit 0; the list is `menu/<lang>/pause.2ld` with the
+/// system font.
+pub const PAUSE_DEFINITION: u16 = 4;
+
+pub struct PauseSource {
+    pub layout: Menu2ld,
+    pub definition: Definition,
+    /// The definition's item messages (sys.bar), in item order.
+    pub texts: Vec<Vec<u8>>,
+    pub font: SystemFont,
+}
 
 fn locator(library: &Library, name: &str) -> Result<(&'static str, usize, [u8; 16])> {
     let found = library
@@ -239,12 +256,15 @@ pub fn load(source: &ProbeSource, id: &EventId) -> Result<Loaded> {
         &message_ids.iter().map(|&m| m as u32).collect::<Vec<_>>(),
     )?;
     let messages = message_ids.iter().copied().zip(texts).collect();
+    // se000 holds the pause list's sounds (FUN_1401dd170: bank 2 = se000).
+    if !bank_numbers.contains(&0) {
+        bank_numbers.push(0);
+    }
     let mut banks = Vec::new();
     for bank in bank_numbers {
         banks.push(library.read(&format!("se/se{bank:03}.win32.scd"))?);
     }
-    let (si, so, sh) = locator(&library, &format!("msg/{LANGUAGE}/sys.bar"))?;
-    let mut labels = hud::load_messages(source, si, so, sh, &[0x8ab4, 0x8ab3])?;
+    let pause = load_pause(source, &mut library)?;
     let font = hud::load_font(
         source,
         locator(&library, &format!("msg/{LANGUAGE}/fontimage.bar"))?,
@@ -293,10 +313,44 @@ pub fn load(source: &ProbeSource, id: &EventId) -> Result<Loaded> {
         music,
         messages,
         banks,
-        pause_labels: [labels.remove(0), labels.remove(0)],
+        pause,
         font,
         paxes,
         texcommon,
         summary,
+    })
+}
+
+/// `pause.2ld`, pause definition 4 with its messages and the system font.
+fn load_pause(source: &ProbeSource, library: &mut Library) -> Result<PauseSource> {
+    let (pi, po, ph) = locator(library, &format!("menu/{LANGUAGE}/pause.2ld"))?;
+    let layout = menu_screen::load(source, pi, po, ph)?;
+    let missions = library.read("14mission.bar")?;
+    let slct = bar::read_bar(&missions)?
+        .entries
+        .into_iter()
+        .find(|e| e.entry_type == 2)
+        .ok_or("pause definition table absent")?;
+    let definitions = pause_definition::read(
+        missions
+            .get(slct.offset as usize..slct.offset as usize + slct.size as usize)
+            .ok_or("pause definition table exceeds its file")?,
+    )?;
+    let definition = pause_definition::find(&definitions, PAUSE_DEFINITION)
+        .ok_or("event pause definition absent")?
+        .clone();
+    let (si, so, sh) = locator(library, &format!("msg/{LANGUAGE}/sys.bar"))?;
+    let ids: Vec<u32> = definition.items.iter().map(|i| i.message as u32).collect();
+    let texts = hud::load_messages(source, si, so, sh, &ids)?;
+    let font = hud::load_system_font(
+        source,
+        locator(library, &format!("msg/{LANGUAGE}/fontimage.bar"))?,
+        locator(library, &format!("msg/{LANGUAGE}/fontinfo.bar"))?,
+    )?;
+    Ok(PauseSource {
+        layout,
+        definition,
+        texts,
+        font,
     })
 }

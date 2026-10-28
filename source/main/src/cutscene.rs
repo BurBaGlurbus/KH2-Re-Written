@@ -27,10 +27,13 @@ use event::Timeline;
 use std::{collections::HashMap, fs::OpenOptions, path::PathBuf, sync::Arc};
 use visual::area_fog::{FogMaterial, FogPlugin};
 use visual::dialogue;
+use visual::field_command_menu;
 use visual::hud::SystemFont;
 use visual::overlay::{LayoutMaterial, Ui2dFrame, Ui2dPlugin};
+use visual::pause_definition::Menu as PauseMenu;
 use visual::room::{mesh, rgba_image};
 use visual::sound;
+use visual::sprite_player::Sheet as SpriteSheet;
 
 /// Event frames per second.
 pub(crate) const EVENT_FPS: f32 = 30.;
@@ -81,9 +84,45 @@ struct Audio {
     /// (frame, bank, sound number) of the plain sound requests, in order.
     effects: Vec<(i32, i16, i32)>,
     effects_started: usize,
-    /// Pause menu: None = running, Some(row) = open on that row.
-    pause: Option<usize>,
-    pause_labels: [Vec<u8>; 2],
+}
+
+/// The event's pause menu (audio-spec section 5): pause definition 4 on
+/// `pause.2ld`; the event clock and its sounds hold while it is open.
+#[derive(Resource)]
+struct Pause {
+    src: load::PauseSource,
+    menu: Option<PauseMenu>,
+    /// The row last chosen (DAT_140744cf0): the next opening's cursor.
+    last: Option<usize>,
+    art_sheet: Option<usize>,
+    font_sheet: Option<usize>,
+    /// `--pause-at`: the event frame the unattended run opens it at.
+    at: Option<f32>,
+    /// Ticks since it opened, and a capture the unattended run asks for.
+    ticks: u32,
+    snap: Option<u32>,
+}
+
+/// Results of pause definition 4's items (`FUN_14031dd70`).
+const PAUSE_SKIP: u16 = 5;
+const PAUSE_CONTINUE: u16 = 6;
+/// Logical pad bits the list reads.
+const PAD_UP: u64 = 0x10;
+const PAD_DOWN: u64 = 0x20;
+const PAD_DECIDE: u64 = 0x4;
+
+/// The unattended pause (`--pause-at`), by ticks since it opened: the
+/// cursor goes down to Skip Scene and back, a capture of each, then
+/// Continue. [Test setup.]
+fn pause_script(ticks: u32) -> (u64, Option<u32>) {
+    match ticks {
+        20 => (PAD_DOWN, None),
+        30 => (0, Some(0)),
+        40 => (PAD_UP, None),
+        50 => (0, Some(1)),
+        60 => (PAD_DECIDE, None),
+        _ => (0, None),
+    }
 }
 
 #[derive(Resource)]
@@ -144,6 +183,8 @@ fn room_animation(
 const VOICE_KEY: u32 = 8_000_000;
 const MUSIC_KEY: u32 = 8_100_000;
 const SE_KEY: u32 = 8_200_000;
+/// The pause list's own sounds (they play while the event's are held).
+const MENU_KEY: u32 = 8_300_000;
 
 pub(crate) fn decode_voice(bytes: &[u8]) -> Result<audio::Clip, Box<dyn std::error::Error>> {
     let bank = data::scd::read(bytes)?;
@@ -172,8 +213,22 @@ fn setup(
     mut images: ResMut<Assets<Image>>,
     mut frame: ResMut<Ui2dFrame>,
     windows: Query<&Window>,
+    mut pause: ResMut<Pause>,
 ) {
     let Startup { room } = startup.0.take().expect("startup data");
+    // The pause list's art (pause.2ld image 0) and the system font.
+    if let Some((t, scale)) = pause.src.layout.texture_for(0, 0) {
+        let (rgba, size) = (t.rgba.clone(), t.size);
+        pause.art_sheet = Some(frame.add_sheet(&mut images, rgba, size, scale));
+    }
+    let font = &pause.src.font;
+    let font_sheet = frame.add_sheet(
+        &mut images,
+        font.rgba.clone(),
+        font.size,
+        font.texel_scale as f32,
+    );
+    pause.font_sheet = Some(font_sheet);
     let world = commands
         .spawn((Transform::default(), Visibility::default()))
         .id();
@@ -363,23 +418,81 @@ fn tick(
     keys: Res<ButtonInput<KeyCode>>,
     mut audio: ResMut<Audio>,
     mut fx: ResMut<fx::Fx>,
+    mut pause: ResMut<Pause>,
 ) {
     // Start (Esc on PC) opens the pause menu: Continue / Skip Scene.
     let start = keys.just_pressed(KeyCode::Escape) || keys.just_pressed(KeyCode::Tab);
-    match audio.pause {
-        None if start && !event.finished => {
-            audio.pause = Some(0);
+    let cancel = keys.just_pressed(KeyCode::Backspace);
+    let pause = &mut *pause;
+    if pause.menu.is_none() && !event.finished {
+        let scripted = pause.at.is_some_and(|at| event.frame >= at);
+        if start || scripted {
+            pause.at = None;
+            pause.ticks = 0;
+            let src = &pause.src;
+            pause.menu = Some(PauseMenu::new(
+                &src.definition,
+                src.texts.clone(),
+                0,
+                false,
+                pause.last,
+            ));
             hold_audio(&audio, true);
+            let (tick, frame) = (event.tick, event.frame);
+            event
+                .log
+                .push(serde_json::json!({"event":"pause_open","tick":tick,"frame":frame}));
+            return;
         }
-        Some(row) => {
-            let up = keys.just_pressed(KeyCode::ArrowUp) || keys.just_pressed(KeyCode::KeyW);
-            let down = keys.just_pressed(KeyCode::ArrowDown) || keys.just_pressed(KeyCode::KeyS);
-            let row = if up || down { 1 - row } else { row };
-            audio.pause = Some(row);
-            let decide = keys.just_pressed(KeyCode::Enter) || keys.just_pressed(KeyCode::Space);
-            if decide && row == 1 {
+    }
+    if let Some(menu) = pause.menu.as_mut() {
+        let mut trig = 0;
+        for (keys_of, bit) in [
+            ([KeyCode::ArrowUp, KeyCode::KeyW], PAD_UP),
+            ([KeyCode::ArrowDown, KeyCode::KeyS], PAD_DOWN),
+            ([KeyCode::Enter, KeyCode::Space], PAD_DECIDE),
+        ] {
+            if keys.any_just_pressed(keys_of) {
+                trig |= bit;
+            }
+        }
+        if event.autoplay.is_some() {
+            let (scripted, snap) = pause_script(pause.ticks);
+            trig = scripted;
+            pause.snap = pause.snap.or(snap);
+        }
+        let seq = &pause.src.layout.layout.sequences[0];
+        menu.update_sprites(seq);
+        let out = menu.frame(seq, trig, trig);
+        pause.ticks += 1;
+        for &id in &out.sounds {
+            let request = audio.banks.request(id).ok().flatten();
+            let found = request.is_some();
+            if let Some(request) = request
+                && let Some(output) = audio.output.as_ref()
+                && let Ok(mut mixer) = output.mixer.lock()
+            {
+                for clip in request.layers {
+                    mixer.play(clip, MENU_KEY, request.volume, 1.);
+                }
+            }
+            let tick = event.tick;
+            event
+                .log
+                .push(serde_json::json!({"event":"pause_sound","tick":tick,"id":id,"found":found}));
+        }
+        // Start and cancel close a list that is not exclusive, as Continue.
+        let closed = (start || cancel) && !menu.exclusive() && pause.ticks > 1;
+        let picked = out.picked.or(closed.then_some(PAUSE_CONTINUE));
+        if let Some(result) = picked {
+            pause.last = Some(menu.cursor());
+            pause.menu = None;
+            let (tick, frame) = (event.tick, event.frame);
+            event.log.push(
+                serde_json::json!({"event":"pause_pick","tick":tick,"frame":frame,"result":result}),
+            );
+            if result == PAUSE_SKIP {
                 // Skip Scene: the end-of-event path, sounds stopped.
-                audio.pause = None;
                 event.finished = true;
                 if let Some(out) = audio.output.as_ref()
                     && let Ok(mut mixer) = out.mixer.lock()
@@ -388,13 +501,11 @@ fn tick(
                         mixer.stop(key);
                     }
                 }
-            } else if (decide && row == 0) || start {
-                audio.pause = None;
+            } else {
                 hold_audio(&audio, false);
             }
-            return;
         }
-        None => {}
+        return;
     }
     if event.finished {
         return;
@@ -650,7 +761,7 @@ fn present(
 fn compose(
     event: Res<Event>,
     overlay: Res<Overlay>,
-    audio: Res<Audio>,
+    pause: Res<Pause>,
     mut frame: ResMut<Ui2dFrame>,
     blur: Res<blur::Blur>,
 ) {
@@ -732,43 +843,23 @@ fn compose(
             .draws
             .push((font_sheet, dialogue::glyph_quads(&glyphs)));
     }
-    // The pause menu: a plain two-row list (Continue / Skip Scene).
-    if let (Some(row), Some(white)) = (audio.pause, overlay.white_sheet) {
-        frame.fill(white, [0., 0., 0., 0.55]);
-        for (i, label) in audio.pause_labels.iter().enumerate() {
-            let y = 190 + i as i32 * 44;
-            if i == row {
-                let w = 220.;
-                frame.draws.push((
-                    white,
-                    vec![data::sprite_sequence::Quad {
-                        corners: [
-                            [256. - w / 2., y as f32 - 20.],
-                            [256. + w / 2., y as f32 - 20.],
-                            [256. - w / 2., y as f32 + 20.],
-                            [256. + w / 2., y as f32 + 20.],
-                        ],
-                        uv: [0, 0, 1, 1],
-                        colors: [[0.2, 0.35, 0.75, 0.85]; 4],
-                        blend: 0,
-                    }],
-                ));
-            }
-            let mut text = dialogue::Text::new(
-                label.clone(),
-                if i == row { 0x80f0_f0f0 } else { 0x8080_8080 },
-                &overlay.font.widths,
-            );
-            let mut glyphs = Vec::new();
-            for _ in 0..512 {
-                glyphs = text.draw(256, y, &overlay.font.widths);
-                if text.complete {
-                    break;
-                }
-            }
-            frame
-                .draws
-                .push((font_sheet, dialogue::glyph_quads(&glyphs)));
+    // The pause list (pause.2ld SEQD 0 and the system font).
+    if let (Some(menu), Some(art), Some(font_sheet)) =
+        (pause.menu.as_ref(), pause.art_sheet, pause.font_sheet)
+    {
+        let seq = &pause.src.layout.layout.sequences[0];
+        let font = field_command_menu::Font {
+            widths: &pause.src.font.widths,
+            pad: 1,
+        };
+        let draws = menu.draw(seq, &font);
+        for (sheet, quads) in draws.below.into_iter().chain(draws.above) {
+            let slot = match sheet {
+                SpriteSheet::Art(_) => art,
+                SpriteSheet::Font => font_sheet,
+                SpriteSheet::Icon => continue,
+            };
+            frame.draws.push((slot, quads));
         }
     }
     // The event curtain (layer C): the start fade-in and types 6/7.
@@ -782,7 +873,33 @@ fn finish(
     mut exit: MessageWriter<AppExit>,
     mut closed: MessageReader<bevy::window::WindowCloseRequested>,
     audio: Res<Audio>,
+    mut pause: ResMut<Pause>,
 ) {
+    // The unattended pause's captures (`--pause-at`).
+    if let (Some(dir), Some(k)) = (event.autoplay.clone(), pause.snap.take()) {
+        let path = dir.join(format!("event-pause-{k:02}.png"));
+        let frame = event.frame;
+        event
+            .log
+            .push(serde_json::json!({"event":"pause_capture","index":k,"frame":frame}));
+        commands.spawn(Screenshot::primary_window()).observe(
+            move |captured: On<ScreenshotCaptured>| {
+                let image = captured
+                    .image
+                    .clone()
+                    .try_into_dynamic()
+                    .expect("pause capture");
+                let mut file = OpenOptions::new()
+                    .write(true)
+                    .create_new(true)
+                    .open(&path)
+                    .expect("new private capture");
+                image
+                    .write_to(&mut file, image::ImageFormat::Png)
+                    .expect("capture encode");
+            },
+        );
+    }
     let music_ready = audio
         .music
         .values()
@@ -845,7 +962,7 @@ fn finish(
 
 fn run(args: Vec<PathBuf>) -> Result<AppExit, Box<dyn std::error::Error>> {
     if args.len() < 2 {
-        return Err("usage: kh2fm event <Steam-root> <manifest> [--event tt:19:613] [--load-only] [--bg-mask <hex>] [--autoplay <new-capture-dir>] [--captures f1,f2,...]".into());
+        return Err("usage: kh2fm event <Steam-root> <manifest> [--event tt:19:613] [--load-only] [--bg-mask <hex>] [--autoplay <new-capture-dir> [--pause-at <frame>]] [--captures f1,f2,...]".into());
     }
     // The GPU device starts while the data decodes (used by the app below).
     let early_renderer = crate::early_renderer::EarlyRenderer::start();
@@ -857,6 +974,7 @@ fn run(args: Vec<PathBuf>) -> Result<AppExit, Box<dyn std::error::Error>> {
     let mut load_only = false;
     let mut bg_mask = u64::MAX;
     let mut autoplay = None;
+    let mut pause_at = None;
     let mut captures = vec![
         10., 100., 200., 300., 400., 520., 600., 700., 760., 900., 1000.,
     ];
@@ -865,6 +983,15 @@ fn run(args: Vec<PathBuf>) -> Result<AppExit, Box<dyn std::error::Error>> {
         match option.to_str() {
             Some("--load-only") => load_only = true,
             Some("--autoplay") => autoplay = options.next().cloned(),
+            Some("--pause-at") => {
+                pause_at = Some(
+                    options
+                        .next()
+                        .and_then(|v| v.to_str())
+                        .ok_or("pause frame absent")?
+                        .parse::<f32>()?,
+                );
+            }
             Some("--bg-mask") => {
                 let value = options
                     .next()
@@ -995,8 +1122,16 @@ fn run(args: Vec<PathBuf>) -> Result<AppExit, Box<dyn std::error::Error>> {
         banks,
         effects,
         effects_started: 0,
-        pause: None,
-        pause_labels: loaded.pause_labels,
+    })
+    .insert_resource(Pause {
+        src: loaded.pause,
+        menu: None,
+        last: None,
+        art_sheet: None,
+        font_sheet: None,
+        at: pause_at.filter(|_| autoplaying),
+        ticks: 0,
+        snap: None,
     })
     .insert_resource(Overlay {
         font: loaded.font,
