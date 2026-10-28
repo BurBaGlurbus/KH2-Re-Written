@@ -91,6 +91,7 @@ mod duel_rules;
 mod duel_sync;
 mod duel_vote;
 mod duel_wire;
+mod enemy_assets;
 mod enemy_battle;
 mod enemy_battle_hits;
 mod enemy_battle_tour;
@@ -15341,7 +15342,7 @@ fn run(mut args: Vec<PathBuf>) -> Result<AppExit, Box<dyn std::error::Error>> {
             Update,
             ((
                 debug_menu::tick,
-                enemy_gallery::service,
+                (enemy_gallery::service, enemy_assets::service).chain(),
                 area_transition,
                 transition_time,
                 bg_visibility,
