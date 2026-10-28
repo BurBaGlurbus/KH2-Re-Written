@@ -506,3 +506,71 @@ fn an_edge_refusing_object_does_not_step_where_the_probe_finds_no_floor() {
     let free = walk(false);
     assert!(close(free.position[0], 95.) && !free.is_jump());
 }
+
+struct TakeoffAtZero(crate::motion::MotionEvents);
+
+impl Clips for TakeoffAtZero {
+    fn length(&self, _: usize) -> u32 {
+        30
+    }
+    fn loop_start(&self, _: usize) -> u32 {
+        0
+    }
+    fn root_delta(&self, _: usize, _: u32) -> Vec3 {
+        [0.; 3]
+    }
+    fn events(&self, _: usize) -> Option<&crate::motion::MotionEvents> {
+        Some(&self.0)
+    }
+}
+
+#[test]
+fn an_unblended_start_fires_the_frame_events_at_frame_0() {
+    // FUN_1403c8a40 -> FUN_14040e960(start, -1.0): a take-off at frame 0
+    // (Dusk's fly-jump motion 155) fires as the motion starts; blended, it
+    // waits for the blend's end.
+    let clips = TakeoffAtZero(crate::motion::MotionEvents {
+        ranges: vec![],
+        frames: vec![crate::motion::FrameEvent {
+            frame: 0,
+            kind: 0,
+            params: vec![],
+        }],
+    });
+    let mut s = Sysobj::bare();
+    s.motion_start(155, 0., &clips);
+    assert!(s.effects.contains(&crate::motion::Effect::Takeoff));
+    let mut s = Sysobj::bare();
+    s.motion_start(155, 8., &clips);
+    assert!(!s.effects.contains(&crate::motion::Effect::Takeoff));
+}
+#[test]
+fn mode_7_rises_straight_turns_to_156_and_lands_on_157() {
+    // FUN_1404229f0 / FUN_140422af0 / FUN_140422b30.
+    let mut s = Sysobj::bare();
+    s.motion_start(155, 0., &Thirty);
+    s.launch_jump([1., 0., 0.], 60., 4.);
+    s.enter_mode7();
+    assert!(s.is_jump() && s.mode7);
+    let mut rose_straight = true;
+    let mut saw_156 = false;
+    for _ in 0..300 {
+        s.end_tick(&Flat);
+        if let Some((arc, _)) = s.jump
+            && arc.t + actor_physics::PHYSICS_STEP < arc.rise
+            && s.position[0] != 0.
+        {
+            rose_straight = false;
+        }
+        saw_156 |= s.motion.slot == 156;
+        if !s.is_jump() {
+            break;
+        }
+    }
+    assert!(rose_straight, "no horizontal move while it rises");
+    assert!(saw_156);
+    assert!(!s.is_jump() && !s.mode7);
+    assert_eq!(s.motion.slot, 157);
+    assert_ne!(s.flags & 0x800_0000, 0);
+    assert!(s.position[0] > 0., "it moved out once past the apex");
+}

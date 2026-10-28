@@ -529,6 +529,9 @@ pub struct Sysobj {
     /// The horizontal velocity FUN_1403b9090 gave an object leaving the
     /// ground, for the fall that follows it this tick.
     pub leave_velocity: Option<[f32; 2]>,
+    /// The jump running is physics mode 7 (FUN_1403b4da0(obj, 7): motions
+    /// 155-157), not mode 1.
+    pub mode7: bool,
     /// +0xc28..: the routine action state.
     pub rtn: crate::rtn::Rtn,
     /// The object's sound bank (`obj_play_se` ids 500000..500999 take its
@@ -819,6 +822,7 @@ impl Sysobj {
             ground: None,
             defer_ground: false,
             leave_velocity: None,
+            mode7: false,
             rtn: Default::default(),
             bg_press: [0.; 4],
             reaction_groups: Default::default(),
@@ -887,7 +891,16 @@ impl Sysobj {
         m.flags.pulses = 0;
         // A motion of its own ends a captured one.
         m.flags.word &= !(1 << 14);
+        let unblended = m.blend_duration == 0.;
         self.capture = None;
+        // FUN_1403c8a40 without a blend: FUN_14040e960(start, -1.0) fires
+        // the frame events at the start frame now (a take-off at frame 0,
+        // which the clock's first step past 0 would never reach); with a
+        // blend they fire when it ends ([`Sysobj::begin_tick`]). [I] Their
+        // effects are carried out with the next tick's.
+        if unblended {
+            self.dispatch_frame_events(clips);
+        }
         true
     }
 
@@ -1404,6 +1417,7 @@ impl Sysobj {
         }
         self.limit_stand = None;
         self.jump = None;
+        self.mode7 = false;
         self.hop = None;
         self.fly = None;
         self.pending_fly = None;
@@ -1520,6 +1534,15 @@ impl Sysobj {
     pub fn land(&mut self, clips: &dyn Clips) {
         self.airborne = false;
         self.sampler = actor_physics::Sampler::default();
+        // Mode 7's land (FUN_140422b30): mode 0, motion 157 with idle behind
+        // it, and `+0x120` bit 27.
+        if std::mem::take(&mut self.mode7) {
+            if self.motion_start(157, 0., clips) {
+                self.motion_queue.push((0, 0.));
+            }
+            self.flags |= 0x800_0000;
+            return;
+        }
         self.state_flags &= !(1 << 27);
         let land = self.jump_motions.land;
         if land >= 0 {
@@ -1554,6 +1577,10 @@ impl Sysobj {
         if self.jump_float.0 && !floating {
             arc = actor_physics::Arc::fall(self.position[1], self.jump_float.1);
         }
+        if self.mode7 {
+            self.update_mode7(arc, velocity, clips, env);
+            return;
+        }
         if self.sampler.due(0.) {
             let dt = actor_physics::PHYSICS_STEP;
             // Without a move request the take-off velocity decays (FUN_1403b7ad0).
@@ -1583,6 +1610,51 @@ impl Sysobj {
                 actor_physics::MOTION_BLEND,
                 clips,
             );
+        }
+        if let Some(floor) = self.touchdown(d, env) {
+            self.position[1] = floor;
+            self.jump = None;
+            self.touch_down(clips);
+        }
+    }
+
+    /// Physics mode 7's step (FUN_1404229f0): while it rises the arc runs
+    /// with no horizontal move; past the apex the velocity steers
+    /// (FUN_1403b7ad0, 0.95 / 0.9) and the arc falls, except that it holds
+    /// while motion 156 has not reached its loop (FUN_1403c7e70). Its fall
+    /// motion (FUN_140422af0): 155 becomes 156 five ticks before the apex
+    /// (`DAT_140623b98`).
+    fn update_mode7(
+        &mut self,
+        mut arc: actor_physics::Arc,
+        mut velocity: [f32; 2],
+        clips: &dyn Clips,
+        env: &dyn Env,
+    ) {
+        if self.sampler.due(0.) {
+            let dt = actor_physics::PHYSICS_STEP;
+            let (dy, h) = if arc.t + dt < arc.rise {
+                let dy = arc.step(self.position[1], self.sstm.fall_max, false, dt);
+                (dy, [0.; 2])
+            } else {
+                velocity = actor_physics::steer(velocity, [0.; 2], 0., 0.95, 0.9);
+                let slot = self.motion.slot;
+                let held = slot == 156
+                    && !(self.motion.blend <= 0. && clips.in_loop(slot, self.motion.tick));
+                let dy = if held {
+                    0.
+                } else {
+                    arc.step(self.position[1], self.sstm.fall_max, false, dt)
+                };
+                (dy, velocity)
+            };
+            self.sampler.store([h[0] * dt, dy, h[1] * dt]);
+        }
+        self.jump = Some((arc, velocity));
+        let d = self.sampler.displacement();
+        self.apply_movement(d, env);
+        if self.motion.slot == 155 && arc.rise <= arc.t + actor_physics::FALL_MOTION_LEAD {
+            self.motion_start(156, 0., clips);
         }
         if let Some(floor) = self.touchdown(d, env) {
             self.position[1] = floor;
@@ -1695,6 +1767,15 @@ impl Sysobj {
         self.state_flags &= !state_flag::GROUND_ARMED;
     }
 
+    /// Frame event 3 (FUN_14040dd70 -> FUN_1403b4da0(obj, 7)): physics mode
+    /// 7 enters as the jump does (FUN_1403cbd30) on the jump the last
+    /// `obj_flyjump` / `method_obj_jump` armed (FUN_1403cbb00).
+    pub fn enter_mode7(&mut self) {
+        let (direction, height, speed) = self.pending_jump.take().unwrap_or(([0.; 3], 0., 0.));
+        self.start_jump(direction, height, speed);
+        self.mode7 = true;
+    }
+
     /// Enter the jump physics mode now.
     fn start_jump(&mut self, direction: Vec3, height: f32, speed: f32) {
         let len = hlen(direction);
@@ -1705,6 +1786,7 @@ impl Sysobj {
         };
         self.steer = None;
         self.hop = None;
+        self.mode7 = false;
         self.jump = Some((
             actor_physics::Arc::launch(self.position[1], height),
             [dir[0] * speed, dir[1] * speed],
@@ -1869,6 +1951,7 @@ impl Sysobj {
     pub fn start_fall(&mut self, vertical_up: f32) {
         self.steer = None;
         self.hop = None;
+        self.mode7 = false;
         self.jump = Some((
             actor_physics::Arc::fall(self.position[1], vertical_up),
             self.leave_velocity.take().unwrap_or([0.; 2]),
@@ -1926,6 +2009,7 @@ impl Sysobj {
         self.blow = Some(actor_physics::Blow::new(velocity, &self.sstm));
         self.knock = None;
         self.jump = None;
+        self.mode7 = false;
         self.hop = None;
         self.fly = None;
         self.steer = None;
@@ -2037,6 +2121,7 @@ impl Sysobj {
     /// `trap_obj_idle`: back to the ground physics mode (FUN_1403b4da0 mode 0).
     pub fn to_ground_mode(&mut self) {
         self.jump = None;
+        self.mode7 = false;
         self.hop = None;
         self.fly = None;
         self.steer = None;

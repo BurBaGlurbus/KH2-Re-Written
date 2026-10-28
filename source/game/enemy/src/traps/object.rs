@@ -644,8 +644,14 @@ fn fly_jump(ctx: &mut Ctx<'_>, m: &mut Memory<'_>, args: &mut Args) -> Result<()
     let (slot, blend, auto) = (args[2].as_int(), args[3].as_float(), args[4].as_int());
     let env = ctx.env;
     let obj = ctx.object(id)?;
+    // FUN_1404233f0: the jump's own arming (FUN_1403cbb00: its parameters,
+    // the fall and land motions back to none and 5), then `+0x648` = 3, the
+    // fly-jump the take-off event enters.
+    let direction = [v[0], 0., -v[2]];
+    obj.sys.launch_jump(direction, v[1], v[3]);
+    obj.sys.pending_mode = 3;
     obj.sys.pending_fly = Some(PendingFly {
-        direction: [v[0], 0., -v[2]],
+        direction,
         height: v[1],
         speed: v[3],
     });
@@ -949,5 +955,35 @@ mod tests {
                 .motion_queue
                 .is_empty()
         );
+    }
+
+    #[test]
+    fn a_fly_jump_waits_for_the_take_off_then_flies() {
+        // FUN_1404233f0: armed as a jump with `+0x648` = 3; the take-off
+        // event enters the fly-jump (Dusk's `jump` act waits on it).
+        let mut world = world_with(&[0.]);
+        let mut me = Object::bare(0);
+        let mut f = frame();
+        let v = crate::traps::test_support::vector(&mut f, 0, [0., -35., 1., 4.]);
+        let handle = Slot::address(object_handle(1));
+        call(
+            &mut world,
+            &mut me,
+            &mut f,
+            fly_jump,
+            &[
+                handle,
+                Slot::address(v),
+                Slot::int(155),
+                Slot::float(0.),
+                Slot::int(1),
+            ],
+        );
+        let sys = &mut world.objects[1].as_mut().unwrap().sys;
+        assert_eq!(sys.pending_mode, 3);
+        assert!(!sys.is_jump(), "armed, not yet off the ground");
+        assert_eq!(sys.jump_motions.fall, 156);
+        sys.take_off(&crate::env::NullEnv);
+        assert!(sys.is_jump());
     }
 }

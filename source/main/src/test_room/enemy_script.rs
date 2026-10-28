@@ -1368,7 +1368,8 @@ impl ScriptBrain {
             "motion_flags":format!("{:#x}", s.motion.flags.word),"flags":format!("{:#x}", s.flags),
             "y":s.position[1],"wall_radius":self.wall_radius,
             "map_body":s.map_body.map(|b| [b.radius, b.height, b.offset, b.mode as f32, b.class as f32]),
-            "no_floor":s.no_floor,
+            "no_floor":s.no_floor,"motion_tick":s.motion.tick,"blend":s.motion.blend,
+            "pending_mode":s.pending_mode,"acts_flags":self.object.acts.flags,
             "made":self.world.objects.iter().flatten().filter(|o| !o.sys.gone)
                 .map(|o| (o.id, o.sys.model, o.sys.hit_shapes.len())).collect::<Vec<_>>()})
     }

@@ -106,6 +106,10 @@ pub struct Flags {
 pub enum Effect {
     /// Frame event 0: leave the ground into the pending physics mode.
     Takeoff,
+    /// Frame event 3: FUN_1403b4da0(obj, 7), the jump of fixed motions
+    /// 155-157 (Dusk's), on the jump the last `obj_flyjump` /
+    /// `method_obj_jump` armed.
+    JumpMode7,
     /// Frame event 1: effect or sound `id`; the script's trigger 0x10 gets
     /// `(object, id, effect handle)`.
     EffectOrSound { id: u16 },
@@ -229,6 +233,7 @@ impl Flags {
         let p = |k: usize| e.params.get(k).copied().unwrap_or(0);
         match e.kind {
             0 => out.push(Effect::Takeoff),
+            3 => out.push(Effect::JumpMode7),
             1 => out.push(Effect::EffectOrSound { id: p(0) }),
             7 => out.push(Effect::ScriptEvent { p0: p(0), p1: p(1) }),
             9 => self.pulses |= 1,

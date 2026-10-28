@@ -322,6 +322,7 @@ impl Object {
                 ));
                 sys.knock = None;
                 sys.jump = None;
+                sys.mode7 = false;
                 sys.hop = None;
                 sys.steer = None;
                 sys.fly = None;

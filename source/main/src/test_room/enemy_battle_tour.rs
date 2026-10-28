@@ -101,7 +101,7 @@ fn area_checkpoints(game: &mut Game, gallery: &enemy_gallery::EnemyGallery) {
             let battle = a.battle.as_ref().map(|b| {
                 serde_json::json!({"hp":b.brain.hp(),"alive":b.brain.alive(),
                     "act":b.brain.description(),"motion":b.brain.motion(),
-                    "position":b.brain.position(),"error":b.error})
+                    "position":b.brain.position(),"error":b.error,"state":b.brain.boss_state()})
             });
             serde_json::json!({"actor":a.id,"model":gallery.catalog.entries[a.entry].model_name,
                 "serial":a.spawn_serial,"error":a.error,"battle":battle})

@@ -544,6 +544,7 @@ impl Object {
         for effect in effects {
             match effect {
                 Effect::Takeoff => self.sys.take_off(env),
+                Effect::JumpMode7 => self.sys.enter_mode7(),
                 Effect::EffectOrSound { id } => {
                     let handle = world.next_effect_handle();
                     world.events.push(Event::MotionEffect {
