@@ -381,16 +381,6 @@ pub const SYPHON_RATE: f32 = 1.4;
 /// [duel choice] The syphon's pull plays this long before the focus comes.
 pub const SYPHON_TICKS: u32 = ticks(0.6);
 
-/// The lock-on camera: from Sora toward the target with a -20° pitch
-/// (none when the target is more than 10° below), pitch -70..+20, at least
-/// 400 cm back or far enough to frame both, eased at 8 a second; 0.5 s
-/// blend in.
-pub const LOCK_PITCH: f32 = -20. * std::f32::consts::PI / 180.;
-pub const LOCK_BELOW: f32 = -10. * std::f32::consts::PI / 180.;
-pub const LOCK_PITCH_MIN: f32 = -70. * std::f32::consts::PI / 180.;
-pub const LOCK_PITCH_MAX: f32 = 20. * std::f32::consts::PI / 180.;
-pub const LOCK_DISTANCE: f32 = length(400.);
-pub const LOCK_EASE: f32 = 8. / 60.;
-pub const LOCK_BLEND: u32 = ticks(0.5);
-/// The look point, 150 cm above Sora's feet.
+/// The lock-on and aiming cameras' look point, 150 cm above Sora's feet
+/// (main's kh3_camera.rs has KH3's camera numbers).
 pub const LOCK_LOOK_UP: f32 = length(150.);

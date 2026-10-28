@@ -740,88 +740,43 @@ pub(crate) fn flow_view(game: &Game, fov: f32) -> Option<boss::OverlayView> {
     })
 }
 
-/// The KH3 lock-on camera's blend and distance (camera_control's own).
-#[derive(Default)]
-pub(crate) struct LockCamera {
-    blend: f32,
-    distance: f32,
-    last: Option<Vec3>,
-}
-
-/// [duel choice] The framing distance's ceiling (the reference has none;
-/// an arena is about 4000 across).
-const LOCK_FAR: f32 = 1600.;
-
-/// KH3's lock-on camera while this player's Sora is locked on to the other
-/// Sora: from behind Sora toward the target, pitched 20° down (looking
-/// straight at a target well below), far enough back to frame both,
-/// easing in and out over half a second from the follow camera's `eye` /
-/// `look`. Not on a wall (the wall camera has him).
-pub(crate) fn lock_view(
-    game: &Game,
-    fov: f32,
-    eye: Vec3,
-    look: Vec3,
-    cam: &mut LockCamera,
-) -> Option<boss::OverlayView> {
-    use kh3::tuning as t;
-    let target = (on(game) && game.target_locked)
-        .then_some(game.selected_target)
-        .flatten();
-    let step = 1. / t::LOCK_BLEND as f32;
-    cam.blend = (cam.blend + if target.is_some() { step } else { -step }).clamp(0., 1.);
-    if cam.blend <= 0. {
-        cam.distance = 0.;
+/// What the shotlock aims at while it aims or its volley flies (the aiming
+/// camera's target, kh3_camera.rs): the other Sora or the dummy, else a
+/// point ahead.
+pub(crate) fn aim_point(game: &Game) -> Option<Vec3> {
+    let k = &game.sora.kh3;
+    if k.aim.is_none() && !matches!(k.mode, kh3::Mode::Volley { .. }) {
         return None;
     }
-    let p = Vec3::from_array(game.sora.player.position) + Vec3::Y * t::LOCK_LOOK_UP;
-    if let Some(t) = target {
-        cam.last = Some(Vec3::from_array(t));
-    }
-    let at = cam.last?;
-    let d = at - p;
-    let flat = Vec2::new(d.x, d.z).length().max(1e-3);
-    let yaw = d.x.atan2(d.z);
-    let rise = d.y.atan2(flat);
-    let pitch = if rise < t::LOCK_BELOW {
-        rise
-    } else {
-        rise + t::LOCK_PITCH
-    }
-    .clamp(t::LOCK_PITCH_MIN, t::LOCK_PITCH_MAX);
-    // Framing both: half their distance over the sine of half the
-    // horizontal field of view (16:9 from the vertical one).
-    let half = ((fov * 0.5).tan() * 16. / 9.).atan();
-    let frame = (d.length() * 0.5 / half.sin()).min(LOCK_FAR);
-    let want = frame.max(t::LOCK_DISTANCE);
-    cam.distance = if cam.distance <= 0. {
-        want
-    } else {
-        cam.distance + (want - cam.distance) * t::LOCK_EASE
-    };
-    let forward = Vec3::new(
-        yaw.sin() * pitch.cos(),
-        pitch.sin(),
-        yaw.cos() * pitch.cos(),
-    );
-    let lock_eye = p - forward * cam.distance;
-    // Ease exponent 2 on the blend.
-    let k = cam.blend * cam.blend;
-    Some(boss::OverlayView {
-        eye: eye.lerp(lock_eye, k),
-        target: look.lerp(p, k),
-        roll: 0.,
-        fov,
-        collision: true,
-    })
+    let p = Vec3::from_array(game.sora.player.position);
+    let yaw = game.sora.player.yaw;
+    Some(k.foe.map(Vec3::from_array).unwrap_or_else(|| {
+        p + Vec3::new(yaw.sin(), 0., yaw.cos()) * 1000. + Vec3::Y * kh3::tuning::LOCK_LOOK_UP
+    }))
 }
 
 /// [Test] The KH3 script's buttons for the room Sora of an unattended
 /// KH3 test (the rival runs the same script half a cycle later).
 pub(crate) fn scripted_room_pad(game: &Game, tick: u64) -> Option<(rival::RivalPad, Pad)> {
-    if game.autoplay.is_none() || !on(game) || !game.rival_script || game.net_client {
+    if game.autoplay.is_none() || !on(game) || game.net_client {
         return None;
     }
+    // [Test] Unattended Test KH3 mode: the script's acting half against the
+    // dummy (its taking half stands, while kh3_menu's script runs).
+    if game.kh3_dummy {
+        let foe = room_foe(game)?;
+        let view = rival::Kh3View::default();
+        let pad = rival::kh3_pad(tick, 0, game.sora.player.position, foe.position, view);
+        let kh3 = Pad {
+            shotlock: pad.shotlock_held,
+            situation: pad.flow,
+        };
+        return Some((pad, kh3));
+    }
+    if !game.rival_script {
+        return None;
+    }
+
     // The preview stands him still.
     if game.kh3_preview.is_some() {
         return Some((rival::RivalPad::default(), Pad::default()));

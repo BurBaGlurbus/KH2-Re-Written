@@ -302,3 +302,95 @@ the side wall run's looks in game once an arena has a pole the scripts reach.
 
 Tuning in play with two players; poles on an arena that has pillars; bolt visuals checked side by side; the
 joiner's prediction (none yet, as for the KH2 ruleset).
+
+## Follow-up 3, 2026-10-28: KH3's executable, cameras, ability menu, dummy, blends, combos
+
+Requested by burba in the project thread, relayed by the coordinator: the lock-on camera "is not tied to Sora,
+it swings everywhere", the shotlock does not zoom in, no way to equip or unequip KH3 abilities, Test KH3 mode
+should be a dummy enemy to hit and knock back rather than another Sora, some animations snap, and KH3's
+abilities and combos should replace KH2's, recreated from KH3's own functions with Ghidra, without needing KH3
+to run. Build identity: local `main` after `055cc0a`. Source: the Steam KH2FM build as before; KH3's PC
+executable (Steam, `KINGDOM HEARTS III\Binaries\Win64`) was copied into the private research folder and only
+read there.
+
+**Method.** Plain headless Ghidra 12.1.4 on a private copy (an unanalysed project for decompiles on demand,
+a fully analysed one in the background), with the UE4 reflection data (native function tables, enum and
+property names) and byte scans to find the routines. Private: `%LOCALAPPDATA%\KH2FinalRewrite\research\kh3-exe\`
+(virtualized under the Claude app's `LocalCache`): `cam\kh3-camera-spec.md`, `combat\kh3-combat-spec.md`,
+their decompiles, the scan tables, and the runs `runs-20261028\dummy01-03`. Routines translated into Rust
+note their KH3 addresses; no KH3 bytes, data or assets are in the repository or read at run time.
+
+### Recreated from KH3's executable
+
+- **Lock-on camera** (`test_room\kh3_camera.rs`, from `ATresCameraNormalLoc`: 0x14060ab70, 0x14060a930,
+  0x14060edb0, 0x140611170, 0x140611760, 0x140606190, 0x1405ffa60, 0x1406100d0, solver 0x1405defa0 /
+  0x1405e0590, approach law 0x1405d0850 / 0x1405d0b30 / 0x1405d0650). KH3's lock camera never aims at the
+  target: the right stick turns it (120 deg/s, slowed to half beyond 1000 cm), a slow auto-turn follows only
+  while Sora moves (his speed over 800 cm/s times a ramp to 1.2, 1.5 s after the stick, yaw kept while he runs at
+  the camera), limits hold it within 120 deg of the Sora-to-target heading and pitch -70 to the target's
+  elevation (at most 20), and both stay in frame by moving the pivot to their midpoint and backing off until the
+  pair (grown by 50 cm radii) fits the field of view (1.1 margin across, the 9:16 aspect up and down). Sora's
+  point leads by 0.24 x his velocity x his distance from the screen's middle. Every smoothing step is the
+  executable's: 1/60 s steps, rate 8 (pivot with a 100 cm lag limit, distance, rotation). It blends in and out
+  over 0.5 s, ease-out exponent 2. It now runs on the fixed tick (it was per frame).
+- **Ability ids, combos.** `ETresAbilityKind` values are the ids KH3's checks use; the equip count stacks.
+  `player::kh3::combo`: the chain is 4 attacks plus one per Combo Plus (ground) or Air Combo Plus (air)
+  (0x141433570); 1 finisher, one more for Speed Slash or Triple Rush, one more for Magic Flash, taking the
+  chain's last slots (0x141433a60); each attack is chosen by KH3's selector (0x14134aca0): a pattern at the
+  chain's start by distance (400 cm after 50 off), regular hits alternating by it, the jump to a target over
+  100 cm above, the down slash for a target 100 cm below an airborne Sora, aerial ids in the air, the
+  finisher order, Rising Spiral's launch once a chain restarting the count. A press during a swing asks for
+  the next attack (KH3 needs no hit for it: the old hit-confirm is gone); it plays once the swing's combo
+  window opens. KH2 attack records stand in for KH3's motions (`combo::stand_in`).
+- **Ability gates** (`player::kh3::ability`): Counter Slash is GUARD_COUNTER (KH3's 1.0 s post-guard window),
+  Payback Strike BLOW_COUNTER (an attack out of the recovery), Final Blow REVENGE_EX, Risk Dodge RISKDODGE,
+  Focus Syphon FOCUS_ASPIR, Rising Spiral SLASH_UPPER, Sonic Slash / Sonic Cleave / Buzz Saw SONIC_SLASH /
+  SONIC_DOWN / TURN_CUTTER.
+
+### Built with KH2 stand-ins or duel choices
+
+- **Shotlock camera.** KH3's over-the-shoulder camera (`ATresCameraTargetOTS`, 0x14062d850): a pivot offset in
+  camera space from Sora's point looking at the target, pitch within +-40, rate 8, no distance smoothing,
+  0.5 s blends; through the aim and the volley. Its distance and shoulder offset are Blueprint values in KH3's
+  paks: [duel choice] 220 cm back, 55 cm right, 25 cm up. (The only camera KH3's lock routine spawns natively,
+  `ATresCameraMultiLock`, is wider, FOV 100 deg at 400 cm; it is not taken to be the zoom burba describes.)
+- **Ability menu** (`test_room\kh3_menu.rs`). 28 KH3 abilities on four Config pages (Movement, Actions,
+  Attacks, Combo) with an AP row; Left/Right equip, stackables x1-x3, refused past the AP; [duel choice] 60 AP;
+  names and AP costs from KH3's public ability lists (the data table is in KH3's paks). Test KH3 mode opens it
+  on START; the lobby's builds show the four pages when the ruleset is KH3, and the camp's KH2 Abilities entry
+  is hidden. The set rides the build (`Loadout::kh3`, 8 bytes on the wire), checked by the host, kept in
+  `duel-prefs.json`. The equipped set gates the layer's moves; Block is KH2's Guard bit, set from it every tick.
+- **Test KH3 mode** (`--kh3-test`): the room's Shadow stands 500 in front of Sora as a training dummy: it faces
+  him, never attacks, moves, sinks or leaves, takes every hit with the Shadow's own flinch, blow, knock-down and
+  get-up, and its HP fills again instead of dying; each hit gives focus as a hit on a Sora does; the HUD shows the
+  last hit's damage and the run of hits. `--kh3-test --rival-script` keeps the scripted rival for the unattended
+  duel tests; `--kh3-test --autoplay` runs the KH3 script's acting half on the dummy, locks on and works the menu.
+- **Blends** (`player::kh3::blend`): KH3's blend times are montage data in its paks; [duel choice] every
+  KH3-ruleset state change crossfades on KH2's blend clock: 5 ticks into reactions, 6 swings and jumps, 8 dodges,
+  air slide, airstep and kicks, 10 get-up, recovery, volley and the flow states, glide KH2's 16; KH2 swings,
+  casts and guards started in the ruleset get at least these.
+
+### Checks
+
+| Check | Result |
+| --- | --- |
+| Unit tests: approach law, blends, limits, framing, Sora kept in view while the target circles him, no turn standing still, OTS; combo lengths, finisher slots, patterns, launch; ability gates; menu pages and steps; dummy; Loadout wire and checks | PASS |
+| Live Test KH3 mode (`dummy01`-`03`, release build, unattended): the dummy takes 34 hits (combo 16, finishers 3, launch, flow attack, wall run, Superslide, both volleys), never dies; the lock-on holds Sora on screen through the run, the shotlock's aim shows him over the shoulder; the menu's four pages fit, Dodge Roll off and on and Combo Plus x1 change the AP 47 -> 44 -> 47 -> 51 | PASS (by captures and log) |
+| `cargo fmt --all --check`, `cargo clippy --all-targets --locked -- -D warnings`, `cargo test --locked` | PASS |
+| Real keys and pad, the lobby's KH3 pages over LAN, two PCs | NOT RUN |
+
+### Uncertainty
+
+- Static reading of KH3's code only; no KH3 run was compared.
+- Values in KH3's paks (Blueprint and data tables) are not in the executable: the OTS distance and offset,
+  AP costs, per-attack invincibility and reach, input and cancel windows (KH2's combo windows stand in),
+  just-guard length, blend times. The free camera is a Blueprint subclass in KH3, so the lock values it copies
+  could be overridden there.
+- Not found in the executable: Block's check, Combo Boost / Air Combo Boost (damage side), Final Blow's effect
+  (REVENGE_EX), the whiff-keep rule of Combo Master; these keep the earlier behaviour.
+- The target's look-ahead and some collision passes of the lock camera are not ported.
+- The menu's text is plain English in the system font.
+
+### Verdict
+
+PARTIAL (in progress).

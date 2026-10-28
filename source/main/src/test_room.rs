@@ -1574,6 +1574,10 @@ struct CameraRig {
     /// The map's camera collision in game world space.
     collision: CameraCollision,
     collision_hits: u64,
+    /// [KH3 ruleset] KH3's lock-on and aiming cameras, and the view they
+    /// give this tick (kh3_camera.rs).
+    kh3: kh3_camera::Kh3Camera,
+    kh3_view: Option<boss::OverlayView>,
 }
 
 /// FUN_1403b7810's ramp: a value and its per-frame step toward `end`.
@@ -8490,6 +8494,28 @@ fn simulate(
         &spheres,
     );
     *collision_hits += hits.get();
+    // [KH3 ruleset] KH3's lock-on and aiming cameras over the follow camera.
+    rig.kh3_view = if duel_kh3::on(&game) {
+        let frame = kh3_camera::Frame {
+            feet: Vec3::from_array(game.sora.player.position),
+            yaw: game.sora.player.yaw,
+            locked: game
+                .target_locked
+                .then_some(game.selected_target)
+                .flatten()
+                .map(Vec3::from_array),
+            aim: duel_kh3::aim_point(&game),
+            turn,
+            height: zoom,
+            eye: from_world(rig.camera.eye),
+            look: from_world(rig.camera.look_at),
+            fov: rig.camera.vertical_fov(),
+        };
+        rig.kh3.tick(&frame)
+    } else {
+        rig.kh3 = kh3_camera::Kh3Camera::default();
+        None
+    };
     // Sora fades out as first person starts and back in as it ends (the ramp
     // restarts from its far end each time, as FUN_1403b7810 does).
     if rig.camera.first_person != rig.was_first_person {
@@ -11063,7 +11089,6 @@ fn camera_control(
     talk: Option<Res<Talk>>,
     settings: Res<settings_room::SettingsRes>,
     game: Res<Game>,
-    mut lock_camera: Local<duel_kh3::LockCamera>,
 ) {
     // Mouse-look (input::mouse_look): the PC version reads the mouse while
     // its window is active with the cursor inside (FUN_140105810), and not
@@ -11108,9 +11133,10 @@ fn camera_control(
     // as the follow camera's is (FUN_140164940 from the target). [I] The
     // camera system's own test for event cameras (FUN_1401780d0) is taken
     // to be that one.
-    // [KH3 ruleset] The wall camera, else KH3's lock-on camera.
-    let kh3_view = duel_kh3::flow_view(&game, fov)
-        .or_else(|| duel_kh3::lock_view(&game, fov, eye, look_at, &mut lock_camera));
+    // [KH3 ruleset] The wall camera, else KH3's lock-on and aiming cameras
+    // (the fixed tick's).
+    let kh3_view = duel_kh3::flow_view(&game, fov).or(rig.kh3_view);
+
     let (pose, fov) = match game.overlay_camera.or(game.duel_camera).or(kh3_view) {
         Some(v) => {
             let mut eye = v.eye;
@@ -15236,6 +15262,8 @@ fn run(mut args: Vec<PathBuf>) -> Result<AppExit, Box<dyn std::error::Error>> {
         fade: FadeRamp::SHOWN,
         collision_hits: 0,
         collision: CameraCollision::new(&loaded.room),
+        kh3: kh3_camera::Kh3Camera::default(),
+        kh3_view: None,
     };
     eprintln!(
         "Test room ready (the original PC bindings). WASD moves (Left Alt walks), Space/Backspace jump, Enter/left-click decides (Attack), Up/Down choose a command, right-click/Right Shift guards, F/Right Ctrl reacts (Talk), M opens the menu, the mouse turns the camera, middle-click/Right Alt recentres, F3 opens the debug menu (F2 its help), Esc exits."
