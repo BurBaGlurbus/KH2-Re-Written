@@ -545,6 +545,16 @@ impl Object {
             match effect {
                 Effect::Takeoff => self.sys.take_off(env),
                 Effect::JumpMode7 => self.sys.enter_mode7(),
+                // FUN_14040dd70 cases 0xd / 0xe -> vt+0xa0 (FUN_1403dad90 for
+                // the ZAKO / ENEMY classes): a request to the object's voice
+                // player (+0xbb4, YS::VOICE_IOP; FUN_1403ce580 keeps the
+                // higher priority). [I] The +0x6c8 bit 0 test is not
+                // modelled: every class here is a STDOBJ.
+                Effect::Voice { id, arg } => world.events.push(Event::Voice {
+                    object: self.id,
+                    id: i32::from(id),
+                    arg: i32::from(arg),
+                }),
                 Effect::EffectOrSound { id } => {
                     let handle = world.next_effect_handle();
                     world.events.push(Event::MotionEffect {

@@ -88,6 +88,30 @@ fn frame_events_pulse_or_ask_the_engine() {
 }
 
 #[test]
+fn frame_events_13_and_14_request_a_voice() {
+    // FUN_14040dd70 cases 0xd / 0xe: p0 and, with two parameters, p1.
+    let mut f = Flags::default();
+    let mut out = Vec::new();
+    for (kind, params) in [(0xd, vec![12]), (0xe, vec![12, 3])] {
+        f.frame_event(
+            &FrameEvent {
+                frame: 4,
+                kind,
+                params,
+            },
+            1,
+            &mut out,
+        );
+    }
+    assert_eq!(
+        out,
+        [
+            Effect::Voice { id: 12, arg: 0 },
+            Effect::Voice { id: 12, arg: 3 }
+        ]
+    );
+}
+#[test]
 fn frame_events_fire_once_as_the_clock_passes_them() {
     // Length 10, loop from 4: frame 0 fires at tick 0; the first step is two ticks.
     assert!(frame_event_fires(0, 0, 10, 4));

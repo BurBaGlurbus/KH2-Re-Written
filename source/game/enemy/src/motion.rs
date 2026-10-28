@@ -115,6 +115,10 @@ pub enum Effect {
     EffectOrSound { id: u16 },
     /// Frame event 7: the script's trigger 0x11 gets `(object, p0, p1)`.
     ScriptEvent { p0: u16, p1: u16 },
+    /// Frame events 0xd / 0xe: the class's voice slot (vt+0xa0, as
+    /// `obj_voice`) with voice `id` and `arg` (0 when the record has fewer
+    /// than two parameters).
+    Voice { id: u16, arg: u16 },
     /// Range event 0x18: `+0x108` = `value * scale`.
     SetSpeed { value: u16 },
     /// Range events 0x19 / 0x1a: sysobj +0x638 = value.
@@ -236,6 +240,10 @@ impl Flags {
             3 => out.push(Effect::JumpMode7),
             1 => out.push(Effect::EffectOrSound { id: p(0) }),
             7 => out.push(Effect::ScriptEvent { p0: p(0), p1: p(1) }),
+            0xd | 0xe => out.push(Effect::Voice {
+                id: p(0),
+                arg: if e.params.len() < 2 { 0 } else { p(1) },
+            }),
             9 => self.pulses |= 1,
             10 => self.pulses |= 2,
             0xb => self.pulses |= 4,
