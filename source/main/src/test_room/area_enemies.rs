@@ -5,8 +5,10 @@
 //! at their places when the area is ready; the groups of spawn type 2 come
 //! as the game brings them, when Sora stands in their point's zone
 //! (FUN_1403fe320 case 1 -> FUN_1403fe6f0, `::area::Area::group_spawn`).
-//! [I] Places around the player or within a radius (spawn arguments 1 and
-//! 2) are taken as the record's own; the room holds 16 actors at most.
+//! Spawn arguments 1 and 2 place an entity at a free point around Sora or
+//! within its radius (FUN_1403f3fa0, or FUN_1403f4080 for an objentry with
+//! +0x48 bit 3). [I] The ring search draws from this module's own engine
+//! generator; the room holds 16 actors at most.
 use super::*;
 
 #[derive(Resource, Default)]
@@ -19,6 +21,115 @@ pub struct AreaEnemies {
     enabled: std::collections::HashSet<u64>,
     /// The tour moved Sora into the first group's zone.
     tour_moved: bool,
+    /// The free-point search's generator and lap counter (DAT_142ae5d78).
+    rng: enemy::world::Lcg,
+    ring_counter: u32,
+}
+
+/// The map as the free-point search sees it (as the script brain's
+/// `line_hit_polygon`: mask bit 16 takes the attack ray).
+struct MapEnv<'a> {
+    room: &'a RoomWorld,
+    player: [f32; 3],
+}
+
+struct NoClips;
+impl enemy::env::Clips for NoClips {
+    fn length(&self, _: usize) -> u32 {
+        0
+    }
+    fn loop_start(&self, _: usize) -> u32 {
+        0
+    }
+    fn root_delta(&self, _: usize, _: u32) -> [f32; 3] {
+        [0.; 3]
+    }
+    fn events(&self, _: usize) -> Option<&enemy::motion::MotionEvents> {
+        None
+    }
+}
+
+impl enemy::env::Env for MapEnv<'_> {
+    fn floor(&self, x: f32, z: f32, top: f32) -> Option<f32> {
+        self.room.floor(x, z, top)
+    }
+    fn clips(&self, _: u32) -> &dyn enemy::env::Clips {
+        &NoClips
+    }
+    fn player_position(&self) -> [f32; 3] {
+        self.player
+    }
+    fn target_position(&self, _: u32) -> Option<[f32; 3]> {
+        None
+    }
+    fn line_hit_polygon(
+        &self,
+        from: [f32; 3],
+        to: [f32; 3],
+        class: u32,
+    ) -> Option<([f32; 3], i32)> {
+        match self.room {
+            RoomWorld::Map(map) if class >> 16 & 1 != 0 => {
+                map.attack_hit(from, to).map(|h| (h.point, -1))
+            }
+            RoomWorld::Map(map) => map
+                .line(from, to, class)
+                .map(|(p, poly)| (p, i32::from(poly))),
+            RoomWorld::Triangles(_) => None,
+        }
+    }
+}
+
+/// FUN_1403fe6f0's place for spawn arguments 1 and 2, in the scene: around
+/// Sora (the centre 200 above him, 150 to 450 out; in the air 100 below to
+/// 100 above the ring) or within the record's radius of its own place.
+fn free_point(
+    state: &mut AreaEnemies,
+    env: &MapEnv<'_>,
+    flying: bool,
+    place: ::area::Place,
+    own: Vec3,
+) -> Vec3 {
+    use enemy::traps::random_position::{air_point, ground_point};
+    let (center, near, far, low, high, class) = match place {
+        ::area::Place::Own => return own,
+        ::area::Place::NearPlayer => {
+            let p = env.player;
+            (
+                [p[0], p[1] + 200., p[2], 1.],
+                150.,
+                450.,
+                -100.,
+                100.,
+                0x1_0000,
+            )
+        }
+        ::area::Place::NearOwn(r) => ([own.x, own.y, own.z, 1.], 0., r, 0., 0., 0),
+    };
+    let v = if flying {
+        air_point(
+            env,
+            &mut state.rng,
+            &mut state.ring_counter,
+            center,
+            near,
+            far,
+            low,
+            high,
+            class | 2,
+        )
+    } else {
+        ground_point(
+            env,
+            &mut state.rng,
+            &mut state.ring_counter,
+            center,
+            near,
+            far,
+            class | 1,
+        )
+    };
+    Vec3::new(v[0], v[1], v[2])
 }
 
 pub fn enabled() -> bool {
@@ -85,13 +196,14 @@ fn fighter(gallery: &enemy_gallery::EnemyGallery, object: u32) -> Option<usize> 
 fn place(
     gallery: &mut enemy_gallery::EnemyGallery,
     s: &::area::Spawn,
+    at: Option<Vec3>,
 ) -> Option<serde_json::Value> {
     let entry = fighter(gallery, s.entity.object)?;
     if gallery.actors.len() >= enemy_gallery::MAX_ACTORS {
         return None;
     }
     let [x, y, z] = s.entity.position;
-    let at = Vec3::new(x, -y, -z);
+    let at = at.unwrap_or(Vec3::new(x, -y, -z));
     gallery.queue_spawn(
         entry,
         at,
@@ -137,7 +249,7 @@ pub fn tick(
         }
         let placed: Vec<_> = spawns
             .iter()
-            .filter_map(|s| place(&mut gallery, s))
+            .filter_map(|s| place(&mut gallery, s, None))
             .collect();
         game.event(
             serde_json::json!({"event":"area_enemies_placed","tick":tick,
@@ -175,10 +287,20 @@ pub fn tick(
             };
             area.current.state.group_spawn(object, &mut census)
         };
-        let placed: Vec<_> = made
-            .iter()
-            .filter_map(|g| place(&mut gallery, &g.spawn))
-            .collect();
+        let env = MapEnv {
+            room: &game.world,
+            player: game.sora.player.position,
+        };
+        let mut placed = Vec::new();
+        for g in &made {
+            let [x, y, z] = g.spawn.entity.position;
+            let flying = area
+                .source
+                .object(g.spawn.entity.object)
+                .is_some_and(|o| o.flags >> 3 & 1 != 0);
+            let at = free_point(&mut state, &env, flying, g.place, Vec3::new(x, -y, -z));
+            placed.extend(place(&mut gallery, &g.spawn, Some(at)));
+        }
         if !placed.is_empty() {
             let wave = area.current.state.objects[object].wave;
             game.event(serde_json::json!({"event":"area_group_spawn","tick":tick,
