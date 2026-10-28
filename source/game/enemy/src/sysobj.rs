@@ -1723,14 +1723,20 @@ impl Sysobj {
                 }
                 let d = self.sampler.displacement();
                 let from = self.position;
-                self.position = env.movement(from, d);
-                // The floor is looked for from above the step's start, as
-                // the hop's landing does: a blow that starts on the floor
-                // and drops at once still lands on it.
-                if d[1] <= 0.
-                    && let Some(y) = env.floor(self.position[0], self.position[2], from[1] + 30.)
-                    && self.position[1] <= y
-                {
+                // FUN_1403b9090: the blow's move is solved against the map
+                // like every mode's (walls stop it); with a map body the
+                // solve also says whether it came down on a floor.
+                self.apply_movement(d, env);
+                let landed = if self.map_body.is_some() {
+                    self.touchdown(d, env)
+                } else {
+                    // The floor is looked for from above the step's start, as
+                    // the hop's landing does: a blow that starts on the floor
+                    // and drops at once still lands on it.
+                    env.floor(self.position[0], self.position[2], from[1] + 30.)
+                        .filter(|&y| d[1] <= 0. && self.position[1] <= y)
+                };
+                if let Some(y) = landed {
                     self.position[1] = y;
                     self.blow = None;
                     self.airborne = false;
@@ -1741,7 +1747,9 @@ impl Sysobj {
         } else {
             if let Some(knock) = &mut self.knock {
                 if let Some(d) = knock.step() {
-                    self.position = env.movement(self.position, d);
+                    // Through the map solve, so the edge probe (FUN_1403bab20:
+                    // a battle object being knocked back) can hold it.
+                    self.apply_movement(d, env);
                 } else {
                     self.knock = None;
                 }
