@@ -870,17 +870,22 @@ fn read_stick(
 /// then a flight north, east and south-west, back toward the start; then
 /// R1 locks on, the back button warps, R1 releases and the back button
 /// dashes north.
-fn autoplay_input(tick: u64, decide: bool) -> ([f32; 3], u16) {
+fn autoplay_input(tick: u64, decide: bool, route: bool) -> ([f32; 3], u16) {
     use controller::button;
     let press = |at: u64, b: u16| if tick == at || tick == at + 1 { b } else { 0 };
+    // In the grid, Triangle opens the journal and the back button closes
+    // it again; a Gummi route's menu has no journal, so the back button
+    // would close the menu before the decide.
+    let journal = if route {
+        0
+    } else {
+        press(320, button::TRIANGLE) | press(340, button::CIRCLE)
+    };
     let buttons = press(60, button::TRIANGLE)
         | press(150, button::RIGHT)
         | press(210, button::R1)
         | press(290, button::L1)
-        // In the grid, Triangle opens the journal and the back button
-        // closes it again.
-        | press(320, button::TRIANGLE)
-        | press(340, button::CIRCLE)
+        | journal
         | press(
             370,
             if decide {
@@ -1467,7 +1472,9 @@ fn tick(mut wm: ResMut<WorldMap>, ui: Res<UiRes>) {
             };
             ([0.; 3], advance)
         } else {
-            let (mut stick, buttons) = autoplay_input(wm.tick - wm.event_ticks, wm.autoplay_decide);
+            let route = wm.landing.as_ref().is_some_and(|(l, ..)| l.route.is_some());
+            let (mut stick, buttons) =
+                autoplay_input(wm.tick - wm.event_ticks, wm.autoplay_decide, route);
             // [Tour aid] KH2RW_WM_FLY=<x>,<y>: after the menu, fly this way
             // instead of the scripted flight.
             if let Some((x, y)) = std::env::var("KH2RW_WM_FLY").ok().and_then(|v| {
