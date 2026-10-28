@@ -126,6 +126,14 @@ impl Bullet {
     pub fn previous(&self) -> Option<Vec3> {
         self.previous
     }
+
+    /// [KH3 ruleset] A shotlock bolt rides a bullet (its effect and its
+    /// hit volume) while the duel's KH3 layer steers it: the bullet lives
+    /// as long as the bolt does.
+    pub fn keep_alive(&mut self) {
+        self.life = LIFE;
+        self.fade = FADE;
+    }
 }
 
 #[cfg(test)]

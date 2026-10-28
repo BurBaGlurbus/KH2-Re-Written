@@ -19,6 +19,7 @@ pub mod equipment_stats;
 pub mod follow_camera;
 pub mod forms;
 pub mod growth;
+pub mod kh3;
 pub mod limit_form;
 pub mod magic;
 pub mod party_hit;
@@ -2837,6 +2838,11 @@ impl TriangleWorld {
     }
     pub fn counts(&self) -> (usize, usize) {
         (self.floors.len(), self.walls.len())
+    }
+
+    /// The wall triangles (the KH3 ruleset looks for poles among them).
+    pub fn walls(&self) -> &[[Vec3; 3]] {
+        &self.walls
     }
 }
 
