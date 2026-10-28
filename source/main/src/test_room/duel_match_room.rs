@@ -47,6 +47,11 @@ const FX_WON: u16 = 16;
 /// result's shot eases in over two and a half seconds.
 const INTRO_TICKS: u64 = 2 * COUNT_STEP;
 const RESULT_SHOT: u64 = 150;
+/// [Duel choice] The result's title stays over the field, with the
+/// winner's shot, this long before the result's menu opens; it fades over
+/// the last TITLE_FADE ticks.
+const RESULT_HOLD: u64 = 90;
+const TITLE_FADE: f32 = 10.;
 /// Logical pad bits of mode 7.
 const UP: u64 = 0x10;
 const DOWN: u64 = 0x20;
@@ -324,7 +329,7 @@ pub(crate) fn tick(
     if let Some(camp) = camp.as_deref_mut() {
         let want = room
             .m
-            .filter(|_| over && !game.duel_vote_up)
+            .filter(|m| over && !game.duel_vote_up && now.saturating_sub(m.since) >= RESULT_HOLD)
             .map(|m| m.began as u32);
         // The Results page opens with its numbers still to count.
         let text = room.m.map(|m| result_text(&m, seat, net, game, Some(0.)));
@@ -403,10 +408,15 @@ pub(crate) fn tick(
     }
     if game.autoplay.is_some() {
         // [Test] Unattended: both ask for a rematch two seconds in. On the
-        // way the result is captured (`--duel-shots`), then the cursor goes
-        // down to Results and opens it, and that is captured too.
+        // way the title and the result's menu are captured (`--duel-shots`),
+        // then the cursor goes down to Results and opens it, and that is
+        // captured too.
         let t = now.saturating_sub(m.since);
-        let rematch_at = if game.duel_shots { 240 } else { 120 };
+        let rematch_at = if game.duel_shots {
+            240 + RESULT_HOLD
+        } else {
+            120
+        };
         if playing && t >= rematch_at && !m.rematch[seat] {
             pick = Some(if game.duel_quick {
                 ENTRY_QUICK
@@ -415,7 +425,7 @@ pub(crate) fn tick(
             });
         }
         if game.duel_shots {
-            if t == 40 || t == 150 {
+            if t == 40 || t == 150 + RESULT_HOLD {
                 duel_camp::shot(game, (3, m.since, t));
             }
             let on = camp.as_deref().and_then(|c| c.open.as_ref()).filter(|o| {
@@ -425,7 +435,7 @@ pub(crate) fn tick(
                     .is_some_and(|d| d.owner.0 == duel_camp::RESULT)
             });
             if let Some(o) = on
-                && (70..104).contains(&t)
+                && (70 + RESULT_HOLD..104 + RESULT_HOLD).contains(&t)
                 && t.is_multiple_of(6)
                 && o.state == pause_menu::State::Top
             {
@@ -831,6 +841,14 @@ const WHITE: [f32; 4] = [1.6, 1.6, 1.6, 1.];
 const GOLD: [f32; 4] = [1.9, 1.6, 0.7, 1.];
 const RED: [f32; 4] = [1.8, 0.6, 0.5, 1.];
 
+/// [Duel choice] A title's entrance: it settles to its size over
+/// TITLE_IN ticks (200 ms), fast first (a strong ease-out).
+const TITLE_IN: f32 = 12.;
+
+fn settle(t: u64) -> f32 {
+    1. - (1. - (t as f32 / TITLE_IN).min(1.)).powi(3)
+}
+
 fn label(text: &str, centre: [f32; 2], size: f32, colour: [f32; 4]) -> Label {
     Label {
         text: pause_menu::encode_text(text),
@@ -912,7 +930,7 @@ pub(crate) fn labels(room: &MatchRoom, net: &DuelNet, game: &Game, in_camp: bool
                 Some(Why::Time) => "TIME UP",
                 _ => "K.O.",
             };
-            let k = (t as f32 / 20.).min(1.);
+            let k = settle(t);
             out.push(label(head, [256., 160.], 40. + 20. * (1. - k), GOLD));
             let line = match m.winner {
                 Some(w) => format!("{} wins the round", name(usize::from(w))),
@@ -921,16 +939,30 @@ pub(crate) fn labels(room: &MatchRoom, net: &DuelNet, game: &Game, in_camp: bool
             out.push(label(&line, [256., 205.], 16., WHITE));
         }
         Phase::Over if in_camp => {
-            // The title over the field, right of the menu's entries; the
-            // menu holds the rest.
-            let (title, colour, why) = result_head(&m, seat, net);
-            let k = (t as f32 / 30.).min(1.);
-            out.push(label(title, [320., 100.], 44. + 16. * (1. - k), colour));
-            out.push(label(&why, [320., 136.], 14., WHITE));
+            // The title over the field until the result's menu opens; the
+            // menu holds the rest (its help line says why).
+            if t < RESULT_HOLD {
+                let (title, colour, why) = result_head(&m, seat, net);
+                let k = settle(t);
+                let fade = ((RESULT_HOLD - t) as f32 / TITLE_FADE).min(1.);
+                let [r, g, b, _] = colour;
+                out.push(label(
+                    title,
+                    [256., 84.],
+                    44. + 16. * (1. - k),
+                    [r, g, b, fade],
+                ));
+                out.push(label(
+                    &why,
+                    [256., 122.],
+                    15.,
+                    [WHITE[0], WHITE[1], WHITE[2], fade],
+                ));
+            }
         }
         Phase::Over => {
             let (title, colour, why) = result_head(&m, seat, net);
-            let k = (t as f32 / 30.).min(1.);
+            let k = settle(t);
             // The title above, the numbers and choices below: the shot of
             // the Sora shows between them.
             out.push(label(title, [256., 64.], 44. + 16. * (1. - k), colour));

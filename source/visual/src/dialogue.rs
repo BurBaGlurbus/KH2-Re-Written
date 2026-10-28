@@ -381,6 +381,8 @@ pub struct TalkWindow {
     position: [i32; 2],
     widths: Vec<u8>,
     glyphs: Vec<Glyph>,
+    /// A notice: no arrow, no advance.
+    held: bool,
 }
 
 impl TalkWindow {
@@ -404,6 +406,7 @@ impl TalkWindow {
             position: TALK_POSITION,
             widths: widths.to_vec(),
             glyphs: Vec::new(),
+            held: false,
         }
     }
 
@@ -416,6 +419,23 @@ impl TalkWindow {
         w.tail = None;
         w.position = [0x100, 0x30 + w.size.1 / 2];
         w
+    }
+
+    /// [Rewrite] A status line in the balloon (the LAN duel's "Waiting for
+    /// a player"): no advance arrow and no advance; it stays until its
+    /// owner calls `dismiss`.
+    pub fn notice(seq: &Sequence, message: Vec<u8>, colour: u32, widths: &[u8]) -> Self {
+        let mut w = Self::balloon(seq, message, colour, widths);
+        w.held = true;
+        w
+    }
+
+    /// [Rewrite] Closes the window with its own close animation, from any
+    /// state (a notice's text went out of date).
+    pub fn dismiss(&mut self) {
+        if self.state < 4 {
+            self.state = 4;
+        }
     }
 
     pub fn size(&self) -> (i32, i32) {
@@ -443,12 +463,14 @@ impl TalkWindow {
             1 => {
                 if self.text.complete {
                     // No choices: mode 1, the advance arrow.
-                    self.arrow = Some(Player::new(&self.seq, ARROW));
+                    if !self.held {
+                        self.arrow = Some(Player::new(&self.seq, ARROW));
+                    }
                     self.state = 2;
                 }
             }
             2 => {
-                if advance {
+                if advance && !self.held {
                     sounds.push(ADVANCE_SOUND);
                     if self.text.next_page(&self.widths) {
                         self.state = 1;
@@ -668,6 +690,52 @@ mod tests {
         assert_eq!(t.draw(0, 0, &widths).len(), 1);
         assert_eq!(t.draw(0, 0, &widths).len(), 2);
         assert!(!t.complete);
+    }
+
+    /// Synthetic window art: every group one frame long, played once.
+    fn window_sequence() -> Sequence {
+        let group = data::sprite_sequence::AnimationGroup {
+            animations: 0..0,
+            play_count: 1,
+            loop_frames: [0, 0],
+            light_position_x: 0,
+            text_position_y: 0,
+            text_scale: 0,
+            ui_padding: 0,
+            text_position_x: 0,
+        };
+        Sequence {
+            sprites: Vec::new(),
+            parts: Vec::new(),
+            sprite_groups: Vec::new(),
+            animations: Vec::new(),
+            groups: vec![group; 80],
+        }
+    }
+
+    #[test]
+    fn a_notice_has_no_arrow_ignores_advance_and_closes_when_dismissed() {
+        let seq = window_sequence();
+        let widths = [10u8; 200];
+        let mut w = TalkWindow::notice(&seq, vec![0x21, 0x21, 0x00], 0x80808080, &widths);
+        for _ in 0..8 {
+            assert!(w.step(true).is_empty());
+        }
+        assert_eq!(w.state, 2);
+        assert!(w.arrow.is_none());
+        w.dismiss();
+        for _ in 0..8 {
+            w.step(false);
+        }
+        assert!(w.deleted());
+        // A talk window still waits for the advance with its arrow.
+        let mut t = TalkWindow::balloon(&seq, vec![0x21, 0x00], 0x80808080, &widths);
+        for _ in 0..4 {
+            t.step(false);
+        }
+        assert_eq!(t.state, 2);
+        assert!(t.arrow.is_some());
+        assert_eq!(t.step(true), vec![ADVANCE_SOUND]);
     }
 
     #[test]

@@ -30,6 +30,12 @@ const CURSOR: [f32; 4] = [1.9, 1.6, 0.7, 1.];
 /// The vote's panel top.
 const VOTE_TOP: f32 = 290.;
 const BACKING: [f32; 4] = [0., 0., 0., 0.55];
+/// The status balloon's top (WINDOW_BALLOON at y 0x30) and its frame
+/// beyond the text.
+const BALLOON_TOP: i32 = 0x30;
+const BALLOON_PAD: i32 = 28;
+/// The match's text over the field: its shadow's opacity.
+const SHADOW: f32 = 0.7;
 /// The banner ("Waiting for a player", "Opponent left"): its size and row.
 const BANNER_SIZE: f32 = 16.;
 const BANNER_Y: f32 = 120.;
@@ -104,6 +110,63 @@ pub(crate) struct DuelNet {
     since_refresh: u32,
     lines: Vec<(String, bool)>,
     sheets: Option<(usize, usize)>,
+    /// The status in the game's message balloon: its art (read once, on
+    /// its own thread), the text wanted this frame, the window showing it
+    /// and those still closing, and the art's 2D sheets.
+    notice_job: Option<std::thread::JoinHandle<Result<NoticeArt, String>>>,
+    notice_art: Option<Result<NoticeArt, String>>,
+    pub(crate) notice_want: Option<String>,
+    notice: Option<(String, visual::dialogue::TalkWindow)>,
+    notices_closing: Vec<visual::dialogue::TalkWindow>,
+    notice_sheets: Option<(usize, usize)>,
+}
+
+/// YS::WINDOW_BALLOON's art as the world map reads it (msg/us/fontinfo.bar
+/// and wm.bar's window, the event font, 03system 'ftst' colour 5 of the
+/// world map) [duel choice: the session's status in the game's own message
+/// window].
+pub(crate) struct NoticeArt {
+    sheet: Sheet,
+    font: SystemFont,
+    colour: u32,
+}
+
+fn load_notice_art(source: &ProbeSource) -> Result<NoticeArt, String> {
+    let mut library = data::path_lookup::Library::open(source).map_err(|e| e.to_string())?;
+    let at = |name: &str| {
+        library
+            .find(name)
+            .map(|f| (f.index, f.ordinal, f.name_hash))
+            .ok_or(format!("{name} is not installed"))
+    };
+    let info = at("msg/us/fontinfo.bar")?;
+    let sheet =
+        hud::load_window_sheet(source, info, at("msg/us/wm.bar")?).map_err(|e| e.to_string())?;
+    let font = hud::load_font(source, at("msg/us/fontimage.bar")?, info, b"evt\0")
+        .map_err(|e| e.to_string())?;
+    let colour = library
+        .read("03system.bin")
+        .ok()
+        .and_then(|s| hud::ftst_colour(&s, 5, 15).ok())
+        .unwrap_or(0x8005_0520);
+    Ok(NoticeArt {
+        sheet,
+        font,
+        colour,
+    })
+}
+
+/// A notice's text in game text: its lines (`\n`) end in 0x02.
+fn notice_text(s: &str) -> Vec<u8> {
+    let mut out = Vec::new();
+    for (i, line) in s.split('\n').enumerate() {
+        if i > 0 {
+            out.push(0x02);
+        }
+        out.extend(pause_menu::encode_text(line));
+    }
+    out.push(0);
+    out
 }
 
 /// SHA-256 of the running executable: two instances play together only on
@@ -243,6 +306,12 @@ impl DuelNet {
             since_refresh: 0,
             lines: Vec::new(),
             sheets: None,
+            notice_job: None,
+            notice_art: None,
+            notice_want: None,
+            notice: None,
+            notices_closing: Vec::new(),
+            notice_sheets: None,
         })
     }
 
@@ -310,8 +379,10 @@ pub(crate) fn begin(
     mut controls: ResMut<visual::input::Controls>,
     mut game: ResMut<Game>,
     mut loadout: ResMut<duel_loadout::DuelLoadout>,
+    gallery: Res<enemy_gallery::EnemyGallery>,
 ) {
     let Some(mut net) = net else { return };
+    notice_tick(&mut net, &gallery, &mut game);
     net.session.update();
     net.inbox.clear();
     while let Some(m) = net.session.receive(net::RELIABLE) {
@@ -357,7 +428,7 @@ pub(crate) fn begin(
             }
             NetEvent::Rejected(reason) => {
                 game.event(serde_json::json!({"event":"net_rejected","tick":tick,"reason":reason}));
-                net.status = Status::Ended(format!("The host refused: {reason}"), tick);
+                net.status = Status::Ended(format!("The host refused: {reason}."), tick);
                 leave_session(&mut game, &mut loadout);
             }
             NetEvent::Disconnected(reason) => {
@@ -369,11 +440,11 @@ pub(crate) fn begin(
                 let text = match (net.role, net.peer.clone()) {
                     // The host keeps listening for the next player.
                     (Role::Host, who) => format!(
-                        "{} left: {reason}. Waiting for a player",
-                        who.as_deref().unwrap_or("The other player")
+                        "{}\nWaiting for the next player.",
+                        gone(who.as_deref().unwrap_or("The other player"), &reason)
                     ),
-                    (Role::Join, Some(_)) => format!("Opponent left: {reason}. Esc to quit"),
-                    (Role::Join, None) => format!("Could not join: {reason}"),
+                    (Role::Join, Some(who)) => format!("{}\nEsc to quit.", gone(&who, &reason)),
+                    (Role::Join, None) => format!("Could not join: {reason}."),
                 };
                 net.status = Status::Ended(text, tick);
                 if net.role == Role::Join {
@@ -391,6 +462,69 @@ pub(crate) fn begin(
         net.status = Status::Waiting(port);
         net.peer = None;
     }
+}
+
+/// Why the other player is gone, by name (the link's reasons name no one:
+/// "the other player left", "the host timed out").
+fn gone(who: &str, reason: &str) -> String {
+    if reason.ends_with(" left") {
+        format!("{who} left the duel.")
+    } else if reason.ends_with(" timed out") {
+        format!("{who} stopped answering.")
+    } else {
+        format!("{who} left: {reason}.")
+    }
+}
+
+/// The status balloon, one fixed step: its art is read once a session
+/// runs; a changed status closes the window showing the old one (its own
+/// close animation) and the new one opens once it has gone.
+fn notice_tick(net: &mut DuelNet, gallery: &enemy_gallery::EnemyGallery, game: &mut Game) {
+    if net.notice_art.is_none() && net.notice_job.is_none() {
+        let source = Arc::clone(&gallery.source);
+        net.notice_job = Some(std::thread::spawn(move || load_notice_art(&source)));
+    }
+    if net.notice_job.as_ref().is_some_and(|j| j.is_finished())
+        && let Some(job) = net.notice_job.take()
+    {
+        let art = job
+            .join()
+            .unwrap_or_else(|_| Err("the reading thread stopped".into()));
+        if let Err(e) = &art {
+            game.event(serde_json::json!({"event":"duel_notice_art","error":e}));
+        }
+        net.notice_art = Some(art);
+    }
+    let Some(Ok(art)) = &net.notice_art else {
+        return;
+    };
+    if net.notice.as_ref().map(|(t, _)| t) != net.notice_want.as_ref()
+        && let Some((_, mut w)) = net.notice.take()
+    {
+        w.dismiss();
+        net.notices_closing.push(w);
+    }
+    if net.notice.is_none()
+        && net.notices_closing.is_empty()
+        && let Some(text) = net.notice_want.clone()
+    {
+        let w = visual::dialogue::TalkWindow::notice(
+            &art.sheet.sequence,
+            notice_text(&text),
+            art.colour,
+            &art.font.widths,
+        );
+        let tick = game.tick;
+        game.event(serde_json::json!({"event":"duel_notice","tick":tick,"text":text}));
+        net.notice = Some((text, w));
+    }
+    if let Some((_, w)) = net.notice.as_mut() {
+        w.step(false);
+    }
+    for w in &mut net.notices_closing {
+        w.step(false);
+    }
+    net.notices_closing.retain(|w| !w.deleted());
 }
 
 /// How long the host shows why its player left before waiting again.
@@ -658,15 +792,51 @@ pub(crate) fn present(
         pad: 1,
     };
     let banner = match &net.status {
-        Status::Waiting(port) => Some(format!("Waiting for a player on UDP port {port}")),
+        Status::Waiting(port) => Some(format!("Waiting for a player to join.\nUDP port {port}")),
         Status::Joining(host) => Some(format!("Joining {host}...")),
         Status::Playing => None,
         Status::Ended(reason, _) => Some(reason.clone()),
     };
-    // A match's result says who left; the banner gives way to it.
+    // A match's result says who left, and an open menu covers the field:
+    // the status gives way to them.
     let result_up = duel_match.as_ref().is_some_and(|m| m.menu_up());
-    if let Some(text) = banner.filter(|_| !result_up) {
-        let encoded = pause_menu::encode_text(&text);
+    let menu_open = camp.as_ref().is_some_and(|c| c.open.is_some());
+    let banner = banner.filter(|_| !result_up && !menu_open);
+    net.notice_want = banner.clone();
+    // The game's message balloon; without its art, a plain line.
+    if net.notice_sheets.is_none()
+        && let Some(Ok(art)) = net.notice_art.as_mut()
+    {
+        let window = frame.add_sheet(
+            &mut images,
+            std::mem::take(&mut art.sheet.texture_rgba),
+            art.sheet.texture_size,
+            art.sheet.texel_scale as f32,
+        );
+        let evt = frame.add_sheet(
+            &mut images,
+            std::mem::take(&mut art.font.rgba),
+            art.font.size,
+            art.font.texel_scale as f32,
+        );
+        net.notice_sheets = Some((window, evt));
+    }
+    if let Some((window, evt)) = net.notice_sheets {
+        for w in net
+            .notices_closing
+            .iter()
+            .chain(net.notice.as_ref().map(|(_, w)| w))
+        {
+            for d in w.draw(window, evt) {
+                if let visual::gauge::Draw::Quads { quads, sheet, .. } = d {
+                    frame.draws.push((sheet, quads));
+                }
+            }
+        }
+    }
+    let plain = matches!(net.notice_art, Some(Err(_)));
+    if let Some(text) = banner.filter(|_| plain) {
+        let encoded = pause_menu::encode_text(&text.replace('\n', "  "));
         let width = field_command_menu::text_width(&encoded, &f, BANNER_SIZE);
         let x = BANNER_CENTRE - width / 2.;
         frame.draws.push(backing(
@@ -719,6 +889,14 @@ pub(crate) fn present(
                 white,
                 [x - 8., y - 3., x + width + 8., y + l.size + 3.],
             ));
+        } else {
+            // Over the field: a soft shadow keeps it readable on a flash.
+            let d = (l.size / 16.).max(1.);
+            let shade = [0., 0., 0., SHADOW * l.colour[3]];
+            frame.draws.push((
+                sheet,
+                field_command_menu::text_quads_sized(&l.text, [x + d, y + d], shade, &f, l.size),
+            ));
         }
         frame.draws.push((
             sheet,
@@ -770,7 +948,8 @@ pub(crate) fn present(
         }
         frame.draws.push((sheet, quads));
     }
-    if !net.overlay || net.lines.is_empty() {
+    // The network overlay is for the field: menus keep their own corner.
+    if !net.overlay || net.lines.is_empty() || menu_open {
         return;
     }
     let encoded: Vec<(Vec<u8>, bool)> = net
@@ -783,13 +962,17 @@ pub(crate) fn present(
         .map(|(l, _)| field_command_menu::text_width(l, &f, SIZE))
         .fold(0., f32::max);
     let x = RIGHT - width;
+    // Below the status balloon while it shows.
+    let top = net.notice.as_ref().map_or(TOP, |(_, w)| {
+        TOP.max((BALLOON_TOP + w.size().1 + BALLOON_PAD) as f32)
+    });
     frame.draws.push(backing(
         white,
         [
             x - 4.,
-            TOP - 2.,
+            top - 2.,
             RIGHT + 4.,
-            TOP + LINE * encoded.len() as f32 + 2.,
+            top + LINE * encoded.len() as f32 + 2.,
         ],
     ));
     let mut quads = Vec::new();
@@ -797,7 +980,7 @@ pub(crate) fn present(
         let colour = if *warn { WARN } else { TEXT };
         quads.extend(field_command_menu::text_quads_sized(
             line,
-            [x, TOP + n as f32 * LINE],
+            [x, top + n as f32 * LINE],
             colour,
             &f,
             SIZE,
@@ -809,6 +992,19 @@ pub(crate) fn present(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_departure_names_the_player_once() {
+        assert_eq!(gone("Riku", "the other player left"), "Riku left the duel.");
+        assert_eq!(
+            gone("Riku", "the host timed out"),
+            "Riku stopped answering."
+        );
+        assert_eq!(gone("Riku", "no answer"), "Riku left: no answer.");
+        let t = notice_text("Waiting.\nUDP port 1");
+        assert_eq!(t.iter().filter(|&&b| b == 0x02).count(), 1);
+        assert_eq!(t.last(), Some(&0));
+    }
 
     #[test]
     fn addresses_take_the_default_port() {
