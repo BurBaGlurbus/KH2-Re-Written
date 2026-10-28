@@ -1201,6 +1201,8 @@ struct Game {
     /// [KH3 ruleset] The room collision's poles, kept by its triangle
     /// counts (duel_kh3.rs).
     kh3_poles: Option<duel_kh3::PoleCache>,
+    /// [Test] `--kh3-preview`: the looks or elements shown one by one.
+    kh3_preview: Option<duel_kh3::Preview>,
     /// A match is running: a knocked-out Sora stays down for the round.
     duel_match: bool,
     /// Damage dealt and hits landed this match, by the attacker's slot.
@@ -1390,6 +1392,9 @@ struct Game {
     effect_queue: Vec<EffectRequest>,
     /// Elements to start next tick at a place other than Sora's own.
     fx_queue: Vec<drive_fx::Placed>,
+    /// [KH3 ruleset] Elements of a composite look, each with its style
+    /// (duel_kh3.rs); a look reaches the joiner by its id, not by these.
+    fx_styled: Vec<(drive_fx::Placed, drive_fx::Style)>,
     /// Battle actors' scene position and yaw this tick, and the motion
     /// serial and frame their triggers were last scanned at.
     actor_poses: HashMap<u64, (Vec3, f32)>,
@@ -8196,6 +8201,7 @@ fn simulate(
                 };
                 let slot = game.local_slot;
                 duel_kh3::after(&mut game, &out, slot);
+                duel_kh3::preview_tick(&mut game, tick);
                 out.step
             } else {
                 let Game {
@@ -13766,6 +13772,7 @@ fn run(mut args: Vec<PathBuf>) -> Result<AppExit, Box<dyn std::error::Error>> {
     let mut duel_wisdom = false;
     let mut duel_no_mirage = false;
     let mut duel_idle = false;
+    let mut kh3_preview: Option<duel_kh3::Preview> = None;
     // The LAN duel (duel_net.rs): host or join, the port, the name shown
     // to the other player, the link simulator and the overlay.
     let mut net_host = false;
@@ -13840,6 +13847,16 @@ fn run(mut args: Vec<PathBuf>) -> Result<AppExit, Box<dyn std::error::Error>> {
             Some("--kh3-test") => {
                 rival_script = true;
                 duel_rules.ruleset = duel_rules::Ruleset::Kh3;
+            }
+            // [Test] The KH3 test standing still while the looks show.
+            Some("--kh3-preview") => {
+                rival_script = true;
+                duel_rules.ruleset = duel_rules::Ruleset::Kh3;
+                let spec = options
+                    .next()
+                    .and_then(|v| v.to_str())
+                    .ok_or("preview list absent")?;
+                kh3_preview = Some(duel_kh3::Preview::parse(spec)?);
             }
             Some("--duel-bench") => duel_bench = true,
             Some("--duel-magic") => duel_magic = true,
@@ -14455,6 +14472,8 @@ fn run(mut args: Vec<PathBuf>) -> Result<AppExit, Box<dyn std::error::Error>> {
         enemy_battle_tour::captures()
     } else if enemy_tour {
         enemy_tour::CAPTURES.to_vec()
+    } else if let Some(p) = &kh3_preview {
+        p.captures()
     } else {
         tour.as_ref()
             .map(|t| t.captures.clone())
@@ -14502,6 +14521,8 @@ fn run(mut args: Vec<PathBuf>) -> Result<AppExit, Box<dyn std::error::Error>> {
         enemy_battle_tour::end()
     } else if enemy_tour {
         enemy_tour::END
+    } else if let Some(p) = &kh3_preview {
+        p.end()
     } else {
         tour.as_ref().map_or(
             if talk_room {
@@ -14612,6 +14633,7 @@ fn run(mut args: Vec<PathBuf>) -> Result<AppExit, Box<dyn std::error::Error>> {
         duel_wisdom,
         duel_shot_keys: std::collections::HashSet::new(),
         kh3_poles: None,
+        kh3_preview,
         duel_match: false,
         duel_dealt: [0; 2],
         duel_landed: [0; 2],
@@ -14794,6 +14816,7 @@ fn run(mut args: Vec<PathBuf>) -> Result<AppExit, Box<dyn std::error::Error>> {
         sound_frame: None,
         effect_queue: Vec::new(),
         fx_queue: Vec::new(),
+        fx_styled: Vec::new(),
         actor_poses: HashMap::new(),
         actor_bones: HashMap::new(),
         actor_scan: HashMap::new(),

@@ -7,8 +7,9 @@
 //! shows focus, the shotlock's locks and the grand magic offer. Single
 //! player and the KH2 ruleset never come here.
 
+use super::duel_wire::DuelEvent;
 use super::*;
-use player::kh3::{self, Foe, Pad, Scene, surface::Pole};
+use player::kh3::{self, Foe, Pad, Scene, look::Look, surface::Pole};
 
 /// Shotlock bolts' bullet keys: Wisdom's bullet range with this bit.
 pub(crate) const SHOT_BIT: u64 = 1 << 59;
@@ -189,8 +190,9 @@ pub(crate) fn after(game: &mut Game, out: &kh3::Outcome, slot: u8) {
 pub(crate) const CUE_SOUND: &str = "kh3";
 
 /// The KH2 stand-ins of a KH3 moment (`player::kh3::cue`) for the Sora
-/// swapped in (`game.sora`, his own effect containers): sounds to the
-/// queue, effect elements onto him (or `anchor`), each in the log.
+/// swapped in (`game.sora`, seat `slot`, his own effect containers):
+/// sounds to the queue, looks onto him (or `anchor`), each in the log. A
+/// shotlock lock's look sits on the target.
 pub(crate) fn cues(game: &mut Game, event: &'static str, slot: u8, anchor: drive_fx::Anchor) {
     use kh3::cue::Cue;
     let tick = game.tick;
@@ -200,22 +202,13 @@ pub(crate) fn cues(game: &mut Game, event: &'static str, slot: u8, anchor: drive
                 game.sound_queue.push((id, CUE_SOUND));
                 true
             }
-            Cue::Own(e) | Cue::Wisdom(e) | Cue::System(e) => {
-                let found = game.drive.as_mut().and_then(|d| match c {
-                    Cue::Own(_) => d.paxes.get(&d.shown).cloned().map(|p| (p, d.shown)),
-                    Cue::Wisdom(_) => d.wisdom_pax().map(|p| (p, player::forms::WISDOM)),
-                    _ => d.src.system_pax.clone().map(|p| (p, 0xff)),
-                });
-                match found {
-                    Some((pax, owner)) => {
-                        game.fx_queue.push(drive_fx::Placed {
-                            req: drive_fx::FxRequest { pax, id: e, owner },
-                            anchor,
-                        });
-                        true
-                    }
-                    None => false,
-                }
+            Cue::Look(look) => {
+                let at = match anchor {
+                    drive_fx::Anchor::World { at, yaw, .. } => Some((at.to_array(), yaw)),
+                    _ if look == Look::Lock => game.sora.kh3.foe.map(|f| (f, 0.)),
+                    _ => None,
+                };
+                show(game, look, slot, at, 1.)
             }
         };
         game.event(
@@ -223,6 +216,301 @@ pub(crate) fn cues(game: &mut Game, event: &'static str, slot: u8, anchor: drive
             "on":event,"cue":format!("{c:?}"),"played":played}),
         );
     }
+}
+
+/// [KH3 ruleset] A look's size by a hit's weight (the knock's scale,
+/// 0.3 to 1.6): from 0.85 to 1.15 times its own, so a counter's burst stays
+/// about Sora's height.
+pub(crate) fn hit_size(strike: &kh3::hurt::Strike) -> f32 {
+    (0.8 + strike.scale * 0.2).clamp(0.85, 1.15)
+}
+
+/// Starts a look for the Sora swapped in (seat `slot`: on him, or at a
+/// place, turned by a yaw) and sends it to the joiner by its id. Whether
+/// any of its layers started.
+pub(crate) fn show(
+    game: &mut Game,
+    look: Look,
+    slot: u8,
+    at: Option<([f32; 3], f32)>,
+    size: f32,
+) -> bool {
+    let anchor = anchor_of(game, slot, at);
+    let size = look_size(size);
+    let Some(d) = game.drive.as_mut() else {
+        return false;
+    };
+    let (starts, missing) = look_starts(d, look, anchor, f32::from(size) / 10.);
+    let started = !starts.is_empty();
+    game.fx_styled.extend(starts);
+    game.duel_events.push(DuelEvent::Look {
+        look: look.id(),
+        slot,
+        size,
+        at,
+    });
+    log_look(game, look, slot, missing);
+    started
+}
+
+/// A look's size on the wire, in tenths.
+fn look_size(size: f32) -> u8 {
+    (size * 10.).round().clamp(1., 40.) as u8
+}
+
+/// Where a look goes for seat `slot`: on him (the room Sora's own seat, or
+/// a rival's) or at a place.
+fn anchor_of(game: &Game, slot: u8, at: Option<([f32; 3], f32)>) -> drive_fx::Anchor {
+    match at {
+        Some((at, yaw)) => drive_fx::Anchor::World {
+            at: Vec3::from_array(at),
+            pitch: 0.,
+            yaw,
+        },
+        None if slot == game.local_slot => drive_fx::Anchor::Sora,
+        None => drive_fx::Anchor::Rival(slot),
+    }
+}
+
+fn log_look(game: &mut Game, look: Look, slot: u8, missing: Vec<String>) {
+    let tick = game.tick;
+    game.event(
+        serde_json::json!({"event":"kh3_look","tick":tick,"slot":slot,
+        "look":look.name(),"missing":missing}),
+    );
+}
+
+/// A look's layers as styled starts from a Sora's effect containers (his
+/// Drive state), with the layers whose container or element is not there
+/// (a form kit still loading).
+pub(crate) fn look_starts(
+    d: &mut drive_room::DriveRt,
+    look: Look,
+    anchor: drive_fx::Anchor,
+    size: f32,
+) -> (Vec<(drive_fx::Placed, drive_fx::Style)>, Vec<String>) {
+    layer_starts(d, look.layers(), anchor, size)
+}
+
+/// Layers as styled starts (`look_starts`).
+fn layer_starts(
+    d: &mut drive_room::DriveRt,
+    layers: &[kh3::look::Layer],
+    anchor: drive_fx::Anchor,
+    size: f32,
+) -> (Vec<(drive_fx::Placed, drive_fx::Style)>, Vec<String>) {
+    use kh3::look::Source;
+    let mut starts = Vec::new();
+    let mut missing = Vec::new();
+    for l in layers {
+        let found = match l.source {
+            Source::Sora => d.paxes.get(&player::forms::NORMAL).cloned().map(|p| (p, 0)),
+            Source::Form(f) => d.form_pax(f).map(|p| (p, f)),
+            Source::System => d.src.system_pax.clone().map(|p| (p, 0xff)),
+        };
+        match found {
+            Some((pax, owner)) if pax.by_id(l.element).is_some() => {
+                starts.push((
+                    drive_fx::Placed {
+                        req: drive_fx::FxRequest {
+                            pax,
+                            id: l.element,
+                            owner,
+                        },
+                        anchor,
+                    },
+                    style_of(l, size),
+                ));
+            }
+            _ => missing.push(format!("{:?}:{}", l.source, l.element)),
+        }
+    }
+    (starts, missing)
+}
+
+/// A layer's style at a look's size.
+pub(crate) fn style_of(l: &kh3::look::Layer, size: f32) -> drive_fx::Style {
+    drive_fx::Style {
+        scale: l.scale * size,
+        tint: l.tint,
+        offset: l.offset.map(|v| v * size),
+        bone: l.bone,
+        delay: f32::from(l.delay),
+        life: (l.life > 0).then_some(f32::from(l.life)),
+        sound: l.sound,
+    }
+}
+
+/// Joiner: the host's look on this instance's Sora of that seat (or at
+/// its place), from that Sora's own containers.
+pub(crate) fn play_look(game: &mut Game, id: u8, slot: u8, size: u8, at: Option<([f32; 3], f32)>) {
+    let Some(look) = Look::from_id(id) else {
+        return;
+    };
+    let anchor = anchor_of(game, slot, at);
+    let size = f32::from(size) / 10.;
+    let local = slot == game.local_slot;
+    let drive = if local {
+        game.drive.as_mut()
+    } else {
+        game.rivals
+            .iter_mut()
+            .find(|r| r.slot == slot)
+            .and_then(|r| r.own.drive.as_mut())
+    };
+    let Some(d) = drive else {
+        return;
+    };
+    let (starts, missing) = look_starts(d, look, anchor, size);
+    game.fx_styled.extend(starts);
+    log_look(game, look, slot, missing);
+}
+
+/// [Test] `--kh3-preview <list>`: both Soras stand still in the KH3 test
+/// while the room Sora shows, one every `PREVIEW_EVERY` ticks, each item
+/// of the list (`looks`, `look:<name>`, `sora:<id>`, `form<n>:<id>`,
+/// `system:<id>`, ids as `a-b` ranges too), seen from his side; three
+/// captures each. For checking the looks and choosing their elements.
+pub(crate) struct Preview {
+    items: Vec<PreviewItem>,
+}
+
+#[derive(Clone, Copy, Debug)]
+enum PreviewItem {
+    Look(Look),
+    Element(kh3::look::Source, u16),
+}
+
+/// When the first item shows (the forms' kits have loaded by then) and
+/// how far apart the items are.
+const PREVIEW_START: u64 = 600;
+const PREVIEW_EVERY: u64 = 60;
+/// Ticks after an item's start of its captures.
+const PREVIEW_SHOTS: [u64; 3] = [3, 10, 24];
+
+impl Preview {
+    pub(crate) fn parse(spec: &str) -> Result<Preview, String> {
+        use kh3::look::{ALL, Source};
+        let mut items = Vec::new();
+        for token in spec.split(',').map(str::trim).filter(|t| !t.is_empty()) {
+            if token == "looks" {
+                items.extend(ALL.iter().map(|&l| PreviewItem::Look(l)));
+                continue;
+            }
+            let (kind, rest) = token
+                .split_once(':')
+                .ok_or_else(|| format!("preview item {token}"))?;
+            if kind == "look" {
+                let l = ALL
+                    .iter()
+                    .find(|l| l.name() == rest)
+                    .ok_or_else(|| format!("no look {rest}"))?;
+                items.push(PreviewItem::Look(*l));
+                continue;
+            }
+            let source = match kind {
+                "sora" => Source::Sora,
+                "system" => Source::System,
+                k => Source::Form(
+                    k.strip_prefix("form")
+                        .and_then(|n| n.parse().ok())
+                        .ok_or_else(|| format!("preview source {k}"))?,
+                ),
+            };
+            let (a, b) = rest.split_once('-').unwrap_or((rest, rest));
+            let (a, b): (u16, u16) = (
+                a.parse().map_err(|_| format!("element {a}"))?,
+                b.parse().map_err(|_| format!("element {b}"))?,
+            );
+            items.extend((a..=b).map(|e| PreviewItem::Element(source, e)));
+        }
+        if items.is_empty() {
+            return Err("an empty preview list".into());
+        }
+        Ok(Preview { items })
+    }
+
+    /// The run's captures, in the items' order.
+    pub(crate) fn captures(&self) -> Vec<u64> {
+        (0..self.items.len() as u64)
+            .flat_map(|i| PREVIEW_SHOTS.map(|s| PREVIEW_START + i * PREVIEW_EVERY + s))
+            .collect()
+    }
+
+    pub(crate) fn end(&self) -> u64 {
+        PREVIEW_START + self.items.len() as u64 * PREVIEW_EVERY + 2
+    }
+}
+
+/// [Test] The preview's item of this tick, on the room Sora.
+pub(crate) fn preview_tick(game: &mut Game, tick: u64) {
+    let Some(item) = game.kh3_preview.as_ref().and_then(|p| {
+        let i = tick.checked_sub(PREVIEW_START)?;
+        i.is_multiple_of(PREVIEW_EVERY)
+            .then(|| p.items.get((i / PREVIEW_EVERY) as usize).copied())
+            .flatten()
+    }) else {
+        return;
+    };
+    let slot = game.local_slot;
+    // Looks that land on a target or a hit: a little in front of him.
+    let p = game.sora.player.position;
+    let yaw = game.sora.player.yaw;
+    let front = (
+        [p[0] + yaw.sin() * 40., p[1] + 90., p[2] + yaw.cos() * 40.],
+        yaw,
+    );
+    let started = match item {
+        PreviewItem::Look(l) => {
+            let at = matches!(l, Look::Lock | Look::BoltHit | Look::HeavyHit).then_some(front);
+            show(game, l, slot, at, 1.)
+        }
+        PreviewItem::Element(source, element) => {
+            let layer = kh3::look::Layer {
+                source,
+                element,
+                bone: None,
+                offset: [0.; 3],
+                scale: 1.,
+                tint: [1.; 4],
+                delay: 0,
+                // Its loops end before the next item.
+                life: PREVIEW_EVERY as u16 - 15,
+                sound: false,
+            };
+            let look = std::slice::from_ref(&layer);
+            match game.drive.as_mut() {
+                Some(d) => {
+                    let (starts, _) = layer_starts(d, look, drive_fx::Anchor::Sora, 1.);
+                    let ok = !starts.is_empty();
+                    game.fx_styled.extend(starts);
+                    ok
+                }
+                None => false,
+            }
+        }
+    };
+    game.event(serde_json::json!({"event":"kh3_preview","tick":tick,
+        "item":format!("{item:?}"),"started":started}));
+}
+
+/// [Test] The preview's camera: from Sora's right, a little ahead, level
+/// with his chest.
+fn preview_view(game: &Game, fov: f32) -> Option<boss::OverlayView> {
+    game.kh3_preview.as_ref()?;
+    let yaw = game.sora.player.yaw;
+    let (facing, right) = (
+        Vec3::new(yaw.sin(), 0., yaw.cos()),
+        Vec3::new(yaw.cos(), 0., -yaw.sin()),
+    );
+    let p = Vec3::from_array(game.sora.player.position);
+    Some(boss::OverlayView {
+        eye: p + right * 380. + facing * 120. + Vec3::Y * 130.,
+        target: p + Vec3::Y * 85.,
+        roll: 0.,
+        fov,
+        collision: false,
+    })
 }
 
 /// A spell this Sora's grand magic cast is still out (its hits double).
@@ -240,7 +528,7 @@ pub(crate) fn bolts(game: &mut Game, slot: u8) {
         drive,
         sora,
         magic,
-        fx_queue,
+        fx_styled,
         ..
     } = &mut *game;
     let Some(d) = drive.as_mut() else {
@@ -286,14 +574,17 @@ pub(crate) fn bolts(game: &mut Game, slot: u8) {
                 b.speed = bolt.speed;
                 d.bullets.push(b);
                 if let Some(pax) = look {
-                    fx_queue.push(drive_fx::Placed {
-                        req: drive_fx::FxRequest {
-                            pax,
-                            id: BOLT_ELEMENT,
-                            owner: player::forms::WISDOM,
+                    fx_styled.push((
+                        drive_fx::Placed {
+                            req: drive_fx::FxRequest {
+                                pax,
+                                id: BOLT_ELEMENT,
+                                owner: player::forms::WISDOM,
+                            },
+                            anchor: drive_fx::Anchor::Bullet(key),
                         },
-                        anchor: drive_fx::Anchor::Bullet(key),
-                    });
+                        bullet_style(key),
+                    ));
                 }
             }
         }
@@ -306,6 +597,23 @@ pub(crate) fn bolts(game: &mut Game, slot: u8) {
         );
     }
 }
+
+/// [duel choice] A bolt rides Wisdom's orb, cyan and a little smaller, so
+/// a volley never reads as Wisdom Form's own shots (both can be in one
+/// duel). Other bullets keep their look.
+pub(crate) fn bullet_style(key: u64) -> drive_fx::Style {
+    if is_bolt(key) {
+        drive_fx::Style {
+            tint: kh3::look::colour::LOCK,
+            scale: BOLT_SCALE,
+            ..drive_fx::Style::default()
+        }
+    } else {
+        drive_fx::Style::default()
+    }
+}
+
+const BOLT_SCALE: f32 = 0.8;
 
 /// Whether a bullet key is a shotlock bolt's.
 pub(crate) fn is_bolt(key: u64) -> bool {
@@ -329,6 +637,9 @@ const WALL_CAMERA_UP: f32 = 120.;
 pub(crate) fn flow_view(game: &Game, fov: f32) -> Option<boss::OverlayView> {
     if !on(game) {
         return None;
+    }
+    if let Some(v) = preview_view(game, fov) {
+        return Some(v);
     }
     let k = &game.sora.kh3;
     let yaw = game.sora.player.yaw;
@@ -441,6 +752,10 @@ pub(crate) fn lock_view(
 pub(crate) fn scripted_room_pad(game: &Game, tick: u64) -> Option<(rival::RivalPad, Pad)> {
     if game.autoplay.is_none() || !on(game) || !game.rival_script || game.net_client {
         return None;
+    }
+    // The preview stands him still.
+    if game.kh3_preview.is_some() {
+        return Some((rival::RivalPad::default(), Pad::default()));
     }
     let foe = game.rivals.first()?.fighter.player.position;
     let view = rival::kh3_view(&game.sora, game.rivals.first().map(|r| &r.fighter));
@@ -597,5 +912,41 @@ mod tests {
         assert_eq!((key & 0xffff_ffff) as u32, 77);
         // A rival's effect keys flip bits 56-57 only.
         assert!(is_bolt(rival::tag_key(key, 1)));
+    }
+
+    #[test]
+    fn bolts_are_cyan_and_wisdom_s_shots_keep_their_look() {
+        let bolt = SHOT_KEYS | (2 << 40) | 9;
+        let style = bullet_style(bolt);
+        assert_eq!(style.tint, kh3::look::colour::LOCK);
+        assert!(style.scale < 1.);
+        assert_eq!(bullet_style(rival::tag_key(bolt, 1)), style);
+        assert_eq!(bullet_style(1 << 60 | 5), drive_fx::Style::default());
+    }
+
+    #[test]
+    fn a_heavier_hit_has_a_bigger_burst_within_bounds() {
+        use kh3::hurt::{Knock, Strike};
+        let size = |scale| {
+            hit_size(&Strike {
+                knock: Knock::Blow,
+                scale,
+            })
+        };
+        assert!(size(0.6) < size(1.2) && size(1.2) < size(1.6));
+        assert!((0.85..=1.15).contains(&size(0.)) && (0.85..=1.15).contains(&size(3.)));
+    }
+
+    #[test]
+    fn a_layer_s_style_follows_the_look_s_size() {
+        let l = kh3::look::Look::Airstep.layers()[0];
+        let s = style_of(&l, 1.1);
+        assert!((s.scale - l.scale * 1.1).abs() < 1e-6);
+        assert!((s.offset[1] - l.offset[1] * 1.1).abs() < 1e-4);
+        assert_eq!(s.life, Some(f32::from(l.life)));
+        assert_eq!((s.tint, s.bone, s.sound), (l.tint, l.bone, false));
+        // Its size goes in tenths on the wire.
+        assert_eq!(look_size(1.15), 12);
+        assert_eq!(look_size(0.), 1);
     }
 }

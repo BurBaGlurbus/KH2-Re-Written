@@ -174,6 +174,58 @@ and the left-out list again. Evidence (private): `%LOCALAPPDATA%\KH2FinalRewrite
   ground; Counterguard's swing only clashes); the counter and the launch home to 60 cm [duel choice]; Upper
   Slash rises from 0.35 s, after its hit [duel choice]; a record the layer plays snaps to the target first.
 
+## Follow-up 2, 2026-10-28: a look of its own for every move
+
+burba asked to find the effects that were duplicates, build new ones by combining old ones, and make every
+effect look good and coherent. Before this, Sora's Quick Run element (P_EX100 110) stood in for eight moves
+(air slide, Doubleflight, flow jump, Superslide and its repeats, airstep, flow attacks, Final Blow, Risk Dodge),
+the clash flash (system 13) for the counter, the chase warp and the Risk warp, Wisdom's shot spark for both the
+bolt hit and Focus Syphon, and glide, wall run, wall kick, pole spin, slide end and the focus gauge had none.
+An atlas of every candidate element on a standing Sora also showed that element 110 draws a wide white sheet
+across the screen unless he runs fast.
+
+- **Looks, `player::kh3::look`.** A look is a short list of KH2FM effect elements (Sora's own object, a Drive
+  form's, the system container), each with a bone, an offset, a size, a tint, a delay and a life. 34 looks, one
+  per move or moment; each event in `cue::of` has at most one. One visual language [duel choice]: flowmotion and
+  the dashes blue-white wind, the shotlock cyan, guards, counters, the chase and the Risk Dodge gold, the focus
+  gauge its HUD blue, KH3's heavy hits white-orange; Aerial Recovery keeps KH2's own look. The pieces are KH2's:
+  Wisdom's Quick Run swoosh, Master Form's speed lines, ground arcs, halo rings, take-off burst and spin, Final
+  Form's star, beam and slashes, Valor's arcs, Explosion's and Aerial Finish's rings and arcs, Finishing Leap's
+  blade flash, Wisdom's orbit rings, pillars, flash and hit slash, the prize glow. Left out after the atlas:
+  element 110, Final's flat ground bands (20, 27-30), whiteouts (Master 101), tan dust, and the system elements
+  that mean something else in a duel (0 item use and GO, 11-13 guard and clash, 14 KO, 15-16 level-ups).
+- **New moments.** Glide repeats its look every 24 ticks; Superslide and the airstep have separate repeat looks;
+  focus reaching full has a cue (look and se000 32); a heavy KH3 swing (any knock but small or beat) shows a
+  burst where it landed, 0.85 to 1.15 times its size by the hit's weight; each lock's look sits on the target.
+- **Bolts.** They ride Wisdom's orb as before, now cyan and 0.8 times its size on both sides, so a volley never
+  reads as Wisdom Form's own shots in the same duel.
+- **Room side.** `drive_fx::Style` starts an element with a size, tint, offset, bone, delay, life and its sound
+  on or off; tints multiply sprite, model and triangle colours. Every look's layer has a life (some ability
+  elements loop until stopped), so nothing outlasts its move. `duel_kh3::show` starts a look from the acting
+  Sora's own containers (a form's taken from its preloaded kit, `DriveRt::form_pax`) and logs `kh3_look` with
+  any layer it could not start.
+- **Network.** A look goes to the joiner as one event `Look { id, seat, size, place }` (5 bytes on a Sora, 21 at
+  a place); the joiner starts the same layers from its own table on its own copy of that Sora. The looks' element
+  starts are not sent one by one. Out of a LAN duel the duel's event list is now cleared each tick (it grew in a
+  local duel).
+- **The flow-attack whoosh on the joiner.** The 500046 the joiner "missed" in the earlier LAN runs is the host's
+  last tick: the host's run ends at its last capture and quits before sending that tick's events (a Superslide
+  there in `kh3look1`/`2`, tick 7400). Every earlier 500046, look and sound arrives.
+- **[Test] tools.** `--kh3-preview <list>` stands both Soras still in Test KH3 mode and shows each item
+  (`looks`, `look:<name>`, `sora:<id>`, `form<n>:<id>`, `system:<id>`, ranges) from his side, three captures
+  each. With `--perf-overlay` an unattended run logs its FPS, 1 % low and p99 once a second (`perf`).
+
+Evidence (private): `%LOCALAPPDATA%\KH2FinalRewrite
+esearch\kh3-combat\looks-20261028\` (atlas, looks, probes,
+`looks2`, `looks3`, `run1`, `perf1`, contact sheets, `sheet.py`, `grid.py`, `lan_looks.py`), the per-move table
+`kh3-combat\kh3-looks-table.md`, LAN logs `%USERPROFILE%\kh2-lan-out\kh3look1-*`, `kh3look2-*`.
+
+Duplicates left: the looks reuse KH2 elements in other colours and sizes (Master's burst in four looks,
+Final's star in four, Master's speed lines in four); each look's combination and its leading element differ
+(a test). The duel's GO flash is system 0, an item's flash too, and its win sparkle is system 16, a form
+level-up's; both come with their own match sounds and were left. The guard and clash flashes (11, 13) and the
+Keyblade's hit sparks are KH2's own in both rulesets.
+
 ## Left out
 
 - Attractions, Links, team attacks: no counterpart in a 1v1 duel of two Soras (rides, partners, party).
@@ -208,6 +260,13 @@ and the left-out list again. Evidence (private): `%LOCALAPPDATA%\KH2FinalRewrite
 | Real key presses (Right Shift posted to the window, `guard-kh2`, `guard-kh3b`) | PASS: Guard from the keyboard path; guarded hits (flash 11 and 13) in both rulesets |
 | Follow-up loopback LAN `kh3lan19` (both scripted, KH3) | PASS: the joiner guards the host's swing and the host guards, counters and Final Blows the joiner's; the joiner plays every effect the host starts (by element 1:1 but one afterimage at the very end) and the Soras' sounds; joiner receive 10.8 KB/s |
 | Pole spin, side wall run, slide end, Focus Syphon and the Risk Dodge in a LAN run | NOT RUN: the scripts did not reach them; unit tests only |
+| Follow-up 2 unit tests: `kh3::look` (ids and names, every layer's life, delay, size, tint and offset in range, no white-sheet element, no two looks alike nor led by the same element in one colour, each layer in its family's palette, no meaning-laden system element), the cues (every look used, one per event, repeat looks shorter than two periods), `duel_wire` (the look event round trip, 5 bytes), `duel_kh3` (bolt style, hit size, a layer's style) | PASS |
+| Element atlas (`--kh3-preview`, 120 elements, life-capped) and every look standing (`looks1`, probes) | PASS by eye: element 110's sheet and Final's bands found and left out; Risk Dodge's first pick (Final 28) drew a band and was replaced; Focus Syphon's first pick was too faint and was strengthened |
+| Every look layer ends (`looks3`: `look_layer_end` logs each layer's age) | PASS: 54 of 54 layers started in the full preview ended, the longest 37 ticks after its start (its life, delay and fade) |
+| Test KH3 run in motion (`run1`, 6400 ticks, 29 captures from the duel camera, perf overlay) | PASS: every look started, no missing layer; launch, glide, air slide, wall kick, Superslide, flow attack, aim and locks, the volley, bolt hits, counter, Final Blow, chase warp and Risk Dodge on screen; nothing left after a move or at the round's idle; the counter's weight-sized burst was too big (a quarter of the screen) and was cut to 0.85-1.15 |
+| FPS, uncapped request, one capture only (`perf1`, RTX 2070 SUPER, Vulkan) | 60 (vsync) throughout; Superslide 1 % low 39 / p99 24 ms, Ragnarok volley 37 / 26 ms, King of Hearts 38 / 24 ms, counter and Final Blow 43 / 23 ms; quiet play p99 25 ms |
+| Loopback LAN (`kh3look1`, `kh3look2`, both scripted) | PASS: 148 of the host's 149 looks on the joiner, same look and seat (the one left is the host's last tick); no missing layer; joiner receive 10.1-11.9 KB/s, 36-46 KB/s while bolts fly (before: 10.2-12.5 and 45-48); the joiner's captures show the aim rings, the airstep's star, the launch arc and the chase warp |
+| `cargo fmt --all --check`, `cargo clippy --all-targets --locked -- -D warnings`, `cargo test --locked`, `cargo build --locked`, smoke `--frames 180`, `tools\Build-Launcher.ps1 -Skate3` | PASS |
 
 ## Uncertainty
 
@@ -223,14 +282,23 @@ and the left-out list again. Evidence (private): `%LOCALAPPDATA%\KH2FinalRewrite
   reference's kinds and scales now.
 - The stand-in sounds and effects were chosen from what the ids are known to be (the catalog), not by listening
   side by side with KH3.
-- On the joiner, the flow attack's whoosh (500046) played 6-7 fewer times than on the host in the LAN runs; not
-  explained.
+- The looks were judged by eye from captures (a standing Sora from his side, the duel camera in the scripted
+  runs, the joiner's screen), not beside KH3; their elements were chosen by what they look like, not by what KH3
+  draws. The Mirage Arena's bright floor makes the white-blue looks fainter there than in the test room.
+- In a long preview run (all 34 looks) some captures show a look a little after its logged start, while the
+  short probes and the runs in motion line up with the log, and the layers' logged ends are on time: taken to
+  be capture timing, not the effects; not explained.
+- The joiner's captures can only be matched to the host's moments by its own look ticks (its clock runs about
+  180 ticks behind), so a few joiner captures missed their move.
 
 ## Verdict
 
 PARTIAL (in progress).
 
 ## Next
+
+Looks in play with two players (sizes on the Mirage Arena's floor, the camera's distance); pole spin and
+the side wall run's looks in game once an arena has a pole the scripts reach.
 
 Tuning in play with two players; poles on an arena that has pillars; bolt visuals checked side by side; the
 joiner's prediction (none yet, as for the KH2 ruleset).

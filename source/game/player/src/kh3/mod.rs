@@ -16,6 +16,7 @@
 
 pub mod cue;
 pub mod hurt;
+pub mod look;
 pub mod surface;
 pub mod tuning;
 
@@ -677,6 +678,7 @@ impl Kh3 {
     ) -> Outcome {
         let mut out = Outcome::default();
         out.began.append(&mut self.pending);
+        let was_full = self.focus >= t::FOCUS_MAX;
         self.foe = scene.foe.map(|f| f.centre);
         self.gauges();
         // A reaction, a death, a cast or a form change replaced what the
@@ -705,6 +707,10 @@ impl Kh3 {
             }
         }
         out.cues.extend(cue::periodic(&self.mode));
+        // The gauge filled up this tick.
+        if !was_full && self.focus >= t::FOCUS_MAX {
+            out.cues.push("focus_full");
+        }
         if std::mem::take(&mut self.record_started) {
             out.step.started = Some(player.action);
         }

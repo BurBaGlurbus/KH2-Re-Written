@@ -488,6 +488,15 @@ pub(crate) enum DuelEvent {
         owner: u8,
         anchor: FxAnchor,
     },
+    /// [KH3 ruleset] A composite look (`player::kh3::look`) by its id, on
+    /// the Sora of a seat or at a place (and yaw), at a size in tenths:
+    /// the joiner starts its layers from its own copy of the table.
+    Look {
+        look: u8,
+        slot: u8,
+        size: u8,
+        at: Option<([f32; 3], f32)>,
+    },
 }
 
 /// Where a forwarded Drive effect starts.
@@ -656,6 +665,25 @@ pub(crate) fn encode_events(tick: u64, events: &[DuelEvent]) -> Vec<u8> {
                     }
                 }
             }
+            DuelEvent::Look {
+                look,
+                slot,
+                size,
+                at,
+            } => {
+                w.u8(7);
+                w.u8(*look);
+                w.u8(*slot);
+                w.u8(*size);
+                match at {
+                    None => w.u8(0),
+                    Some((at, yaw)) => {
+                        w.u8(1);
+                        put_vec(&mut w, *at);
+                        w.f32(*yaw);
+                    }
+                }
+            }
         }
     }
     w.finish()
@@ -727,6 +755,27 @@ pub(crate) fn decode_events(bytes: &[u8]) -> Option<(u64, Vec<DuelEvent>)> {
                     return None;
                 }
                 DuelEvent::Guard(at, r.u16()?)
+            }
+            7 => {
+                let (look, slot, size) = (r.u8()?, r.u8()?, r.u8()?);
+                let at = match r.u8()? {
+                    0 => None,
+                    1 => {
+                        let at = get_vec(&mut r)?;
+                        let yaw = r.f32()?;
+                        if !yaw.is_finite() {
+                            return None;
+                        }
+                        Some((at, yaw))
+                    }
+                    _ => return None,
+                };
+                DuelEvent::Look {
+                    look,
+                    slot,
+                    size,
+                    at,
+                }
             }
             _ => return None,
         });
@@ -950,10 +999,33 @@ mod tests {
                     yaw: -1.,
                 },
             },
+            DuelEvent::Look {
+                look: 3,
+                slot: 1,
+                size: 10,
+                at: None,
+            },
+            DuelEvent::Look {
+                look: 30,
+                slot: 0,
+                size: 13,
+                at: Some(([4., 90., -2.], 0.25)),
+            },
         ];
         assert_eq!(
             decode_events(&encode_events(99, &events)),
             Some((99, events))
+        );
+        // A look on a Sora is five bytes: it replaces an element list.
+        let one = |e: DuelEvent| encode_events(0, &[e]).len();
+        assert_eq!(
+            one(DuelEvent::Look {
+                look: 0,
+                slot: 0,
+                size: 10,
+                at: None
+            }) - one(DuelEvent::KnockOut(0)),
+            3
         );
         assert_eq!(decode_events(&[EVENTS]), None);
         assert_eq!(decode_events(&encode_input(&[])), None);

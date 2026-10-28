@@ -792,6 +792,20 @@ fn land(
             },
         );
     }
+    // [KH3 ruleset] A heavy swing's own burst where it landed, sized by
+    // its weight (the Keyblade's spark stays under it).
+    if let Some((_, strike, false)) = kh3_log
+        && strike.knock.heavy()
+        && hit.spell.is_none()
+    {
+        super::duel_kh3::show(
+            game,
+            player::kh3::look::Look::HeavyHit,
+            attacker_slot,
+            Some((hit.contact.to_array(), away.x.atan2(away.z))),
+            super::duel_kh3::hit_size(&strike),
+        );
+    }
     if let Some((source, strike, shrug)) = kh3_log {
         game.event(serde_json::json!({"event":"kh3_react","tick":tick,
             "attacker":attacker_slot,"victim":victim_slot,"source":source.name(),

@@ -148,8 +148,9 @@ fn state_of(
 
 /// Host, after the field's tick: both Soras and the tick's events.
 pub(crate) fn host_send(net: Option<ResMut<DuelNet>>, mut game: ResMut<Game>) {
-    let Some(mut net) = net else { return };
+    // Out of a LAN duel nobody reads the events.
     let events = std::mem::take(&mut game.duel_events);
+    let Some(mut net) = net else { return };
     if net.role != Role::Host || !net.playing() {
         return;
     }
@@ -249,6 +250,12 @@ fn play_event(game: &mut Game, event: &DuelEvent) {
             game.event(serde_json::json!({"event":"duel_stood_up","tick":tick,"slot":slot}));
         }
         DuelEvent::Spell { .. } | DuelEvent::DriveFx { .. } => duel_fx::play(game, event),
+        DuelEvent::Look {
+            look,
+            slot,
+            size,
+            at,
+        } => duel_kh3::play_look(game, look, slot, size, at),
     }
 }
 
@@ -347,7 +354,7 @@ pub(crate) fn join_apply(net: Option<ResMut<DuelNet>>, mut game: ResMut<Game>) {
                 it.slots.clone_from(&s.items);
             }
             if let Some(d) = game.drive.as_mut() {
-                d.show_bullets(&s.bullets, &mut game.fx_queue);
+                d.show_bullets(&s.bullets, &mut game.fx_styled);
             }
             if apply_state(s, &mut game.sora) {
                 game.action_started = now;
@@ -358,7 +365,7 @@ pub(crate) fn join_apply(net: Option<ResMut<DuelNet>>, mut game: ResMut<Game>) {
             show_form(game, s.slot, s.form);
             rival::swap(game, &mut r);
             if let Some(d) = r.own.drive.as_mut() {
-                d.show_bullets(&s.bullets, &mut game.fx_queue);
+                d.show_bullets(&s.bullets, &mut game.fx_styled);
             }
             if apply_state(s, &mut r.fighter) {
                 r.started = now;

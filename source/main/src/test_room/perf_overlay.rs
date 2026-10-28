@@ -31,6 +31,8 @@ pub struct PerfOverlay {
     samples: VecDeque<f32>,
     since_refresh: f32,
     lines: Vec<String>,
+    /// Refreshes since the last line in an unattended run's log.
+    logged: u32,
     /// The system font and a white texel as 2D-layer sheets (uploaded on
     /// first use).
     sheets: Option<(usize, usize)>,
@@ -65,7 +67,7 @@ fn latest(store: Option<&DiagnosticsStore>, path: &'static str) -> Option<f64> {
 
 /// Samples the frame and, a few times a second, rebuilds the text.
 pub(super) fn sample(
-    game: Res<Game>,
+    mut game: ResMut<Game>,
     mut overlay: ResMut<PerfOverlay>,
     real: Res<Time<Real>>,
     entities: &Entities,
@@ -115,6 +117,16 @@ pub(super) fn sample(
     }
     lines.push(last);
     overlay.lines = lines;
+    // [Test] An unattended run logs the numbers once a second.
+    overlay.logged += 1;
+    if game.autoplay.is_some() && overlay.logged >= (1. / REFRESH) as u32 {
+        overlay.logged = 0;
+        let tick = game.tick;
+        game.event(
+            serde_json::json!({"event":"perf","tick":tick,"fps":fps.round(),
+            "low":low.round(),"p99_ms":(p99 * 100.).round() / 100.}),
+        );
+    }
 }
 
 /// Draws the text over everything (after the HUD and the menus).

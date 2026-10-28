@@ -86,6 +86,53 @@ pub struct Placed {
     pub anchor: Anchor,
 }
 
+/// How a composite look starts an element (the KH3 ruleset's looks,
+/// `player::kh3::look`): its size, colour, place, bone, start and end. The
+/// default leaves the element as its PAX has it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Style {
+    /// Times the element's own scale.
+    pub scale: f32,
+    /// Times every colour it draws (1.0 = as drawn; additive elements
+    /// brighten above 1).
+    pub tint: [f32; 4],
+    /// Added to the element's own translation, in its bone's frame (scene
+    /// axes: x right, y up, z forward).
+    pub offset: [f32; 3],
+    /// The bone code it starts on instead of its own; an element bound in
+    /// its PAX follows that bone.
+    pub bone: Option<i16>,
+    /// Ticks before it starts, after its own start wait.
+    pub delay: f32,
+    /// Ticks after its start when it fades out (over a few event frames),
+    /// if it is still running.
+    pub life: Option<f32>,
+    /// Whether its own sound plays.
+    pub sound: bool,
+}
+
+impl Default for Style {
+    fn default() -> Self {
+        Style {
+            scale: 1.,
+            tint: [1.; 4],
+            offset: [0.; 3],
+            bone: None,
+            delay: 0.,
+            life: None,
+            sound: true,
+        }
+    }
+}
+
+/// The fade of an element whose `Style::life` ran out (event frames).
+const LIFE_FADE: f32 = 4.;
+
+/// A draw's colour times a look's tint.
+fn tinted(c: [f32; 4], tint: [f32; 4]) -> [f32; 4] {
+    std::array::from_fn(|i| c[i] * tint[i])
+}
+
 /// An instance's draws of one kind with its DPD, PDATA texture mask and
 /// layer rank.
 type Drawn<T> = (Arc<Dpd>, [u8; 16], i8, Vec<T>);
@@ -138,6 +185,12 @@ struct Running {
     /// starts with the element, after its start wait.
     sound: Option<u32>,
     sound_wait: f32,
+    /// A look's tint ([1; 4] for the element as drawn).
+    tint: [f32; 4],
+    /// Ticks until a look's element fades.
+    life: Option<f32>,
+    /// A look's element: the tick it started (its end is logged).
+    styled: Option<u64>,
 }
 
 /// Odd layers behind everything, even layers in front, 0 by depth
@@ -307,17 +360,22 @@ pub fn tick(
     mut fx: ResMut<DriveFx>,
     mut sparks: ResMut<super::SparkRing>,
 ) {
-    let mut requests: Vec<Placed> = std::mem::take(&mut game.fx_queue);
+    let mut requests: Vec<(Placed, Style)> = std::mem::take(&mut game.fx_queue)
+        .into_iter()
+        .map(|p| (p, Style::default()))
+        .collect();
+    requests.append(&mut game.fx_styled);
     let mut swapped = None;
     if let Some(d) = game.drive.as_mut() {
-        requests.extend(
-            std::mem::take(&mut d.fx_requests)
-                .into_iter()
-                .map(|req| Placed {
+        requests.extend(std::mem::take(&mut d.fx_requests).into_iter().map(|req| {
+            (
+                Placed {
                     req,
                     anchor: Anchor::Sora,
-                }),
-        );
+                },
+                Style::default(),
+            )
+        }));
         swapped = d.fx_owner_left.take();
     }
     let enemy_at = game
@@ -408,7 +466,7 @@ pub fn tick(
             r.instance.fade_out(15.);
         }
     }
-    for Placed { req, anchor } in requests {
+    for (Placed { req, anchor }, style) in requests {
         let element = match anchor {
             Anchor::Map { index } => req.pax.elements.get(index),
             _ => req.pax.by_id(req.id),
@@ -419,7 +477,16 @@ pub fn tick(
         let Some(dpx) = req.pax.effect(element.effect_number) else {
             continue;
         };
-        let local = ::effect::instance_matrix(element.translation, element.rotation, element.scale);
+        // A look's offset is in scene axes; the element's frame is the
+        // game's (y and z flipped).
+        let t = element.translation;
+        let o = style.offset;
+        let local = ::effect::instance_matrix(
+            [t[0] + o[0], t[1] - o[1], t[2] - o[2]],
+            element.rotation,
+            element.scale.map(|s| s * style.scale),
+        );
+        let bone = style.bone.unwrap_or(element.bone);
         let mut enemy_element = None;
         let mut actor_element = None;
         let mut bullet = None;
@@ -436,12 +503,12 @@ pub fn tick(
                     }
                     _ => &pose,
                 };
-                let bind = (element.flags & 1 != 0).then_some(Bind {
-                    bone: element.bone,
-                    local,
-                });
+                let bind = (element.flags & 1 != 0).then_some(Bind { bone, local });
                 let world = match &bind {
                     Some(b) => bound_world(pose, b),
+                    // A look's bone places an unbound element where it
+                    // starts.
+                    None if style.bone.is_some() => bound_world(pose, &Bind { bone, local }),
                     None => ::effect::math::mul(&to_game(pose.root), &local),
                 };
                 (bind, world)
@@ -472,14 +539,19 @@ pub fn tick(
             }
             Anchor::World { at, pitch, yaw } => (
                 None,
-                ::effect::instance_matrix(to_world(at.to_array()), [pitch, yaw, 0.], element.scale),
+                ::effect::instance_matrix(
+                    to_world(at.to_array()),
+                    [pitch, yaw, 0.],
+                    element.scale.map(|s| s * style.scale),
+                ),
             ),
             Anchor::Bullet(key) => {
                 let Some((pos, dir)) = bullet_at(&game, key) else {
                     continue;
                 };
-                bullet = Some((key, element.scale));
-                (None, aimed(pos, dir, element.scale))
+                let scale = element.scale.map(|s| s * style.scale);
+                bullet = Some((key, scale));
+                (None, aimed(pos, dir, scale))
             }
             Anchor::Enemy => {
                 let Some((position, yaw)) = enemy_at else {
@@ -501,6 +573,7 @@ pub fn tick(
         };
         // A bound element waits one extra tick (DAT_1406239f8, 0.1).
         let wait = element.start_wait
+            + style.delay
             + if bind.is_some() || enemy_element.is_some() {
                 0.1
             } else {
@@ -509,7 +582,7 @@ pub fn tick(
         let dpd = req.pax.dpds[dpx.dpd].clone();
         // A sound plays only for sound > 0 (the element's SE id), at the
         // element's start: now when it has no wait.
-        let sound = (element.sound > 0).then_some(element.sound as u32);
+        let sound = (element.sound > 0 && style.sound).then_some(element.sound as u32);
         if let Some(id) = sound
             && wait <= 0.
         {
@@ -553,6 +626,9 @@ pub fn tick(
                 }),
                 sound: sound.filter(|_| wait > 0.),
                 sound_wait: wait,
+                tint: style.tint,
+                life: style.life.map(|l| l + wait),
+                styled: style.life.map(|_| tick),
             });
         }
     }
@@ -616,7 +692,32 @@ pub fn tick(
         {
             r.instance.world = aimed(pos, dir, scale);
         }
-        let q = r.instance.frame(&view, &mut fx.rng);
+        if let Some(left) = r.life.as_mut() {
+            *left -= 1.;
+            if *left <= 0. {
+                r.life = None;
+                r.instance.fade_out(LIFE_FADE);
+            }
+        }
+        let mut q = r.instance.frame(&view, &mut fx.rng);
+        if r.tint != [1.; 4] {
+            let tint = r.tint;
+            for quad in &mut q {
+                quad.colour = tinted(quad.colour, tint);
+                if let Some(c) = quad.corner_colours.as_mut() {
+                    *c = c.map(|c| tinted(c, tint));
+                }
+            }
+            let byte = |c: [u8; 4]| -> [u8; 4] {
+                std::array::from_fn(|i| (f32::from(c[i]) * tint[i]).clamp(0., 255.) as u8)
+            };
+            for m in &mut r.instance.model_draws {
+                m.rgba = byte(m.rgba);
+            }
+            for t in &mut r.instance.triangles {
+                t.colours = t.colours.map(byte);
+            }
+        }
         for &k in &r.instance.unsupported {
             if !fx.reported.contains(&k) {
                 fx.reported.push(k);
@@ -638,6 +739,17 @@ pub fn tick(
         if complete && !t.is_empty() {
             triangles.push((layer, t));
         }
+    }
+    let ended: Vec<(u16, u64)> = fx
+        .running
+        .iter()
+        .filter(|r| r.instance.finished())
+        .filter_map(|r| r.styled.map(|t| (r.owner.into(), tick - t)))
+        .collect();
+    for (owner, age) in ended {
+        game.event(
+            serde_json::json!({"event":"look_layer_end","tick":tick,"owner":owner,"age":age}),
+        );
     }
     fx.running.retain(|r| !r.instance.finished());
     for (slot, owner) in super::weapon_trail::OWNERS.into_iter().enumerate() {

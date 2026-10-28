@@ -633,11 +633,18 @@ impl DriveRt {
     /// whether or not the form was ever taken: a joiner draws the other
     /// Sora's bullets, and the KH3 ruleset's shotlock bolts ride them.
     pub(crate) fn wisdom_pax(&mut self) -> Option<Arc<data::object_effect::Pax>> {
-        if let Some(p) = self.paxes.get(&forms::WISDOM) {
+        self.form_pax(forms::WISDOM)
+    }
+
+    /// A form's effects once its kit is loaded (taken into `paxes`, where
+    /// the form change finds them too); the KH3 ruleset's looks borrow
+    /// from them.
+    pub(crate) fn form_pax(&mut self, form: u8) -> Option<Arc<data::object_effect::Pax>> {
+        if let Some(p) = self.paxes.get(&form) {
             return Some(Arc::clone(p));
         }
-        let p = Arc::new(self.ready.get_mut(&forms::WISDOM)?.pax.take()?);
-        self.paxes.insert(forms::WISDOM, Arc::clone(&p));
+        let p = Arc::new(self.ready.get_mut(&form)?.pax.take()?);
+        self.paxes.insert(form, Arc::clone(&p));
         Some(p)
     }
 
@@ -646,7 +653,7 @@ impl DriveRt {
     pub(crate) fn show_bullets(
         &mut self,
         shown: &[(u64, [f32; 3], [f32; 3])],
-        fx_queue: &mut Vec<super::drive_fx::Placed>,
+        fx_styled: &mut Vec<(super::drive_fx::Placed, super::drive_fx::Style)>,
     ) {
         let ends = &mut self.bullet_ends;
         self.bullets.retain(|b| {
@@ -665,14 +672,17 @@ impl DriveRt {
             self.bullets
                 .push(player::wisdom_form::Bullet::new(key, 0, pos, dir));
             if let Some(pax) = self.wisdom_pax() {
-                fx_queue.push(super::drive_fx::Placed {
-                    req: super::drive_fx::FxRequest {
-                        pax,
-                        id: BULLET_ELEMENT,
-                        owner: forms::WISDOM,
+                fx_styled.push((
+                    super::drive_fx::Placed {
+                        req: super::drive_fx::FxRequest {
+                            pax,
+                            id: BULLET_ELEMENT,
+                            owner: forms::WISDOM,
+                        },
+                        anchor: super::drive_fx::Anchor::Bullet(key),
                     },
-                    anchor: super::drive_fx::Anchor::Bullet(key),
-                });
+                    super::duel_kh3::bullet_style(key),
+                ));
             }
         }
     }

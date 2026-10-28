@@ -762,6 +762,8 @@ pub(crate) fn tick(mut game: ResMut<Game>) {
             let at = rival.fighter.player.position;
             rival.pad = if bench {
                 bench_pad(tick, at, sora_at)
+            } else if game.kh3_preview.is_some() {
+                RivalPad::default()
             } else if game.duel_rules.kh3() {
                 kh3_pad(
                     tick,

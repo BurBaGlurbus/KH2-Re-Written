@@ -1165,7 +1165,6 @@ fn every_move_and_moment_has_its_kh2_stand_in_and_nothing_stacks() {
     let motion_only = [
         "dodge_roll",
         "airstep_hop",
-        "launch",
         "flinch",
         "air_flinch",
         "blown",
@@ -1189,6 +1188,31 @@ fn every_move_and_moment_has_its_kh2_stand_in_and_nothing_stacks() {
                 assert!(matches!(id / 1000, 0 | 500 | 999), "{e}: {id}");
             }
         }
+    }
+    // Every look is some event's, and each event has at most one.
+    for l in look::ALL {
+        let users: Vec<_> = EVENTS
+            .iter()
+            .filter(|e| of(e).contains(&Cue::Look(l)))
+            .collect();
+        assert!(!users.is_empty(), "{l:?} unused");
+    }
+    for e in EVENTS {
+        let looks = of(e).iter().filter(|c| matches!(c, Cue::Look(_))).count();
+        assert!(looks <= 1, "{e}");
+    }
+    // The lasting moves' repeats have looks of their own, short enough not
+    // to pile up over a period.
+    for (repeat, every) in [
+        ("slide_trail", cue::TRAIL_EVERY),
+        ("airstep_trail", cue::TRAIL_EVERY),
+        ("glide_trail", cue::GLIDE_EVERY),
+        ("wall_step", cue::STEP_EVERY),
+    ] {
+        let Some(Cue::Look(l)) = of(repeat).first().copied() else {
+            panic!("{repeat}");
+        };
+        assert!(u32::from(l.span()) <= every * 2, "{repeat}: {}", l.span());
     }
     // A wall run's step once per period, a dash's afterimage likewise.
     let steps = (0..120)
