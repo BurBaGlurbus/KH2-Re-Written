@@ -59,6 +59,7 @@ impl DuelPrefs {
             "rules": self.rules.map(|r| rules_json(&r)),
             "build": self.build.as_ref().map(|b| json!({
                 "keyblade": b.keyblade, "abilities": b.abilities, "items": b.items,
+                "kh3": b.kh3,
             })),
         });
         if let Ok(text) = serde_json::to_string_pretty(&v)
@@ -138,6 +139,10 @@ fn build_from(v: &Value) -> Option<Loadout> {
         keyblade: u16::try_from(v["keyblade"].as_u64()?).ok()?,
         abilities: ids(&v["abilities"])?,
         items: ids(&v["items"])?,
+        kh3: v["kh3"]
+            .as_u64()
+            .filter(|&k| player::kh3::ability::Set(k).valid())
+            .unwrap_or(player::kh3::ability::Set::default().0),
     })
 }
 
@@ -165,10 +170,16 @@ pub(crate) fn fit(saved: &Loadout, limits: &Limits, current: &Loadout) -> Loadou
         .map(|i| if limits.items.contains(i) { *i } else { 0 })
         .collect();
     items.resize(limits.item_slots, 0);
+    let kh3 = player::kh3::ability::Set(saved.kh3);
     Loadout {
         keyblade,
         abilities,
         items,
+        kh3: if kh3.valid() && kh3.ap() <= player::kh3::ability::AP_MAX {
+            saved.kh3
+        } else {
+            current.kh3
+        },
     }
 }
 
@@ -211,7 +222,9 @@ mod tests {
             keyblade: 0x99,
             abilities: vec![0x8000 | 11, 13, 0x8000 | 11, 0x8000 | 11],
             items: vec![2, 5, 1, 1],
+            kh3: 0b01,
         };
+
         let b = fit(&saved, &limits, &current);
         assert_eq!(b.keyblade, 0x29);
         assert_eq!(b.abilities, vec![0x8000 | 11, 0x8000 | 11, 10, 12]);

@@ -8,7 +8,7 @@
 //! and the duel's Risk Dodge.
 
 use super::*;
-use crate::{abilities, hurt};
+use crate::hurt;
 
 /// The reference's damage kinds that a duel's attacks give.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -341,7 +341,6 @@ impl Kh3 {
         if !again {
             let mut step = Step::default();
             self.shown = None;
-            player.blend = 0.;
             self.show(player, action, clips, &mut step);
         }
         !again
@@ -482,7 +481,7 @@ impl Kh3 {
             if tick >= t::RECOVERY_FROM
                 && input.jump
                 && knock != Knock::Beat
-                && player.abilities.has(abilities::bit::AERIAL_RECOVERY)
+                && self.has(A::AerialRecovery)
             {
                 self.velocity = [0.; 3];
                 self.double = true;
@@ -493,7 +492,7 @@ impl Kh3 {
             if knock == Knock::Parabola
                 && tick >= t::PARABOLA_ACT
                 && input.attack
-                && self.command(player, input, p, clips, world, scene, out)
+                && self.swing(player, input, scene, clips, out, true)
             {
                 return;
             }
@@ -620,6 +619,24 @@ impl Kh3 {
         };
         let tick = tick + 1;
         player.invulnerable = player.invulnerable.max(2.);
+        // Payback Strike: Attack out of the recovery strikes back at the one
+        // who knocked him (KH3's BlowCounter, armed by BLOW_COUNTER on the
+        // recovery's dash toward the attacker, 0x141332930).
+        if input.attack
+            && self.has(A::PaybackStrike)
+            && scene.foe.is_some()
+            && self.play_record(
+                player,
+                combo::stand_in(combo::id::BLOW_COUNTER),
+                input,
+                clips,
+            )
+        {
+            self.mode = Mode::Kh2;
+            self.shown = None;
+            out.began.push("payback_strike");
+            return;
+        }
         if tick >= t::RECOVERY_CHANGE && (input.jump || input.attack || input.guard) {
             self.mode = Mode::Air {
                 jump: Jump::None,
@@ -648,7 +665,7 @@ impl Kh3 {
         clips: &Clips,
         step: &mut Step,
     ) -> bool {
-        if self.chase_offer == 0 || scene.foe.is_none() {
+        if self.chase_offer == 0 || scene.foe.is_none() || !self.has(A::FinalBlow) {
             return false;
         }
         self.chase_offer = 0;
@@ -732,9 +749,10 @@ impl Kh3 {
         clips: &Clips,
         step: &mut Step,
     ) -> bool {
-        let Some((_, attacker, air)) = self.risk_offer else {
+        let Some((_, attacker, air)) = self.risk_offer.filter(|_| self.has(A::RiskDodge)) else {
             return false;
         };
+
         self.risk_offer = None;
         let d = [
             attacker[0] - player.position[0],

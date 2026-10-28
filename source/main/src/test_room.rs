@@ -104,6 +104,8 @@ mod enemy_script;
 mod enemy_target;
 mod enemy_tour;
 mod fighter;
+mod kh3_camera;
+mod kh3_menu;
 mod mirage_arena;
 /// The executable's identity, which the launcher's LAN search compares.
 pub(crate) use duel_net::build_identity;
@@ -1203,6 +1205,14 @@ struct Game {
     kh3_poles: Option<duel_kh3::PoleCache>,
     /// [Test] `--kh3-preview`: the looks or elements shown one by one.
     kh3_preview: Option<duel_kh3::Preview>,
+    /// The launcher's Test KH3 mode (`--kh3-test` without
+    /// `--rival-script`): the KH3 ruleset against the training dummy (the
+    /// room's Shadow, standing), with the KH3 ability menu on START.
+    kh3_dummy: bool,
+    /// The dummy's hits already counted for focus (duel_kh3.rs).
+    kh3_dummy_seen: u32,
+    /// [KH3 ruleset] Test KH3 mode's ability menu is open (kh3_menu.rs).
+    kh3_menu: Option<u32>,
     /// A match is running: a knocked-out Sora stays down for the round.
     duel_match: bool,
     /// Damage dealt and hits landed this match, by the attacker's slot.
@@ -13764,6 +13774,7 @@ fn run(mut args: Vec<PathBuf>) -> Result<AppExit, Box<dyn std::error::Error>> {
     let mut perf_overlay = false;
     let mut basic_fk = false;
     let mut rival_script = false;
+    let mut kh3_test = false;
     let mut duel_bench = false;
     let mut duel_magic = false;
     let mut duel_shots = false;
@@ -13842,10 +13853,11 @@ fn run(mut args: Vec<PathBuf>) -> Result<AppExit, Box<dyn std::error::Error>> {
             Some("--perf-overlay") => perf_overlay = true,
             Some("--basic-fk") => basic_fk = true,
             Some("--rival-script") => rival_script = true,
-            // The launcher's Test KH3 mode: a local duel in the KH3 ruleset
-            // against the scripted rival (duel_kh3.rs).
+            // The launcher's Test KH3 mode: the KH3 ruleset against the
+            // training dummy; with `--rival-script`, against the scripted
+            // rival instead (the unattended tests' way; duel_kh3.rs).
             Some("--kh3-test") => {
-                rival_script = true;
+                kh3_test = true;
                 duel_rules.ruleset = duel_rules::Ruleset::Kh3;
             }
             // [Test] The KH3 test standing still while the looks show.
@@ -14605,7 +14617,7 @@ fn run(mut args: Vec<PathBuf>) -> Result<AppExit, Box<dyn std::error::Error>> {
         room_start: (loaded.spawn.to_array(), loaded.yaw),
         duel_arena: duel_arena::TEST_ROOM,
         duel_rules,
-        duel: rival_script,
+        duel: rival_script || kh3_test,
         local_slot: 0,
         net_client: false,
         net_pad: rival::RivalPad::default(),
@@ -14634,6 +14646,9 @@ fn run(mut args: Vec<PathBuf>) -> Result<AppExit, Box<dyn std::error::Error>> {
         duel_shot_keys: std::collections::HashSet::new(),
         kh3_poles: None,
         kh3_preview,
+        kh3_dummy: kh3_test && !rival_script,
+        kh3_dummy_seen: 0,
+        kh3_menu: None,
         duel_match: false,
         duel_dealt: [0; 2],
         duel_landed: [0; 2],
@@ -15158,7 +15173,7 @@ fn run(mut args: Vec<PathBuf>) -> Result<AppExit, Box<dyn std::error::Error>> {
     // The duel's baseline (duel_loadout.rs), for a session or the scripted
     // rival; the room's own build comes back when the session ends.
     let mut duel_loadout = duel_loadout::DuelLoadout::default();
-    if net_setup.is_some() || rival_script {
+    if net_setup.is_some() || rival_script || game.kh3_dummy {
         let record = duel_loadout::apply(&mut game, &mut duel_loadout)?;
         game.event(record);
     }
@@ -15191,12 +15206,16 @@ fn run(mut args: Vec<PathBuf>) -> Result<AppExit, Box<dyn std::error::Error>> {
     };
     // The launcher's Test KH3 mode is a duel as a session's is: Sora alone
     // (duel_kh3.rs).
-    if duel_session.is_none() && rival_script && duel_rules.kh3() {
+    if duel_session.is_none() && (rival_script || game.kh3_dummy) && duel_rules.kh3() {
         game.second_deck = None;
         game.summons = None;
         game.party.clear();
+        // The dummy is the room's Shadow, standing (duel_kh3::dummy_setup
+        // puts it in front of Sora).
+        let dummy = game.kh3_dummy;
         if let Some(rt) = game.enemy.as_mut() {
-            rt.enabled = false;
+            rt.enabled = dummy;
+            rt.enemy.dummy = dummy;
         }
     }
     let rig = CameraRig {
@@ -15429,6 +15448,7 @@ fn run(mut args: Vec<PathBuf>) -> Result<AppExit, Box<dyn std::error::Error>> {
                 camp_setup,
                 game_over::setup,
                 rival::script_setup,
+                duel_kh3::dummy_setup,
             ),
         )
         .add_systems(Update, crate::skate::toggle)
@@ -15444,6 +15464,8 @@ fn run(mut args: Vec<PathBuf>) -> Result<AppExit, Box<dyn std::error::Error>> {
                     duel_lobby_room::tick,
                     duel_vote::tick,
                     duel_match_room::tick,
+                    kh3_menu::tick,
+
                     duel_music::tick.run_if(resource_exists::<duel_music::DuelMusic>),
                 )
                     .chain(),

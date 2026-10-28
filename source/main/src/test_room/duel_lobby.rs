@@ -29,6 +29,9 @@ pub(crate) struct Loadout {
     pub abilities: Vec<u16>,
     /// Battle item slots (0 = empty).
     pub items: Vec<u16>,
+    /// The KH3 ruleset's abilities (`player::kh3::ability::Set`); the KH2
+    /// ruleset ignores them.
+    pub kh3: u64,
 }
 
 /// Where a player is in the lobby (the other player sees it).
@@ -133,6 +136,17 @@ impl Limits {
         let used = self.ap_used(&l.abilities);
         if used > self.ap_max {
             return Err(format!("{used} AP used, {} allowed", self.ap_max));
+        }
+        let kh3 = player::kh3::ability::Set(l.kh3);
+        if !kh3.valid() {
+            return Err("a KH3 ability the duel does not have".into());
+        }
+        if kh3.ap() > player::kh3::ability::AP_MAX {
+            return Err(format!(
+                "{} KH3 AP used, {} allowed",
+                kh3.ap(),
+                player::kh3::ability::AP_MAX
+            ));
         }
         if l.items.len() > self.item_slots {
             return Err("more item slots than Sora has".into());
@@ -278,6 +292,7 @@ fn put_loadout(w: &mut Writer, l: &Loadout) {
     w.u16(l.keyblade);
     put_list(w, &l.abilities);
     put_list(w, &l.items);
+    w.u64(l.kh3);
 }
 
 fn get_loadout(r: &mut Reader) -> Option<Loadout> {
@@ -285,6 +300,7 @@ fn get_loadout(r: &mut Reader) -> Option<Loadout> {
         keyblade: r.u16()?,
         abilities: get_list(r, 255)?,
         items: get_list(r, 16)?,
+        kh3: r.u64()?,
     })
 }
 
@@ -409,6 +425,7 @@ mod tests {
             keyblade: OATH,
             abilities,
             items: vec![1, 2, 0],
+            kh3: player::kh3::ability::Set::default().0,
         }
     }
 
@@ -481,9 +498,29 @@ mod tests {
         assert!(l.check(&item, &[]).is_err());
         let slots = Loadout {
             items: vec![1, 1, 1, 1],
-            ..ok
+            ..ok.clone()
         };
         assert!(l.check(&slots, &[]).is_err());
+        // A KH3 build over its AP, or with bits past the list.
+        let mut costly = player::kh3::ability::Set::default();
+        for a in player::kh3::ability::ALL {
+            costly.put(a.ability, a.most);
+        }
+        let kh3 = Loadout {
+            kh3: costly.0,
+            ..ok.clone()
+        };
+        assert!(l.check(&kh3, &[]).is_err());
+        let odd = Loadout {
+            kh3: u64::MAX,
+            ..ok.clone()
+        };
+        assert!(l.check(&odd, &[]).is_err());
+        // It goes over the wire.
+        let mut w = Writer::default();
+        put_loadout(&mut w, &ok);
+        let bytes = w.finish();
+        assert_eq!(get_loadout(&mut Reader::new(&bytes)), Some(ok));
     }
 
     #[test]

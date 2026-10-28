@@ -262,7 +262,22 @@ pub struct Shadow {
     /// `target_search(obj, 1)` ran last: the target record names the last
     /// attacker until `mode_battle` or the appearance searches Sora again.
     tracks_attacker: bool,
+    /// [Test] The KH3 test's training dummy: it stands facing Sora, never
+    /// attacks, moves or leaves, and its HP fills again instead of dying;
+    /// its reactions (flinch, blow, knock-down, getting up) are the
+    /// Shadow's own.
+    pub dummy: bool,
+    /// [Test] The dummy's count of hits taken, the last hit's damage, the
+    /// damage of the run of hits now going (it starts over after
+    /// `DUMMY_RUN_GAP` ticks without one) and the ticks since the last.
+    pub dummy_hits: u32,
+    pub dummy_last: i32,
+    pub dummy_run: i32,
+    pub dummy_idle: u32,
 }
+
+/// [Test] Ticks without a hit that end the dummy's run of damage.
+pub const DUMMY_RUN_GAP: u32 = 120;
 
 impl Shadow {
     pub fn new(position: Vec3, yaw: f32, stats: TargetStats, sstm: actor_physics::Sstm) -> Self {
@@ -297,6 +312,11 @@ impl Shadow {
             wished: 0.,
             attacker_pos: None,
             tracks_attacker: false,
+            dummy: false,
+            dummy_hits: 0,
+            dummy_last: 0,
+            dummy_run: 0,
+            dummy_idle: 0,
         };
         // OBJ_MAIN: act_start("appear_shadow"); act_push("mode_battle").
         s.act_start(ActKind::AppearShadow);
@@ -335,7 +355,9 @@ impl Shadow {
     /// Test-room aid (debug menu): a fresh Shadow at its spawn point, as the
     /// respawn after `RESPAWN_TICKS` makes it.
     pub fn respawn(&mut self) {
+        let dummy = self.dummy;
         *self = Shadow::new(self.spawn, self.yaw, self.stats, self.sstm);
+        self.dummy = dummy;
     }
 
     fn act_start(&mut self, kind: ActKind) {
@@ -426,6 +448,18 @@ impl Shadow {
         };
         let dmg = combat::damage_with(attacker, attack, &self.stats, &state);
         self.hp = (self.hp - dmg).max(0);
+        if self.dummy {
+            if self.hp <= 0 {
+                self.hp = self.stats.max_hp;
+            }
+            if self.dummy_idle > DUMMY_RUN_GAP {
+                self.dummy_run = 0;
+            }
+            self.dummy_hits += 1;
+            self.dummy_last = dmg;
+            self.dummy_run += dmg;
+            self.dummy_idle = 0;
+        }
         let back = self.forward()[0] * direction[0] + self.forward()[2] * direction[2] >= 0.;
         let class = combat::reaction_class(attack.reaction);
         if class == 5 {
@@ -568,9 +602,7 @@ impl Shadow {
         if self.gone {
             self.gone_ticks += 1;
             if self.gone_ticks >= RESPAWN_TICKS {
-                let stats = self.stats;
-                let (spawn, yaw, sstm) = (self.spawn, self.yaw, self.sstm);
-                *self = Shadow::new(spawn, yaw, stats, sstm);
+                self.respawn();
             }
             return;
         }
@@ -607,8 +639,10 @@ impl Shadow {
             }
             return;
         }
+        self.dummy_idle = self.dummy_idle.saturating_add(1);
         let before = self.position;
         let previous_tick = self.motion_tick;
+
         self.motion_tick = clips.advance(self.motion, self.motion_tick);
         let length = clips.length(self.motion).max(1);
         let finished = self.motion_tick >= length;
@@ -776,6 +810,10 @@ impl Shadow {
             v
         };
         let d = hlen(to_target);
+        if self.dummy && matches!(act.kind, ActKind::ModeBattle | ActKind::ModeRevenge) {
+            self.act_start(ActKind::BattleIdle);
+            return false;
+        }
         let leave_check = |s: &Shadow| {
             let v = sub(player, s.position);
             (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt() > 2000.
@@ -1310,6 +1348,67 @@ mod tests {
             s.tick(&mut rng, &clips, &Flat, [0., 0., 500.], [0., 0., 500.]);
         }
         assert!(s.gone);
+    }
+
+    #[test]
+    fn the_dummy_stands_takes_hits_and_never_dies() {
+        let clips = TestClips(HashMap::new());
+        let mut rng = ScriptRandom::default();
+        let mut s = Shadow::new([0.; 3], 0., stats(), sstm());
+        s.dummy = true;
+        // Sora far away: a Shadow would leave; the dummy stays and stands.
+        for _ in 0..400 {
+            s.tick(&mut rng, &clips, &Flat, [0., 0., 3000.], [0., 0., 3000.]);
+            assert!(s.alive() && !s.sunk);
+            assert!(!matches!(
+                s.current_act(),
+                Some(
+                    ActKind::ClawL
+                        | ActKind::ClawR
+                        | ActKind::ClawF
+                        | ActKind::MoveTarget
+                        | ActKind::MoveShadowRound
+                        | ActKind::Leave
+                )
+            ));
+        }
+        assert!(hlen(s.position) < 50., "{:?}", s.position);
+        let finisher = AttackParams {
+            power: 1000,
+            stat: 0,
+            element: 0,
+            reaction: 7,
+            knockback: [3, 45],
+            ..AttackParams::default()
+        };
+        let sora = AttackerStats {
+            strength: 5,
+            magic: 7,
+            max: 99999,
+            min: 1,
+            ..AttackerStats::default()
+        };
+        let standard = combat::Difficulty::Standard;
+        let dealt = s
+            .hit([0., 0., 1.], true, &finisher, &sora, standard)
+            .unwrap();
+        assert!(dealt >= s.stats.max_hp, "a killing hit");
+        assert_ne!(s.current_act(), Some(ActKind::Dead));
+        assert_eq!(s.hp, s.stats.max_hp, "HP fills again");
+        assert!(matches!(s.reaction, Reaction::Blow { .. }), "still knocked");
+        assert_eq!((s.dummy_hits, s.dummy_last, s.dummy_run), (1, dealt, dealt));
+        s.hit([0., 0., 1.], true, &flinch(), &weak_attacker(), standard)
+            .unwrap();
+        assert_eq!(s.dummy_hits, 2);
+        assert!(s.dummy_run > dealt);
+        // A pause ends the run.
+        for _ in 0..=DUMMY_RUN_GAP {
+            s.tick(&mut rng, &clips, &Flat, [0., 0., 300.], [0., 0., 300.]);
+        }
+        let d = s
+            .hit([0., 0., 1.], true, &flinch(), &weak_attacker(), standard)
+            .unwrap();
+        assert_eq!(s.dummy_run, d);
     }
 
     fn flinch() -> AttackParams {

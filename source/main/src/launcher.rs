@@ -85,7 +85,7 @@ enum Action {
     Multiplayer,
     /// Host a duel and wait for a player.
     HostDuel,
-    /// A local duel in the KH3 ruleset against the scripted Sora.
+    /// The KH3 ruleset on this PC against a training dummy.
     TestKh3,
     /// Join a host the LAN search found (index into the found list).
     JoinFound(usize),
@@ -313,8 +313,9 @@ impl Launcher {
                 let mut items = vec![
                     Item::new("Host a duel", Action::HostDuel)
                         .detail("Wait for a player on this network"),
-                    Item::new("Test KH3 mode", Action::TestKh3)
-                        .detail("The KH3 ruleset against a scripted Sora on this PC"),
+                    Item::new("Test KH3 mode", Action::TestKh3).detail(
+                        "The KH3 ruleset against a training dummy; START picks KH3 abilities",
+                    ),
                 ];
                 for (i, host) in self.found.iter().enumerate() {
                     let item =

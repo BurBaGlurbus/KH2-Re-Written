@@ -14,6 +14,9 @@
 //!
 //! The numbers are in `tuning`; walls and poles in `surface`.
 
+pub mod ability;
+pub mod blend;
+pub mod combo;
 pub mod cue;
 pub mod hurt;
 pub mod look;
@@ -26,6 +29,7 @@ use crate::{
     Action, Body, Clips, Collided, Input, Params, Player, Step, Vec3, World, actor_physics, growth,
     ptya,
 };
+use ability::Ability as A;
 use std::f32::consts::{FRAC_PI_2, PI, TAU};
 use surface::{Pole, Wall};
 use tuning as t;
@@ -371,6 +375,12 @@ pub struct Kh3 {
     /// A record started this tick outside the KH2 controller's own tick
     /// (its swing's hit windows are new: the room keys them by the start).
     record_started: bool,
+    /// The KH3 abilities equipped (the build's; ability.rs).
+    pub abilities: ability::Set,
+    /// KH3's chain (combo.rs), and an Attack press during a swing waiting
+    /// for its combo window.
+    pub chain: combo::Chain,
+    queued: bool,
 }
 
 impl Default for Kh3 {
@@ -412,6 +422,9 @@ impl Default for Kh3 {
             spark_wait: 0,
             counter_swing: None,
             record_started: false,
+            abilities: ability::Set::default(),
+            chain: combo::Chain::default(),
+            queued: false,
         }
     }
 }
@@ -496,6 +509,11 @@ pub fn airstep_speed(d: f32) -> f32 {
 }
 
 impl Kh3 {
+    /// KH3 ability `a` is equipped.
+    pub fn has(&self, a: ability::Ability) -> bool {
+        self.abilities.has(a)
+    }
+
     /// A state of the layer's own is running.
     pub fn owns(&self) -> bool {
         self.mode != Mode::Kh2
@@ -678,6 +696,8 @@ impl Kh3 {
     ) -> Outcome {
         let mut out = Outcome::default();
         out.began.append(&mut self.pending);
+        // KH3's abilities stand for KH2's gates (Guard, the combo limits).
+        self.abilities.apply_kh2(&mut player.abilities);
         let was_full = self.focus >= t::FOCUS_MAX;
         self.foe = scene.foe.map(|f| f.centre);
         self.gauges();
@@ -780,9 +800,9 @@ impl Kh3 {
         if player.action == action && self.shown == Some(action) {
             player.frame = player.frame.saturating_add(1);
         } else {
+            player.blend = blend::ticks(player.action, action, &self.mode);
             player.action = action;
             player.frame = 0;
-            player.blend = crate::blend_for(action);
             step.started = Some(action);
         }
         player.armed = true;
@@ -897,6 +917,7 @@ impl Kh3 {
         }
         if input.attack
             && self.counter > 0
+            && self.has(A::CounterSlash)
             && matches!(player.action, Action::GuardRecoil | Action::Guard)
             && self.play_record(player, record::COUNTER, input, clips)
         {
@@ -904,13 +925,13 @@ impl Kh3 {
             out.began.push("counter");
             return;
         }
-        // The launch: Jump in a ground chain that has landed a hit.
+        // The launch: Jump in a ground chain, Rising Spiral's, once a chain
+        // (combo.rs).
         if input.jump
             && matches!(player.action, Action::Attack(_))
-            && player.connected
             && !finisher
-            && !self.launched
-            && self.play_record(player, record::LAUNCH, input, clips)
+            && self.chain.open()
+            && self.launch(player, input, clips)
         {
             self.launched = true;
             player.combo = ptya::Combo::default();
@@ -926,12 +947,12 @@ impl Kh3 {
             && self.cancel_open(player, clips)
         {
             if player.in_air() {
-                if self.slide_cooldown == 0 {
+                if self.slide_cooldown == 0 && self.has(A::AirSlide) {
                     self.velocity = [0.; 3];
                     self.start_slide(player, dir, clips, &mut out.step);
                     return;
                 }
-            } else {
+            } else if self.has(A::DodgeRoll) {
                 self.start_roll(player, dir, clips, &mut out.step);
                 return;
             }
@@ -943,12 +964,31 @@ impl Kh3 {
             self.start_jump(player, clips, &mut out.step);
             return;
         }
+        // KH3's chain (combo.rs): a press during a swing asks for the next
+        // attack, which starts once the swing's combo window opens (KH2's
+        // window stands for KH3's animation notify; KH3 needs no hit for
+        // it); a press out of a recovery starts a chain. The KH2
+        // controller's own chain is not used.
+        if input.attack {
+            if swinging {
+                self.queued = self.chain.open();
+            } else if Self::recovered(player, clips)
+                && self.swing(player, input, scene, clips, out, true)
+            {
+                return;
+            }
+        }
+        if !swinging {
+            self.queued = false;
+        } else if self.queued
+            && self.cancel_open(player, clips)
+            && self.swing(player, input, scene, clips, out, false)
+        {
+            return;
+        }
         let mut inp = *input;
         inp.jump = false;
-        // Hit-confirm: a chain goes on only once one of its hits landed.
-        if swinging && !player.connected {
-            inp.attack = false;
-        }
+        inp.attack = false;
         // The layer's own buttons are not KH2's: a dodge with the stick is
         // the layer's, and jumps are only the KH2 controller's out of its
         // own states.
@@ -958,8 +998,9 @@ impl Kh3 {
         let before = player.position;
         let started = player.action;
         out.step = player.tick(&inp, p, clips, world);
-        if out.step.started.is_some() {
+        if let Some(a) = out.step.started {
             self.counter_swing = None;
+            player.blend = player.blend.max(blend::kh2_floor(a));
         }
         if out.step.started.is_some() && matches!(started, Action::Attack(_) | Action::AirAttack(_))
         {
@@ -1109,6 +1150,100 @@ impl Kh3 {
         }
     }
 
+    /// The moment as KH3's selector reads it (0x141330d30): the target's
+    /// distance and height over Sora's middle; one foe in a duel.
+    fn ctx(&self, player: &Player, scene: &Scene, air: bool) -> combo::Ctx {
+        match scene.foe {
+            Some(f) => combo::Ctx {
+                distance: (f.position[0] - player.position[0])
+                    .hypot(f.position[2] - player.position[2]),
+                dz: f.centre[1] - (player.position[1] + t::CHEST),
+                air,
+                crowd: 1,
+            },
+            None => combo::Ctx {
+                air,
+                ..combo::Ctx::default()
+            },
+        }
+    }
+
+    /// KH3's chain (combo.rs): its next attack on the attack's KH2 stand-in
+    /// record. `start` begins a chain (except right after the launch, whose
+    /// chain goes on in the air). From one of the layer's states he is
+    /// handed to the KH2 controller as `command` does.
+    fn swing(
+        &mut self,
+        player: &mut Player,
+        input: &Input,
+        scene: &Scene,
+        clips: &Clips,
+        out: &mut Outcome,
+        start: bool,
+    ) -> bool {
+        if start && self.chain.prev != combo::id::LAUNCH {
+            self.chain.start(&self.abilities);
+        }
+        if !self.chain.open() {
+            return false;
+        }
+        let own = self.owns();
+        let air = if own {
+            self.airborne()
+        } else {
+            player.in_air()
+        };
+        let saved = (self.chain, player.clone());
+        let pick = self
+            .chain
+            .next(&self.abilities, &self.ctx(player, scene, air));
+        if own && air {
+            if !player.action.airborne() {
+                player.action = Action::Fall;
+            }
+            player.arc = actor_physics::Arc::fall(player.position[1], self.velocity[1]);
+            player.air_velocity = [self.velocity[0], self.velocity[2]];
+            player.vertical_speed = self.velocity[1];
+            player.pending_jump = None;
+            player.sampler.reset();
+        } else if own && !matches!(player.action, Action::Idle | Action::Walk | Action::Run) {
+            player.action = Action::Idle;
+        }
+        if !self.play_record(player, combo::stand_in(pick.id), input, clips) {
+            (self.chain, *player) = saved;
+            return false;
+        }
+        player.combo = ptya::Combo {
+            step: self.chain.n.min(100) as u8,
+            finish: u8::from(pick.finisher),
+        };
+        if own && matches!(player.action, Action::AirAttack(_)) {
+            self.air_swings = 0;
+        }
+        self.mode = Mode::Kh2;
+        self.shown = None;
+        self.lean_target = [0.; 2];
+        self.queued = false;
+        out.began.push(if pick.finisher {
+            "combo_finisher"
+        } else {
+            "combo"
+        });
+        true
+    }
+
+    /// Rising Spiral's launch out of the chain (combo.rs's one-shot).
+    fn launch(&mut self, player: &mut Player, input: &Input, clips: &Clips) -> bool {
+        let saved = self.chain;
+        match self.chain.launch() {
+            Some(p) if self.play_record(player, combo::stand_in(p.id), input, clips) => true,
+            _ => {
+                self.chain = saved;
+                false
+            }
+        }
+    }
+
     /// Plays an attack record now (the KH2 controller's swing, with its hop
     /// and hit windows).
     fn play_record(&mut self, player: &mut Player, id: u8, input: &Input, clips: &Clips) -> bool {
@@ -1127,6 +1262,7 @@ impl Kh3 {
             player.yaw = yaw;
             return false;
         }
+        player.blend = player.blend.max(blend::SWING);
         player.connected = false;
         player.invulnerable = 0.;
         self.traction = 0.;
@@ -1174,6 +1310,9 @@ impl Kh3 {
         if free(player.action) {
             *player = saved;
             return false;
+        }
+        if let Some(a) = step.started {
+            player.blend = player.blend.max(blend::kh2_floor(a));
         }
         out.step = step;
         self.mode = Mode::Kh2;
@@ -1303,6 +1442,7 @@ impl Kh3 {
                     }
                     if self.counter > 0
                         && input.attack
+                        && self.has(A::CounterSlash)
                         && self.play_record(player, record::COUNTER, input, clips)
                     {
                         self.counter = 0;
@@ -1312,9 +1452,10 @@ impl Kh3 {
                     }
                     // Attack, or Guard with the stick idle (roll to roll never).
                     let guard = input.guard && stick(input).0 < t::STICK_ACTIVE;
-                    if (input.attack || guard)
-                        && self.command(player, input, p, clips, world, scene, out)
-                    {
+                    if input.attack && self.swing(player, input, scene, clips, out, true) {
+                        return;
+                    }
+                    if guard && self.command(player, input, p, clips, world, scene, out) {
                         return;
                     }
                 }
@@ -1371,10 +1512,13 @@ impl Kh3 {
                 self.mode = Mode::HopBack { tick };
                 player.invulnerable = player.invulnerable.max(2.);
                 if (t::HOP_INPUT..t::HOP_CHANGE).contains(&tick) {
-                    if input.attack && self.start_flow(player, record::SONIC, input, clips) {
+                    if input.attack
+                        && self.has(A::SonicSlash)
+                        && self.start_flow(player, record::SONIC, input, clips)
+                    {
                         return;
                     }
-                    if input.guard {
+                    if input.guard && self.has(A::Superslide) {
                         self.start_superslide(player, None, scene, clips, &mut out.step);
                         return;
                     }
@@ -1502,6 +1646,7 @@ impl Kh3 {
         let (m, dir) = stick(input);
         if self.counter > 0
             && input.attack
+            && self.has(A::CounterSlash)
             && self.play_record(player, record::COUNTER, input, clips)
         {
             self.counter = 0;
@@ -1512,11 +1657,11 @@ impl Kh3 {
         if input.attack && self.start_chase(player, scene, clips, &mut out.step) {
             return;
         }
-        if input.attack && self.command(player, input, p, clips, world, scene, out) {
+        if input.attack && self.swing(player, input, scene, clips, out, true) {
             return;
         }
         if input.guard {
-            if m >= t::STICK_ACTIVE {
+            if m >= t::STICK_ACTIVE && self.has(A::DodgeRoll) {
                 self.start_roll(player, dir, clips, &mut out.step);
                 return;
             }
@@ -1616,7 +1761,7 @@ impl Kh3 {
     }
 
     fn start_jump(&mut self, player: &mut Player, clips: &Clips, step: &mut Step) {
-        let jump = if player.growth_level(growth::HIGH_JUMP) > 0 {
+        let jump = if self.has(A::HighJump) {
             Jump::High
         } else {
             Jump::Normal
@@ -1666,8 +1811,14 @@ impl Kh3 {
     /// The flow jump: up at 2500 cm/s with a push along `dir`.
     fn super_jump(&mut self, player: &mut Player, dir: [f32; 2], clips: &Clips, step: &mut Step) {
         player.yaw = yaw_of(dir);
-        self.velocity = [0., t::SUPER_JUMP, 0.];
-        self.push = [dir[0] * t::SUPER_PUSH, dir[1] * t::SUPER_PUSH];
+        // Without Superjump the way off is a plain jump.
+        let (up, push) = if self.has(A::Superjump) {
+            (t::SUPER_JUMP, t::SUPER_PUSH)
+        } else {
+            (t::JUMP, 0.)
+        };
+        self.velocity = [0., up, 0.];
+        self.push = [dir[0] * push, dir[1] * push];
         self.double = false;
         self.lean_target = [0.; 2];
         self.mode = Mode::Air {
@@ -1705,7 +1856,10 @@ impl Kh3 {
         let vy = self.velocity[1];
         // Commands.
         if input.attack {
-            if self.counter > 0 && self.play_record(player, record::COUNTER, input, clips) {
+            if self.counter > 0
+                && self.has(A::CounterSlash)
+                && self.play_record(player, record::COUNTER, input, clips)
+            {
                 self.counter = 0;
                 self.mode = Mode::Kh2;
                 out.began.push("counter");
@@ -1714,22 +1868,22 @@ impl Kh3 {
             if self.start_chase(player, scene, clips, &mut out.step) {
                 return;
             }
-            if self.command(player, input, p, clips, world, scene, out) {
+            if self.swing(player, input, scene, clips, out, true) {
                 return;
             }
         }
         if input.guard && m >= t::STICK_ACTIVE {
-            if jump == Jump::Super {
+            if jump == Jump::Super && self.has(A::Superslide) {
                 player.yaw = yaw_of(dir);
                 self.start_superslide(player, None, scene, clips, &mut out.step);
                 return;
             }
-            if self.slide_cooldown == 0 {
+            if self.slide_cooldown == 0 && self.has(A::AirSlide) {
                 self.start_slide(player, dir, clips, &mut out.step);
                 return;
             }
         }
-        if input.jump && self.double && vy <= t::DOUBLEFLIGHT_BELOW {
+        if input.jump && self.double && vy <= t::DOUBLEFLIGHT_BELOW && self.has(A::Doubleflight) {
             self.double = false;
             if m >= t::STICK_ACTIVE {
                 player.yaw = yaw_of(dir);
@@ -1749,6 +1903,7 @@ impl Kh3 {
         // Glide: Jump held while a jump's fall runs.
         if !input.jump_up
             && vy <= 0.
+            && self.has(A::Glide)
             && matches!(jump, Jump::Normal | Jump::High | Jump::Double)
             && tick > 1
         {
@@ -1864,7 +2019,11 @@ impl Kh3 {
         self.mode = Mode::Slide { tick, dir };
         player.invulnerable = player.invulnerable.max(2.);
         if tick >= t::SLIDE_CANCEL {
-            if input.jump && self.double && self.velocity[1] <= t::DOUBLEFLIGHT_BELOW {
+            if input.jump
+                && self.double
+                && self.velocity[1] <= t::DOUBLEFLIGHT_BELOW
+                && self.has(A::Doubleflight)
+            {
                 self.double = false;
                 self.mode = Mode::Takeoff {
                     tick: 0,
@@ -1878,7 +2037,7 @@ impl Kh3 {
                 );
                 return;
             }
-            if input.attack && self.command(player, input, p, clips, world, scene, out) {
+            if input.attack && self.swing(player, input, scene, clips, out, true) {
                 return;
             }
         }
@@ -1894,6 +2053,7 @@ impl Kh3 {
             p.radius,
             Self::span(player.position[1], p),
         ) && -(wall.normal[0] * dir[0] + wall.normal[1] * dir[1]) > 0.5
+            && self.has(A::WallKick)
         {
             self.start_kick(player, wall, clips, &mut out.step);
             return;
@@ -1934,9 +2094,10 @@ impl Kh3 {
             return;
         }
         let (m, dir) = stick(input);
-        if input.attack && self.command(player, input, p, clips, world, scene, out) {
+        if input.attack && self.swing(player, input, scene, clips, out, true) {
             return;
         }
+
         if input.guard && m >= t::STICK_ACTIVE && self.slide_cooldown == 0 {
             self.start_slide(player, dir, clips, &mut out.step);
             return;
@@ -1966,6 +2127,9 @@ impl Kh3 {
 
     /// A pole within reach of the point ahead: the pole spin.
     fn grab(&mut self, player: &mut Player, scene: &Scene, clips: &Clips, step: &mut Step) -> bool {
+        if !self.has(A::PoleSpin) {
+            return false;
+        }
         let f = facing(player.yaw);
         let at = [
             player.position[0] + f[0] * t::POLE_AHEAD,
@@ -2028,7 +2192,10 @@ impl Kh3 {
         };
         let _ = world;
         let tick = tick + 1;
-        if input.attack && self.start_flow(player, record::SPIN, input, clips) {
+        if input.attack
+            && self.has(A::BuzzSaw)
+            && self.start_flow(player, record::SPIN, input, clips)
+        {
             self.last_pole = Some(pole.centre);
             return;
         }
@@ -2083,7 +2250,11 @@ impl Kh3 {
         } else if (guard && turn_done) || over {
             self.last_pole = Some(pole.centre);
             player.yaw = yaw_of(tangent);
-            self.start_superslide(player, Some(pole.centre), scene, clips, &mut out.step);
+            if self.has(A::Superslide) {
+                self.start_superslide(player, Some(pole.centre), scene, clips, &mut out.step);
+            } else {
+                self.fall(player, [0.; 3], clips, &mut out.step);
+            }
         }
     }
 
@@ -2139,7 +2310,10 @@ impl Kh3 {
             self.super_jump(player, f, clips, &mut out.step);
             return;
         }
-        if input.attack && self.start_flow(player, record::SONIC, input, clips) {
+        if input.attack
+            && self.has(A::SonicSlash)
+            && self.start_flow(player, record::SONIC, input, clips)
+        {
             return;
         }
         let (m, dir) = stick(input);
@@ -2159,6 +2333,7 @@ impl Kh3 {
                 p.radius,
                 Self::span(player.position[1], p),
             ) && -(wall.normal[0] * f[0] + wall.normal[1] * f[1]) > 0.5
+                && self.has(A::WallKick)
             {
                 self.start_kick(player, wall, clips, &mut out.step);
                 return;
@@ -2274,7 +2449,7 @@ impl Kh3 {
             self.super_jump(player, d, clips, &mut out.step);
             return;
         }
-        if input.guard || (up && tick > t::WALL_RUN_MAX) {
+        if (input.guard && self.has(A::WallKick)) || (up && tick > t::WALL_RUN_MAX) {
             let wall = Wall {
                 normal: n,
                 surface: [player.position[0] - n[0], player.position[2] - n[1]],
@@ -2285,7 +2460,7 @@ impl Kh3 {
             }
             return;
         }
-        if input.attack && scene.foe.is_some() {
+        if input.attack && scene.foe.is_some() && self.has(A::SonicCleave) {
             player.position[0] += off[0];
             player.position[2] += off[1];
             if self.start_flow(player, record::WALL_ATTACK, input, clips) {
@@ -2450,7 +2625,7 @@ impl Kh3 {
                     world,
                 );
             }
-            if self.start_flow(player, record::SONIC, input, clips) {
+            if self.has(A::SonicSlash) && self.start_flow(player, record::SONIC, input, clips) {
                 return;
             }
         }
@@ -2466,7 +2641,7 @@ impl Kh3 {
         };
         self.show(player, motion, clips, &mut out.step);
         if tick >= t::KICK_TICKS {
-            if guard {
+            if guard && self.has(A::Superslide) {
                 player.yaw = yaw_of(n);
                 self.start_superslide(player, None, scene, clips, &mut out.step);
             } else {
@@ -2608,12 +2783,13 @@ impl Kh3 {
             if self.shot_hold >= t::AIM_HOLD
                 && !self.shot_spent
                 && can_aim
-                && (self.focus > 0. || self.focus_empty)
+                && (self.focus > 0. || (self.focus_empty && self.has(A::FocusSyphon)))
                 && range <= t::AIM_RANGE
             {
                 self.shot_spent = true;
                 self.aim = Some(Aim {
-                    syphon: self.focus_empty,
+                    syphon: self.focus_empty && self.has(A::FocusSyphon),
+
                     ..Aim::default()
                 });
                 if let Some(f) = scene.foe {

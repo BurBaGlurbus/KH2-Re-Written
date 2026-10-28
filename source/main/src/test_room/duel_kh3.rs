@@ -82,12 +82,78 @@ pub(crate) fn foe(position: [f32; 3], centre: [f32; 3]) -> Foe {
     Foe { position, centre }
 }
 
-/// The room Sora's foe: the first rival.
+/// The room Sora's foe: the first rival, else Test KH3 mode's dummy.
 pub(crate) fn room_foe(game: &Game) -> Option<Foe> {
-    game.rivals
+    if let Some(r) = game.rivals.first() {
+        return (r.fighter.vitals.hp > 0)
+            .then(|| foe(r.fighter.player.position, rival::rival_centre(r)));
+    }
+    let rt = game
+        .enemy
+        .as_ref()
+        .filter(|rt| game.kh3_dummy && rt.enabled && rt.enemy.targetable())?;
+    let at = rt.enemy.position;
+    // Its target shape's centre (the lock-on's point), else its middle.
+    let centre = enemy_targets(rt)
         .first()
-        .filter(|r| r.fighter.vitals.hp > 0)
-        .map(|r| foe(r.fighter.player.position, rival::rival_centre(r)))
+        .map_or([at[0], at[1] + DUMMY_MIDDLE, at[2]], |t| t.centre);
+    Some(foe(at, centre))
+}
+
+/// [Test] Test KH3 mode: the dummy stands this far in front of Sora, and
+/// its middle (without a target shape) is this high.
+const DUMMY_DISTANCE: f32 = 500.;
+const DUMMY_MIDDLE: f32 = 50.;
+
+/// [Test] Test KH3 mode: the room's Shadow stands as the training dummy in
+/// front of Sora, facing him.
+pub(crate) fn dummy_setup(mut game: ResMut<Game>) {
+    if !game.kh3_dummy {
+        return;
+    }
+    let p = game.sora.player.position;
+    let yaw = game.sora.player.yaw;
+    let at = [
+        p[0] + yaw.sin() * DUMMY_DISTANCE,
+        p[1],
+        p[2] + yaw.cos() * DUMMY_DISTANCE,
+    ];
+    let Some(rt) = game.enemy.as_mut() else {
+        return;
+    };
+    rt.enabled = true;
+    rt.enemy.dummy = true;
+    rt.enemy.spawn = at;
+    rt.enemy.position = at;
+    rt.enemy.yaw = yaw + std::f32::consts::PI;
+    let tick = game.tick;
+    game.event(serde_json::json!({"event":"kh3_dummy","tick":tick,"position":at}));
+}
+
+/// [Test] Each hit the dummy took since the last tick is a hit Sora landed
+/// (focus and style, as a hit on the other Sora gives).
+fn dummy_hits(game: &mut Game) {
+    let Some(n) = game
+        .enemy
+        .as_ref()
+        .filter(|rt| game.kh3_dummy && rt.enemy.dummy)
+        .map(|rt| rt.enemy.dummy_hits)
+    else {
+        return;
+    };
+    let new = n.saturating_sub(game.kh3_dummy_seen);
+    game.kh3_dummy_seen = n;
+    for _ in 0..new.min(8) {
+        game.sora.kh3.landed(true);
+    }
+    if new > 0
+        && let Some(rt) = game.enemy.as_ref()
+    {
+        let e = &rt.enemy;
+        let (tick, last, run, hp, motion) = (game.tick, e.dummy_last, e.dummy_run, e.hp, e.motion);
+        game.event(serde_json::json!({"event":"kh3_dummy_hit","tick":tick,
+            "damage":last,"run":run,"hp":hp,"motion":motion}));
+    }
 }
 
 /// The KH3 buttons of the room Sora's own pad: R2 held (logical bit 32)
@@ -143,6 +209,9 @@ pub(crate) fn contain(at: [f32; 3], extent: [f32; 4], round: bool, radius: f32) 
 /// seat `slot`): the arena's bounds, the log, a grand magic, the grand
 /// window's MP.
 pub(crate) fn after(game: &mut Game, out: &kh3::Outcome, slot: u8) {
+    if slot == game.local_slot {
+        dummy_hits(game);
+    }
     if let Some((_, _, Some(extent))) = &game.kh3_poles {
         let round = game.duel_arena == duel_arena::MIRAGE;
         let p = game.sora.player.position;
@@ -780,6 +849,9 @@ const BAR_BACK: [f32; 4] = [0., 0., 0., 0.6];
 const TEXT: [f32; 4] = [1.6, 1.6, 1.6, 1.];
 const LOCKS: [f32; 2] = [256., 150.];
 const OFFER: [f32; 2] = [256., 166.];
+const DUMMY_TEXT: [f32; 2] = [432., 330.];
+const MENU_TEXT: [f32; 2] = [432., 317.];
+
 const SIZE: f32 = 10.;
 
 fn rect(r: [f32; 4], c: [f32; 4]) -> data::sprite_sequence::Quad {
@@ -864,6 +936,25 @@ pub(crate) fn present(
             _ => "Grand Thunder",
         };
         texts.push((format!("{name}   TRIANGLE"), OFFER, true));
+    }
+    // [Test] Test KH3 mode: the dummy's damage (the last hit, the run of
+    // hits now going) and the menu's button.
+    if game.kh3_dummy {
+        if let Some(e) = game.enemy.as_ref().map(|rt| &rt.enemy)
+            && e.dummy_hits > 0
+        {
+            let run = if e.dummy_idle <= player::shadow::DUMMY_RUN_GAP {
+                e.dummy_run
+            } else {
+                0
+            };
+            texts.push((
+                format!("DUMMY  HIT {}   COMBO {}", e.dummy_last, run),
+                DUMMY_TEXT,
+                false,
+            ));
+        }
+        texts.push(("START  KH3 ABILITIES".into(), MENU_TEXT, false));
     }
     let mut quads = Vec::new();
     for (text, at, centred) in texts {

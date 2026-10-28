@@ -65,6 +65,9 @@ enum RowKind {
     ConfirmBans,
     Keyblade,
     Ready,
+    /// A row of the KH3 ruleset's ability pages (kh3_menu.rs): the page
+    /// among them and the row (0 is the AP).
+    Kh3(usize, usize),
     /// Shown only.
     Info,
 }
@@ -194,6 +197,7 @@ fn build_of(game: &Game) -> Loadout {
             .as_ref()
             .map(|i| i.slots.clone())
             .unwrap_or_default(),
+        kh3: game.sora.kh3.abilities.0,
     }
 }
 
@@ -355,6 +359,10 @@ fn put_build(game: &mut Game, build: &Loadout) {
         if let Some(d) = game.drive.as_mut() {
             d.keyblades_changed(build.keyblade);
         }
+    }
+    let kh3 = player::kh3::ability::Set(build.kh3);
+    if kh3.valid() {
+        game.sora.kh3.abilities = kh3;
     }
     drive_room::rebuild_abilities(game, None);
 }
@@ -627,6 +635,7 @@ fn run_camp(
             ..DuelPages::default()
         }
     });
+    let kh3 = game.duel_rules.kh3();
     let menu = duel_camp::hold(camp, game, duel_camp::LOBBY, want, || {
         let mut entries = vec![duel_camp::entry(
             7,
@@ -637,7 +646,12 @@ fn run_camp(
             ),
         )];
         if builds {
-            entries.extend([duel_camp::Item::Own(0), duel_camp::Item::Own(1)]);
+            // In the KH3 ruleset KH3's abilities (the Duel pages' KH3
+            // Abilities) stand for the camp's KH2 Abilities.
+            entries.push(duel_camp::Item::Own(0));
+            if !kh3 {
+                entries.push(duel_camp::Item::Own(1));
+            }
         }
         entries.push(duel_camp::entry(
             ENTRY_LEAVE,
@@ -795,6 +809,13 @@ fn step(
         RowKind::Ready => {
             let ready = !room.lobby.seats[room.seat].ready;
             intend(room, net, game, Intent::Ready(ready));
+        }
+        RowKind::Kh3(page, row) => {
+            if let Some(Err(why)) = kh3_menu::step(&mut game.sora.kh3.abilities, page, row, forward)
+            {
+                room.note = Some((why, game.tick));
+                game.sound_queue.push((SE_ERROR, "lobby"));
+            }
         }
         RowKind::Info => {}
     }
@@ -1086,6 +1107,21 @@ fn pages(room: &LobbyRoom, net: &DuelNet, game: &Game, ap: i32) -> Pages {
     k.push(RowKind::Info);
     rows.push(r);
     kinds.push(k);
+    // KH3's ability pages (the KH3 ruleset's builds): their AP and each
+    // ability.
+    if stage == Stage::Loadout && rules.kh3() {
+        let shown = note
+            .as_ref()
+            .map(|_| room.note.as_ref().map_or("", |n| n.0.as_str()));
+        for (k, (name, r)) in kh3_menu::pages(game.sora.kh3.abilities, shown)
+            .into_iter()
+            .enumerate()
+        {
+            names.push(name);
+            kinds.push((0..r.len()).map(|row| RowKind::Kh3(k, row)).collect());
+            rows.push(r);
+        }
+    }
     // Ready: the Keyblade, the AP, Ready.
     if stage == Stage::Loadout {
         names.push(text("Ready"));

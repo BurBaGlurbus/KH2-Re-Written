@@ -133,8 +133,10 @@ fn press_jump() -> Input {
 #[test]
 fn the_jump_leaves_on_its_fifth_tick_and_peaks_at_the_held_height() {
     let mut r = Rig::new(room(&[]));
+    r.kh3.abilities.put(ability::Ability::HighJump, 0);
     assert_eq!(r.kh3.mode, Mode::Ground);
     r.step(&press_jump(), &Pad::default(), None);
+
     let mut left = None;
     let mut peak: f32 = 0.;
     for tick in 2..200 {
@@ -168,6 +170,7 @@ fn the_jump_leaves_on_its_fifth_tick_and_peaks_at_the_held_height() {
 #[test]
 fn a_tapped_jump_is_lower() {
     let mut r = Rig::new(room(&[]));
+    r.kh3.abilities.put(ability::Ability::HighJump, 0);
     r.step(&press_jump(), &Pad::default(), None);
     let mut peak: f32 = 0.;
     for _ in 0..120 {
@@ -267,6 +270,75 @@ fn the_dodge_roll_covers_its_curve_with_invulnerability_first() {
     );
     assert!((tuning::ROLL_CANCEL - 1..=tuning::ROLL_CANCEL + 1).contains(&invulnerable));
     assert_eq!(r.kh3.mode, Mode::Ground);
+}
+
+#[test]
+fn moves_need_their_kh3_ability() {
+    use ability::Ability as A;
+    let roll = Input {
+        guard: true,
+        direction: [1., 0.],
+        ..Input::default()
+    };
+    // Without Dodge Roll, Guard with the stick does not roll.
+    let mut r = Rig::new(room(&[]));
+    r.kh3.abilities.put(A::DodgeRoll, 0);
+    r.step(&roll, &Pad::default(), None);
+    assert!(!matches!(r.kh3.mode, Mode::Roll { .. }), "{:?}", r.kh3.mode);
+    // Without Doubleflight, a second Jump in the air does nothing.
+    let mut r = Rig::new(room(&[]));
+    r.kh3.abilities.put(A::Doubleflight, 0);
+    r.step(&press_jump(), &Pad::default(), None);
+    for _ in 0..30 {
+        r.step(&Input::default(), &Pad::default(), None);
+    }
+    r.step(&press_jump(), &Pad::default(), None);
+    assert!(
+        !matches!(
+            r.kh3.mode,
+            Mode::Takeoff {
+                jump: Jump::Double,
+                ..
+            }
+        ),
+        "{:?}",
+        r.kh3.mode
+    );
+    // Without Glide, holding Jump while falling stays a fall.
+    let mut r = Rig::new(room(&[]));
+    r.kh3.abilities.put(A::Glide, 0);
+    r.step(&press_jump(), &Pad::default(), None);
+    for _ in 0..60 {
+        r.step(&Input::default(), &Pad::default(), None);
+        assert!(!matches!(r.kh3.mode, Mode::Glide { .. }));
+    }
+    // Block is KH2's Guard bit, set every tick from the set.
+    let mut r = Rig::new(room(&[]));
+    r.kh3.abilities.put(A::Block, 0);
+    r.step(&Input::default(), &Pad::default(), None);
+    assert!(!r.player.abilities.has(crate::abilities::bit::GUARD));
+    r.kh3.abilities.put(A::Block, 1);
+    r.step(&Input::default(), &Pad::default(), None);
+    assert!(r.player.abilities.has(crate::abilities::bit::GUARD));
+}
+
+#[test]
+fn kh3_states_blend_in() {
+    let mut r = Rig::new(room(&[]));
+    let roll = Input {
+        guard: true,
+        direction: [1., 0.],
+        ..Input::default()
+    };
+    r.step(&roll, &Pad::default(), None);
+    assert!(matches!(r.kh3.mode, Mode::Roll { .. }));
+    assert_eq!(r.player.blend, blend::DODGE);
+    r.step(&press_jump(), &Pad::default(), None);
+    for _ in 0..tuning::ROLL_TICKS {
+        r.step(&Input::default(), &Pad::default(), None);
+    }
+    // The roll's end back to standing still blends as locomotion does.
+    assert!(r.player.blend > 2., "{}", r.player.blend);
 }
 
 #[test]
@@ -955,11 +1027,9 @@ fn a_launch_goes_higher_and_ends_in_a_fall() {
 fn aerial_recovery_needs_the_ability_and_a_fifth_of_a_second() {
     for ability in [false, true] {
         let mut r = Rig::new(room(&[]));
-        if ability {
-            r.player
-                .abilities
-                .set(crate::abilities::bit::AERIAL_RECOVERY);
-        }
+        r.kh3
+            .abilities
+            .put(ability::Ability::AerialRecovery, u8::from(ability));
         r.kh3.hurt(
             &mut r.player,
             Strike {
