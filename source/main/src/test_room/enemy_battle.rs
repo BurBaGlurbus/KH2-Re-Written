@@ -901,7 +901,7 @@ pub(super) fn build_clips(
 impl BattleActor {
     #[allow(clippy::too_many_arguments)]
     pub fn load(
-        source: &ProbeSource,
+        source: &Arc<ProbeSource>,
         entry: &Entry,
         kind: &Kind,
         position: Vec3,
@@ -970,6 +970,7 @@ impl BattleActor {
                     spawn_serial,
                     character: entry.character,
                 },
+                super::boss::spawner(source).map(|s| Box::new(s) as Box<dyn enemy::world::Spawner>),
             )?;
             // The row the script bound (0: it bound none, the stand-in
             // stays). Its EXP, prize and strength are the host's.

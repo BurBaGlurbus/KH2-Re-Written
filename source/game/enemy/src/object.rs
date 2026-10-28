@@ -597,26 +597,42 @@ impl Object {
                 Effect::ReactionGroup { kind, p0, p1 } => {
                     self.sys.reaction_groups.range_event(kind, p0, p1)
                 }
-                // Range 28 (FUN_14040d810 -> FUN_1403d4b10 -> FUN_1403d3a90)
-                // and frame event 21: turn toward the target by up to the
-                // parameter in degrees, only beyond 50 units horizontally
-                // (DAT_1405b532c). [I] Only Sora's object (a limit scene's)
-                // turns here; others report the event.
+                // Turning toward a target, for battle objects (+0x6c8 bit 1):
+                // range 0x16 (FUN_14040d810 -> FUN_1403d4b90) and frame event
+                // 0xf (FUN_14040dd70 -> FUN_1403d4b80) toward the object's own
+                // target record (+0xbf8); range 28 (FUN_1403d4b10) and frame
+                // event 21 (FUN_1403d4aa0) toward the player's (+0xdc8), which
+                // only Sora's object (a limit scene's) turns by here. Each is
+                // FUN_1403d3a90: beyond 50 units horizontally (DAT_1405b532c)
+                // the heading turns toward the target point by up to the
+                // parameter in degrees (FUN_1403b9f70); a frame event's 0
+                // faces it at once (FUN_1403d3970 -> FUN_1403b65c0). A valid
+                // record sets `+0x194` bit 3. Range parameters come first; a
+                // frame event's come after its motion slot.
                 Effect::Other {
                     range,
                     kind,
                     ref params,
-                } if self.id == crate::world::PLAYER_OBJECT
-                    && (range && kind == 28 || !range && kind == 21) =>
+                } if self.sys.class_flags & crate::sysobj::class_flag::BATTLE != 0
+                    && (range && kind == 0x16 || !range && kind == 0xf)
+                    || self.id == crate::world::PLAYER_OBJECT
+                        && (range && kind == 28 || !range && kind == 21) =>
                 {
-                    let degrees = f32::from(params.first().copied().unwrap_or(0));
+                    let degrees = params.get(usize::from(!range)).copied().unwrap_or(0);
                     if let Some(at) = env.target_position(self.sys.target.id) {
+                        self.sys.motion.flags.word3 |= 8;
                         let d = [at[0] - self.sys.position[0], at[2] - self.sys.position[2]];
                         if d[0].hypot(d[1]) > 50. {
                             let delta = crate::sysobj::wrap(d[0].atan2(d[1]) - self.sys.yaw);
-                            let step = degrees.to_radians();
-                            self.sys.yaw =
-                                crate::sysobj::wrap(self.sys.yaw + delta.clamp(-step, step));
+                            let turn = if !range && degrees == 0 {
+                                delta
+                            } else {
+                                delta.clamp(
+                                    -f32::from(degrees).to_radians(),
+                                    f32::from(degrees).to_radians(),
+                                )
+                            };
+                            self.sys.yaw = crate::sysobj::wrap(self.sys.yaw + turn);
                         }
                     }
                 }

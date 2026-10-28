@@ -226,12 +226,16 @@ fn roster_tick(game: &mut Game, gallery: &mut enemy_gallery::EnemyGallery, check
         slot.summarized = true;
         let e = &gallery.catalog.entries[slot.entry];
         let actor = gallery.actors.first();
-        let (unsupported, services): (Vec<_>, Vec<_>) = actor
+        let (unsupported, services, motion_events): (Vec<_>, Vec<_>, Vec<_>) = actor
             .and_then(|a| a.battle.as_ref())
             .and_then(|b| match &b.brain {
                 enemy_battle::Brain::Script(s) => Some((
                     s.unsupported.iter().copied().collect(),
                     s.services.iter().copied().collect(),
+                    s.motion_events
+                        .iter()
+                        .map(|&(r, k)| format!("{}{k}", if r { "range " } else { "frame " }))
+                        .collect(),
                 )),
                 _ => None,
             })
@@ -256,7 +260,8 @@ fn roster_tick(game: &mut Game, gallery: &mut enemy_gallery::EnemyGallery, check
             "enabled":enabled,"fault":slot.fault,"acts":slot.acts,
             "motions":slot.motions,"hits_on_sora":incoming,"hits_on_enemy":outgoing,
             "orbs":orbs,"died_after":slot.died,"travelled":slot.travelled,
-            "closest_to_sora":slot.closest,"unsupported":unsupported,"services":services}));
+            "closest_to_sora":slot.closest,"unsupported":unsupported,"services":services,
+            "motion_events":motion_events}));
     }
 }
 

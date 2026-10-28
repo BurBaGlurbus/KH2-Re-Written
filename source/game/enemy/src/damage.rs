@@ -17,9 +17,12 @@ use crate::traps::target::PLAYER_TARGET;
 use crate::world::{Event, Object, World, object_handle};
 use player::{actor_physics, combat};
 
+/// Where the damage record sits in its object's handle space.
+pub const DAMAGE_RECORD_OFFSET: u32 = 0x400;
+
 /// The damage record's handle (the argument OBJ_DAMAGE receives).
 pub fn damage_handle(id: u32) -> u32 {
-    object_handle(id) + 0x400
+    object_handle(id) + DAMAGE_RECORD_OFFSET
 }
 
 /// One hit as the attack hands it to its target (the damage record
@@ -129,6 +132,9 @@ impl Object {
         sys.damage_parts = hit.pool;
         sys.damage_exec = false;
         sys.last_attacker = Some(PLAYER_TARGET);
+        // [U] Hits reach here from Sora's side only; a party member's hit
+        // would name the member.
+        sys.damage_attacker = Some(PLAYER_TARGET);
         let damage = self.apply_damage(world, env, hit);
         // FUN_1403ee9b0, skipped for a ZAKO the hit killed.
         let dead = self.sys.state_flags & state_flag::DEAD_MARKED != 0;
@@ -442,6 +448,35 @@ mod tests {
         },
     };
 
+    #[test]
+    fn obj_damage_reads_the_attacker_from_the_damage_record() {
+        // M_EX350_10 / B_EX380: OBJ_DAMAGE takes the record and reads its
+        // +0x10 (`push.d.sp.d 16`), the attacker's handle (FUN_1403ce740).
+        const START: u32 = 18;
+        let mut b = vec![0u8; 16];
+        b[..4].copy_from_slice(b"test");
+        for v in [64u32, 64, 64] {
+            b.extend(v.to_le_bytes());
+        }
+        for v in [0u32, START, DAMAGE as u32, START + 1, 0, 0] {
+            b.extend(v.to_le_bytes());
+        }
+        // OBJ_INIT: exit; OBJ_DAMAGE: pop.sp 0, push.d.sp.d 16, pop.wp W0,
+        // push.d.sp.d 20, pop.wp W1, exit.
+        for w in [
+            0x0049u16, 0x0001, 0, 0x00b0, 16, 0x0041, 0, 0x00b0, 20, 0x0041, 4, 0x0049,
+        ] {
+            b.extend(w.to_le_bytes());
+        }
+        let (mut world, template) = boss(100);
+        let mut o = Object::spawn(&mut world, &NullEnv, 0, &b, template.sys).unwrap();
+        o.take_hit(&mut world, &NullEnv, &hit(&strong(0, 3), &SORA, true));
+        let word = |i: usize| {
+            u32::from_le_bytes(o.script.instance.work[i * 4..i * 4 + 4].try_into().unwrap())
+        };
+        assert_eq!(word(0), crate::world::PLAYER_HANDLE);
+        assert_eq!(word(1), object_handle(o.id));
+    }
     #[test]
     fn only_a_can_kill_attack_takes_a_bosss_last_hp() {
         let (mut world, mut o) = boss(10);

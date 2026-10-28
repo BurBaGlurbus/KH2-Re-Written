@@ -1325,6 +1325,24 @@ impl Host for Machine<'_> {
             if offset < 16 {
                 return Some(if offset == 4 { object_handle(id) } else { 0 });
             }
+            let record = offset.wrapping_sub(crate::damage::DAMAGE_RECORD_OFFSET);
+            if record == 0x10 || record == 0x14 {
+                // The damage record OBJ_DAMAGE receives (FUN_1403ce740): +0x10
+                // the attacker, +0x14 the struck object, as engine handles.
+                if record == 0x14 {
+                    return Some(object_handle(id));
+                }
+                let sys = if id == self.ctx.me.id {
+                    &self.ctx.me.sys
+                } else {
+                    &self.ctx.world.objects.get(id as usize)?.as_deref()?.sys
+                };
+                return Some(match sys.damage_attacker {
+                    None => 0,
+                    Some(crate::traps::target::PLAYER_TARGET) => PLAYER_HANDLE,
+                    Some(a) => object_handle(a),
+                });
+            }
             if (TARGET_RECORD_OFFSET..TARGET_RECORD_OFFSET + 16).contains(&offset) {
                 let sys = if id == self.ctx.me.id {
                     &self.ctx.me.sys

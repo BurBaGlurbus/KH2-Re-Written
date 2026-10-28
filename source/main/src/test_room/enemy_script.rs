@@ -477,6 +477,9 @@ pub struct ScriptBrain {
     /// Names of the requests the script made of subsystems this host does not
     /// have (camera, screen, mission HUD, party, prizes).
     pub services: std::collections::BTreeSet<&'static str>,
+    /// The motion events (range or frame, kind) the engine passed on and
+    /// nothing here carries out, for the unattended logs.
+    pub motion_events: std::collections::BTreeSet<(bool, u8)>,
     /// What the host has already reported, so each name is reported once.
     reported: std::collections::BTreeSet<&'static str>,
     /// Attack slots the script applied to Sora directly (`attack_strike`),
@@ -590,6 +593,7 @@ impl ScriptBrain {
         sstm: actor_physics::Sstm,
         clips: Arc<Clips>,
         setup: ScriptSetup,
+        spawner: Option<Box<dyn enemy::world::Spawner>>,
     ) -> Result<Self, String> {
         let payload = script_payload(source, model)?;
         let mut brain = Self {
@@ -610,6 +614,7 @@ impl ScriptBrain {
             prizes: Vec::new(),
             unsupported: Default::default(),
             services: Default::default(),
+            motion_events: Default::default(),
             reported: Default::default(),
             captured: Default::default(),
             strikes: Vec::new(),
@@ -630,6 +635,8 @@ impl ScriptBrain {
             sora_mpdrive: Vec::new(),
             presentations: Vec::new(),
         };
+        // The spawner is there for OBJ_INIT's own `sysobj_appear` (M_EX870's).
+        brain.world.spawner = spawner;
         brain.build(position, yaw, stats, sstm, &mut ScriptRandom::default())?;
         Ok(brain)
     }
@@ -656,7 +663,9 @@ impl ScriptBrain {
         {
             sys.team = 2;
         }
+        let spawner = self.world.spawner.take();
         self.world = EnemyWorld::default();
+        self.world.spawner = spawner;
         self.world.tolerate_missing = true;
         self.world.patn = self.setup.patn.clone();
         self.world.sheets = self
@@ -1042,6 +1051,14 @@ impl ScriptBrain {
                         self.prizes.push((count, at));
                     }
                 }
+                // Range 10 / 0x21 (attack windows) and frame event 8 (sound)
+                // are read from the clip by the host itself.
+                Event::MotionEvent { range, kind, .. }
+                    if !matches!((range, kind), (true, 10 | 0x21) | (false, 8)) =>
+                {
+                    self.motion_events.insert((range, kind));
+                }
+                Event::MotionEvent { .. } => {}
                 Event::Unsupported(name) => {
                     self.unsupported.insert(name);
                 }

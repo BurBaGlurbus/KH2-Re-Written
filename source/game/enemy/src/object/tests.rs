@@ -305,3 +305,42 @@ fn leaving_the_ground_runs_trigger_0xd_before_the_engine_falls() {
     let plain = left_in_the_air(false);
     assert!(plain.sys.is_jump());
 }
+
+#[test]
+fn a_battle_object_turns_toward_its_target_under_range_0x16_and_frame_0xf() {
+    // FUN_1403d4b90 / FUN_1403d4b80 -> FUN_1403d3a90: up to the degrees,
+    // beyond 50 units; a frame event of 0 degrees faces the target at once.
+    let mut world = World::default();
+    let env = TargetAt { near: false };
+    let mut o = Object::bare(1);
+    o.sys.class_flags |= crate::sysobj::class_flag::BATTLE;
+    o.sys.yaw = 0.;
+    o.sys.effects.push(Effect::Other {
+        range: true,
+        kind: 0x16,
+        params: vec![10],
+    });
+    o.carry_out_motion_effects(&mut world, &env);
+    assert!(
+        (o.sys.yaw - 10f32.to_radians()).abs() < 1e-5,
+        "{}",
+        o.sys.yaw
+    );
+    assert_ne!(o.sys.motion.flags.word3 & 8, 0);
+    o.sys.effects.push(Effect::Other {
+        range: false,
+        kind: 0xf,
+        params: vec![5, 0],
+    });
+    o.carry_out_motion_effects(&mut world, &env);
+    assert!((o.sys.yaw - std::f32::consts::FRAC_PI_2).abs() < 1e-5);
+    // Within 50 units it does not turn.
+    let near = TargetAt { near: true };
+    o.sys.effects.push(Effect::Other {
+        range: false,
+        kind: 0xf,
+        params: vec![5, 0],
+    });
+    o.carry_out_motion_effects(&mut world, &near);
+    assert!((o.sys.yaw - std::f32::consts::FRAC_PI_2).abs() < 1e-5);
+}

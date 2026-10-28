@@ -125,6 +125,10 @@ pub struct AttackWindow {
     pub end: f32,
     pub id: u16,
     pub group: u8,
+    /// Range 0x21 with its third parameter set: the attack keeps the hit id
+    /// of the object's last attack (FUN_1403d25d0's last argument, the
+    /// attack set's +4), so what that one struck is not struck again.
+    pub continues: bool,
 }
 impl AttackWindow {
     /// Native range dispatch uses a half-open interval. Stored key time and
@@ -466,9 +470,12 @@ impl EnemyCombat {
             .triggers
             .iter()
             .flat_map(|t| &t.records.ranges)
-            .filter(|r| r.trigger == 10)
+            .filter(|r| r.trigger == 10 || r.trigger == 0x21)
         {
-            if range.parameters.len() != 2 {
+            // Range 10 and 0x21 (FUN_14040d810 -> FUN_1403dafe0 -> the
+            // class's vt+0x98 -> FUN_1403d25d0): the ATKP id, the group and,
+            // for 0x21, whether the hit id carries over.
+            if range.parameters.len() != if range.trigger == 10 { 2 } else { 3 } {
                 return Err("attack window parameter layout unsupported".into());
             }
             let id = range.parameters[0] as u16;
@@ -488,6 +495,7 @@ impl EnemyCombat {
                 end,
                 id,
                 group,
+                continues: range.parameters.get(2).is_some_and(|&p| p != 0),
             });
         }
         Ok(windows)
@@ -704,8 +712,29 @@ pub(super) fn attack_shapes(
     attacks
 }
 
+/// The hit-id key of each window: its own index, or for a continuing one
+/// the key of the window that started last before it (ties to the earlier
+/// record).
+pub fn hit_keys(windows: &[AttackWindow]) -> Vec<usize> {
+    let mut keys: Vec<usize> = (0..windows.len()).collect();
+    let mut order = keys.clone();
+    order.sort_by(|&a, &b| {
+        windows[a]
+            .start
+            .total_cmp(&windows[b].start)
+            .then(a.cmp(&b))
+    });
+    for (n, &i) in order.iter().enumerate() {
+        if windows[i].continues && n > 0 {
+            keys[i] = keys[order[n - 1]];
+        }
+    }
+    keys
+}
+
 /// A motion's attack windows (frame trigger range 10: the ATKP id and the
-/// collision group) whose group has shapes.
+/// collision group) whose group has shapes. [I] Range 0x21 is not read for
+/// these.
 pub(super) fn motion_attack_windows(
     motion: &SelectedMotion,
     attacks: &HashMap<u8, Vec<HitShape>>,
@@ -722,6 +751,7 @@ pub(super) fn motion_attack_windows(
                 end: r.end_frame as u16 as f32,
                 id: r.parameters[0] as u16,
                 group,
+                continues: false,
             })
         })
         .collect()
@@ -824,12 +854,30 @@ mod tests {
             end: 8.,
             id: 1,
             group: 1,
+            continues: false,
         };
         assert!(!w.active(3.));
         assert!(w.active(4.));
         assert!(w.active(7.9));
         assert!(!w.active(8.));
         assert!(!w.active(f32::NAN));
+    }
+
+    #[test]
+    fn a_continuing_window_shares_the_hit_id_of_the_last_one_started() {
+        let w = |start: f32, continues: bool| AttackWindow {
+            start,
+            end: start + 4.,
+            id: 1,
+            group: 1,
+            continues,
+        };
+        // The second continues the first; the third starts afresh; the
+        // fourth continues the third, the latest started before it.
+        let windows = [w(0., false), w(2., true), w(6., false), w(9., true)];
+        assert_eq!(hit_keys(&windows), [0, 0, 2, 2]);
+        // A continuing window with none before it keeps its own.
+        assert_eq!(hit_keys(&[w(3., true)]), [0]);
     }
 
     #[test]

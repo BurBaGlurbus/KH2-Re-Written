@@ -582,9 +582,6 @@ pub fn service(
                 if let super::enemy_battle::Brain::Script(a) = &mut battle.brain {
                     let object = gallery.catalog.entries[actor.entry].object_id;
                     a.set_captured(super::boss::capture_lengths(&game.clips, object));
-                    if let Some(s) = super::boss::spawner(&gallery.source) {
-                        a.set_spawner(Box::new(s));
-                    }
                 }
                 let params = super::enemy_battle::target_params(&gallery.source)?;
                 gallery.target_params = Some(params);

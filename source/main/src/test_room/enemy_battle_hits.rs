@@ -667,13 +667,14 @@ pub fn tick(game: &mut Game, actors: &mut [GalleryActor], tick: u64) {
         let toward = ((sora_at - at) * Vec3::new(1., 0., 1.)).normalize_or_zero();
         let mut incoming = None;
         // The motion's attack windows, then the attack objects the script placed.
+        let keys = super::enemy_combat::hit_keys(&battle.windows);
         let mut candidates: Vec<Candidate> = battle
             .windows
             .iter()
             .enumerate()
             .filter(|(_, w)| w.active(battle.frame))
             .map(|(window, w)| Candidate {
-                window,
+                window: keys[window],
                 atkp: w.id,
                 sub: 0,
                 script_slot: None,
@@ -1108,6 +1109,8 @@ pub fn retire(game: &mut Game, actors: &mut [GalleryActor], tick: u64) {
             && serial == battle.serial
             && battle.error.is_none()
             && actor.error.is_none();
+        // A continuing window holds the id of the one it continues.
+        let keys = super::enemy_combat::hit_keys(&battle.windows);
         battle
             .contacts
             .incoming_ids
@@ -1116,8 +1119,9 @@ pub fn retire(game: &mut Game, actors: &mut [GalleryActor], tick: u64) {
                     && *started == serial
                     && battle
                         .windows
-                        .get(*window)
-                        .is_some_and(|w| w.active(battle.frame));
+                        .iter()
+                        .zip(&keys)
+                        .any(|(w, k)| k == window && w.active(battle.frame));
                 if !keep {
                     expired.push(*id)
                 }

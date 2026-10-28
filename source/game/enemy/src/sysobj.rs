@@ -350,6 +350,10 @@ pub struct Sysobj {
     pub entry_fly: bool,
     /// The attacker of the last hit (the damage record's source).
     pub last_attacker: Option<u32>,
+    /// The damage record's attacker (+0x10, the attack's owner +0xc;
+    /// FUN_1403cf830, FUN_1403ce740), [crate::traps::target::PLAYER_TARGET]
+    /// for Sora.
+    pub damage_attacker: Option<u32>,
     /// The reaction value of the damage record being handled (+0x26).
     pub damage_reaction: u32,
     /// +0xa58/+0xa64: the second movement request (`trap_obj_move_request`).
@@ -743,6 +747,7 @@ impl Sysobj {
             appear_way: -1,
             entry_fly: false,
             last_attacker: None,
+            damage_attacker: None,
             damage_reaction: 0,
             request_direction: [0.; 3],
             request_speed: 0.,
