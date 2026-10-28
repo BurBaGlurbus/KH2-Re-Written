@@ -37,6 +37,7 @@ FUN_1403fe6f0 places a group entity by its spawn argument:
 | --- | --- |
 | hb20, battle program 86 (`hb20-01`) | PASS: point 47's Dusks (argument 0) stand at their places; point 46's Armored Knight 12 (argument 1) appears 346 from Sora, inside the 150-450 ring; 13 actors run to 1800 without a fault, hits land both ways |
 | hb20, the first Knight (11) | The group popped at tick 30 while Sora still stood at the configuration's spawn (an hb01 position, off this map); no ground was found and it stood at the search centre, as FUN_1403f3dd0's fallback gives |
+| hb20 again with Sora at the area's own player spawn (the configuration's `spawn` removed; `hb20-02`) | PASS: both Knights (11, 12) come out on the floor the search finds around Sora, the lower level at y -800 where their own records stand too, and walk there for the whole run; 13 actors without a fault; 5 hits on Sora, 17 on the enemies |
 | `rustfmt --check` on the changed files, `cargo clippy --all-targets --locked -- -D warnings`, `cargo test --locked` | PASS |
 | Release launcher (`tools\Build-Launcher.ps1 -Skate3`) | PASS |
 | Side by side with the installed game | NOT RUN |
@@ -45,8 +46,8 @@ FUN_1403fe6f0 places a group entity by its spawn argument:
 
 - The search's generator is this module's own, not the engine's shared one, so the drawn points differ from the
   game's.
-- Sora starts where the room configuration puts him, not at the area's player spawn; a group whose zone holds that
-  point pops in before the tour moves him.
+- A room configuration's `spawn` overrides the area's player spawn (`test_room.rs`); area configurations should leave
+  it out, as the private hb08 and hb20 ones now do.
 
 ## Verdict
 
@@ -55,4 +56,4 @@ with the installed game.
 
 ## Next
 
-Start Sora at the area's own player spawn in area configurations; the battle state and music an encounter starts.
+The battle state and music an encounter starts.
