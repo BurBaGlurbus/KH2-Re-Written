@@ -76,6 +76,8 @@ pub struct GalleryActor {
     blend_from: Option<(u64, Vec<motion_eval::World>)>,
     /// The motion serial of the shown battle pose.
     shown_serial: Option<u64>,
+    /// The spawn record serial an area placed it with (0: summoned by hand).
+    pub spawn_serial: u16,
 }
 
 /// A motion's playable range, in source key frames.
@@ -253,6 +255,7 @@ enum Request {
         entry: usize,
         position: Vec3,
         yaw: f32,
+        serial: u16,
     },
     Motion {
         actor: u64,
@@ -313,6 +316,12 @@ impl EnemyGallery {
     }
 
     pub fn queue_summon(&mut self, entry: usize, position: Vec3, yaw: f32) {
+        self.queue_spawn(entry, position, yaw, 0);
+    }
+
+    /// A summon an area's spawn record placed: its serial goes to the
+    /// object (`obj_search_by_serial` finds it by that).
+    pub fn queue_spawn(&mut self, entry: usize, position: Vec3, yaw: f32, serial: u16) {
         if self.pending.len() >= MAX_PENDING {
             self.status = "Inspection request queue is full".into();
         } else if position.is_finite() && yaw.is_finite() {
@@ -320,6 +329,7 @@ impl EnemyGallery {
                 entry,
                 position,
                 yaw,
+                serial,
             });
         } else {
             self.status = "Inspection placement must be finite".into();
@@ -549,9 +559,6 @@ pub fn service(
         let result = match request {
             Request::Battle { actor: id } => (|| {
                 let game = game.as_deref_mut().ok_or("battle session absent")?;
-                if area.is_some() && !game.sephiroth {
-                    return Err("AI host currently requires the generated flat test room".into());
-                }
                 let rt = game
                     .enemy
                     .as_ref()
@@ -569,6 +576,7 @@ pub fn service(
                     actor.yaw,
                     rt.battle_level,
                     rt.difficulty,
+                    actor.spawn_serial,
                 )?;
                 // A boss's captures of Sora last as long as his kit's clips.
                 if let super::enemy_battle::Brain::Script(a) = &mut battle.brain {
@@ -597,6 +605,7 @@ pub fn service(
                 entry,
                 position,
                 yaw,
+                serial,
             } => summon(
                 &mut commands,
                 &mut gallery,
@@ -607,7 +616,12 @@ pub fn service(
                 &mut meshes,
                 &mut materials,
                 &mut images,
-            ),
+            )
+            .map(|()| {
+                if let Some(a) = gallery.actors.last_mut() {
+                    a.spawn_serial = serial;
+                }
+            }),
             Request::Motion { actor, choice } => load_motion(&mut gallery, actor, choice),
         };
         if let Err(error) = result {
@@ -736,6 +750,7 @@ fn summon(
         shown_joints: Vec::new(),
         blend_from: None,
         shown_serial: None,
+        spawn_serial: 0,
     });
     gallery.selected = Some(id);
     gallery.status = format!("Summoned inspection actor {id}; select a source motion slot");
@@ -1320,6 +1335,7 @@ mod tests {
             shown_joints: Vec::new(),
             blend_from: None,
             shown_serial: None,
+            spawn_serial: 0,
         }
     }
 

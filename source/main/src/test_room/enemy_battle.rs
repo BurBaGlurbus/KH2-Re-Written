@@ -876,6 +876,7 @@ pub(super) fn build_clips(
 }
 
 impl BattleActor {
+    #[allow(clippy::too_many_arguments)]
     pub fn load(
         source: &ProbeSource,
         entry: &Entry,
@@ -884,6 +885,7 @@ impl BattleActor {
         yaw: f32,
         level: u16,
         difficulty: combat::Difficulty,
+        spawn_serial: u16,
     ) -> Result<Self, String> {
         if !supported(entry) {
             return Err(
@@ -942,6 +944,7 @@ impl BattleActor {
                     entry_id: entry.object_id,
                     sheets: Some(assets.sheets.clone()),
                     patn: assets.patn.clone(),
+                    spawn_serial,
                 },
             )?;
             // The row the script bound (0: it bound none, the stand-in

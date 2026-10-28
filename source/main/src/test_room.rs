@@ -71,6 +71,7 @@ mod character_kit;
 mod command_layout;
 mod debug_menu;
 pub(crate) use debug_menu::DebugMenu;
+mod area_enemies;
 mod deck_tour;
 mod drive_fx;
 mod drive_room;
@@ -15248,6 +15249,7 @@ fn run(mut args: Vec<PathBuf>) -> Result<AppExit, Box<dyn std::error::Error>> {
         .init_resource::<debug_menu::DebugMenu>()
         .init_resource::<perf_overlay::PerfOverlay>()
         .init_resource::<enemy_battle_tour::Checks>()
+        .init_resource::<area_enemies::AreaEnemies>()
         .init_resource::<sephiroth::Fight>()
         .add_plugins(SkatePlugins)
         .add_systems(
@@ -15298,6 +15300,7 @@ fn run(mut args: Vec<PathBuf>) -> Result<AppExit, Box<dyn std::error::Error>> {
                     enemy_battle::tick,
                     enemy_gallery::tick,
                     enemy_battle_tour::tick,
+                    area_enemies::tick,
                     sephiroth::tick,
                     enemy_tour::tick,
                     field_npc_tick,

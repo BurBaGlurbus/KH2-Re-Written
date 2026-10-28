@@ -86,6 +86,44 @@ pub struct Checks {
     clean: u32,
 }
 
+/// With `KH2RW_AREA_ENEMIES` the tour is the area's own enemies
+/// (`area_enemies`): their state at checkpoints and a verdict at the end
+/// (every placed actor fought without a fault).
+fn area_checkpoints(game: &mut Game, gallery: &enemy_gallery::EnemyGallery) {
+    let tick = game.tick;
+    if !(tick.is_multiple_of(300) || tick == END) {
+        return;
+    }
+    let actors: Vec<_> = gallery
+        .actors
+        .iter()
+        .map(|a| {
+            let battle = a.battle.as_ref().map(|b| {
+                serde_json::json!({"hp":b.brain.hp(),"alive":b.brain.alive(),
+                    "act":b.brain.description(),"motion":b.brain.motion(),
+                    "position":b.brain.position(),"error":b.error})
+            });
+            serde_json::json!({"actor":a.id,"model":gallery.catalog.entries[a.entry].model_name,
+                "serial":a.spawn_serial,"error":a.error,"battle":battle})
+        })
+        .collect();
+    let (incoming, outgoing) = (game.enemy_incoming_hits, game.enemy_outgoing_hits);
+    game.event(serde_json::json!({"event":"area_enemies_checkpoint","tick":tick,
+        "actors":actors,"positive_damage_to_player":incoming,"positive_damage_to_enemies":outgoing}));
+    if tick == END {
+        let pass = !gallery.actors.is_empty()
+            && gallery
+                .actors
+                .iter()
+                .all(|a| a.error.is_none() && a.battle.as_ref().is_some_and(|b| b.error.is_none()));
+        game.autoplay_failed |= !pass;
+        game.event(
+            serde_json::json!({"event":"area_enemies_verdict","tick":tick,"pass":pass,
+            "actors":gallery.actors.len(),"installed_comparison":"NOT RUN"}),
+        );
+    }
+}
+
 /// One tick of the roster (see [`roster`]).
 fn roster_tick(game: &mut Game, gallery: &mut enemy_gallery::EnemyGallery, checks: &mut Checks) {
     let tick = game.tick;
@@ -243,6 +281,10 @@ pub fn tick(
     }
     if roster() {
         roster_tick(&mut game, &mut gallery, &mut checks);
+        return;
+    }
+    if area_enemies::enabled() {
+        area_checkpoints(&mut game, &gallery);
         return;
     }
     let tick = game.tick;

@@ -438,6 +438,9 @@ pub struct ScriptSetup {
     pub entry_id: u32,
     pub sheets: Option<super::enemy_combat::EnmpSheets>,
     pub patn: Vec<[u8; 32]>,
+    /// The spawn record's serial (+0x9f0 -> +0x1e) when an area placed the
+    /// object; 0 otherwise.
+    pub spawn_serial: u16,
 }
 
 pub struct ScriptBrain {
@@ -642,6 +645,7 @@ impl ScriptBrain {
         sys.appear_way = 2;
         sys.set_class(self.setup.object_type);
         sys.entry_id = self.setup.entry_id;
+        sys.spawn_serial = self.setup.spawn_serial;
         self.world = EnemyWorld::default();
         self.world.tolerate_missing = true;
         self.world.patn = self.setup.patn.clone();
