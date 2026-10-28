@@ -11821,6 +11821,7 @@ struct CampRes {
     seen_minigames: Vec<u16>,
     seen_story: Vec<u16>,
     seen_synthesis: Vec<u8>,
+    seen_reports: Vec<u16>,
     picture_sheets: HashMap<u16, Option<usize>>,
     notice_sheets: HashMap<String, usize>,
     /// The menus' language code (`menu/<lang>/` notice and photo files).
@@ -12337,6 +12338,7 @@ fn camp_tick(
         mp,
         max_mp,
         party,
+        journal_tour: game.journal_tour,
     };
     // The menu chain (menu mode 10, FUN_14031aac0): the camp; deciding a
     // journal brings the curtain down over the camp's close; the journal
@@ -12567,6 +12569,7 @@ fn camp_tick(
             (c.seen_quests, c.seen_minigames) = open.seen_lists();
             c.seen_story = open.seen_story();
             c.seen_synthesis = open.seen_synthesis();
+            c.seen_reports = open.seen_reports();
             c.journal = None;
             game.event(serde_json::json!({"event":"journal_close","tick":tick}));
             // FUN_140304ea0: the camp is rebuilt (its open sound) and the
@@ -12698,6 +12701,8 @@ struct CampSide {
     mp: i32,
     max_mp: i32,
     party: Vec<CampMember>,
+    /// The journal tour's extras count toward the Journal badge.
+    journal_tour: bool,
 }
 
 fn party_source(c: &CampRes, character: u8) -> Option<&PartyCampSource> {
@@ -12847,6 +12852,7 @@ fn camp_data(
         mp,
         max_mp,
         party,
+        journal_tour,
     } = side;
     let (gear, hp, max_hp, mp, max_mp) = (*gear, *hp, *max_hp, *mp, *max_mp);
     // The battle's item slots and stock are the live ones.
@@ -13000,6 +13006,12 @@ fn camp_data(
         settings: Some(settings.current.clone()),
         languages: settings.languages.clone(),
         duel: None,
+        // FUN_140305dc0: DAT_140beec27 = FUN_140346b30() as the camp
+        // starts.
+        journal_new: c
+            .journal_source
+            .as_ref()
+            .is_some_and(|j| journal_data(c, j, 1, 2, *journal_tour).any_new()),
     }
 }
 
@@ -13041,6 +13053,7 @@ fn journal_data(
         diag: j.diag.clone(),
         albums: j.albums.clone(),
         reports: j.reports.clone(),
+        seen_reports: c.seen_reports.clone(),
         treasures: j.treasures.clone(),
         item_names: j.item_names.clone(),
         opened_bits: j.opened_bits.clone(),
@@ -15103,6 +15116,7 @@ fn run(mut args: Vec<PathBuf>) -> Result<AppExit, Box<dyn std::error::Error>> {
             seen_minigames: Vec::new(),
             seen_story: Vec::new(),
             seen_synthesis: Vec::new(),
+            seen_reports: Vec::new(),
             picture_sheets: HashMap::new(),
             notice_sheets: HashMap::new(),
             lang: settings.loaded_or("us"),

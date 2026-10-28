@@ -28,8 +28,9 @@ pub const SYNTHESIS: super::journal::Synthesis = super::journal::Synthesis {
     collections: 4,
     recipes: 9,
 };
-pub const CAPTURES: [u64; 11] = [
-    560, 880, 1000, 1240, 1620, 1740, 2020, 2300, 2820, 2960, 3440,
+/// The first capture is the camp's top level (the Journal row's NEW!).
+pub const CAPTURES: [u64; 12] = [
+    130, 560, 880, 1000, 1240, 1620, 1740, 2020, 2300, 2820, 2960, 3440,
 ];
 pub const END: u64 = 3500;
 

@@ -37,7 +37,7 @@ Unfinished:
 - Journal: the Pieces and Puzzles pages; the 3D model pages of Character Files; the "Slain" counts; scroll-bar thumbs. The Story, Missions, Minigames, Limits and Synthesis Notes pages are built (T164) but show only test values in the room.
 - Equip: form sub-weapons and the weapon-change list; status totals are not recomputed after equipping.
 - Customize and Party: party members' settings, locked members and world guests.
-- NEW! badges show on the Items row and the Stock list for items the room adds (T162); the other rows and lists, Load/Save and the item shop are not built.
+- NEW! badges show on the Items, Abilities, Customize and Journal rows and on the Stock, ability, magic and Equip lists (T162, T255, T267); the Status row, the forms' ability lists, Load/Save and the item shop are not built.
 - Tutorial notices and Journal "seen" marks are kept in memory only, never in a save.
 
 ### Gravity and movement feel

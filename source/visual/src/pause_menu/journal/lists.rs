@@ -77,7 +77,7 @@ pub(super) fn frame_time(frames: u32) -> (u32, u32, u32, u32) {
 
 /// FUN_14033c630 over the save's story flags, menu flags and minigame
 /// records.
-fn quest_status(
+pub(super) fn quest_status(
     q: &data::journal_table::Quest,
     show_all: bool,
     story: impl Fn(u16) -> bool,

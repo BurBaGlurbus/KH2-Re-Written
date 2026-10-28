@@ -272,8 +272,9 @@ pub struct JournalData {
     pub item_names: HashMap<u16, TreasureItem>,
     pub opened_bits: Vec<u16>,
     pub owned_items: Vec<u16>,
-    /// jiminy.bar `anse`.
+    /// jiminy.bar `anse` and the rows already seen (save+0x4d74).
     pub reports: Vec<data::journal_table::Report>,
+    pub seen_reports: Vec<u16>,
     /// The `char` rows and `albu` rows already seen (save+0x4c38 / +0x4c7c).
     pub seen_chars: Vec<u16>,
     pub seen_albums: Vec<u16>,
@@ -298,6 +299,94 @@ pub struct JournalData {
     pub synthesis: Synthesis,
     pub moogle_names: Vec<Vec<u8>>,
     pub seen_synthesis: Vec<u8>,
+}
+
+/// FUN_140346b30 reads album and story bits of journal worlds 0..0xe and
+/// 13 report bits.
+const NEW_WORLDS: std::ops::Range<i8> = 0..0xf;
+const NEW_REPORTS: usize = 0xd;
+
+impl JournalData {
+    /// FUN_14039a980 (0xffff is never set).
+    fn flag(&self, f: u16) -> bool {
+        f != 0xffff && self.flags.contains(&f)
+    }
+
+    /// FUN_1403444f0's character bits: an entry of a record whose
+    /// condition holds (the off flag is not tested).
+    fn char_available(&self, character: u16) -> bool {
+        self.diag.iter().any(|r| {
+            let cond = if r.kind == 2 {
+                false
+            } else {
+                r.cond != 0xffff && self.flags.contains(&r.cond)
+            };
+            cond && r.entries.iter().any(|e| e.character == character)
+        })
+    }
+
+    /// FUN_140346b30 over the bits FUN_140345420 fills: some entry is
+    /// available but not yet seen (the camp's Journal badge, camp-01
+    /// §3.3). The treasure, map and puzzle piece bits are not built
+    /// (their seen fields are not kept) [U].
+    pub fn any_new(&self) -> bool {
+        let chars = (0..self.chars.len() as u16)
+            .any(|c| self.char_available(c) && !self.seen_chars.contains(&c));
+        let reports = self
+            .reports
+            .iter()
+            .take(NEW_REPORTS)
+            .enumerate()
+            .any(|(i, r)| {
+                self.owned_items.contains(&r.item) && !self.seen_reports.contains(&(i as u16))
+            });
+        let limits = (0..self.limits.len()).any(|i| {
+            self.limit_counts.get(i).is_some_and(|&n| n > 0)
+                && !self.seen_limits.contains(&(i as u16))
+        });
+        let record = |r: u16| {
+            self.minigame_records
+                .get(r as usize)
+                .copied()
+                .unwrap_or((0, 0))
+        };
+        let missions = self.quests.iter().enumerate().any(|(i, q)| {
+            let status = lists::quest_status(
+                q,
+                self.flag(SHOW_ALL),
+                |f| self.flag(f),
+                |f| self.menu_flags.contains(&f),
+                record,
+            );
+            !matches!(status, 0 | 3) && !self.seen_quests.contains(&(i as u16))
+        });
+        let minigames = self
+            .minigames
+            .iter()
+            .enumerate()
+            .any(|(i, m)| record(m.record).0 > 1 && !self.seen_minigames.contains(&(i as u16)));
+        let s = self.synthesis;
+        let synthesis = [
+            s.moogle_seen,
+            s.materials > 0,
+            s.materials > 0,
+            s.moogle_seen,
+        ]
+        .iter()
+        .enumerate()
+        .any(|(line, &reached)| reached && !self.seen_synthesis.contains(&(line as u8)));
+        let albums = self.albums.iter().enumerate().any(|(r, a)| {
+            NEW_WORLDS.contains(&a.world)
+                && self.flag(a.flag)
+                && !self.seen_albums.contains(&(r as u16))
+        });
+        let story = self.stories.iter().enumerate().any(|(k, s)| {
+            NEW_WORLDS.contains(&s.world)
+                && self.flag(s.flag)
+                && !self.seen_story.contains(&(k as u16))
+        });
+        chars || reports || limits || missions || minigames || synthesis || albums || story
+    }
 }
 
 /// The face and photo files the caller has loaded for the journal, and
@@ -687,6 +776,8 @@ impl Journal {
         j.seen_albums = j.data.seen_albums.iter().copied().collect();
         j.seen_chars_at_open = j.seen_chars.clone();
         j.seen_albums_at_open = j.seen_albums.clone();
+        j.files.seen_reports = j.data.seen_reports.iter().copied().collect();
+        j.files.seen_reports_at_open = j.files.seen_reports.clone();
         j.limits.seen = j.data.seen_limits.iter().copied().collect();
         j.limits.seen_at_open = j.limits.seen.clone();
         j.lists.seen_quests = j.data.seen_quests.iter().copied().collect();
@@ -705,9 +796,8 @@ impl Journal {
         self.data.texts.get(&id).cloned().unwrap_or_default()
     }
 
-    /// FUN_14039a980 (0xffff is never set).
     fn flag(&self, f: u16) -> bool {
-        f != 0xffff && self.data.flags.contains(&f)
+        self.data.flag(f)
     }
 
     fn show_all(&self) -> bool {
@@ -1746,6 +1836,13 @@ impl Journal {
         (q, m)
     }
 
+    /// The seen `anse` rows to carry to the next opening (save+0x4d74).
+    pub fn seen_reports(&self) -> Vec<u16> {
+        let mut r: Vec<u16> = self.files.seen_reports.iter().copied().collect();
+        r.sort_unstable();
+        r
+    }
+
     /// The seen `limi` rows to carry to the next opening (save+0x4c38 +
     /// 0x84).
     pub fn seen_limits(&self) -> Vec<u16> {
@@ -1875,6 +1972,69 @@ impl Curtain {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_camp_badge_asks_for_an_available_unseen_entry() {
+        let char = Char {
+            world: 0,
+            image: 0,
+            frame: 0,
+            bit: 0,
+            name: 0,
+            description: 0,
+            origin: 0,
+            flags: 0,
+        };
+        let mut d = JournalData {
+            flags: vec![0x10],
+            chars: vec![char; 2],
+            diag: vec![Diag {
+                cond: 0x10,
+                off: 0,
+                world: 0,
+                kind: 0,
+                entries: vec![data::journal_table::DiagEntry {
+                    character: 1,
+                    at: [0, 0],
+                    visible: true,
+                }],
+            }],
+            ..Default::default()
+        };
+        assert!(d.any_new());
+        d.seen_chars = vec![1];
+        assert!(!d.any_new());
+        // A story entry of world 0xf or above is not asked about.
+        let story = |world| Story {
+            world,
+            summary: 0,
+            objective: 0,
+            entry: 0,
+            flag: 0x10,
+        };
+        d.stories = vec![story(0xf)];
+        assert!(!d.any_new());
+        d.stories = vec![story(0xf), story(3)];
+        assert!(d.any_new());
+        d.seen_story = vec![1];
+        assert!(!d.any_new());
+        // Synthesis lines 0 and 3 follow the Moogle; seeing both clears it.
+        d.synthesis.moogle_seen = true;
+        assert!(d.any_new());
+        d.seen_synthesis = vec![0, 3];
+        assert!(!d.any_new());
+        // An owned report not yet read.
+        d.reports = vec![data::journal_table::Report {
+            item: 0x200,
+            title: 0,
+            text: 0,
+        }];
+        assert!(!d.any_new());
+        d.owned_items = vec![0x200];
+        assert!(d.any_new());
+        d.seen_reports = vec![0];
+        assert!(!d.any_new());
+    }
 
     fn pad(trig: u64, repeat: u64) -> Pad {
         Pad { trig, repeat }

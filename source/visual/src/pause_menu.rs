@@ -270,6 +270,9 @@ pub struct Data {
     /// The caller's pages on the Config screen (None: the exe's and the
     /// settings' pages).
     pub duel: Option<DuelPages>,
+    /// DAT_140beec27: some journal entry is new (`JournalData::any_new`
+    /// when the camp opens).
+    pub journal_new: bool,
 }
 
 /// Cursor memory kept between camp openings (DAT_140beec30 / 7c).
@@ -867,6 +870,8 @@ impl Camp {
                     .collect();
                 (!marks.is_empty()).then(|| marks.iter().all(|&s| s))
             }
+            // Jiminy's Journal: always the pulsing badge.
+            5 => self.data.journal_new.then_some(false),
             _ => None,
         }
     }

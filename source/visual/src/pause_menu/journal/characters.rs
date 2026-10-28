@@ -166,17 +166,8 @@ impl Journal {
         self.chars.sel = -1;
     }
 
-    /// FUN_1403444f0's character bits: an entry of a record whose
-    /// condition holds (the off flag is not tested).
     pub(super) fn char_available(&self, character: u16) -> bool {
-        self.data.diag.iter().any(|r| {
-            let cond = if r.kind == 2 {
-                false
-            } else {
-                r.cond != 0xffff && self.data.flags.contains(&r.cond)
-            };
-            cond && r.entries.iter().any(|e| e.character == character)
-        })
+        self.data.char_available(character)
     }
 
     /// FUN_14032c5c0.

@@ -104,6 +104,7 @@ pub(crate) fn load(
             seen_minigames: Vec::new(),
             seen_story: Vec::new(),
             seen_synthesis: Vec::new(),
+            seen_reports: Vec::new(),
             picture_sheets: HashMap::new(),
             notice_sheets: HashMap::new(),
             lang,
@@ -159,6 +160,7 @@ impl WorldMapCamp {
             mp,
             max_mp: mp,
             party: Vec::new(),
+            journal_tour: false,
         };
         camp_data(c, panels, None, &self.settings, &side)
     }
@@ -291,6 +293,7 @@ impl WorldMapCamp {
                 (c.seen_quests, c.seen_minigames) = open.seen_lists();
                 c.seen_story = open.seen_story();
                 c.seen_synthesis = open.seen_synthesis();
+                c.seen_reports = open.seen_reports();
                 c.journal = None;
                 self.log
                     .push(serde_json::json!({"event":"journal_close","tick":tick}));

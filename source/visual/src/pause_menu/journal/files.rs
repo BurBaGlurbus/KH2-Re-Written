@@ -67,8 +67,8 @@ pub(super) struct Page {
     /// Lines the description window shows; whether it has arrows.
     visible: usize,
     arrows: bool,
-    seen_reports: HashSet<u16>,
-    seen_reports_at_open: HashSet<u16>,
+    pub(super) seen_reports: HashSet<u16>,
+    pub(super) seen_reports_at_open: HashSet<u16>,
 }
 
 /// The list state of a kind and the detail state it opens.
