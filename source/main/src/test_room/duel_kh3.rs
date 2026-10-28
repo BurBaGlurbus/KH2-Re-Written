@@ -18,7 +18,7 @@ const BOLT_ELEMENT: u16 = 20;
 /// Wisdom's ATKP sub-tables: King of Hearts' bolts take the plain shot's
 /// (power 20), Ragnarok's the volley's last (25) [duel choice].
 const KOH_SUB: u8 = 0;
-const RAGNAROK_SUB: u8 = 3;
+pub(crate) const RAGNAROK_SUB: u8 = 3;
 /// A grand magic keeps the caster's MP and doubles its spell's hits for
 /// this long (the cast and its volumes).
 const GRAND_TICKS: u32 = 150;
@@ -159,6 +159,9 @@ pub(crate) fn after(game: &mut Game, out: &kh3::Outcome, slot: u8) {
             "focus":game.sora.kh3.focus.round()});
         game.event(record);
     }
+    for &name in out.began.iter().chain(&out.cues) {
+        cues(game, name, slot, drive_fx::Anchor::Sora);
+    }
     if let Some((left, mp)) = game.sora.kh3_grand {
         // The grand magic costs nothing: the MP stays where it was.
         game.sora.player.mp.cur = mp;
@@ -177,6 +180,47 @@ pub(crate) fn after(game: &mut Game, out: &kh3::Outcome, slot: u8) {
         game.event(
             serde_json::json!({"event":"kh3_grand","tick":tick,"slot":slot,
             "magic":spell,"ok":ok}),
+        );
+    }
+}
+
+/// The sound cause of the KH3 cues (duel_fx sends it to the joiner with
+/// the Soras' own sounds).
+pub(crate) const CUE_SOUND: &str = "kh3";
+
+/// The KH2 stand-ins of a KH3 moment (`player::kh3::cue`) for the Sora
+/// swapped in (`game.sora`, his own effect containers): sounds to the
+/// queue, effect elements onto him (or `anchor`), each in the log.
+pub(crate) fn cues(game: &mut Game, event: &'static str, slot: u8, anchor: drive_fx::Anchor) {
+    use kh3::cue::Cue;
+    let tick = game.tick;
+    for &c in kh3::cue::of(event) {
+        let played = match c {
+            Cue::Sound(id) => {
+                game.sound_queue.push((id, CUE_SOUND));
+                true
+            }
+            Cue::Own(e) | Cue::Wisdom(e) | Cue::System(e) => {
+                let found = game.drive.as_mut().and_then(|d| match c {
+                    Cue::Own(_) => d.paxes.get(&d.shown).cloned().map(|p| (p, d.shown)),
+                    Cue::Wisdom(_) => d.wisdom_pax().map(|p| (p, player::forms::WISDOM)),
+                    _ => d.src.system_pax.clone().map(|p| (p, 0xff)),
+                });
+                match found {
+                    Some((pax, owner)) => {
+                        game.fx_queue.push(drive_fx::Placed {
+                            req: drive_fx::FxRequest { pax, id: e, owner },
+                            anchor,
+                        });
+                        true
+                    }
+                    None => false,
+                }
+            }
+        };
+        game.event(
+            serde_json::json!({"event":"kh3_cue","tick":tick,"slot":slot,
+            "on":event,"cue":format!("{c:?}"),"played":played}),
         );
     }
 }
@@ -316,6 +360,82 @@ pub(crate) fn flow_view(game: &Game, fov: f32) -> Option<boss::OverlayView> {
     })
 }
 
+/// The KH3 lock-on camera's blend and distance (camera_control's own).
+#[derive(Default)]
+pub(crate) struct LockCamera {
+    blend: f32,
+    distance: f32,
+    last: Option<Vec3>,
+}
+
+/// [duel choice] The framing distance's ceiling (the reference has none;
+/// an arena is about 4000 across).
+const LOCK_FAR: f32 = 1600.;
+
+/// KH3's lock-on camera while this player's Sora is locked on to the other
+/// Sora: from behind Sora toward the target, pitched 20° down (looking
+/// straight at a target well below), far enough back to frame both,
+/// easing in and out over half a second from the follow camera's `eye` /
+/// `look`. Not on a wall (the wall camera has him).
+pub(crate) fn lock_view(
+    game: &Game,
+    fov: f32,
+    eye: Vec3,
+    look: Vec3,
+    cam: &mut LockCamera,
+) -> Option<boss::OverlayView> {
+    use kh3::tuning as t;
+    let target = (on(game) && game.target_locked)
+        .then_some(game.selected_target)
+        .flatten();
+    let step = 1. / t::LOCK_BLEND as f32;
+    cam.blend = (cam.blend + if target.is_some() { step } else { -step }).clamp(0., 1.);
+    if cam.blend <= 0. {
+        cam.distance = 0.;
+        return None;
+    }
+    let p = Vec3::from_array(game.sora.player.position) + Vec3::Y * t::LOCK_LOOK_UP;
+    if let Some(t) = target {
+        cam.last = Some(Vec3::from_array(t));
+    }
+    let at = cam.last?;
+    let d = at - p;
+    let flat = Vec2::new(d.x, d.z).length().max(1e-3);
+    let yaw = d.x.atan2(d.z);
+    let rise = d.y.atan2(flat);
+    let pitch = if rise < t::LOCK_BELOW {
+        rise
+    } else {
+        rise + t::LOCK_PITCH
+    }
+    .clamp(t::LOCK_PITCH_MIN, t::LOCK_PITCH_MAX);
+    // Framing both: half their distance over the sine of half the
+    // horizontal field of view (16:9 from the vertical one).
+    let half = ((fov * 0.5).tan() * 16. / 9.).atan();
+    let frame = (d.length() * 0.5 / half.sin()).min(LOCK_FAR);
+    let want = frame.max(t::LOCK_DISTANCE);
+    cam.distance = if cam.distance <= 0. {
+        want
+    } else {
+        cam.distance + (want - cam.distance) * t::LOCK_EASE
+    };
+    let forward = Vec3::new(
+        yaw.sin() * pitch.cos(),
+        pitch.sin(),
+        yaw.cos() * pitch.cos(),
+    );
+    let lock_eye = p - forward * cam.distance;
+    // Ease exponent 2 on the blend.
+    let k = cam.blend * cam.blend;
+    Some(boss::OverlayView {
+        eye: eye.lerp(lock_eye, k),
+        target: look.lerp(p, k),
+        roll: 0.,
+        fov,
+        collision: true,
+    })
+}
+
 /// [Test] The KH3 script's buttons for the room Sora of an unattended
 /// KH3 test (the rival runs the same script half a cycle later).
 pub(crate) fn scripted_room_pad(game: &Game, tick: u64) -> Option<(rival::RivalPad, Pad)> {
@@ -323,7 +443,8 @@ pub(crate) fn scripted_room_pad(game: &Game, tick: u64) -> Option<(rival::RivalP
         return None;
     }
     let foe = game.rivals.first()?.fighter.player.position;
-    let pad = rival::kh3_pad(tick, 0, game.sora.player.position, foe);
+    let view = rival::kh3_view(&game.sora, game.rivals.first().map(|r| &r.fighter));
+    let pad = rival::kh3_pad(tick, 0, game.sora.player.position, foe, view);
     let kh3 = Pad {
         shotlock: pad.shotlock_held,
         situation: pad.flow,
@@ -408,7 +529,15 @@ pub(crate) fn present(
     )];
     if let Some(aim) = k.aim {
         texts.push((
-            format!("SHOTLOCK  {} / {}", aim.locks, kh3::tuning::MAX_LOCKS),
+            if aim.syphon {
+                format!(
+                    "FOCUS SYPHON  {} / {}",
+                    aim.locks,
+                    kh3::tuning::SYPHON_LOCKS
+                )
+            } else {
+                format!("SHOTLOCK  {} / {}", aim.locks, kh3::tuning::MAX_LOCKS)
+            },
             LOCKS,
             true,
         ));

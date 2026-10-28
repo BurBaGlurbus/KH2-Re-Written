@@ -26,6 +26,7 @@ pub struct FxRequest {
 }
 
 /// Where an element starts, when it is not Sora's own.
+#[derive(Clone, Copy)]
 pub enum Anchor {
     /// Sora's own object (his bones, for bound elements).
     Sora,

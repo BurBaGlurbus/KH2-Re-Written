@@ -648,7 +648,7 @@ fn snapshots_carry_what_the_joiner_shows() {
     assert_eq!(j.focus, 63.);
     assert_eq!(j.aim.map(|a| a.locks), Some(9));
     assert_eq!(j.lean, [-1.5, 0.25]);
-    assert_eq!(MODE_NAMES.len(), 22);
+    assert_eq!(MODE_NAMES.len(), 33);
     for n in MODE_NAMES {
         assert!(mode_named(n).is_some());
     }
@@ -736,5 +736,497 @@ fn a_superslide_does_not_pass_through_a_thin_wall() {
             None,
         );
         assert!(r.player.position[2] < 300., "{:?}", r.player.position);
+    }
+}
+
+// Hit reactions, Final Blow, the Risk Dodge, Focus Syphon and the cues.
+
+fn idle_input() -> Input {
+    Input {
+        jump_up: true,
+        ..Input::default()
+    }
+}
+
+#[test]
+fn every_attack_gives_the_reference_s_damage_kind() {
+    use hurt::{Knock as K, Source as S, strike};
+    let cases = [
+        (
+            S::Swing {
+                finisher: false,
+                air: false,
+            },
+            K::Small,
+            0.8,
+        ),
+        (
+            S::Swing {
+                finisher: true,
+                air: false,
+            },
+            K::Blow,
+            1.2,
+        ),
+        (
+            S::Swing {
+                finisher: true,
+                air: true,
+            },
+            K::Blow,
+            0.8,
+        ),
+        (
+            S::Flow {
+                record: record::SONIC,
+                hit: 0,
+            },
+            K::Small,
+            1.0,
+        ),
+        (
+            S::Flow {
+                record: record::SONIC,
+                hit: 1,
+            },
+            K::Toss,
+            1.5,
+        ),
+        (
+            S::Flow {
+                record: record::WALL_ATTACK,
+                hit: 0,
+            },
+            K::Toss,
+            1.5,
+        ),
+        (
+            S::Flow {
+                record: record::SPIN,
+                hit: 2,
+            },
+            K::VerticalRoll,
+            1.0,
+        ),
+        (S::Launch, K::Toss, 0.6),
+        (S::Counter, K::VerticalRoll, 1.6),
+        (S::Chase { hit: 0 }, K::Small, 0.3),
+        (S::Chase { hit: 1 }, K::SideSpin, 0.6),
+        (S::Bolt { ragnarok: false }, K::SideSpin, 0.8),
+        (S::Bolt { ragnarok: true }, K::Toss, 0.9),
+        (
+            S::Spell {
+                heavy: false,
+                grand: false,
+            },
+            K::Small,
+            1.0,
+        ),
+        (
+            S::Spell {
+                heavy: true,
+                grand: false,
+            },
+            K::Parabola,
+            1.0,
+        ),
+        (
+            S::Spell {
+                heavy: false,
+                grand: true,
+            },
+            K::Parabola,
+            1.0,
+        ),
+    ];
+    for (source, knock, scale) in cases {
+        let s = strike(source);
+        assert_eq!((s.knock, s.scale), (knock, scale), "{}", source.name());
+    }
+    assert!(!K::Small.heavy() && !K::Beat.heavy() && K::Toss.heavy() && K::Blow.heavy());
+}
+
+#[test]
+fn a_flinch_slides_holds_him_until_its_change_point_then_lets_him_act() {
+    let mut r = Rig::new(room(&[]));
+    let strike = Strike {
+        knock: Knock::Small,
+        scale: 1.,
+    };
+    assert!(r.kh3.hurt(&mut r.player, strike, [0., 1.], true, &r.clips));
+    assert!(matches!(r.kh3.mode, Mode::Hurt { air: false, .. }));
+    let z0 = r.player.position[2];
+    // Stunned: a held stick and every button do nothing until 0.4667 s.
+    let mash = Input {
+        attack: true,
+        jump: true,
+        direction: [1., 0.],
+        ..Input::default()
+    };
+    for _ in 1..tuning::SMALL_ACT {
+        r.step(&mash, &Pad::default(), None);
+        assert_eq!(r.kh3.mode.name(), "flinch");
+    }
+    let slid = r.player.position[2] - z0;
+    // 550 cm/s, x0.9 a tick: about a tenth of a metre-second's worth.
+    let expect = tuning::SMALL_KNOCK * 0.9 / (1. - 0.9);
+    assert!((slid - expect).abs() < expect * 0.1, "{slid} vs {expect}");
+    assert!(r.player.position[0].abs() < 1e-3, "no steering while hurt");
+    r.step(&idle_input(), &Pad::default(), None);
+    r.step(
+        &Input {
+            direction: [1., 0.],
+            jump_up: true,
+            ..Input::default()
+        },
+        &Pad::default(),
+        None,
+    );
+    assert_eq!(r.kh3.mode, Mode::Ground, "the stick ends it at the change");
+}
+
+#[test]
+fn a_toss_peaks_where_the_reference_says_then_downs_him_until_he_gets_up() {
+    let mut r = Rig::new(room(&[]));
+    let strike = Strike {
+        knock: Knock::Toss,
+        scale: 1.,
+    };
+    r.kh3.hurt(&mut r.player, strike, [0., 1.], true, &r.clips);
+    let mut peak: f32 = 0.;
+    let mut downed = None;
+    for tick in 1..200 {
+        r.step(&idle_input(), &Pad::default(), None);
+        peak = peak.max(r.player.position[1]);
+        // No invulnerability in the air: a juggle goes on.
+        if matches!(r.kh3.mode, Mode::Hurt { .. }) {
+            assert!(!r.kh3.untouchable(&r.player, &r.clips));
+        }
+        if matches!(r.kh3.mode, Mode::Down { .. }) {
+            downed = Some(tick);
+            break;
+        }
+    }
+    // 1500 cm/s at x3 gravity: 383 cm up.
+    let want = 1500. * 1500. / (2. * 2940.) * tuning::SCALE;
+    assert!((peak - want).abs() < want * 0.05, "{peak} vs {want}");
+    // Up 0.51 s, a 0.1 s hang, down about 0.88 s.
+    let downed = downed.expect("down");
+    assert!((80..=95).contains(&downed), "{downed}");
+    assert!(r.kh3.untouchable(&r.player, &r.clips), "down [duel choice]");
+    for _ in 1..tuning::DOWN_END {
+        r.step(&idle_input(), &Pad::default(), None);
+        assert_eq!(r.kh3.mode.name(), "down");
+    }
+    r.step(&idle_input(), &Pad::default(), None);
+    assert_eq!(r.kh3.mode, Mode::Ground);
+    assert!(r.player.invulnerable > 0., "the wake guard");
+}
+
+#[test]
+fn a_launch_goes_higher_and_ends_in_a_fall() {
+    let mut r = Rig::new(room(&[]));
+    r.kh3.hurt(
+        &mut r.player,
+        Strike {
+            knock: Knock::Launch,
+            scale: 1.,
+        },
+        [0., 1.],
+        true,
+        &r.clips,
+    );
+    let mut peak: f32 = 0.;
+    let mut fell = false;
+    for _ in 0..200 {
+        r.step(&idle_input(), &Pad::default(), None);
+        peak = peak.max(r.player.position[1]);
+        if matches!(r.kh3.mode, Mode::Air { .. }) {
+            fell = true;
+            break;
+        }
+    }
+    let want = 2500. * 2500. / (2. * 2940.) * tuning::SCALE;
+    assert!((peak - want).abs() < want * 0.05, "{peak} vs {want}");
+    assert!(fell, "the launch ends in the air: {:?}", r.kh3.mode);
+}
+
+#[test]
+fn aerial_recovery_needs_the_ability_and_a_fifth_of_a_second() {
+    for ability in [false, true] {
+        let mut r = Rig::new(room(&[]));
+        if ability {
+            r.player
+                .abilities
+                .set(crate::abilities::bit::AERIAL_RECOVERY);
+        }
+        r.kh3.hurt(
+            &mut r.player,
+            Strike {
+                knock: Knock::Toss,
+                scale: 1.,
+            },
+            [0., 1.],
+            true,
+            &r.clips,
+        );
+        r.step(&press_jump(), &Pad::default(), None);
+        assert!(matches!(r.kh3.mode, Mode::Hurt { .. }), "too early");
+        for _ in 1..tuning::RECOVERY_FROM {
+            r.step(&idle_input(), &Pad::default(), None);
+        }
+        r.step(&press_jump(), &Pad::default(), None);
+        assert_eq!(
+            matches!(r.kh3.mode, Mode::Recover { .. }),
+            ability,
+            "{:?}",
+            r.kh3.mode
+        );
+        if ability {
+            assert!(r.kh3.untouchable(&r.player, &r.clips));
+        }
+    }
+}
+
+#[test]
+fn armour_and_a_command_s_first_tenth_shrug_off_light_hits_only() {
+    let light = Strike {
+        knock: Knock::Small,
+        scale: 1.,
+    };
+    let heavy = Strike {
+        knock: Knock::Blow,
+        scale: 1.,
+    };
+    let player = Player::new([0.; 3], 0.);
+    let k = Kh3 {
+        mode: Mode::Superslide {
+            tick: 3,
+            pole: None,
+        },
+        ..Kh3::default()
+    };
+    assert!(k.shrugs_strike(&player, light) && !k.shrugs_strike(&player, heavy));
+    let mut swinging = Player::new([0.; 3], 0.);
+    swinging.action = Action::Attack(0);
+    swinging.frame = tuning::COMMAND_ARMOUR - 1;
+    assert!(Kh3::default().shrugs_strike(&swinging, light));
+    swinging.frame = tuning::COMMAND_ARMOUR;
+    assert!(!Kh3::default().shrugs_strike(&swinging, light));
+}
+
+#[test]
+fn another_hit_on_a_body_in_the_air_keeps_its_motion() {
+    let mut r = Rig::new(room(&[]));
+    let toss = Strike {
+        knock: Knock::Toss,
+        scale: 1.,
+    };
+    assert!(r.kh3.hurt(&mut r.player, toss, [0., 1.], true, &r.clips));
+    for _ in 0..5 {
+        r.step(&idle_input(), &Pad::default(), None);
+    }
+    let frame = r.player.frame;
+    // A bolt from behind: speed again, no new motion, voice or facing.
+    let yaw = r.player.yaw;
+    assert!(!r.kh3.hurt(&mut r.player, toss, [0., -1.], true, &r.clips));
+    assert_eq!((r.player.frame, r.player.yaw), (frame, yaw));
+    assert!(r.kh3.velocity[1] > 0.);
+}
+
+#[test]
+fn a_counter_that_blows_him_away_offers_final_blow_which_warps_to_him() {
+    let mut r = Rig::new(room(&[]));
+    let foe = Foe {
+        position: [0., 0., 1200.],
+        centre: [0., 80., 1200.],
+    };
+    let counter = hurt::Source::Counter;
+    r.kh3.struck(counter, hurt::strike(counter));
+    assert!(r.kh3.chase_offer > 0);
+    r.step(
+        &Input {
+            attack: true,
+            ..idle_input()
+        },
+        &Pad::default(),
+        Some(foe),
+    );
+    assert_eq!(r.kh3.mode.name(), "final_blow");
+    assert!(r.player.invulnerable > 0.);
+    let mut warped = false;
+    for _ in 0..tuning::CHASE_WARP + 2 {
+        let out = r.step(&idle_input(), &Pad::default(), Some(foe));
+        warped |= out.began.contains(&"chase_warp");
+    }
+    assert!(warped);
+    let d = (foe.position[2] - r.player.position[2]).abs();
+    assert!((d - tuning::CHASE_SHORT).abs() < 5., "{d}");
+}
+
+#[test]
+fn a_guarded_heavy_hit_offers_the_risk_dodge_to_behind_the_attacker() {
+    let mut r = Rig::new(room(&[]));
+    let attacker = [0., 0., 300.];
+    r.kh3.guarded(
+        &mut r.player,
+        Strike {
+            knock: Knock::Small,
+            scale: 1.,
+        },
+        [0., -1.],
+        attacker,
+        false,
+    );
+    assert!(r.kh3.risk_offer.is_none(), "a light hit offers nothing");
+    r.kh3.guarded(
+        &mut r.player,
+        Strike {
+            knock: Knock::Blow,
+            scale: 1.2,
+        },
+        [0., -1.],
+        attacker,
+        false,
+    );
+    assert!(r.kh3.risk_offer.is_some());
+    r.player.action = Action::GuardRecoil;
+    r.player.frame = 5;
+    r.kh3.mode = Mode::Kh2;
+    r.step(&press_jump(), &Pad::default(), None);
+    assert_eq!(r.kh3.mode.name(), "risk_dodge");
+    for _ in 0..tuning::RISK_SLIDE_TICKS + 1 {
+        assert!(r.kh3.untouchable(&r.player, &r.clips));
+        r.step(&idle_input(), &Pad::default(), None);
+    }
+    assert_eq!(r.kh3.mode, Mode::Ground);
+    assert!(
+        r.player.position[2] > attacker[2],
+        "{:?}",
+        r.player.position
+    );
+    // Turned round to face him, with the counter offered.
+    assert!(r.player.yaw.cos() < -0.99);
+    assert!(r.kh3.counter > 0);
+}
+
+#[test]
+fn an_emptied_gauge_makes_the_shotlock_focus_syphon() {
+    let mut r = Rig::new(room(&[]));
+    let foe = Foe {
+        position: [0., 0., 900.],
+        centre: [0., 80., 900.],
+    };
+    r.kh3.focus = 0.;
+    r.step(&idle_input(), &Pad::default(), Some(foe));
+    assert!(r.kh3.focus_empty);
+    let hold = Pad {
+        shotlock: true,
+        ..Pad::default()
+    };
+    let mut locks = 0;
+    for _ in 0..400 {
+        r.step(&idle_input(), &hold, Some(foe));
+        if let Some(a) = r.kh3.aim {
+            assert!(a.syphon);
+            locks = a.locks;
+        }
+        if locks >= tuning::SYPHON_LOCKS {
+            break;
+        }
+    }
+    assert_eq!(locks, tuning::SYPHON_LOCKS);
+    let before = r.kh3.focus;
+    r.step(
+        &Input {
+            attack: true,
+            ..idle_input()
+        },
+        &hold,
+        Some(foe),
+    );
+    assert_eq!(r.kh3.mode.name(), "focus_syphon");
+    let mut gained = false;
+    for _ in 0..tuning::SYPHON_TICKS + 1 {
+        let out = r.step(&idle_input(), &hold, Some(foe));
+        gained |= out.cues.contains(&"syphon_gain");
+    }
+    assert!(gained);
+    let gain = r.kh3.focus - before;
+    let want = (tuning::SYPHON_RATE * f32::from(tuning::SYPHON_LOCKS)).trunc();
+    assert!((gain - want).abs() < 1.5, "{gain} vs {want}");
+    assert!(r.kh3.focus_empty, "until the gauge is full again");
+}
+
+#[test]
+fn every_move_and_moment_has_its_kh2_stand_in_and_nothing_stacks() {
+    use cue::{Cue, EVENTS, of, periodic};
+    // Events that a KH2 motion's own triggers voice and sound alone.
+    let motion_only = [
+        "dodge_roll",
+        "airstep_hop",
+        "launch",
+        "flinch",
+        "air_flinch",
+        "blown",
+        "beaten",
+        "tossed",
+    ];
+    for e in EVENTS {
+        assert_eq!(of(e).is_empty(), motion_only.contains(&e), "{e}");
+    }
+    // Every move the layer names (bar locomotion and the KH2 side) is an
+    // event.
+    for m in MODE_NAMES {
+        if !matches!(m, "kh2" | "ground" | "air" | "land" | "takeoff") {
+            assert!(EVENTS.contains(&m), "{m}");
+        }
+    }
+    // Sounds sit in the banks the duel loads.
+    for e in EVENTS {
+        for c in of(e) {
+            if let Cue::Sound(id) = c {
+                assert!(matches!(id / 1000, 0 | 500 | 999), "{e}: {id}");
+            }
+        }
+    }
+    // A wall run's step once per period, a dash's afterimage likewise.
+    let steps = (0..120)
+        .filter(|&tick| {
+            periodic(&Mode::WallRun {
+                normal: [1., 0.],
+                up: true,
+                side: 0.,
+                tick,
+                idle: 0,
+            })
+            .is_some()
+        })
+        .count();
+    assert_eq!(steps, (119 / cue::STEP_EVERY) as usize);
+    assert!(periodic(&Mode::Ground).is_none());
+}
+
+#[test]
+fn the_layer_s_cues_name_known_events() {
+    // A wall run, a lock: what the layer emits has an entry.
+    let mut r = Rig::new(room(&[([-1000., 300.], [1000., 300.], 2000.)]));
+    let foe = Foe {
+        position: [0., 0., -900.],
+        centre: [0., 80., -900.],
+    };
+    let hold = Pad {
+        shotlock: true,
+        ..Pad::default()
+    };
+    let mut seen = Vec::new();
+    for _ in 0..60 {
+        let out = r.step(&idle_input(), &hold, Some(foe));
+        seen.extend(out.began);
+        seen.extend(out.cues);
+    }
+    assert!(seen.contains(&"aim") && seen.contains(&"lock"), "{seen:?}");
+    for e in seen {
+        assert!(cue::EVENTS.contains(&e), "{e}");
     }
 }

@@ -236,8 +236,8 @@ fn play_event(game: &mut Game, event: &DuelEvent) {
             direction: Vec3::from_array(direction),
             own,
         }),
-        DuelEvent::Guard(at) => game.effect_queue.push(EffectRequest::System {
-            id: 11,
+        DuelEvent::Guard(at, flash) => game.effect_queue.push(EffectRequest::System {
+            id: flash,
             at: Vec3::from_array(at),
         }),
         DuelEvent::KnockOut(slot) => {
@@ -319,10 +319,20 @@ pub(crate) fn join_apply(net: Option<ResMut<DuelNet>>, mut game: ResMut<Game>) {
         d.preload();
     }
     drive_room::rebuild_weapons(game);
+    // [KH3 ruleset] Wisdom's container is named by the host's KH3 cues
+    // (the airstep's afterimage, the bolts' flash and sparks): ready on
+    // both Soras before an event names it.
+    let kh3 = game.duel_rules.kh3();
+    if kh3 && let Some(d) = game.drive.as_mut() {
+        d.wisdom_pax();
+    }
     let mut rivals = std::mem::take(&mut game.rivals);
     for r in &mut rivals {
         if let Some(d) = r.own.drive.as_mut() {
             d.preload();
+            if kh3 {
+                d.wisdom_pax();
+            }
         }
         rival::swap(game, r);
         drive_room::rebuild_weapons(game);

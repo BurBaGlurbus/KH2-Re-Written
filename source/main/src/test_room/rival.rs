@@ -391,20 +391,75 @@ pub(crate) fn script_pad(tick: u64, me: [f32; 3], toward: [f32; 3]) -> RivalPad 
     pad
 }
 
-/// [KH3 ruleset] The second Sora's KH3 script runs this much later, so the
-/// two are not in step.
-pub(crate) const KH3_SECOND: u64 = 800;
-/// The KH3 script's cycle.
-const KH3_CYCLE: u64 = 1600;
+/// [KH3 ruleset] The second Sora's KH3 script runs half a cycle later: one
+/// Sora acts while the other takes it.
+pub(crate) const KH3_SECOND: u64 = KH3_ACT;
+/// The KH3 script's cycle: the acting half, then the half taking the other
+/// Sora's moves.
+const KH3_ACT: u64 = 3200;
+const KH3_CYCLE: u64 = 2 * KH3_ACT;
+
+/// What the KH3 script sees of its own Sora (on a joiner, as the host's
+/// snapshot shows him): his guard, the counter, Final Blow and the Risk
+/// Dodge offered.
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct Kh3View {
+    pub guarding: bool,
+    pub counter: bool,
+    pub chase: bool,
+    /// Knocked into the air by a heavy hit (Aerial Recovery may follow).
+    pub flying: bool,
+    /// The Risk Dodge is offered.
+    pub risk: bool,
+    /// The counter offered is the Risk Dodge's (longer than a guard's).
+    pub risk_counter: bool,
+    /// His own swing has landed (or met a guard): the launch may follow.
+    pub connected: bool,
+    /// The other Sora's swing and its frame.
+    pub foe_swing: Option<u32>,
+    /// The other Sora guards (or recoils from a guard).
+    pub foe_guarding: bool,
+}
+
+/// [Test] The guard goes up from this tick of the other's swing (a joiner
+/// sees it some ticks late).
+const GUARD_LEAD: u32 = 1;
+
+pub(crate) fn kh3_view(f: &Fighter, foe: Option<&Fighter>) -> Kh3View {
+    Kh3View {
+        guarding: matches!(f.player.action, Action::Guard | Action::GuardRecoil),
+        counter: f.kh3.counter_open(),
+        chase: f.kh3.chase_open(),
+        risk: f.kh3.risk_open(),
+        risk_counter: f.kh3.counter_ticks() > player::kh3::tuning::COUNTER_WINDOW,
+        connected: matches!(f.player.action, Action::Attack(_)) && f.player.connected,
+        flying: matches!(f.kh3.mode.name(), "blown" | "tossed"),
+        foe_swing: foe
+            .filter(|o| matches!(o.player.action, Action::Attack(_) | Action::AirAttack(_)))
+            .map(|o| o.player.frame),
+        foe_guarding: foe
+            .is_some_and(|o| matches!(o.player.action, Action::Guard | Action::GuardRecoil)),
+    }
+}
 
 /// [Test] The KH3 ruleset's script (`--kh3-test`, the scripted rival, and
-/// the room Sora of an unattended KH3 run): a ground chain with the launch
-/// and an air combo, a jump with Doubleflight and a glide, a dodge roll, an
-/// air slide, a run along the X axis away from the arena's middle into its
-/// wall (wall runs, the kick, Superslide, Sonic Slash), a full shotlock
-/// (Ragnarok), then an airstep with its flow attack. Fixed by the tick so
-/// a run repeats.
-pub(crate) fn kh3_pad(tick: u64, offset: u64, me: [f32; 3], toward: [f32; 3]) -> RivalPad {
+/// the room Sora of an unattended KH3 run). Acting: a ground chain with the
+/// launch and an air combo, a jump with Doubleflight and a glide, a dodge
+/// roll, an air slide, a run along the X axis away from the arena's middle
+/// into its wall (wall runs, the kick, Superslide, Sonic Slash), a full
+/// shotlock (Ragnarok), an airstep with its flow attack, a chain to its
+/// finisher, a short shotlock (King of Hearts), a chain into a guard, a
+/// launch into a guard, then spells and the grand magic when offered. Taking: standing, Aerial
+/// Recovery during the Ragnarok, and against the guarded chain a guard,
+/// the Risk Dodge out of a guarded heavy hit, the counter and Final Blow.
+/// Fixed by the tick (and what `view` shows) so a run repeats.
+pub(crate) fn kh3_pad(
+    tick: u64,
+    offset: u64,
+    me: [f32; 3],
+    toward: [f32; 3],
+    view: Kh3View,
+) -> RivalPad {
     let d = Vec2::new(toward[0] - me[0], toward[2] - me[2]);
     let distance = d.length();
     let chase = d.normalize_or_zero();
@@ -412,16 +467,48 @@ pub(crate) fn kh3_pad(tick: u64, offset: u64, me: [f32; 3], toward: [f32; 3]) ->
     let t = (tick + offset) % KH3_CYCLE;
     let mut pad = RivalPad::default();
     let mut stick = Vec2::ZERO;
+    if t >= KH3_ACT {
+        // Taking the other's moves (he is at `u` of his acting half).
+        let u = t - KH3_ACT;
+        match u {
+            // Aerial Recovery once the Ragnarok's bolts toss him.
+            1400..1600 => pad.jump = view.flying && u.is_multiple_of(4),
+            // The guarded chain: Guard while he swings; out of a guard's
+            // Jump while the Risk Dodge is offered (a heavy hit guarded), then
+            // Attack while the counter or Final Blow is offered.
+            2150..2700 => {
+                // The second chain launches into the guard: only the Risk
+                // Dodge's counter is taken there.
+                let risk_only = u >= 2470;
+                if view.chase || view.counter && (!risk_only || view.risk_counter) {
+                    pad.attack = u.is_multiple_of(4);
+                } else if view.risk {
+                    pad.jump = true;
+                } else if !view.guarding {
+                    // Guard as his swing comes.
+                    // (A joiner sees his frames through snapshots, a few at a
+                    // time, and late.)
+                    pad.guard = view
+                        .foe_swing
+                        .is_some_and(|f| (GUARD_LEAD..GUARD_LEAD + 8).contains(&f));
+                }
+            }
+            _ => {}
+        }
+        pad.direction = [0., 0.];
+        return pad;
+    }
     // Outward along X: the arenas are round or square about the middle.
     let outward = Vec2::new(if me[0] < 0. { -1. } else { 1. }, 0.);
     match t {
-        // Close in, then the ground chain; Jump mid-chain launches.
+        // Close in, then the ground chain; Jump just after a hit lands is
+        // the launch.
         0..230 => {
             if distance > 170. {
                 stick = chase;
             }
             pad.attack = distance < 260. && t.is_multiple_of(14);
-            pad.jump = t == 215;
+            pad.jump = matches!(t, 196 | 200 | 204 | 215);
         }
         // The air combo after the launch.
         230..300 => pad.attack = t.is_multiple_of(12),
@@ -432,44 +519,81 @@ pub(crate) fn kh3_pad(tick: u64, offset: u64, me: [f32; 3], toward: [f32; 3]) ->
             pad.jump_held = t < 460;
             stick = side * 0.9;
         }
-        // A dodge roll to the side.
-        490 => {
+        // A dodge roll to the side, once landed.
+        530 => {
             pad.guard = true;
             stick = side;
         }
         // A jump, then an air slide.
-        540 => pad.jump = true,
-        541..600 => {
-            pad.jump_held = t < 550;
-            if t == 556 {
+        580 => pad.jump = true,
+        581..640 => {
+            pad.jump_held = t < 590;
+            if t == 596 {
                 pad.guard = true;
                 stick = -side;
             }
         }
         // Out to the wall and up it; Guard kicks off into a Superslide,
         // Attack in it is the Sonic Slash.
-        600..960 => {
+        660..1020 => {
             stick = outward;
-            pad.guard = t == 940;
+            pad.guard = t == 1000;
         }
-        960..1000 => pad.attack = t == 975,
+        1020..1060 => pad.attack = t == 1035,
         // A full shotlock: hold R2, fire at 24 locks (Ragnarok).
-        1010..1210 => {
-            pad.shotlock_held = t < 1190;
-            pad.attack = t == 1180;
+        1070..1270 => {
+            pad.shotlock_held = t < 1250;
+            pad.attack = t == 1240;
         }
         // Aim again and airstep (Guard), then the flow attack on arrival.
-        1460..1540 => {
-            pad.shotlock_held = t < 1482;
-            pad.guard = t == 1478;
-            pad.attack = t > 1484 && t.is_multiple_of(3);
+        1520..1600 => {
+            pad.shotlock_held = t < 1542;
+            pad.guard = t == 1538;
+            pad.attack = t > 1544 && t.is_multiple_of(3);
+        }
+        // Close in and chain to the finisher (a blow, a knock-down).
+        1620..1770 => {
+            if distance > 170. {
+                stick = chase;
+            }
+            pad.attack = distance < 260. && t.is_multiple_of(14);
+        }
+        // A short shotlock: a few locks, King of Hearts.
+        1780..2050 => {
+            pad.shotlock_held = t < 1822;
+            pad.attack = t == 1818;
+        }
+        // A chain into the other's guard, and one into a guard of its
+        // finisher (the Risk Dodge).
+        2150..2450 | 2470..2700 => {
+            if distance > 170. {
+                stick = chase;
+            }
+            // The second chain: Jump once a swing met him (or his guard),
+            // the launch, a heavy hit for his guard.
+            pad.jump = t >= 2470 && view.connected;
+            // Held off while he guards or swings, so his counter has him to
+            // hit.
+            pad.attack = distance < 260.
+                && t.is_multiple_of(12)
+                && !view.foe_guarding
+                && view.foe_swing.is_none();
+        }
+        // Spells (style for the grand magic), then the grand magic once
+        // it is offered.
+        2720..KH3_ACT => {
+            pad.command = match t {
+                2740 | 2790 | 2840 | 2890 => Command::Cast(magic::FIRE),
+                2940 => Command::Cast(magic::THUNDER),
+                _ => Command::None,
+            };
+            pad.flow = t >= 3010 && t.is_multiple_of(10);
         }
         _ => {}
     }
     pad.direction = stick.clamp_length_max(1.).to_array();
     pad
 }
-
 /// What the magic bench does, in turn: the five spells that cost MP twice
 /// (176 of the duel's 180), the first item slot, Cure (all the MP that is
 /// left), then Valor Form.
@@ -639,7 +763,13 @@ pub(crate) fn tick(mut game: ResMut<Game>) {
             rival.pad = if bench {
                 bench_pad(tick, at, sora_at)
             } else if game.duel_rules.kh3() {
-                kh3_pad(tick, KH3_SECOND, at, sora_at)
+                kh3_pad(
+                    tick,
+                    KH3_SECOND,
+                    at,
+                    sora_at,
+                    kh3_view(&rival.fighter, Some(&game.sora)),
+                )
             } else {
                 script_pad(tick, at, sora_at)
             };

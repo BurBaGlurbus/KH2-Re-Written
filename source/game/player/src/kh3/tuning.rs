@@ -187,6 +187,9 @@ pub const TRACTION_AIR_FIRST: f32 = speed(1200.);
 pub const TRACTION_RATE: f32 = 0.2;
 pub const TRACTION_RATE_AIR_FIRST: f32 = 0.3;
 pub const TRACTION_STOP: f32 = length(160.);
+/// [duel choice] The counter and the launch home to this close: their KH2
+/// stand-in records reach less far than the reference's swings.
+pub const CLOSE_STOP: f32 = length(60.);
 pub const TRACTION_RANGE: f32 = length(800.);
 /// [duel choice] The traction window of a KH2 swing: the reference's
 /// windows run about 0.1-0.33 s into a swing.
@@ -199,11 +202,16 @@ pub const HOVER_FALL: f32 = accel(147.);
 /// search origin; 90 cm puts it at his chest) [duel choice].
 pub const CHEST: f32 = length(90.);
 
-/// Launch (Rising Spiral): rises at 1000 cm/s from 0.1 s to 0.6 s of the
-/// swing; once per chain.
+/// Launch (Rising Spiral): rises at 1000 cm/s for half a second, homing in
+/// from 0.1 s to 0.6 s of the swing; once per chain.
 pub const LAUNCH_RISE: f32 = speed(1000.);
 pub const LAUNCH_FROM: u32 = ticks(0.1);
 pub const LAUNCH_TO: u32 = ticks(0.6);
+/// [duel choice] The rise starts once Upper Slash (its KH2 stand-in) has
+/// struck, at 0.35 s, and keeps the reference's half second: rising from
+/// 0.1 s, the record's hit would pass over the other Sora.
+pub const LAUNCH_RISE_FROM: u32 = ticks(0.35);
+pub const LAUNCH_END: u32 = ticks(0.85);
 
 /// Flow attacks: Sonic Slash's dash (900 cm of root, scaled to the target)
 /// and its height gain 4.5. [duel choice] The dash runs at 1500 cm/s for
@@ -283,3 +291,106 @@ pub const GRAND_DAMAGE: f32 = 2.;
 
 /// The presentation's lean eases this share a tick toward its target.
 pub const LEAN_EASE: f32 = 0.25;
+
+// Hit reactions (the reference's player damage parameters). Damage motions
+// fall at -980 cm/s² (gravity scale 1); a tossed body rises at x3 and
+// hangs at x0.25 for 0.1 s after the apex.
+pub const HURT_GRAVITY: f32 = accel(980.);
+pub const HURT_RISE_GRAVITY: f32 = accel(2940.);
+pub const HURT_APEX_GRAVITY: f32 = accel(245.);
+pub const HURT_APEX_TICKS: u32 = ticks(0.1);
+/// A flinch: 550 cm/s x the row's scale along the hit, x0.9 a frame on the
+/// ground; in the air gravity waits while air braking (2048 cm/s²) brings
+/// it under 150 cm/s. Acting again at 0.4667 s; the ground clip ends at
+/// 1.1667 s, the air one at 0.6 s.
+pub const SMALL_KNOCK: f32 = speed(550.);
+pub const SMALL_DECAY: f32 = 0.9;
+pub const SMALL_AIR_BRAKE: f32 = accel(2048.);
+pub const SMALL_AIR_STOP: f32 = speed(150.);
+pub const SMALL_ACT: u32 = ticks(0.4667);
+pub const SMALL_END: u32 = ticks(1.1667);
+pub const SMALL_AIR_END: u32 = ticks(0.6);
+/// A blow: 2000 cm/s x scale along the hit and 300 up, x0.95 a frame;
+/// gravity once under 700 cm/s.
+pub const BLOW_SPEED: f32 = speed(2000.);
+pub const BLOW_UP: f32 = speed(300.);
+pub const BLOW_DECAY: f32 = 0.95;
+pub const BLOW_GRAVITY_BELOW: f32 = speed(700.);
+/// Toss and launch: straight up at 1500 / 2500 cm/s x scale.
+pub const TOSS_UP: f32 = speed(1500.);
+pub const LAUNCH_UP: f32 = speed(2500.);
+/// A launch ends in the air after 1.2 s of falling.
+pub const LAUNCH_FALL_END: u32 = ticks(1.2);
+/// A parabola: 1500 cm/s x scale at 45°, the horizontal x0.98 a frame
+/// while above 300 cm/s; acting again after 0.6 s.
+pub const PARABOLA: f32 = speed(1500. * std::f32::consts::FRAC_1_SQRT_2);
+pub const PARABOLA_DECAY: f32 = 0.98;
+pub const PARABOLA_KEEP: f32 = speed(300.);
+pub const PARABOLA_ACT: u32 = ticks(0.6);
+/// A beat: 2500 cm/s straight down, sliding out from under the attacker
+/// [duel choice: the slide at a flinch's speed].
+pub const BEAT_DOWN: f32 = speed(2500.);
+/// Knocked down: acting again 0.6 s after the landing, up at 0.93 s.
+pub const DOWN_ACT: u32 = ticks(0.6);
+pub const DOWN_END: u32 = ticks(0.93);
+/// Aerial Recovery: Jump from 0.2 s into a blow, toss, launch or
+/// parabola; invulnerable for its 0.5 s, moves again from 0.2667 s.
+pub const RECOVERY_FROM: u32 = ticks(0.2);
+pub const RECOVERY_TICKS: u32 = ticks(0.5);
+pub const RECOVERY_CHANGE: u32 = ticks(0.2667);
+/// For 0.1 s after a command starts, hits deal damage but no flinch.
+pub const COMMAND_ARMOUR: u32 = ticks(0.1);
+/// A guarded hit pushes back at 300 cm/s (light) or 1000 cm/s (heavy) x the
+/// row's scale. KH2's knock-slide takes ten times its first tick's step.
+pub const GUARD_PUSH: [f32; 2] = [speed(300.) * 10., speed(1000.) * 10.];
+/// [duel choice] The reference has no invulnerability while down or getting
+/// up; a duel keeps KH2's (the knock-down's own frames, and this long after
+/// getting up), so a downed Sora cannot be hit over and over.
+pub const WAKE_GUARD: u32 = ticks(0.25);
+
+/// Final Blow: a counter that leaves the other Sora blown away offers the
+/// chase for the next attack; after 0.2 s he is put 150 cm short of the
+/// target and 100 cm under it. [duel choice] The offer lasts 1 s.
+pub const CHASE_OFFER: u32 = ticks(1.0);
+pub const CHASE_WARP: u32 = ticks(0.2);
+pub const CHASE_SHORT: f32 = length(150.);
+pub const CHASE_UNDER: f32 = length(100.);
+
+/// Risk Dodge [duel choice: the reference only offers it from an enemy's
+/// marked attack; here guarding a heavy hit (a finisher's blow or harder)
+/// offers it for 0.5 s]: Jump slides under to behind the attacker (800 cm
+/// of root scaled to end behind him, clamped to 300-1000 cm, a 180° turn,
+/// moves again at 0.4667 s, invulnerable throughout); an attacker in the
+/// air is warped behind instead after 0.2 s. A counter is offered for 2 s
+/// after.
+pub const RISK_OFFER: u32 = ticks(0.5);
+pub const RISK_SLIDE_TICKS: u32 = ticks(0.4667);
+pub const RISK_MIN: f32 = length(300.);
+pub const RISK_MAX: f32 = length(1000.);
+pub const RISK_BEHIND: f32 = length(150.);
+pub const RISK_WARP: u32 = ticks(0.2);
+pub const RISK_COUNTER: u32 = ticks(2.0);
+
+/// Focus Syphon (shotlock kind 36): with the focus gauge emptied (until it
+/// is full again) the shotlock takes up to 18 locks, each after 0.0002 s
+/// per cm to the target, and refills focus by trunc(1.4 x locks); no
+/// damage.
+pub const SYPHON_LOCKS: u8 = 18;
+pub const SYPHON_PER_CM: f32 = 0.0002 * 60.;
+pub const SYPHON_RATE: f32 = 1.4;
+/// [duel choice] The syphon's pull plays this long before the focus comes.
+pub const SYPHON_TICKS: u32 = ticks(0.6);
+
+/// The lock-on camera: from Sora toward the target with a -20° pitch
+/// (none when the target is more than 10° below), pitch -70..+20, at least
+/// 400 cm back or far enough to frame both, eased at 8 a second; 0.5 s
+/// blend in.
+pub const LOCK_PITCH: f32 = -20. * std::f32::consts::PI / 180.;
+pub const LOCK_BELOW: f32 = -10. * std::f32::consts::PI / 180.;
+pub const LOCK_PITCH_MIN: f32 = -70. * std::f32::consts::PI / 180.;
+pub const LOCK_PITCH_MAX: f32 = 20. * std::f32::consts::PI / 180.;
+pub const LOCK_DISTANCE: f32 = length(400.);
+pub const LOCK_EASE: f32 = 8. / 60.;
+pub const LOCK_BLEND: u32 = ticks(0.5);
+/// The look point, 150 cm above Sora's feet.
+pub const LOCK_LOOK_UP: f32 = length(150.);

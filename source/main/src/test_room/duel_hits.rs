@@ -108,6 +108,9 @@ struct Landed {
     guarded: bool,
     /// The victim's Reflect volume that took it.
     barrier: Option<u64>,
+    /// The victim's guard row's reaction to the clash (ATKP +0x13, 2: the
+    /// clash flash only).
+    guard_refact: u8,
     /// A spell volume's centre (a Magnet draws toward it).
     centre: Option<Vec3>,
 }
@@ -267,9 +270,11 @@ pub(crate) fn tick(mut game: ResMut<Game>, mut previous: Local<HashMap<(u64, usi
                             return None;
                         }
                         let pair = (g_row.kind.min(row.kind), g_row.kind.max(row.kind));
+                        // The cone takes the vector from the other attack's
+                        // owner to this one's (as against the battle enemies).
                         let clashes = matches!(pair, (0, 0) | (0, 2) | (0, 3) | (1, 3))
-                            && in_cone(g_row, views[v].facing, to_attacker)
-                            && in_cone(&row, views[a].facing, -to_attacker);
+                            && in_cone(g_row, views[v].facing, -to_attacker)
+                            && in_cone(&row, views[a].facing, to_attacker);
                         if !clashes {
                             return None;
                         }
@@ -279,12 +284,12 @@ pub(crate) fn tick(mut game: ResMut<Game>, mut previous: Local<HashMap<(u64, usi
                                 .find(|(g, gr)| {
                                     combat::spheres_overlap(c, radius, g.to_array(), *gr)
                                 })
-                                .map(|(g, _)| *g)
+                                .map(|(g, _)| (*g, g_row.refact_self))
                         })
                     });
                     // A Reflect barrier (the victim's guard volumes) takes it too.
                     let barrier = guard_volume(&spells[v], &points, radius);
-                    if let Some(at) = guard_hit.or(barrier.map(|b| b.0)) {
+                    if let Some((at, refact)) = guard_hit.or(barrier.map(|b| (b.0, 0))) {
                         landed.push(Landed {
                             attacker: *attacker,
                             victim: *victim,
@@ -297,6 +302,7 @@ pub(crate) fn tick(mut game: ResMut<Game>, mut previous: Local<HashMap<(u64, usi
                             contact: at,
                             guarded: true,
                             barrier: barrier.map(|b| b.1),
+                            guard_refact: refact,
                             centre: None,
                         });
                         break;
@@ -318,6 +324,7 @@ pub(crate) fn tick(mut game: ResMut<Game>, mut previous: Local<HashMap<(u64, usi
                             contact: b,
                             guarded: false,
                             barrier: None,
+                            guard_refact: 0,
                             centre: None,
                         });
                         break;
@@ -374,6 +381,7 @@ pub(crate) fn tick(mut game: ResMut<Game>, mut previous: Local<HashMap<(u64, usi
                     contact,
                     guarded,
                     barrier: barrier.map(|b| b.1),
+                    guard_refact: 0,
                     centre: Some(Vec3::from_array(vol.centre)),
                 });
             }
@@ -528,6 +536,22 @@ fn land(
         (super::duel_kh3::grand(a), a.kh3.volley_dealt)
     };
     let bolt = hit.spell.is_some_and(super::duel_kh3::is_bolt);
+    // [KH3 ruleset] What the hit came from decides its damage kind
+    // (player::kh3::hurt).
+    let kh3_hit = rules.kh3().then(|| {
+        let (a, a_clips) = fighter(game, kit, hit.attacker);
+        let source = match hit.spell {
+            Some(_) if bolt => player::kh3::Source::Bolt {
+                ragnarok: hit.sub == super::duel_kh3::RAGNAROK_SUB,
+            },
+            Some(_) => player::kh3::Source::Spell {
+                heavy: combat::reaction_class(rows[0].reaction) == 4,
+                grand,
+            },
+            None => a.kh3.source(&a.player, a_clips),
+        };
+        (source, player::kh3::hurt::strike(source), a.player.in_air())
+    });
     let (victim, clips) = fighter(game, kit, hit.victim);
     let refused = |game: &mut Game, why: &str| {
         game.event(serde_json::json!({"event":"duel_hit_refused","tick":tick,
@@ -538,6 +562,10 @@ fn land(
     }
     if hit.guarded {
         victim.vitals.record.mark(aid);
+        // As against the battle enemies (FUN_1403d1f40's callers): a clash
+        // flash (system 13) when either row says so or in the air, else the
+        // guard flash (11), the guard's recoil and its invulnerability.
+        let mut flash = 11;
         if let Some(key) = hit.barrier {
             // Reflect took it: the barrier counts the clash (attack_get_
             // reflect_count, +0xb0), which its counter tiers read.
@@ -545,27 +573,71 @@ fn land(
                 *m.reflected.entry(key).or_insert(0) += 1;
             }
         } else {
-            let recoiled = victim
-                .player
-                .guard_recoil([-away.x, -away.z], clips)
-                .is_some();
-            victim.vitals.invulnerable = 80.;
-            if recoiled {
-                set_started(game, hit.victim, tick);
+            let refact_other = rows[0].refact_other;
+            let clash_only = hit.guard_refact == 2 || refact_other == 2;
+            if !clash_only
+                && !victim.player.action.airborne()
+                && (hit.guard_refact != 0 || refact_other != 0)
+            {
+                // Pushed straight back from the attacker, facing him.
+                let recoiled = victim
+                    .player
+                    .guard_recoil([away.x, away.z], clips)
+                    .is_some();
+                victim.vitals.invulnerable = 80.;
+                if recoiled {
+                    set_started(game, hit.victim, tick);
+                }
+            } else {
+                flash = 13;
+            }
+            // [KH3 ruleset] The push-back by the hit's weight; a heavy one
+            // offers the Risk Dodge.
+            let (victim, _) = fighter(game, kit, hit.victim);
+            if let Some((_, strike, attacker_air)) = kh3_hit {
+                victim.kh3.guarded(
+                    &mut victim.player,
+                    strike,
+                    [away.x, away.z],
+                    attacker_at.to_array(),
+                    attacker_air,
+                );
             }
         }
-        fighter(game, kit, hit.attacker).0.player.connected = true;
+        let repelled = {
+            let (a, a_clips) = fighter(game, kit, hit.attacker);
+            a.player.connected = true;
+            // [KH2 ruleset] The swing's own row repels it (RefactSelf not 2
+            // and a reflect motion): the Keyblade's recoil, as off the map
+            // [I: the same recoil stands for the attack's reflect motion].
+            // The KH3 reference repels only reflect level 3, which no
+            // Keyblade swing has.
+            !rules.kh3()
+                && hit.spell.is_none()
+                && rows[0].refact_self != 2
+                && rows[0].reflect_motion != 0
+                && a.player.wall_recoil(&sstm, a_clips).is_some()
+        };
+        if repelled {
+            set_started(game, hit.attacker, tick);
+        }
         game.effect_queue.push(EffectRequest::System {
-            id: 11,
+            id: flash,
             at: hit.contact,
         });
         game.duel_events
-            .push(DuelEvent::Guard(hit.contact.to_array()));
+            .push(DuelEvent::Guard(hit.contact.to_array(), flash));
         game.event(serde_json::json!({"event":"duel_guard","tick":tick,
-            "attacker":attacker_slot,"victim":victim_slot,"atkp":hit.atkp}));
+            "attacker":attacker_slot,"victim":victim_slot,"atkp":hit.atkp,
+            "flash":flash,"repelled":repelled}));
         return;
     }
-    if victim.vitals.invulnerable > 0. || untouchable(&victim.player, clips) {
+    let missed = if rules.kh3() {
+        victim.kh3.untouchable(&victim.player, clips)
+    } else {
+        untouchable(&victim.player, clips)
+    };
+    if victim.vitals.invulnerable > 0. || missed {
         // [KH3 ruleset] A dodge that met a hit opens the counter window.
         if rules.kh3() {
             victim.kh3.dodged();
@@ -659,10 +731,34 @@ fn land(
             knockback: attack.knockback,
         },
     };
-    // [KH3 ruleset] Flow states shrug off light reactions (the damage
-    // stays).
-    let shrug = rules.kh3() && victim.kh3.shrugs(combat::reaction_class(reaction.reaction));
-    let mut started = !shrug && victim.player.react(&reaction, &sstm, clips).is_some();
+    // [KH3 ruleset] The reference's reaction for the hit's kind, on KH2's
+    // damage motions; flow states and a command's first tenth of a second
+    // shrug off light ones (the damage stays). A Magnet keeps its pull.
+    let magnet = hit.centre.is_some() && combat::reaction_class(attack.reaction) == 5;
+    let mut kh3_log = None;
+    let mut started = match kh3_hit {
+        Some((source, strike, _)) if !magnet => {
+            let shrug = victim.kh3.shrugs_strike(&victim.player, strike);
+            kh3_log = Some((source, strike, shrug));
+            // A body already in the air keeps its motion (no new voice).
+            !shrug
+                && victim.kh3.hurt(
+                    &mut victim.player,
+                    strike,
+                    [away.x, away.z],
+                    hit.high,
+                    clips,
+                )
+        }
+        _ => victim.player.react(&reaction, &sstm, clips).is_some(),
+    };
+    let reacted = (
+        victim.kh3.mode.name(),
+        format!("{:?}", victim.player.action),
+    );
+    // A bolt's own impact: Wisdom's shot spark and its sound, once in a
+    // few ticks on one Sora.
+    let bolt_spark = bolt && victim.kh3.spark_ready();
     let hp = victim.vitals.hp;
     if hp == 0 && victim.player.die(clips).is_some() {
         started = true;
@@ -679,7 +775,28 @@ fn land(
             } else {
                 a.kh3.landed(hit.spell.is_none());
             }
+            if let Some((source, strike, _)) = kh3_log {
+                a.kh3.struck(source, strike);
+            }
         }
+    }
+    if bolt_spark {
+        super::duel_kh3::cues(
+            game,
+            "bolt_hit",
+            attacker_slot,
+            drive_fx::Anchor::World {
+                at: hit.contact,
+                pitch: 0.,
+                yaw: away.x.atan2(away.z),
+            },
+        );
+    }
+    if let Some((source, strike, shrug)) = kh3_log {
+        game.event(serde_json::json!({"event":"kh3_react","tick":tick,
+            "attacker":attacker_slot,"victim":victim_slot,"source":source.name(),
+            "knock":strike.knock.name(),"scale":strike.scale,"shrug":shrug,
+            "mode":reacted.0,"action":reacted.1,"hp":hp}));
     }
     // Played here and sent to the joiner, who plays the same (duel_sync).
     let mut events = Vec::new();

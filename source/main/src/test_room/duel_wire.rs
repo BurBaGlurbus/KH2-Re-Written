@@ -315,7 +315,11 @@ pub(crate) fn encode_snapshot(s: &Snapshot) -> Vec<u8> {
                     k.style,
                     k.mode,
                     k.locks,
-                    u8::from(k.aiming),
+                    u8::from(k.aiming)
+                        | u8::from(k.syphon) << 1
+                        | u8::from(k.counter) << 2
+                        | u8::from(k.chase) << 3
+                        | u8::from(k.risk) << 4,
                     k.offer,
                 ]);
                 w.u16(angle_bits(k.lean[0]));
@@ -379,7 +383,11 @@ pub(crate) fn decode_snapshot(bytes: &[u8]) -> Option<Snapshot> {
                     style: b[1],
                     mode: b[2],
                     locks: b[3],
-                    aiming: b[4] != 0,
+                    aiming: b[4] & 1 != 0,
+                    syphon: b[4] & 2 != 0,
+                    counter: b[4] & 4 != 0,
+                    chase: b[4] & 8 != 0,
+                    risk: b[4] & 16 != 0,
                     offer: b[5],
                     lean: [angle_of(r.u16()?), angle_of(r.u16()?)],
                 })
@@ -458,8 +466,9 @@ pub(crate) enum DuelEvent {
         direction: [f32; 3],
         own: bool,
     },
-    /// A guard met a swing: the clash spark at this point.
-    Guard([f32; 3]),
+    /// A guard met a swing: the system flash (11, or the clash's 13) at
+    /// this point.
+    Guard([f32; 3], u16),
     /// A Sora was knocked out (slot).
     KnockOut(u8),
     /// A knocked-out Sora stood up again (slot).
@@ -612,11 +621,12 @@ pub(crate) fn encode_events(tick: u64, events: &[DuelEvent]) -> Vec<u8> {
                 w.u8(3);
                 w.u8(*slot);
             }
-            DuelEvent::Guard(at) => {
+            DuelEvent::Guard(at, flash) => {
                 w.u8(4);
                 for v in at {
                     w.f32(*v);
                 }
+                w.u16(*flash);
             }
             DuelEvent::Spell { pax, fx } => {
                 w.u8(5);
@@ -716,7 +726,7 @@ pub(crate) fn decode_events(bytes: &[u8]) -> Option<(u64, Vec<DuelEvent>)> {
                 if !at.iter().all(|v| v.is_finite()) {
                     return None;
                 }
-                DuelEvent::Guard(at)
+                DuelEvent::Guard(at, r.u16()?)
             }
             _ => return None,
         });
@@ -838,6 +848,10 @@ mod tests {
                         mode: 12,
                         locks: 9,
                         aiming: true,
+                        syphon: true,
+                        counter: false,
+                        chase: true,
+                        risk: false,
                         offer: 1,
                         lean: [angle_of(angle_bits(-1.5)), 0.],
                     }),
@@ -902,7 +916,7 @@ mod tests {
             },
             DuelEvent::KnockOut(1),
             DuelEvent::StoodUp(0),
-            DuelEvent::Guard([4., 5., 6.]),
+            DuelEvent::Guard([4., 5., 6.], 13),
             DuelEvent::Spell {
                 pax: Some("magic/FIRE_3.mag".into()),
                 fx: player::magic::Fx::Start {

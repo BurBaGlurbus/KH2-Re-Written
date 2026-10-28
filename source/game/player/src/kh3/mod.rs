@@ -14,12 +14,16 @@
 //!
 //! The numbers are in `tuning`; walls and poles in `surface`.
 
+pub mod cue;
+pub mod hurt;
 pub mod surface;
 pub mod tuning;
 
+pub use hurt::{Knock, Source, Strike};
+
 use crate::{
-    Action, Body, Clips, Collided, Input, Params, Player, RETALIATING_SLASH, Step, Vec3, World,
-    actor_physics, growth, ptya,
+    Action, Body, Clips, Collided, Input, Params, Player, Step, Vec3, World, actor_physics, growth,
+    ptya,
 };
 use std::f32::consts::{FRAC_PI_2, PI, TAU};
 use surface::{Pole, Wall};
@@ -28,14 +32,17 @@ use tuning as t;
 /// Sora's attack records the KH3 moves play (PTYA ids): the air finishers
 /// stand in for the flow attacks (Sonic Slash, the wall-run attack), the
 /// spinning air finisher for Buzz Saw, Upper Slash for the launch (Rising
-/// Spiral) and Retaliating Slash for the counter [duel choice: the closest
-/// KH2 motions].
+/// Spiral) and the ground chain's first swing (0x05) for the counter [duel
+/// choice: the closest KH2 motions; Retaliating Slash is an air record, cut
+/// short on the ground, and Counterguard's swing is a guard window that
+/// only clashes]. A counter is known by the action it started
+/// (`Kh3::counter_swing`), not by its record, which the chain also plays.
 pub mod record {
     pub const SONIC: u8 = 7;
     pub const WALL_ATTACK: u8 = 8;
     pub const SPIN: u8 = 36;
     pub const LAUNCH: u8 = 0x0c;
-    pub const COUNTER: u8 = super::RETALIATING_SLASH;
+    pub const COUNTER: u8 = 0x05;
 }
 
 /// The two KH3 buttons the KH2 pad does not have.
@@ -70,8 +77,11 @@ pub struct Outcome {
     pub spawned: Vec<u32>,
     /// A grand magic asked for (the magic type).
     pub grand: Option<u8>,
-    /// KH3 moves that began this tick, for the log.
+    /// KH3 moves that began this tick, for the log (and their cues).
     pub began: Vec<&'static str>,
+    /// Other moments with a sound or an effect (`cue::EVENTS`): a lock,
+    /// a bolt's launch, a step of a wall run.
+    pub cues: Vec<&'static str>,
 }
 
 /// How a jump left.
@@ -165,6 +175,43 @@ pub enum Mode {
     Launch {
         tick: u32,
     },
+    /// A hit reaction (hurt.rs): a flinch on the ground (`air` false), or
+    /// a body in the air; `apex` counts the hang after a toss's top, `fell`
+    /// the ticks falling.
+    Hurt {
+        knock: Knock,
+        tick: u32,
+        back: bool,
+        air: bool,
+        high: bool,
+        apex: u32,
+        fell: u32,
+    },
+    /// Knocked down and getting up.
+    Down {
+        tick: u32,
+        back: bool,
+    },
+    /// Aerial Recovery.
+    Recover {
+        tick: u32,
+    },
+    /// Final Blow's warp.
+    Chase {
+        tick: u32,
+    },
+    /// The duel's Risk Dodge: from, to, and whether it is the warp.
+    Risk {
+        tick: u32,
+        from: Vec3,
+        to: Vec3,
+        warp: bool,
+    },
+    /// Focus Syphon's pull.
+    Syphon {
+        tick: u32,
+        locks: u8,
+    },
 }
 
 impl Mode {
@@ -197,6 +244,29 @@ impl Mode {
             Mode::Volley { .. } => "king_of_hearts",
             Mode::Flow { .. } => "flow_attack",
             Mode::Launch { .. } => "launch",
+            Mode::Hurt {
+                knock: Knock::Small,
+                air: false,
+                ..
+            } => "flinch",
+            Mode::Hurt {
+                knock: Knock::Small,
+                ..
+            } => "air_flinch",
+            Mode::Hurt {
+                knock: Knock::Blow | Knock::SideSpin,
+                ..
+            } => "blown",
+            Mode::Hurt {
+                knock: Knock::Beat, ..
+            } => "beaten",
+            Mode::Hurt { .. } => "tossed",
+            Mode::Down { .. } => "down",
+            Mode::Recover { .. } => "aerial_recovery",
+            Mode::Chase { .. } => "final_blow",
+            Mode::Risk { warp: true, .. } => "risk_warp",
+            Mode::Risk { .. } => "risk_dodge",
+            Mode::Syphon { .. } => "focus_syphon",
         }
     }
 }
@@ -208,6 +278,8 @@ pub struct Aim {
     pub tick: u32,
     pub locks: u8,
     timer: f32,
+    /// Focus Syphon's aim (the gauge was emptied).
+    pub syphon: bool,
 }
 
 /// A shotlock bolt (it rides a Wisdom bullet in the room, which draws it
@@ -274,6 +346,30 @@ pub struct Kh3 {
     shot_spent: bool,
     /// The last pole left (a Superslide out of it cannot grab it again).
     last_pole: Option<[f32; 2]>,
+    /// The flow attack running (its record, and whether it is Final
+    /// Blow's chase) and its hits landed so far.
+    flow: Option<(u8, bool)>,
+    flow_hits: u8,
+    /// Final Blow is offered (ticks left).
+    chase_offer: u32,
+    /// The duel's Risk Dodge is offered: ticks left, the attacker's feet,
+    /// whether he is in the air.
+    risk_offer: Option<(u32, Vec3, bool)>,
+    /// The focus gauge was emptied and has not been full since: the
+    /// shotlock is Focus Syphon.
+    pub focus_empty: bool,
+    /// Presentation cues of this tick that the tick itself cannot see
+    /// (a reaction begun by a hit, a lock), handed out with the next
+    /// outcome.
+    pending: Vec<&'static str>,
+    /// Ticks until a bolt's hit on him shows its spark again (a volley's
+    /// bolts land in bursts).
+    spark_wait: u32,
+    /// The swing a counter started (its record is also a chain's).
+    counter_swing: Option<Action>,
+    /// A record started this tick outside the KH2 controller's own tick
+    /// (its swing's hit windows are new: the room keys them by the start).
+    record_started: bool,
 }
 
 impl Default for Kh3 {
@@ -306,6 +402,15 @@ impl Default for Kh3 {
             volley_dealt: 0,
             shot_spent: false,
             last_pole: None,
+            flow: None,
+            flow_hits: 0,
+            chase_offer: 0,
+            risk_offer: None,
+            focus_empty: false,
+            pending: Vec::new(),
+            spark_wait: 0,
+            counter_swing: None,
+            record_started: false,
         }
     }
 }
@@ -475,6 +580,7 @@ impl Kh3 {
                     crate::magic::THUNDER,
                 ][e];
                 self.offer = Some((spell, t::OFFER_TICKS));
+                self.pending.push("grand_offer");
             }
             self.points = [0.; 3];
         }
@@ -483,6 +589,36 @@ impl Kh3 {
     /// The grand magic asked for was cast.
     pub fn grand_used(&mut self) {
         self.offer = None;
+    }
+
+    /// The counter window is open (a guard or a dodge met a hit).
+    pub fn counter_open(&self) -> bool {
+        self.counter > 0
+    }
+
+    /// Ticks left of the counter window.
+    pub fn counter_ticks(&self) -> u32 {
+        self.counter
+    }
+
+    /// Final Blow is offered.
+    pub fn chase_open(&self) -> bool {
+        self.chase_offer > 0
+    }
+
+    /// The Risk Dodge is offered.
+    pub fn risk_open(&self) -> bool {
+        self.risk_offer.is_some()
+    }
+
+    /// A bolt hit him: whether its spark and sound play (at most once in
+    /// `cue::SPARK_EVERY` ticks, so a volley's burst does not stack).
+    pub fn spark_ready(&mut self) -> bool {
+        let ready = self.spark_wait == 0;
+        if ready {
+            self.spark_wait = cue::SPARK_EVERY;
+        }
+        ready
     }
 
     /// A bolt hit (the room removed its bullet).
@@ -497,9 +633,13 @@ impl Kh3 {
         self.lean = shown.lean;
         self.aim = shown.aiming.then(|| Aim {
             locks: shown.locks,
+            syphon: shown.syphon,
             ..Aim::default()
         });
         self.offer = (shown.offer != 0).then_some((shown.offer, 1));
+        self.counter = u32::from(shown.counter);
+        self.chase_offer = u32::from(shown.chase);
+        self.risk_offer = shown.risk.then_some((1, [0.; 3], false));
         self.mode = MODE_NAMES
             .get(usize::from(shown.mode))
             .and_then(|n| mode_named(n))
@@ -514,6 +654,10 @@ impl Kh3 {
             mode: self.mode_code(),
             locks: self.aim.map_or(0, |a| a.locks),
             aiming: self.aim.is_some(),
+            syphon: self.aim.is_some_and(|a| a.syphon),
+            counter: self.counter_open(),
+            chase: self.chase_open(),
+            risk: self.risk_open(),
             offer: self.offer.map_or(0, |o| o.0),
             lean: self.lean,
         }
@@ -532,6 +676,7 @@ impl Kh3 {
         scene: &Scene,
     ) -> Outcome {
         let mut out = Outcome::default();
+        out.began.append(&mut self.pending);
         self.foe = scene.foe.map(|f| f.centre);
         self.gauges();
         // A reaction, a death, a cast or a form change replaced what the
@@ -559,6 +704,10 @@ impl Kh3 {
                 out.began.push(name);
             }
         }
+        out.cues.extend(cue::periodic(&self.mode));
+        if std::mem::take(&mut self.record_started) {
+            out.step.started = Some(player.action);
+        }
         self.step_bolts();
         for k in 0..2 {
             self.lean[k] += (self.lean_target[k] - self.lean[k]) * t::LEAN_EASE;
@@ -568,6 +717,12 @@ impl Kh3 {
 
     /// The gauges and timers of a tick.
     fn gauges(&mut self) {
+        // Emptied (by aiming), the gauge stays "empty" until it is full.
+        if self.focus <= 0. {
+            self.focus_empty = true;
+        } else if self.focus >= t::FOCUS_MAX {
+            self.focus_empty = false;
+        }
         self.focus = (self.focus + t::FOCUS_REGEN).min(t::FOCUS_MAX);
         self.slide_cooldown = self.slide_cooldown.saturating_sub(1);
         self.counter = self.counter.saturating_sub(1);
@@ -577,6 +732,11 @@ impl Kh3 {
         }
         if let Some((spell, left)) = self.offer {
             self.offer = (left > 1).then_some((spell, left - 1));
+        }
+        self.chase_offer = self.chase_offer.saturating_sub(1);
+        self.spark_wait = self.spark_wait.saturating_sub(1);
+        if let Some((left, at, air)) = self.risk_offer {
+            self.risk_offer = (left > 1).then_some((left - 1, at, air));
         }
     }
 
@@ -592,6 +752,13 @@ impl Kh3 {
     /// the run): the frame runs on while it stays, a new one starts at 0.
     fn show(&mut self, player: &mut Player, action: Action, clips: &Clips, step: &mut Step) {
         let action = match action {
+            Action::Hurt(i) if i >= clips.hurt.len() => {
+                if self.airborne() {
+                    Action::Fall
+                } else {
+                    Action::Idle
+                }
+            }
             Action::Growth(m) if clips.growth_clip(m).is_none() => {
                 if self.airborne() {
                     Action::Fall
@@ -620,7 +787,14 @@ impl Kh3 {
     fn airborne(&self) -> bool {
         !matches!(
             self.mode,
-            Mode::Ground | Mode::Land { .. } | Mode::Roll { .. } | Mode::Kh2
+            Mode::Ground
+                | Mode::Land { .. }
+                | Mode::Roll { .. }
+                | Mode::Kh2
+                | Mode::Down { .. }
+                | Mode::Hurt { air: false, .. }
+                | Mode::Risk { warp: false, .. }
+                | Mode::Syphon { .. }
         ) && !matches!(self.mode, Mode::Takeoff { jump, .. } if jump != Jump::Double)
     }
 
@@ -699,6 +873,22 @@ impl Kh3 {
         if player.action == Action::GuardRecoil && player.frame <= 1 {
             self.counter = t::COUNTER_WINDOW;
         }
+        // The duel's Risk Dodge out of a guarded heavy hit.
+        if input.jump
+            && matches!(player.action, Action::GuardRecoil | Action::Guard)
+            && self.start_risk(player, clips, &mut out.step)
+        {
+            return;
+        }
+        // Final Blow: the next attack after a counter that blew him away,
+        // once the counter's swing may be left.
+        if input.attack
+            && self.chase_offer > 0
+            && (Self::recovered(player, clips) || (swinging && self.cancel_open(player, clips)))
+            && self.start_chase(player, scene, clips, &mut out.step)
+        {
+            return;
+        }
         if input.attack
             && self.counter > 0
             && matches!(player.action, Action::GuardRecoil | Action::Guard)
@@ -762,6 +952,9 @@ impl Kh3 {
         let before = player.position;
         let started = player.action;
         out.step = player.tick(&inp, p, clips, world);
+        if out.step.started.is_some() {
+            self.counter_swing = None;
+        }
         if out.step.started.is_some() && matches!(started, Action::Attack(_) | Action::AirAttack(_))
         {
             self.traction = 0.;
@@ -827,7 +1020,14 @@ impl Kh3 {
             ];
             let dist = (d[0].hypot(d[1]) - t::length_of(50.)).max(0.);
             let window = (t::TRACTION_FROM..=t::TRACTION_TO).contains(&frame);
-            let target = if window && dist > t::TRACTION_STOP && dist <= t::TRACTION_RANGE {
+            // A counter or the launch closes right in [duel choice: their KH2
+            // records reach less far than the reference's swings].
+            let stop = if self.counter_swing.is_some() {
+                t::CLOSE_STOP
+            } else {
+                t::TRACTION_STOP
+            };
+            let target = if window && dist > stop && dist <= t::TRACTION_RANGE {
                 speed
             } else {
                 0.
@@ -836,7 +1036,7 @@ impl Kh3 {
             self.traction += (target - self.traction) * k;
             if self.traction > 0.05 {
                 let l = d[0].hypot(d[1]).max(1e-3);
-                let step = self.traction.min((dist - t::TRACTION_STOP).max(0.));
+                let step = self.traction.min((dist - stop).max(0.));
                 Self::travel(
                     player,
                     [d[0] / l * step, 0., d[1] / l * step],
@@ -906,13 +1106,27 @@ impl Kh3 {
     /// Plays an attack record now (the KH2 controller's swing, with its hop
     /// and hit windows).
     fn play_record(&mut self, player: &mut Player, id: u8, input: &Input, clips: &Clips) -> bool {
-        if ptya::find(&clips.records, id).is_none() || !player.ptya_attack(id, input, clips) {
+        if ptya::find(&clips.records, id).is_none() {
+            return false;
+        }
+        // The reference's attacks snap to the target on their first tick.
+        let yaw = player.yaw;
+        if let Some(f) = self.foe {
+            let d = [f[0] - player.position[0], f[2] - player.position[2]];
+            if d[0].hypot(d[1]) > 1. {
+                player.yaw = yaw_of(d);
+            }
+        }
+        if !player.ptya_attack(id, input, clips) {
+            player.yaw = yaw;
             return false;
         }
         player.connected = false;
         player.invulnerable = 0.;
         self.traction = 0.;
         self.aim = None;
+        self.counter_swing = (id == record::COUNTER).then_some(player.action);
+        self.record_started = true;
         true
     }
 
@@ -957,6 +1171,7 @@ impl Kh3 {
         }
         out.step = step;
         self.mode = Mode::Kh2;
+        self.counter_swing = None;
         self.shown = None;
         self.aim = None;
         self.lean_target = [0.; 2];
@@ -983,6 +1198,10 @@ impl Kh3 {
         player.mp.tick(1., player.abilities.mp_haste);
         player.mp_charging = player.mp.charging();
         player.invulnerable = (player.invulnerable - 1.).max(0.);
+        // The KH2 command lockout (frame trigger 16) runs out here too, as
+        // in the KH2 controller's own tick: else a swing's lockout would
+        // outlive it and refuse every attack from the layer's states.
+        player.command_lockout(clips);
         // Shotlock aim takes the stick and the buttons.
         let aiming = self.aim.is_some();
         let free_input = Input {
@@ -1174,6 +1393,12 @@ impl Kh3 {
                 }
             }
             Mode::Volley { .. } => self.volley(player, p, clips, world, scene, out),
+            Mode::Hurt { .. } => self.hurt_tick(player, input, p, clips, world, scene, out),
+            Mode::Down { .. } => self.down_tick(player, input, p, clips, world, scene, out),
+            Mode::Recover { .. } => self.recover_tick(player, input, p, clips, world, scene, out),
+            Mode::Chase { .. } => self.chase_tick(player, input, p, clips, world, scene, out),
+            Mode::Risk { .. } => self.risk_tick(player, p, clips, world, out),
+            Mode::Syphon { .. } => self.syphon(player, p, clips, world, out),
             Mode::Flow { tick } => {
                 let tick = tick + 1;
                 self.mode = Mode::Flow { tick };
@@ -1217,11 +1442,26 @@ impl Kh3 {
                 self.mode = Mode::Launch { tick };
                 player.frame = player.frame.saturating_add(1);
                 self.shown = Some(player.action);
-                let rising = (t::LAUNCH_FROM..t::LAUNCH_TO).contains(&tick);
+                let homing = (t::LAUNCH_FROM..t::LAUNCH_TO).contains(&tick);
+                let rising = (t::LAUNCH_RISE_FROM..t::LAUNCH_END).contains(&tick);
                 let vy = if rising { t::LAUNCH_RISE } else { 0. };
-                self.velocity = [0., vy, 0.];
+                // Rising Spiral homes in (its traction window is 0.1-0.6 s).
+                let mut h = [0f32; 2];
+                if homing && let Some(foe) = scene.foe {
+                    let d = [
+                        foe.position[0] - player.position[0],
+                        foe.position[2] - player.position[2],
+                    ];
+                    let l = d[0].hypot(d[1]);
+                    if l > t::CLOSE_STOP && l <= t::TRACTION_RANGE {
+                        let s = t::TRACTION.min(l - t::CLOSE_STOP);
+                        h = [d[0] / l * s, d[1] / l * s];
+                        player.yaw = yaw_of(d);
+                    }
+                }
+                self.velocity = [h[0], vy, h[1]];
                 Self::travel(player, self.velocity, rising, p, world);
-                if tick >= t::LAUNCH_TO {
+                if tick >= t::LAUNCH_END {
                     // Out into the air: the chain goes on as an air combo.
                     self.air_swings = 0;
                     self.velocity = [0.; 3];
@@ -1261,6 +1501,9 @@ impl Kh3 {
             self.counter = 0;
             self.mode = Mode::Kh2;
             out.began.push("counter");
+            return;
+        }
+        if input.attack && self.start_chase(player, scene, clips, &mut out.step) {
             return;
         }
         if input.attack && self.command(player, input, p, clips, world, scene, out) {
@@ -1460,6 +1703,9 @@ impl Kh3 {
                 self.counter = 0;
                 self.mode = Mode::Kh2;
                 out.began.push("counter");
+                return;
+            }
+            if self.start_chase(player, scene, clips, &mut out.step) {
                 return;
             }
             if self.command(player, input, p, clips, world, scene, out) {
@@ -2237,6 +2483,8 @@ impl Kh3 {
         self.hover = 0.;
         self.mode = Mode::Flow { tick: 0 };
         self.shown = Some(player.action);
+        self.flow = Some((id, false));
+        self.flow_hits = 0;
         true
     }
 
@@ -2354,11 +2602,14 @@ impl Kh3 {
             if self.shot_hold >= t::AIM_HOLD
                 && !self.shot_spent
                 && can_aim
-                && self.focus > 0.
+                && (self.focus > 0. || self.focus_empty)
                 && range <= t::AIM_RANGE
             {
                 self.shot_spent = true;
-                self.aim = Some(Aim::default());
+                self.aim = Some(Aim {
+                    syphon: self.focus_empty,
+                    ..Aim::default()
+                });
                 if let Some(f) = scene.foe {
                     player.yaw = yaw_of([
                         f.position[0] - player.position[0],
@@ -2377,12 +2628,54 @@ impl Kh3 {
             return;
         };
         aim.tick += 1;
+        if aim.syphon {
+            // Focus Syphon: no cost; each lock waits on the distance.
+            if aim.tick > t::AIM_DELAY && aim.locks < t::SYPHON_LOCKS {
+                aim.timer += 1.;
+                let wait = (t::SYPHON_PER_CM * range / t::SCALE).max(1.);
+                if range <= t::AIM_RANGE && (aim.locks == 0 || aim.timer >= wait) {
+                    aim.locks += 1;
+                    aim.timer = 0.;
+                    out.cues.push(if aim.locks == t::SYPHON_LOCKS {
+                        "max_locks"
+                    } else {
+                        "lock"
+                    });
+                }
+            }
+            self.aim = Some(aim);
+            if input.attack && aim.locks > 0 {
+                self.aim = None;
+                self.velocity = [0.; 3];
+                self.mode = Mode::Syphon {
+                    tick: 0,
+                    locks: aim.locks,
+                };
+                self.shown = Some(player.action);
+                out.began.push("focus_syphon");
+            } else if input.guard && scene.foe.is_some() && range <= t::AIRSTEP_RANGE {
+                self.aim = None;
+                self.velocity = [0.; 3];
+                self.mode = Mode::Airstep {
+                    tick: 0,
+                    speed: airstep_speed(range),
+                };
+                self.shown = Some(player.action);
+                out.began.push("airstep");
+            }
+            return;
+        }
         if aim.tick > t::AIM_DELAY && aim.locks < t::MAX_LOCKS {
             self.focus = (self.focus - t::FOCUS_AIM).max(0.);
             aim.timer += 1.;
             if range <= t::AIM_RANGE && (aim.locks == 0 || aim.timer >= t::LOCK_INTERVAL) {
                 aim.locks += 1;
                 aim.timer = (aim.timer - t::LOCK_INTERVAL).max(0.);
+                out.cues.push(if aim.locks == t::MAX_LOCKS {
+                    "max_locks"
+                } else {
+                    "lock"
+                });
             }
         }
         self.aim = Some(aim);
@@ -2398,6 +2691,7 @@ impl Kh3 {
                 speed: airstep_speed(d),
             };
             self.shown = Some(player.action);
+            out.began.push("airstep");
         } else if self.focus <= 0. {
             self.aim = None;
             out.began.push("aim_empty");
@@ -2477,7 +2771,13 @@ impl Kh3 {
             (t::KOH_LAUNCH, t::KOH_END)
         };
         let count = if ragnarok { t::MAX_LOCKS } else { locks };
+        if tick == launch {
+            out.cues.push("bolt_launch");
+        }
         let ring_from = launch.saturating_sub(t::RING_OPEN + 4);
+        if tick == ring_from {
+            out.cues.push("bolt_ring");
+        }
         if tick >= ring_from && spawned < count {
             let n = t::VOLLEY_PER_TICK.min(count - spawned);
             for _ in 0..n {
@@ -2555,6 +2855,47 @@ impl Kh3 {
         }
     }
 
+    /// Focus Syphon: in place and invulnerable while the pull plays, then
+    /// the focus.
+    fn syphon(
+        &mut self,
+        player: &mut Player,
+        p: &Params,
+        clips: &Clips,
+        world: &impl World,
+        out: &mut Outcome,
+    ) {
+        let Mode::Syphon { tick, locks } = self.mode else {
+            return;
+        };
+        let tick = tick + 1;
+        player.invulnerable = player.invulnerable.max(2.);
+        self.show(
+            player,
+            Action::Growth(growth::motion::GLIDE_STAND),
+            clips,
+            &mut out.step,
+        );
+        if tick < t::SYPHON_TICKS {
+            self.mode = Mode::Syphon { tick, locks };
+            return;
+        }
+        self.focus = (self.focus + (t::SYPHON_RATE * f32::from(locks)).trunc()).min(t::FOCUS_MAX);
+        out.cues.push("syphon_gain");
+        let below = world.floor(
+            player.position[0],
+            player.position[2],
+            player.position[1] + p.step_height,
+        );
+        if below.is_some_and(|f| player.position[1] - f < 1.) {
+            self.velocity = [0.; 3];
+            self.mode = Mode::Ground;
+            self.show(player, Action::Idle, clips, &mut out.step);
+        } else {
+            self.fall(player, [0.; 3], clips, &mut out.step);
+        }
+    }
+
     /// The bolts' flight: homing on the target point.
     fn step_bolts(&mut self) {
         let foe = self.foe;
@@ -2622,7 +2963,7 @@ fn home(dir: Vec3, to: Vec3, rate: f32) -> Vec3 {
 }
 
 /// The modes by snapshot code.
-pub const MODE_NAMES: [&str; 22] = [
+pub const MODE_NAMES: [&str; 33] = [
     "kh2",
     "ground",
     "air",
@@ -2645,6 +2986,17 @@ pub const MODE_NAMES: [&str; 22] = [
     "ragnarok",
     "flow_attack",
     "launch",
+    "flinch",
+    "air_flinch",
+    "blown",
+    "beaten",
+    "tossed",
+    "down",
+    "aerial_recovery",
+    "final_blow",
+    "risk_warp",
+    "risk_dodge",
+    "focus_syphon",
 ];
 
 /// A mode as the joiner shows it (its HUD and camera read only the kind;
@@ -2690,6 +3042,12 @@ pub struct Shown {
     pub mode: u8,
     pub locks: u8,
     pub aiming: bool,
+    /// The aim is Focus Syphon's.
+    pub syphon: bool,
+    /// The counter, Final Blow and the Risk Dodge are offered.
+    pub counter: bool,
+    pub chase: bool,
+    pub risk: bool,
     /// The offered grand magic's type (0: none).
     pub offer: u8,
     pub lean: [f32; 2],

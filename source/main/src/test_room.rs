@@ -4171,6 +4171,22 @@ fn load(
         })
         .and_then(|bytes| banks.insert(bytes).ok())
         .and_then(|bank| drive_room::Voices::read(bar_entry(&battle, b"vtbl").ok()?, bank));
+    // The second resident bank, `se/se999` (bank 999, loaded at boot with
+    // se000; fieldsfx-01): the growth motions' sounds (Aerial Dodge's
+    // 999019), the spells' and Drive forms' effect sounds.
+    match data::path_lookup::Library::open(source)
+        .map_err(|e| e.to_string())
+        .and_then(|mut library| {
+            library
+                .read("se/se999.win32.scd")
+                .map_err(|e| e.to_string())
+        })
+        .and_then(|bytes| banks.insert(bytes).map_err(|e| e.to_string()))
+    {
+        Ok(number) if number != 999 => eprintln!("se/se999 registered as bank {number}"),
+        Ok(_) => {}
+        Err(error) => eprintln!("se/se999 not registered: {error}"),
+    }
     // Footsteps: the world's step banks, read on their own thread since
     // the start (`read_footsteps`), registered here.
     let step_info = footsteps_job
@@ -8038,6 +8054,14 @@ fn simulate(
             "params":gallery.target_params.is_some(),
             "enemy":enemy_state}));
     }
+    // [Test] The KH3 script's spells.
+    let cast = cast.or(match kh3_script {
+        Some((p, _)) if !frozen => match p.command {
+            rival::Command::Cast(t) => Some(t),
+            _ => None,
+        },
+        _ => None,
+    });
     // The joiner's commands go to the host with his buttons.
     let mut net_command = rival::Command::None;
     if game.net_client {
@@ -8131,7 +8155,13 @@ fn simulate(
             {
                 let me = game.sora.player.position;
                 game.net_pad = if game.duel_rules.kh3() {
-                    rival::kh3_pad(tick, rival::KH3_SECOND, me, foe)
+                    rival::kh3_pad(
+                        tick,
+                        rival::KH3_SECOND,
+                        me,
+                        foe,
+                        rival::kh3_view(&game.sora, game.rivals.first().map(|r| &r.fighter)),
+                    )
                 } else if game.duel_magic {
                     rival::magic_pad(tick, 100, me, foe)
                 } else if game.duel_wisdom {
@@ -11017,6 +11047,7 @@ fn camera_control(
     talk: Option<Res<Talk>>,
     settings: Res<settings_room::SettingsRes>,
     game: Res<Game>,
+    mut lock_camera: Local<duel_kh3::LockCamera>,
 ) {
     // Mouse-look (input::mouse_look): the PC version reads the mouse while
     // its window is active with the cursor inside (FUN_140105810), and not
@@ -11061,7 +11092,9 @@ fn camera_control(
     // as the follow camera's is (FUN_140164940 from the target). [I] The
     // camera system's own test for event cameras (FUN_1401780d0) is taken
     // to be that one.
-    let kh3_view = duel_kh3::flow_view(&game, fov);
+    // [KH3 ruleset] The wall camera, else KH3's lock-on camera.
+    let kh3_view = duel_kh3::flow_view(&game, fov)
+        .or_else(|| duel_kh3::lock_view(&game, fov, eye, look_at, &mut lock_camera));
     let (pose, fov) = match game.overlay_camera.or(game.duel_camera).or(kh3_view) {
         Some(v) => {
             let mut eye = v.eye;

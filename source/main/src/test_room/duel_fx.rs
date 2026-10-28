@@ -9,7 +9,7 @@
 /// The sound causes the host sends: what a Sora's motions and commands
 /// play. Effect sounds start with their effects on each side; hit sounds
 /// have their own events; menu sounds stay with the player who heard them.
-const SORA_SOUNDS: [&str; 10] = [
+const SORA_SOUNDS: [&str; 11] = [
     "swing",
     "voice",
     "move_se",
@@ -20,6 +20,7 @@ const SORA_SOUNDS: [&str; 10] = [
     "antiform",
     "form_level",
     "wall_hit",
+    super::duel_kh3::CUE_SOUND,
 ];
 
 use super::duel_wire::{DuelEvent, FxAnchor};

@@ -1154,6 +1154,9 @@ const KEY_R2: u64 = 0x1_0000;
 /// the test vote the host puts to both is over. The pages turn on the way,
 /// for the captures: Bans while the bans are chosen, Ready once the
 /// builds are up.
+/// Guard's item id (its ability, in the ban pool).
+const GUARD_ITEM: u16 = 0x52;
+
 fn script(room: &mut LobbyRoom, net: &mut DuelNet, camp: &mut CampRes, game: &mut Game) {
     let seat = &room.lobby.seats[room.seat];
     let on_lobby = camp
@@ -1193,7 +1196,13 @@ fn script(room: &mut LobbyRoom, net: &mut DuelNet, camp: &mut CampRes, game: &mu
     match room.lobby.stage {
         Stage::Bans if room.stage_ticks == 60 * slow && !seat.bans_done => {
             let bans = if room.seat == 1 {
-                room.limits.ban_pool().into_iter().take(1).collect()
+                // Not Guard (item 0x52): the guard tests need it.
+                room.limits
+                    .ban_pool()
+                    .into_iter()
+                    .filter(|&a| a != GUARD_ITEM)
+                    .take(1)
+                    .collect()
             } else {
                 Vec::new()
             };

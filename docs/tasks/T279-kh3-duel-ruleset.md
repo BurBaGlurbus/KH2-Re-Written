@@ -19,7 +19,8 @@ notes are in the repository. Credit and the MIT notice: `CREDITS.md`, `NOTICE`. 
 reference's behaviour and numbers is kept outside the checkout (`%LOCALAPPDATA%\KH2FinalRewrite\research\kh3-combat\`).
 
 Evidence (private, outside the checkout): `%USERPROFILE%\kh2-kh3-out\` (local runs `run01`-`run0N`: logs,
-captures), `%USERPROFILE%\kh2-lan-out\kh3lan*` (loopback LAN runs).
+captures; deleted after the follow-up, whose kept runs are in the research folder below),
+`%USERPROFILE%\kh2-lan-out\kh3lan*` (loopback LAN runs).
 
 ## What was built
 
@@ -86,8 +87,8 @@ captures), `%USERPROFILE%\kh2-lan-out\kh3lan*` (loopback LAN runs).
     Glide and Superslide 205, the poles 206 / 207, the volley 208;
   - the run loop on a wall, pitched or rolled;
   - attack records: the air finishers 7 / 8 for Sonic Slash and the wall-run attack, record 36 for Buzz Saw,
-    Upper Slash (0x0c) for the launch, Retaliating Slash (0x28) for the counter. Their damage and reactions are
-    KH2's ATKP rows.
+    Upper Slash (0x0c) for the launch, Retaliating Slash (0x28) for the counter (the ground chain's first swing,
+    0x05, since the follow-up). Their damage is KH2's ATKP rows; their reactions the reference's (follow-up).
 - **Bolts.** Bolts are Wisdom's bullets (ATKP 859, subs 0 and 3); a volley deals at most 35 % of max HP.
 - **Focus refill.** The reference has no refill without prizes. Here each hit dealt gives +3, each hit taken
   +5, and the gauge refills 1 a second.
@@ -106,20 +107,87 @@ captures), `%USERPROFILE%\kh2-lan-out\kh3lan*` (loopback LAN runs).
   - The grand offer is the element with the most points (not a roll).
   - Style counts at the cast, not the hit.
 
+## Follow-up, 2026-10-28: effects, sounds, reactions, guard, the left-out moves
+
+Requested by burba in the project thread: every KH3 move and event with its effects and sounds on the host and
+the joiner; the other Sora reacting to each attack as KH3 does (stun, launch, knock-down and getting up, air
+reactions); blocking, which did not work in either ruleset; KH2 assets in place of anything that needs KH3's;
+and the left-out list again. Evidence (private): `%LOCALAPPDATA%\KH2FinalRewrite\research\kh3-combat\` —
+`kh3-cues-reactions-table.md` (move → effect → sound → host → joiner, hit → reaction), `kh2-standin-catalog.md`
+(the KH2 sound and effect ids), `runs-20261028\` (`run24` Test KH3 mode with captures, `kh3lan19` loopback LAN,
+`guard-kh2` / `guard-kh3b` real key presses, the audit scripts).
+
+- **Cues, `player::kh3::cue`.** A table from each move and moment (a lock, the 24th lock, the bolts' ring and
+  launch, a bolt's impact, a wall-run step, a dash's afterimage, a pole turn, the grand magic's offer) to KH2
+  stand-ins: Quick Run's afterimage (Sora's element 0x6e) for the dashes, Wisdom's muzzle, shot spark and Quick
+  Run MAX for the bolts and the airstep, the clash flash (system 13) for the counter and the warps, the lock-on,
+  lock-off, cursor and Drive-gauge-full sounds for the shotlock, the jump, roll, run-cloth and swing sounds for
+  the flowmotion. Moves whose KH2 motion already sounds keep the motion's own sounds and voices. Every cue is a
+  one-shot; a lasting move repeats one now and then while it runs, so nothing loops past its move. The room
+  plays them on the Sora's own containers (`duel_kh3::cues`, logged as `kh3_cue`), and the duel's existing event
+  path takes them to the joiner (sound cause `kh3`; Wisdom's container is made ready there). A bolt's spark
+  plays at most once in 4 ticks on one Sora, and a body already knocked into the air keeps its motion (and
+  voice) when another bolt hits it.
+- **Resident bank 999.** The room never loaded `se/se999`, the second bank the game keeps resident from boot
+  (fieldsfx-01), so every 999xxx sound was silent, in single player too: Aerial Dodge, Quick Run, Wisdom's shots,
+  Aerial Recovery, the forms' and limits' effect sounds. It is loaded with Sora's voices now.
+- **Reactions, `player::kh3::hurt`.** Each hit takes the reference's damage kind and scale by what it came from
+  (a swing, a finisher, a flow attack's hit, the launch, the counter, Final Blow, a bolt, a spell or its
+  finisher, a grand magic): flinch 550 cm/s × scale, ×0.9 a frame; blow 2000 and 300 up, ×0.95, gravity under
+  700; toss 1500 and launch 2500 straight up at ×3 gravity with the 0.1 s hang; parabola at 45°; beat
+  straight down; spins as blows and tosses [duel choice]. The victim cannot act until the reference's change
+  point (the hit stun: 0.4667 s for a flinch, 0.6 s after a knock-down's landing); heavy kinds land him into
+  KH2's knock-down and get-up (`BLOW_LAND`); Aerial Recovery (the KH2 ability) from 0.2 s into a blow, toss,
+  launch or parabola. The armour rules: the flow states and a command's first 0.1 s shrug off light kinds. No
+  invulnerability while flinching or in the air (juggles go on); [duel choice] KH2's while down, and 0.25 s
+  after getting up. No hitstop (the reference's shipped game has none). Logged as `kh3_react` (attacker,
+  victim, source, kind, scale, shrug, the victim's mode and motion).
+- **Guard, both rulesets (`duel_hits`).** The duel's guard-against-swing test took the vector from the guard's
+  owner to the attacker where the enemy port (and FUN_1403d1f40's callers) take the other way, so a guard only
+  met swings from behind; and the guard recoil pushed the guarder toward the attacker, facing away. Both now
+  follow the battle-enemy code: the guard flash (11) with the recoil and its invulnerability, or the clash
+  flash (13) in the air or when a row says so (the joiner gets the flash id); a swing whose own row repels it
+  plays the Keyblade's recoil in the KH2 ruleset [I: the map recoil stands for the reflect motion]. In the KH3
+  ruleset a guarded hit pushes back at the reference's 300 or 1000 cm/s, opens the counter window, and a
+  heavy one offers the Risk Dodge. Single player was already right (same test, the right way round; logs show
+  guards against the Shadow).
+- **Built from the left-out list, with KH2 stand-ins:**
+  - Final Blow: a counter that blows the other Sora away offers the chase for 1 s [duel choice]; 0.2 s of
+    Quick Run, then he is put 150 cm short and 100 cm under the target and the second air finisher record plays
+    (0.3 small, then 0.6 sidespin).
+  - Risk Dodge [duel choice, the reference only offers it from an enemy's marked attack]: guarding a heavy hit
+    offers it for 0.5 s; Jump slides under (the Dodge Roll motion) to just behind the attacker (300-1000 cm,
+    invulnerable, turned round) or warps behind one in the air, and offers the counter for 2 s.
+  - Focus Syphon: once the focus gauge is emptied (until it is full again) the shotlock takes up to 18 locks, each
+    after 0.0002 s a cm, and gives trunc(1.4 × locks) focus, no damage.
+  - KH3's lock-on camera while locked on: from behind Sora toward the target, 20° down (none when the target is
+    well below), back far enough to frame both (at least 400 cm, at most 1600 [duel choice]), eased at 8 a
+    second, half a second in and out.
+- **Script and logs.** The KH3 test script runs 6400 ticks: one Sora acts for half the cycle while the other
+  takes it (guards as a swing comes, Aerial Recovery during the Ragnarok, the Risk Dodge, the counter and Final
+  Blow while offered). [Test] The scripted lobby's ban skips Guard (it banned the first of the pool, which is
+  Guard, so a scripted joiner could never block).
+- **Fixed on the way.** The layer's own states never ran the KH2 command lockout down, so after some swings
+  every attack and cast was refused; records the layer started (launch, counter, flow attacks) did not report a
+  new action, so their hit windows kept the previous action's attack id and the launch and the counter never
+  hit. The counter plays the chain's first swing (0x05) now (Retaliating Slash is an air record cut short on the
+  ground; Counterguard's swing only clashes); the counter and the launch home to 60 cm [duel choice]; Upper
+  Slash rises from 0.35 s, after its hit [duel choice]; a record the layer plays snaps to the target first.
+
 ## Left out
 
-- Attractions, Keyblade transformations and Formchanges, Links, team attacks.
-- Rail slides: the arenas have no rails.
-- Final Blow and the chase.
-- Risk Dodge's enemy-offered slides and warps.
-- Pole swing (bars), corner rolls on walls, ledge grabs.
-- The other Keyblades' shotlocks (only kinds 1 and 2 have behaviour in the reference).
-- Focus Syphon.
+- Attractions, Links, team attacks: no counterpart in a 1v1 duel of two Soras (rides, partners, party).
+- Keyblade transformations and Formchanges: each is a Keyblade's own motion set and model change; KH2's Drive
+  forms are the duel's counterpart and stay. Too big for stand-ins.
+- Rail slides, pole swing (bars), corner rolls, ledge grabs: the arenas have no rails, bars or ledges.
+- The other Keyblades' shotlocks: the reference has behaviour only for kinds 1, 2 (built) and 36 (Focus
+  Syphon, built); the rest are rows of lock counts with no behaviour to stand in for.
+- Risk Dodge's slow motion and the shotlock's: one clock for two players.
 - Magic combos beyond KH2's own: KH3's Fire → Fira → Firaga are separate menu tiers, not a chain, so the duel
   keeps KH2's spells, their levels and KH2's spell-in-combo rule.
-- KH3's lock-on camera (KH2's lock stays).
-- Slow motion.
 - The pole spin's own damage (its rows' power is not in the reference).
+- Payback Strike after Aerial Recovery, Critical Counter's just guard: their timers are not located in the
+  reference.
 
 ## Checks
 
@@ -135,6 +203,11 @@ captures), `%USERPROFILE%\kh2-lan-out\kh3lan*` (loopback LAN runs).
 | Two PCs | NOT RUN |
 | `cargo fmt --all --check`, `cargo clippy --all-targets --locked -- -D warnings`, `cargo test --locked`, `cargo build --locked`, smoke `--frames 180` | PASS |
 | Release launcher (`tools\Build-Launcher.ps1 -Skate3`) | PASS |
+| Follow-up unit tests `player::kh3` (32 now: every attack's damage kind, the flinch's slide and stun, the toss's peak and the knock-down and get-up, the launch's peak and fall, Aerial Recovery, armour and the command's tenth, a re-hit in the air, Final Blow, the Risk Dodge, Focus Syphon, every move's stand-in in a loaded bank and the repeats, the layer's cue names) and `duel_wire` (the flags) | PASS |
+| Follow-up Test KH3 run `run24` (6400 ticks, both scripted) | PASS: every cue played (none unplayed), no sound more than twice in a tick; reactions: swing flinch ×11, air flinch, finisher and air finisher blows into down and up, launch toss ×2, counter vertical roll ×3, Final Blow ×3, King of Hearts sidespin, Ragnarok toss ×10, spell finisher parabola, Aerial Recovery ×2, guard, Risk Dodge, grand magic offer and cast |
+| Real key presses (Right Shift posted to the window, `guard-kh2`, `guard-kh3b`) | PASS: Guard from the keyboard path; guarded hits (flash 11 and 13) in both rulesets |
+| Follow-up loopback LAN `kh3lan19` (both scripted, KH3) | PASS: the joiner guards the host's swing and the host guards, counters and Final Blows the joiner's; the joiner plays every effect the host starts (by element 1:1 but one afterimage at the very end) and the Soras' sounds; joiner receive 10.8 KB/s |
+| Pole spin, side wall run, slide end, Focus Syphon and the Risk Dodge in a LAN run | NOT RUN: the scripts did not reach them; unit tests only |
 
 ## Uncertainty
 
@@ -146,7 +219,12 @@ captures), `%USERPROFILE%\kh2-lan-out\kh3lan*` (loopback LAN runs).
 - The cameras: the wall camera frames a Sora on a wall from the arena's side. Elsewhere KH2's follow camera
   trails the fast moves, and some captures show only the wall or a distant Sora. KH3's own camera was not
   ported.
-- Damage and reactions of the flow attacks and the launch are the KH2 records', ATKP's, not KH3's powers.
+- Damage of the flow attacks and the launch is the KH2 records' ATKP, not KH3's powers; their reactions are the
+  reference's kinds and scales now.
+- The stand-in sounds and effects were chosen from what the ids are known to be (the catalog), not by listening
+  side by side with KH3.
+- On the joiner, the flow attack's whoosh (500046) played 6-7 fewer times than on the host in the LAN runs; not
+  explained.
 
 ## Verdict
 
