@@ -91,6 +91,19 @@ pub struct Checks {
 /// (every placed actor fought without a fault).
 fn area_checkpoints(game: &mut Game, gallery: &enemy_gallery::EnemyGallery) {
     let tick = game.tick;
+    // [Tour setup] Sora stands 200 from the first placed enemy, at its
+    // height, so the group meets him (the area itself starts him at its
+    // entrance).
+    if tick == 40
+        && let Some(a) = gallery.actors.first()
+    {
+        let p = game.sora.player.position;
+        game.sora.player.position = [a.position.x - 200., a.position.y, a.position.z];
+        game.event(
+            serde_json::json!({"event":"area_enemies_sora_moved","tick":tick,
+            "from":p,"to":game.sora.player.position,"authored_debug_placement":true}),
+        );
+    }
     if !(tick.is_multiple_of(300) || tick == END) {
         return;
     }

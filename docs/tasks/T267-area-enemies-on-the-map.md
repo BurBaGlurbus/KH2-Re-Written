@@ -27,14 +27,16 @@ outside the checkout (`hb08-01`, `combat-06`).
 - The serial travels with the summon (`EnemyGallery::queue_spawn`) into `ScriptSetup::spawn_serial` and the object's
   `spawn_serial`.
 - An actor's AI is no longer refused inside an area (only Sephiroth's was allowed).
-- `--enemy-combat-tour` with `KH2RW_AREA_ENEMIES`: the area's actors at checkpoints every 300 ticks and a verdict
-  (every placed actor fought without a fault).
+- `--enemy-combat-tour` with `KH2RW_AREA_ENEMIES`: Sora is set 200 from the first placed enemy at tick 40 (an
+  authored tour placement), the area's actors are logged every 300 ticks, and the verdict asks that every placed
+  actor fought without a fault.
 
 ## Checks
 
 | Check | Result |
 | --- | --- |
-| hb08, battle program 1 (`hb08-01`) | PASS: 15 placed (7 Soldiers, 8 Shadows, serials 34–48), all run to 1800 without a fault; those placed above their ledge fall and land on it (y 1100 and 1200 → 900, 950 → 900); they move (up to 800 units), roll, jump and attack (`atk_craw`, `atk_jump`); Sora stands at the entrance about 2000 units away, so no hit lands either way |
+| hb08, battle program 1 (`hb08-01`) | PASS: 15 placed (7 Soldiers, 8 Shadows, serials 34–48), all run to 1800 without a fault; those placed above their ledge fall and land on it (y 1100 and 1200 → 900, 950 → 900); they move (up to 800 units), roll, jump and attack (`atk_craw`, `atk_jump`); Sora stays at the configuration's spawn, out of reach, so no hit lands |
+| hb08 with Sora set 200 from the first enemy at tick 40 (`hb08-02`, a tour placement) | PASS: the group hits Sora 6 times, his attacks (700–1300) land 14 times, one Soldier is defeated and scatters its prize; all 15 without a fault |
 | Combat tour in the flat arena (`combat-06`) | PASS |
 | `cargo fmt --all --check`, `cargo clippy --all-targets --locked -- -D warnings`, `cargo test --locked` | PASS |
 | Release launcher (`tools\Build-Launcher.ps1 -Skate3`) | PASS |
@@ -45,7 +47,7 @@ outside the checkout (`hb08-01`, `combat-06`).
 - Placing every enemy at once is the host's choice: the game pops them in by zone, and its encounter rules (battle
   state, music, the respawn count of type 2) are not translated.
 - The spawn record's unit arguments (`a1`, `a2`, +0x9f4) are not passed on.
-- Sora does not walk to them in the unattended run; a run that brings Sora into the fight is still to do.
+- The unattended run puts Sora by the group instead of walking him there.
 
 ## Verdict
 
