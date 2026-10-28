@@ -15,22 +15,22 @@ Private evidence (outside the checkout): `%LOCALAPPDATA%\KH2FinalRewrite\researc
   for a point of kind 2 (case 1) it marks the record triggered and runs FUN_1403fe6f0, every frame the player is in the
   zone.
 - **FUN_1403fe6f0, the group.** While the point's timer (+0x20) has run out, each entity of spawn type 2 whose object is
-  not alive (FUN_1403b41e0 by serial), that is not on the defeated list (DAT_142ae5e60, FUN_1403f5900) and whose
+  not alive (FUN_1403b41e0 by serial), that is not on the area's list of made objects (DAT_142ae5e60, FUN_1403f5900) and whose
   required count (+0x30) the wave (+0x2c) has reached is made: at its own place, at a free place around the player
   (spawn argument 1, FUN_1403f3fa0 / FUN_1403f4080) or within its radius (2); a made entity sets the timer to its
   respawn delay (+0x2a). With the timer out, FUN_1403feb50 may move the wave on and the round repeats.
 - **FUN_1403feb50, the waves.** Below wave 200: the living entities (types 0 and 3, and type 2 of the waves reached;
-  each one counted unless it is defeated and gone) are weighed by their objentry +0x54; at or under the point's limit
+  each one counted unless it was made and is gone) are weighed by their objentry +0x54; at or under the point's limit
   (header +0x22) the wave steps on, and at header +0x23 it goes back to +0x24, taking the entities of the waves to come
-  off the defeated list; it stops at the first wave some type-2 entity waits for.
+  off the list; it stops at the first wave some type-2 entity waits for.
 
 ## Changes
 
 - `area::Area::group_spawn` (FUN_1403fe6f0) and `next_wave` (FUN_1403feb50) with `area::Census` (the host's alive,
-  defeated, forget and +0x54); `SpawnObject::wave`; a kind-2 zone hit is `Request::Group`.
+  made list and +0x54); `SpawnObject::wave`; a kind-2 zone hit is `Request::Group`.
 - `data::objentry::ObjectEntry::spawn_limit` (+0x54).
 - `test_room/area_enemies.rs`: entities of spawn types 0, 1 and 3 stand at their places when the area is ready; the
-  groups come through `group_spawn` when Sora stands in their zone; defeated serials go on the list. In the unattended
+  groups come through `group_spawn` when Sora stands in their zone; made objects' serials go on the area's list (cleared at its load). In the unattended
   tour Sora is put in the first group point's zone at tick 40 (an authored tour placement).
 - Unit tests `a_group_makes_its_wave_then_the_next_once_the_first_is_down`, `a_respawn_delay_holds_the_next_entity`.
 
@@ -51,7 +51,9 @@ Private evidence (outside the checkout): `%LOCALAPPDATA%\KH2FinalRewrite\researc
   position.
 - The wave loop is bounded at 400 steps (the executable's would not end for a restart wave no entity waits for).
 - A made entity is counted as made even when the room's 16-actor limit stops its summon.
-- The writer of the defeated list in the executable was not traced; the room adds a serial when its actor dies.
+- The made list (DAT_142ae5e60): FUN_1403fe590 / FUN_1403fe650 put a made object's serial on it for objentry types
+  4, 13, 21 and 23 (mask 0xa02010) and FUN_1403a2170 starts it with the area; the room does the same for the objects
+  it places. FUN_1404196d0's own use of FUN_1403f5be0 was not read.
 
 ## Verdict
 
