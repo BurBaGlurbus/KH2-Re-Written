@@ -36,7 +36,7 @@ outside the checkout (`hb08-01`, `combat-06`).
 | Check | Result |
 | --- | --- |
 | hb08, battle program 1 (`hb08-01`) | PASS: 15 placed (7 Soldiers, 8 Shadows, serials 34–48), all run to 1800 without a fault; those placed above their ledge fall and land on it (y 1100 and 1200 → 900, 950 → 900); they move (up to 800 units), roll, jump and attack (`atk_craw`, `atk_jump`); Sora stays at the configuration's spawn, out of reach, so no hit lands |
-| hb08 with Sora set 200 from the first enemy at tick 40 (`hb08-02`, a tour placement) | PASS: the group hits Sora 6 times, his attacks (700–1300) land 14 times, one Soldier is defeated and scatters its prize; all 15 without a fault |
+| hb08 with Sora set 200 from the first enemy at tick 40 (`hb08-02`, a tour placement) | PASS: the group hits Sora 6 times, his attacks (700–1300) land 14 times, one enemy is defeated and its prize drops; all 15 without a fault |
 | Combat tour in the flat arena (`combat-06`) | PASS |
 | `cargo fmt --all --check`, `cargo clippy --all-targets --locked -- -D warnings`, `cargo test --locked` | PASS |
 | Release launcher (`tools\Build-Launcher.ps1 -Skate3`) | PASS |
