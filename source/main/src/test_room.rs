@@ -13499,7 +13499,12 @@ const FIELD_RESUME: f32 = 2.;
 /// in the first 30 frames after a reset.
 const BATTLE_DISTANCE: f32 = 1200.;
 
-fn music_tick(music: Option<ResMut<MusicRes>>, mut game: ResMut<Game>, audio: Res<Audio>) {
+fn music_tick(
+    music: Option<ResMut<MusicRes>>,
+    mut game: ResMut<Game>,
+    audio: Res<Audio>,
+    gallery: Res<enemy_gallery::EnemyGallery>,
+) {
     let Some(mut m) = music else { return };
     let m = &mut *m;
     let tick = game.tick;
@@ -13547,13 +13552,21 @@ fn music_tick(music: Option<ResMut<MusicRes>>, mut game: ResMut<Game>, audio: Re
     }
     // FUN_1403ab6f0: the target state and its hysteresis.
     let p = game.sora.player.position;
-    let target = game.enemy.as_ref().is_some_and(|rt| {
+    let room_enemy = game.enemy.as_ref().is_some_and(|rt| {
         let e = rt.enemy.position;
         !matches!(
             rt.enemy.current_act(),
             Some(shadow::ActKind::Leave | shadow::ActKind::Dead)
         ) && ((e[0] - p[0]).powi(2) + (e[2] - p[2]).powi(2)).sqrt() < BATTLE_DISTANCE
     });
+    // Every battle actor is an object of FUN_1403db9d0's enemy list.
+    let target = room_enemy
+        || gallery.actors.iter().any(|a| {
+            a.battle.as_ref().is_some_and(|b| {
+                let character = gallery.catalog.entries[a.entry].character;
+                b.brain.keeps_battle(character, p, BATTLE_DISTANCE)
+            })
+        });
     m.since_reset = m.since_reset.saturating_add(1);
     if target != m.battle {
         m.counter += 1;

@@ -441,6 +441,8 @@ pub struct ScriptSetup {
     /// The spawn record's serial (+0x9f0 -> +0x1e) when an area placed the
     /// object; 0 otherwise.
     pub spawn_serial: u16,
+    /// The objentry character id (+0x4c).
+    pub character: u16,
 }
 
 pub struct ScriptBrain {
@@ -646,6 +648,14 @@ impl ScriptBrain {
         sys.set_class(self.setup.object_type);
         sys.entry_id = self.setup.entry_id;
         sys.spawn_serial = self.setup.spawn_serial;
+        // FUN_140411700, which every battle object's constructor starts
+        // with (types 3, 4, 12, 13, 21): team 2 (+0x4dc) unless
+        // FUN_1403baa60 (character 0x417 to 0x423).
+        if matches!(self.setup.object_type, 3 | 4 | 12 | 13 | 21)
+            && !(0x417..0x424).contains(&self.setup.character)
+        {
+            sys.team = 2;
+        }
         self.world = EnemyWorld::default();
         self.world.tolerate_missing = true;
         self.world.patn = self.setup.patn.clone();
@@ -1364,6 +1374,14 @@ impl ScriptBrain {
     }
     pub fn hp(&self) -> i32 {
         self.object.sys.hp
+    }
+    /// A boss-class object (+0x6c8 bit 10).
+    pub fn boss(&self) -> bool {
+        self.object.sys.class_flags & enemy::sysobj::class_flag::BOSS != 0
+    }
+    /// +0x4dc: the team.
+    pub fn team(&self) -> i32 {
+        self.object.sys.team
     }
     /// The ENMP row `btlobj_set_sheet` bound (0 before any).
     pub fn sheet(&self) -> i32 {

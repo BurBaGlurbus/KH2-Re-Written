@@ -2210,7 +2210,13 @@ pub fn tick(game: &mut Game, tick: u64) {
                 < BATTLE_RANGE
     }) || party
         .iter()
-        .any(|m| !m.stored && m.follower.attack.is_some());
+        .any(|m| !m.stored && m.follower.attack.is_some())
+        // The battle actors (FUN_1403ab6f0 walks every enemy-class object),
+        // horizontally within the range.
+        || gallery_targets.iter().any(|t| {
+            let d = t.position - Vec3::from_array(player.position);
+            d.x.hypot(d.z) < BATTLE_RANGE
+        });
     party_battle.update(wanted);
     let battle = party_battle.on;
     let system_pax = drive.as_ref().and_then(|d| d.src.system_pax.clone());

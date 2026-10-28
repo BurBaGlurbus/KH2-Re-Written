@@ -109,6 +109,29 @@ impl Brain {
             _ => false,
         }
     }
+    /// FUN_1403ab6f0's test of one enemy-class object for the battle state:
+    /// a boss-class object (+0x6c8 bit 10) always counts; one of team 2
+    /// (+0x4dc) counts within `range` of Sora horizontally, or anywhere when
+    /// its character id is 0x417 to 0x423 (FUN_1403baa60). The hand ports
+    /// count as team 2.
+    pub fn keeps_battle(&self, character: u16, sora: [f32; 3], range: f32) -> bool {
+        if !self.alive() {
+            return false;
+        }
+        let team = match self {
+            Self::Script(a) => {
+                if a.boss() {
+                    return true;
+                }
+                a.team()
+            }
+            _ => 2,
+        };
+        let p = self.position();
+        team == 2
+            && ((0x417..0x424).contains(&character)
+                || ((p[0] - sora[0]).powi(2) + (p[2] - sora[2]).powi(2)).sqrt() < range)
+    }
     /// FUN_1403ba550: whether collision group `group` is on (the hand ports
     /// keep the table's default groups).
     pub fn group_on(&self, group: u8, default_groups: u32) -> bool {
@@ -945,6 +968,7 @@ impl BattleActor {
                     sheets: Some(assets.sheets.clone()),
                     patn: assets.patn.clone(),
                     spawn_serial,
+                    character: entry.character,
                 },
             )?;
             // The row the script bound (0: it bound none, the stand-in
