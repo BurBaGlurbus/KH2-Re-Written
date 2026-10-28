@@ -892,6 +892,9 @@ struct AreaRes {
     /// The townsperson the talk resource currently points at.
     talk_npc: Option<usize>,
     was_talking: bool,
+    /// Group points (object indexes) whose zone Sora stood in this tick,
+    /// for `area_enemies` to spawn (FUN_1403fe6f0).
+    groups: Vec<usize>,
 }
 
 /// Same-world area change (FUN_140156520 mode 0 / FUN_1401561b0): the
@@ -8196,6 +8199,8 @@ fn simulate(
                             job: start_area_job(&a.source, (world, area, entrance)),
                         });
                     }
+                } else if let ::area::Request::Group { object } = request {
+                    a.groups.push(object);
                 } else if let ::area::Request::BgGroups { on, off } = request {
                     for (bit, state) in [(on, true), (off, false)] {
                         if let Some(bit) = bit {
@@ -14218,6 +14223,7 @@ fn run(mut args: Vec<PathBuf>) -> Result<AppExit, Box<dyn std::error::Error>> {
             guide: None,
             guide_hold: 0,
             visited: std::iter::once((current.world, current.area)).collect(),
+            groups: Vec::new(),
             source,
             current,
             previous: None,

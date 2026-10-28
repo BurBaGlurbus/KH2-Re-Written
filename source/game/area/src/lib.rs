@@ -49,6 +49,9 @@ pub struct SpawnObject {
     pub timer: f32,
     /// +0x0e "triggered" byte of the record.
     pub triggered: bool,
+    /// +0x2c: a group point's wave (FUN_1403feb50); entities of spawn type 2
+    /// come once it reaches their required count.
+    pub wave: u8,
 }
 
 /// An entity the area creates, with the object yaw FUN_1403fe590 passes on.
@@ -96,6 +99,39 @@ pub enum Request {
     Signal { signal: u32, id: u16 },
     /// Type 8: switch background groups (0-based).
     BgGroups { on: Option<u8>, off: Option<u8> },
+    /// Type 2: the player is in a group point's zone; the host runs
+    /// [`Area::group_spawn`] for object `object`.
+    Group { object: usize },
+}
+
+/// Where FUN_1403fe6f0 makes a group entity (its spawn argument).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Place {
+    /// At the record's position.
+    Own,
+    /// 1: a free place around the player (FUN_1403f3fa0 / FUN_1403f4080).
+    NearPlayer,
+    /// 2: a free place within the record's radius of its position.
+    NearOwn(f32),
+}
+
+/// An entity a group point makes now.
+#[derive(Clone, Debug)]
+pub struct GroupSpawn {
+    pub spawn: Spawn,
+    pub place: Place,
+}
+
+/// The host's side of a group point.
+pub trait Census {
+    /// FUN_1403b41e0: an object with this spawn serial exists.
+    fn alive(&self, serial: u16) -> bool;
+    /// FUN_1403f5900 on DAT_142ae5e60: the serial's object was defeated.
+    fn defeated(&self, serial: u16) -> bool;
+    /// FUN_1403f5cd0: take the serial off the defeated list.
+    fn forget(&mut self, serial: u16);
+    /// The objentry's +0x54 (what one living object counts).
+    fn spawn_limit(&self, object: u32) -> u8;
 }
 
 pub struct Area {
@@ -140,6 +176,7 @@ impl Area {
                     zones: Vec::new(),
                     timer,
                     triggered: false,
+                    wave: 0,
                 });
             }
         }
@@ -223,6 +260,53 @@ impl Area {
         out
     }
 
+    /// FUN_1403fe6f0 for group point `index`: each entity of spawn type 2 that
+    /// is neither alive nor defeated and whose required count the wave has
+    /// reached is made, the point's timer then waiting its respawn delay;
+    /// with the timer run out the wave moves on (FUN_1403feb50) and the
+    /// round repeats. What is made here counts as alive from then on.
+    pub fn group_spawn(&mut self, index: usize, census: &mut dyn Census) -> Vec<GroupSpawn> {
+        let mut made: Vec<u16> = Vec::new();
+        let mut out = Vec::new();
+        let Some(o) = self.objects.get_mut(index) else {
+            return out;
+        };
+        loop {
+            for e in &o.point.entities {
+                if o.timer > 0. {
+                    return out;
+                }
+                if e.spawn_type != 2
+                    || made.contains(&e.serial)
+                    || census.alive(e.serial)
+                    || census.defeated(e.serial)
+                    || e.required_count > o.wave
+                {
+                    continue;
+                }
+                let place = match e.spawn_arg {
+                    1 => Place::NearPlayer,
+                    2 => Place::NearOwn(f32::from(e.radius)),
+                    _ => Place::Own,
+                };
+                made.push(e.serial);
+                out.push(GroupSpawn {
+                    spawn: Spawn {
+                        set: o.set,
+                        point: index,
+                        entity: e.clone(),
+                        yaw: wrap(PI - e.rotation[1]),
+                    },
+                    place,
+                });
+                o.timer = f32::from(e.respawn_delay);
+            }
+            if o.timer > 0. || !next_wave(o, census, &made) {
+                return out;
+            }
+        }
+    }
+
     /// The player entity this entrance uses, if any: the party leader, or on
     /// the world map the cursor (FUN_140393f50 sub-kind 2 creates it as the
     /// player-class worldmap::Player).
@@ -251,7 +335,12 @@ impl Area {
         }
         let current_world = self.world;
         let mut jumped = false;
-        for o in self.objects.iter_mut().filter(|o| o.flags & 2 != 0) {
+        for (index, o) in self
+            .objects
+            .iter_mut()
+            .enumerate()
+            .filter(|(_, o)| o.flags & 2 != 0)
+        {
             o.flags &= !0x18;
             if o.flags & 1 != 0 || jumped {
                 continue;
@@ -274,6 +363,13 @@ impl Area {
                     continue;
                 }
                 o.flags |= 8;
+                // Type 2 (FUN_1403fe320 case 1): the group spawns
+                // (FUN_1403fe6f0); the host has the objects it needs.
+                if o.point.kind == 2 {
+                    o.triggered = true;
+                    out.push(Request::Group { object: index });
+                    break;
+                }
                 let (stop, req) = hit(o, zi, player, current_world, &blocked);
                 if let Some(r) = req {
                     if matches!(r, Request::Jump { .. }) {
@@ -291,6 +387,60 @@ impl Area {
         }
         out
     }
+}
+
+/// FUN_1403feb50: once the living entities of the point weigh no more than
+/// its limit (header +0x22), the wave steps on (header +0x23 sends it back to
+/// +0x24, clearing the defeated marks of the entities of the waves to come)
+/// until a wave some type-2 entity waits for; false when none (or past 199).
+fn next_wave(o: &mut SpawnObject, census: &mut dyn Census, made: &[u16]) -> bool {
+    if o.wave >= 200 {
+        return false;
+    }
+    let alive = |c: &dyn Census, s: u16| made.contains(&s) || c.alive(s);
+    let mut weight = 0u32;
+    for e in &o.point.entities {
+        let counts = match e.spawn_type {
+            0 | 3 => true,
+            2 => e.required_count <= o.wave,
+            _ => false,
+        };
+        if counts && (!census.defeated(e.serial) || alive(census, e.serial)) {
+            weight += u32::from(census.spawn_limit(e.object));
+        }
+    }
+    if weight > u32::from(o.point.header[0x22]) {
+        return false;
+    }
+    // [I] A restart wave no entity waits for would loop without end; the
+    // steps are bounded here.
+    for _ in 0..400 {
+        o.wave += 1;
+        let (end, restart) = (o.point.header[0x23], o.point.header[0x24]);
+        if end != 0 && end <= o.wave {
+            for e in &o.point.entities {
+                if e.spawn_type == 2
+                    && restart <= e.required_count
+                    && census.defeated(e.serial)
+                    && !alive(census, e.serial)
+                {
+                    census.forget(e.serial);
+                }
+            }
+            o.wave = restart;
+        }
+        if o.point
+            .entities
+            .iter()
+            .any(|e| e.spawn_type == 2 && e.required_count == o.wave)
+        {
+            return true;
+        }
+        if o.wave >= 200 {
+            return false;
+        }
+    }
+    false
 }
 
 /// Type 6 tests only zones whose u16 +0x2c is 1.
@@ -485,6 +635,86 @@ mod tests {
         })
     }
 
+    struct Seen {
+        alive: Vec<u16>,
+        defeated: Vec<u16>,
+    }
+    impl Census for Seen {
+        fn alive(&self, s: u16) -> bool {
+            self.alive.contains(&s)
+        }
+        fn defeated(&self, s: u16) -> bool {
+            self.defeated.contains(&s)
+        }
+        fn forget(&mut self, s: u16) {
+            self.defeated.retain(|&d| d != s);
+        }
+        fn spawn_limit(&self, _: u32) -> u8 {
+            1
+        }
+    }
+
+    fn group(entities: Vec<Entity>) -> Area {
+        let mut a = area(vec![point(2, entities, vec![box_zone(0)])], 0);
+        a.objects[0].timer = 0.;
+        a
+    }
+
+    fn member(serial: u16, required_count: u8, respawn_delay: u16) -> Entity {
+        Entity {
+            serial,
+            required_count,
+            respawn_delay,
+            ..entity(301, 2, 0, 0.)
+        }
+    }
+
+    #[test]
+    fn a_group_makes_its_wave_then_the_next_once_the_first_is_down() {
+        // FUN_1403fe6f0 / FUN_1403feb50 with a limit of 0 (header +0x22):
+        // wave 0's entity comes; wave 1's waits until it is defeated.
+        let mut a = group(vec![member(34, 0, 0), member(35, 1, 0)]);
+        let mut seen = Seen {
+            alive: vec![],
+            defeated: vec![],
+        };
+        let made = a.group_spawn(0, &mut seen);
+        assert_eq!(
+            made.iter()
+                .map(|g| g.spawn.entity.serial)
+                .collect::<Vec<_>>(),
+            [34]
+        );
+        assert_eq!(made[0].place, Place::Own);
+        seen.alive.push(34);
+        assert!(a.group_spawn(0, &mut seen).is_empty(), "34 still stands");
+        seen.alive.clear();
+        seen.defeated.push(34);
+        let made = a.group_spawn(0, &mut seen);
+        assert_eq!(
+            made.iter()
+                .map(|g| g.spawn.entity.serial)
+                .collect::<Vec<_>>(),
+            [35]
+        );
+        assert_eq!(a.objects[0].wave, 1);
+    }
+
+    #[test]
+    fn a_respawn_delay_holds_the_next_entity() {
+        let mut a = group(vec![member(40, 0, 30), member(41, 0, 0)]);
+        let mut seen = Seen {
+            alive: vec![],
+            defeated: vec![],
+        };
+        assert_eq!(a.group_spawn(0, &mut seen).len(), 1);
+        assert_eq!(a.objects[0].timer, 30.);
+        assert!(a.group_spawn(0, &mut seen).is_empty());
+        a.objects[0].timer = 0.;
+        seen.alive.push(40);
+        let made = a.group_spawn(0, &mut seen);
+        assert_eq!(made[0].spawn.entity.serial, 41);
+    }
     #[test]
     fn wrap_matches_the_fmod_form() {
         assert!((wrap(PI - 1.7802) - (PI - 1.7802)).abs() < 1e-6);

@@ -27,6 +27,9 @@ pub struct ObjectEntry {
     /// +0x50: the weight (f32 bits; FUN_1403b5e00), which a vacuum's pull
     /// scales with and 0 of which makes the object immovable.
     pub weight_bits: u32,
+    /// +0x54: what one living object of this entry counts toward a spawn
+    /// point's limit before its next wave comes (FUN_1403feb50).
+    pub spawn_limit: u8,
 }
 
 impl ObjectEntry {
@@ -72,6 +75,7 @@ pub fn read(bytes: &[u8]) -> io::Result<Vec<ObjectEntry>> {
             character: u16::from_le_bytes(e[76..78].try_into().unwrap()),
             form: e[0x57],
             weight_bits: u32::from_le_bytes(e[0x50..0x54].try_into().unwrap()),
+            spawn_limit: e[0x54],
         })
         .collect())
 }
