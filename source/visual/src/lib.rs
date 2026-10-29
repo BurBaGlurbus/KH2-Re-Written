@@ -18,6 +18,7 @@ pub mod level_up;
 pub mod limit_hud;
 pub mod lock_on;
 pub mod menu_screen;
+pub mod mission_timer;
 pub mod new_game;
 pub mod overlay;
 pub mod par;

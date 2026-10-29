@@ -51,6 +51,16 @@ const RESULT_SHOT: u64 = 150;
 /// winner's shot, this long before the result's menu opens; it fades over
 /// the last TITLE_FADE ticks.
 const RESULT_HOLD: u64 = 90;
+
+/// How long the title holds: a match that ended without a round's end (a
+/// player left or forfeited) starts its banner at the result, so it holds
+/// a second longer for the banner's entrance.
+fn hold(m: &Match) -> u64 {
+    match m.why {
+        Some(Why::Left | Why::Forfeit) => RESULT_HOLD + 60,
+        _ => RESULT_HOLD,
+    }
+}
 const TITLE_FADE: f32 = 10.;
 /// Logical pad bits of mode 7.
 const UP: u64 = 0x10;
@@ -91,6 +101,53 @@ pub(crate) struct MatchRoom {
     /// The local tick the result's Results page came up (its numbers count
     /// up from there).
     results_at: Option<u64>,
+    /// The Struggle's 2D sheets (`MatchArt`), read on their own thread once
+    /// a duel's lobby opens.
+    art_job: Option<std::thread::JoinHandle<Result<MatchArt, String>>>,
+    pub art: Option<Result<MatchArt, String>>,
+}
+
+/// [Duel choice] The match's numbers and titles are the Struggle's, the
+/// game's own one-on-one match (msn/us/TT05_MS401.bar, the Struggle
+/// tournament): its timer sheet `ti_t` (dk::TIMER's readout and its 3, 2,
+/// 1, 0), its start `st_t` ("STRUGGLE!") and its end `ed_t` ("YOU WIN!" /
+/// "YOU LOSE" on their bar). Each is drawn as the game authored it.
+pub(crate) struct MatchArt {
+    pub timer: Sheet,
+    pub start: Sheet,
+    pub end: Sheet,
+}
+
+const ART_FILE: &str = "msn/us/TT05_MS401.bar";
+/// The start's "STRUGGLE!" as it bursts and fades (45 frames, GO's time).
+const START_GO: usize = 6;
+/// The end's bar, "YOU WIN!" and "YOU LOSE".
+const END_BAR: usize = 3;
+const END_WIN: usize = 1;
+const END_LOSE: usize = 2;
+
+fn load_art(source: &data::probe_source::ProbeSource) -> Result<MatchArt, String> {
+    let library = data::path_lookup::Library::open(source).map_err(|e| e.to_string())?;
+    let f = library
+        .find(ART_FILE)
+        .ok_or(format!("{ART_FILE} is not installed"))?;
+    let sheet = |name: &[u8; 4]| {
+        hud::load_nth(source, f.index, f.ordinal, f.name_hash, name, Some(0))
+            .map_err(|e| e.to_string())
+    };
+    Ok(MatchArt {
+        timer: sheet(b"ti_t")?,
+        start: sheet(b"st_t")?,
+        end: sheet(b"ed_t")?,
+    })
+}
+
+/// Which of the art's sheets a sprite draws from.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ArtSheet {
+    Timer = 0,
+    Start = 1,
+    End = 2,
 }
 
 /// [Duel choice] The Results page's numbers: each row's value comes in
@@ -195,11 +252,30 @@ pub(crate) fn tick(
         game.event(serde_json::json!({"event":"duel_bank","file":CUP_BANK,
             "bank":bank.as_ref().ok(),"error":bank.as_ref().err()}));
     }
+    if room.art_job.is_none() && room.art.is_none() && lobby.up {
+        let source = Arc::clone(&gallery.source);
+        room.art_job = Some(std::thread::spawn(move || load_art(&source)));
+    }
+    if room.art_job.as_ref().is_some_and(|j| j.is_finished())
+        && let Some(job) = room.art_job.take()
+    {
+        let art = job
+            .join()
+            .unwrap_or_else(|_| Err("the reading thread stopped".into()));
+        game.event(serde_json::json!({"event":"duel_art","file":ART_FILE,
+            "error":art.as_ref().err()}));
+        room.art = Some(art);
+    }
     let playing = matches!(net.status, Status::Playing);
     // A session that ended keeps its result on screen; a new one starts
     // with no match.
     if !playing && !matches!(net.status, Status::Ended(..)) {
-        *room = MatchRoom::default();
+        *room = MatchRoom {
+            art: room.art.take(),
+            art_job: room.art_job.take(),
+            bank_tried: room.bank_tried,
+            ..MatchRoom::default()
+        };
         game.duel_match = false;
         return;
     }
@@ -329,7 +405,7 @@ pub(crate) fn tick(
     if let Some(camp) = camp.as_deref_mut() {
         let want = room
             .m
-            .filter(|m| over && !game.duel_vote_up && now.saturating_sub(m.since) >= RESULT_HOLD)
+            .filter(|m| over && !game.duel_vote_up && now.saturating_sub(m.since) >= hold(m))
             .map(|m| m.began as u32);
         // The Results page opens with its numbers still to count.
         let text = room.m.map(|m| result_text(&m, seat, net, game, Some(0.)));
@@ -700,13 +776,15 @@ fn sounds(room: &mut MatchRoom, seat: usize, now: u64, game: &mut Game) {
     let count = (m.phase == Phase::Countdown)
         .then(|| count_at(now.saturating_sub(m.since)))
         .flatten();
-    // The timer's beep at 2, 1 and 0 seconds left of a timed fight.
+    // The timer's beep with its 3, 2 and 1 (FUN_14018d830: 2, 1 and 0
+    // whole seconds left).
     if m.phase == Phase::Fight
         && let Some(end) = m.clock_end
     {
-        let left = end.saturating_sub(now).div_ceil(60);
-        if left <= 2 && room.beeped != Some(left) {
-            room.beeped = Some(left);
+        let left = end.saturating_sub(now);
+        let whole = left / 60;
+        if left > 0 && whole <= 2 && room.beeped != Some(whole) {
+            room.beeped = Some(whole);
             game.sound_queue.push((SE_BEEP, "match"));
         }
     } else {
@@ -859,9 +937,103 @@ fn label(text: &str, centre: [f32; 2], size: f32, colour: [f32; 4]) -> Label {
     }
 }
 
+/// The game's sprites of the match this frame (worked out from the host's
+/// clock): the countdown's numerals, "STRUGGLE!" at the start, the clock of
+/// a timed fight, "YOU WIN!" / "YOU LOSE" at a round's end and the result.
+pub(crate) fn sprites(
+    room: &MatchRoom,
+    net: &DuelNet,
+    game: &Game,
+    in_camp: bool,
+) -> Vec<(ArtSheet, Vec<data::sprite_sequence::Quad>)> {
+    use visual::mission_timer as timer;
+    let (Some(m), Some(Ok(art))) = (room.m, room.art.as_ref()) else {
+        return Vec::new();
+    };
+    let now = now(net, game);
+    let t = now.saturating_sub(m.since) as u32;
+    let seat = usize::from(net.role == Role::Join);
+    let mut out = Vec::new();
+    let mut put = |sheet: ArtSheet, quads: Vec<data::sprite_sequence::Quad>| {
+        if !quads.is_empty() {
+            out.push((sheet, quads));
+        }
+    };
+    let ts = &art.timer.sequence;
+    let numeral = |n: usize, age: u32| timer::group_quads(ts, timer::NUMERAL[n], age, [0., 0.]);
+    // The clock of a timed fight, from its start to the round's end.
+    let clock = m.clock_end.map(|end| end.saturating_sub(now) as u32);
+    match m.phase {
+        Phase::Countdown => {
+            if let Some(n) = count_at(u64::from(t)) {
+                put(
+                    ArtSheet::Timer,
+                    numeral(usize::from(n), t % COUNT_STEP as u32),
+                );
+            }
+        }
+        Phase::Fight => {
+            if u64::from(t) < GO_SHOWN {
+                put(
+                    ArtSheet::Start,
+                    timer::group_quads(&art.start.sequence, START_GO, t, [0., 0.]),
+                );
+            }
+            if let Some(left) = clock {
+                put(
+                    ArtSheet::Timer,
+                    timer::quads(ts, timer::Side::Centre, left, t),
+                );
+                if let Some((n, from)) = timer::numeral(left) {
+                    put(ArtSheet::Timer, numeral(n, from - left));
+                }
+            }
+        }
+        Phase::RoundOver | Phase::Over => {
+            if m.why == Some(Why::Time) && m.phase == Phase::RoundOver {
+                // The readout stays as it stood (its entrance long done).
+                put(
+                    ArtSheet::Timer,
+                    timer::quads(ts, timer::Side::Centre, 0, u32::MAX),
+                );
+                put(ArtSheet::Timer, numeral(0, t));
+            }
+            // The title: a round's, kept through the result (its age runs
+            // on from the round's end when the match ended with one).
+            let age = match (m.phase, m.why) {
+                (Phase::Over, Some(Why::KnockOut | Why::Time)) => t + duel_match::ROUND_OVER as u32,
+                _ => t,
+            };
+            let over_shown = m.phase == Phase::Over && (!in_camp || u64::from(t) >= hold(&m));
+            if let Some(w) = m.winner.filter(|_| !over_shown) {
+                let text = if usize::from(w) == seat {
+                    END_WIN
+                } else {
+                    END_LOSE
+                };
+                let es = &art.end.sequence;
+                put(
+                    ArtSheet::End,
+                    timer::group_quads(es, END_BAR, age, [0., 0.]),
+                );
+                put(ArtSheet::End, timer::group_quads(es, text, age, [0., 0.]));
+            }
+        }
+    }
+    out
+}
+
 /// The match's display this frame (worked out from the host's clock).
 /// `in_camp`: the pause menu shows the result's choices and numbers.
-pub(crate) fn labels(room: &MatchRoom, net: &DuelNet, game: &Game, in_camp: bool) -> Vec<Label> {
+/// `art`: the game's sprites stand for the numerals, GO, the clock and the
+/// titles (`sprites`); the names, the rounds and why stay text.
+pub(crate) fn labels(
+    room: &MatchRoom,
+    net: &DuelNet,
+    game: &Game,
+    in_camp: bool,
+    art: bool,
+) -> Vec<Label> {
     let Some(m) = room.m else {
         return Vec::new();
     };
@@ -893,11 +1065,11 @@ pub(crate) fn labels(room: &MatchRoom, net: &DuelNet, game: &Game, in_camp: bool
             // The names, then each numeral grows in and fades.
             out.push(label(
                 &format!("{me}   vs   {them}"),
-                [256., 110.],
+                [256., if art { 64. } else { 110. }],
                 18.,
                 WHITE,
             ));
-            if let Some(n) = count_at(t) {
+            if let Some(n) = count_at(t).filter(|_| !art) {
                 let k = (t % COUNT_STEP) as f32 / COUNT_STEP as f32;
                 let size = 72. * (1.5 - 0.5 * (1. - (1. - k).powi(3)));
                 let alpha = if k > 0.8 { (1. - k) / 0.2 } else { 1. };
@@ -909,6 +1081,7 @@ pub(crate) fn labels(room: &MatchRoom, net: &DuelNet, game: &Game, in_camp: bool
                 ));
             }
         }
+        Phase::Fight if art => {}
         Phase::Fight => {
             if t < GO_SHOWN {
                 let k = t as f32 / GO_SHOWN as f32;
@@ -925,6 +1098,8 @@ pub(crate) fn labels(room: &MatchRoom, net: &DuelNet, game: &Game, in_camp: bool
                 out.push(label(&duel_rules::clock(left), [256., 24.], 22., colour));
             }
         }
+        // The banner says who won the round; a drawn one says so in text.
+        Phase::RoundOver if art && m.winner.is_some() => {}
         Phase::RoundOver => {
             let head = match m.why {
                 Some(Why::Time) => "TIME UP",
@@ -941,10 +1116,22 @@ pub(crate) fn labels(room: &MatchRoom, net: &DuelNet, game: &Game, in_camp: bool
         Phase::Over if in_camp => {
             // The title over the field until the result's menu opens; the
             // menu holds the rest (its help line says why).
-            if t < RESULT_HOLD {
+            if t < hold(&m) {
                 let (title, colour, why) = result_head(&m, seat, net);
+                // With the art the banner is the title; the reason goes
+                // under it.
+                let fade = ((hold(&m) - t) as f32 / TITLE_FADE).min(1.);
+                if art && m.winner.is_some() {
+                    out.push(label(
+                        &why,
+                        [256., 198.],
+                        15.,
+                        [WHITE[0], WHITE[1], WHITE[2], fade],
+                    ));
+                    return out;
+                }
                 let k = settle(t);
-                let fade = ((RESULT_HOLD - t) as f32 / TITLE_FADE).min(1.);
+                let fade = ((hold(&m) - t) as f32 / TITLE_FADE).min(1.);
                 let [r, g, b, _] = colour;
                 out.push(label(
                     title,

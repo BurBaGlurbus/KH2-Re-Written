@@ -68,8 +68,23 @@ enum RowKind {
     /// A row of the KH3 ruleset's ability pages (kh3_menu.rs): the page
     /// among them and the row (0 is the AP).
     Kh3(usize, usize),
+    /// A choice of the pick list that stands in for its row's page.
+    Choice(usize),
     /// Shown only.
     Info,
+}
+
+/// [Duel choice] Decide on a row of more than two choices opens them as a
+/// list in place of its page (the row's name on the page's tab, the cursor
+/// on the current one): Decide takes the one under the cursor, Cancel goes
+/// back. Left and Right still step the row.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Picking {
+    page: usize,
+    row: usize,
+    kind: RowKind,
+    /// The row's choice when the list opened.
+    selected: usize,
 }
 
 #[derive(Resource, Default)]
@@ -127,6 +142,8 @@ pub(crate) struct LobbyRoom {
     prompts: duel_camp::Prompts,
     /// The devices this window reads, when not all of them.
     devices: Option<String>,
+    /// A pick list is up.
+    picking: Option<Picking>,
 }
 
 impl LobbyRoom {
@@ -744,10 +761,59 @@ fn run_camp(
             step(room, net, game, menu, kind, forward);
         }
     }
+    // Decide on a row: a choice of the open list, a list to open, or a
+    // toggle (Ready, the bans' Confirm, a two-way row); Cancel closes the
+    // list. Leaving the Config screen drops it.
+    if menu.state != pause_menu::State::Config {
+        room.picking = None;
+    }
+    let (decided, cancel) = menu.data.duel.as_mut().map_or((Vec::new(), false), |d| {
+        let c = d.picking && std::mem::take(&mut d.cancel);
+        (std::mem::take(&mut d.decided), c)
+    });
+    let mut cursor = None;
+    if !decided.is_empty() {
+        let (_, rows, kinds) = pages(room, net, game, ap);
+        for (page, row) in decided {
+            let Some(&kind) = kinds.get(page).and_then(|r| r.get(row)) else {
+                continue;
+            };
+            let shown = &rows[page][row];
+            match kind {
+                RowKind::Choice(to) => {
+                    if let Some(p) = room.picking.take() {
+                        choose(room, net, game, menu, p, to);
+                        cursor = Some((p.page, p.row));
+                    }
+                }
+                RowKind::Info => game.sound_queue.push((SE_ERROR, "lobby")),
+                kind if listed(kind, shown.choices.len()) => {
+                    room.picking = Some(Picking {
+                        page,
+                        row,
+                        kind,
+                        selected: shown.selected,
+                    });
+                    cursor = Some((page, shown.selected));
+                    if let Some(d) = menu.data.duel.as_mut() {
+                        d.cancel = false;
+                    }
+                }
+                kind => step(room, net, game, menu, kind, true),
+            }
+        }
+    }
+    if cancel && let Some(p) = room.picking.take() {
+        cursor = Some((p.page, p.row));
+    }
     let (names, rows, _) = pages(room, net, game, ap);
     if let Some(d) = menu.data.duel.as_mut() {
         d.names = names;
         d.rows = rows;
+        d.picking = room.picking.is_some();
+        if cursor.is_some() {
+            d.cursor = cursor;
+        }
     }
 }
 
@@ -817,7 +883,7 @@ fn step(
                 game.sound_queue.push((SE_ERROR, "lobby"));
             }
         }
-        RowKind::Info => {}
+        RowKind::Info | RowKind::Choice(_) => {}
     }
     if game.duel_rules != rules_before {
         room.lobby.rules_changed();
@@ -1065,7 +1131,7 @@ fn pages(room: &LobbyRoom, net: &DuelNet, game: &Game, ap: i32) -> Pages {
             choices,
             selected,
             help(&format!(
-                "An ability neither player can equip this match. {} and {} choose.",
+                "An ability neither player can equip this match. Decide lists them, {} and {} step.",
                 room.prompts.left, room.prompts.right
             )),
             !choosing,
@@ -1077,7 +1143,7 @@ fn pages(room: &LobbyRoom, net: &DuelNet, game: &Game, ap: i32) -> Pages {
         vec![text(if mine.bans_done { "Chosen" } else { "Confirm" })],
         0,
         help(&format!(
-            "{} confirms your bans. None is a choice too.",
+            "Decide or {} confirms your bans. None is a choice too.",
             room.prompts.right
         )),
         !choosing,
@@ -1135,7 +1201,7 @@ fn pages(room: &LobbyRoom, net: &DuelNet, game: &Game, ap: i32) -> Pages {
                     .iter()
                     .position(|&b| b == game.equipment.weapon)
                     .unwrap_or(0),
-                help("Each Keyblade has its own Strength, Magic and ability. Equip shows them."),
+                help("Decide lists the Keyblades with their Strength and Magic."),
                 false,
             ),
             row(
@@ -1154,8 +1220,8 @@ fn pages(room: &LobbyRoom, net: &DuelNet, game: &Game, ap: i32) -> Pages {
                 vec![text("Not yet"), text("Ready")],
                 usize::from(mine.ready),
                 help(&format!(
-                    "{}, or {}, when your build is done. The match starts when both are ready.",
-                    room.prompts.right, room.prompts.start
+                    "Decide, or {}, when your build is done. The match starts when both are ready.",
+                    room.prompts.start
                 )),
                 false,
             ),
@@ -1175,10 +1241,96 @@ fn pages(room: &LobbyRoom, net: &DuelNet, game: &Game, ap: i32) -> Pages {
             RowKind::Info,
         ]);
     }
+    if let Some(p) = room.picking
+        && let Some(base) = rows.get(p.page).and_then(|r| r.get(p.row)).cloned()
+    {
+        let list: Vec<DuelRow> = base
+            .choices
+            .iter()
+            .enumerate()
+            .map(|(i, c)| {
+                let label = if i == p.selected { "Now" } else { "" };
+                let help = pick_help(room, game, p.kind, i)
+                    .map_or_else(|| base.help.clone(), |h| duel_camp::help_text(&h));
+                row(label, vec![c.clone()], 0, help, false)
+            })
+            .collect();
+        names[p.page] = base.label.clone();
+        kinds[p.page] = (0..list.len()).map(RowKind::Choice).collect();
+        rows[p.page] = list;
+    }
     (names, rows, kinds)
 }
 
-/// Menu keys in mode 7: Right, R2 (the next page).
+/// A pick list's help for choice `i`: a Keyblade's Strength and Magic.
+fn pick_help(room: &LobbyRoom, game: &Game, kind: RowKind, i: usize) -> Option<String> {
+    match kind {
+        RowKind::Keyblade => {
+            let k = *room.limits.keyblades.get(i)?;
+            let g = keyblade_gear(game, k);
+            Some(format!(
+                "Strength {}, Magic {}. Decide equips it, Cancel goes back.",
+                g.strength, g.magic
+            ))
+        }
+        _ => None,
+    }
+}
+
+/// Whether Decide on a row of this kind opens its choices as a list (more
+/// than two of them) rather than stepping it.
+fn listed(kind: RowKind, choices: usize) -> bool {
+    choices > 2
+        && matches!(
+            kind,
+            RowKind::Arena
+                | RowKind::Ruleset
+                | RowKind::Mode
+                | RowKind::Damage
+                | RowKind::Magic
+                | RowKind::HitCap
+                | RowKind::Time
+                | RowKind::Ban(_)
+                | RowKind::Keyblade
+        )
+}
+
+/// A pick list's choice `to` on its row (from `from`, the row's choice when
+/// it opened).
+fn choose(
+    room: &mut LobbyRoom,
+    net: &mut DuelNet,
+    game: &mut Game,
+    menu: &mut pause_menu::Camp,
+    p: Picking,
+    to: usize,
+) {
+    match p.kind {
+        RowKind::Ban(i) => room.picks[i] = to,
+        RowKind::Keyblade => {
+            if let (Some(&k), Some(e)) = (
+                room.limits.keyblades.get(to),
+                menu.data.items.equipment.first_mut(),
+            ) {
+                e.weapon = k;
+            }
+        }
+        kind => {
+            let forward = to >= p.selected;
+            for _ in 0..to.abs_diff(p.selected) {
+                step(room, net, game, menu, kind, forward);
+            }
+        }
+    }
+    let tick = game.tick;
+    game.event(serde_json::json!({"event":"duel_pick","tick":tick,
+        "row":format!("{:?}", p.kind),"choice":to}));
+}
+
+/// Menu keys in mode 7: Decide, Down, Right, R2 (the next page).
+const KEY_DECIDE: u64 = 0x4;
+const KEY_CANCEL: u64 = 0x8;
+const KEY_DOWN: u64 = 0x20;
 const KEY_START: u64 = 0x2;
 const KEY_RIGHT: u64 = 0x80;
 const KEY_R2: u64 = 0x1_0000;
@@ -1207,6 +1359,15 @@ fn script(room: &mut LobbyRoom, net: &mut DuelNet, camp: &mut CampRes, game: &mu
         game.duel_camp_press = match (room.lobby.stage, room.stage_ticks) {
             (Stage::Bans, 30) | (Stage::Loadout, 40 | 46) => KEY_R2,
             (Stage::Bans, 40) if room.seat == 1 => KEY_RIGHT,
+            // The joiner opens Ban 1's list and backs out of it.
+            (Stage::Bans, 44) if room.seat == 1 => KEY_DECIDE,
+            (Stage::Bans, 52) if room.seat == 1 => KEY_CANCEL,
+            // The joiner's Keyblade from the list (Decide on the Keyblade
+            // row, down two, Decide); the host's Ready through its row.
+            (Stage::Loadout, 54 | 66) if room.seat == 1 && !game.duel_magic => KEY_DECIDE,
+            (Stage::Loadout, 58 | 62) if room.seat == 1 && !game.duel_magic => KEY_DOWN,
+            (Stage::Loadout, 54 | 58) if room.seat == 0 => KEY_DOWN,
+            (Stage::Loadout, 62) if room.seat == 0 => KEY_DECIDE,
             // The joiner readies with Start once its camp is back from the
             // vote (the host through the row).
             (Stage::Loadout, t)
@@ -1216,10 +1377,10 @@ fn script(room: &mut LobbyRoom, net: &mut DuelNet, camp: &mut CampRes, game: &mu
             }
             _ => 0,
         };
-        // The Match page, the Bans page, the Ready page.
+        // The Match page, the Bans page, the Keyblade list, the Ready page.
         if matches!(
             (room.lobby.stage, room.stage_ticks),
-            (Stage::Bans, 20 | 80) | (Stage::Loadout, 70)
+            (Stage::Bans, 20 | 48 | 56 | 80) | (Stage::Loadout, 64 | 70)
         ) {
             let key = (
                 1,
@@ -1276,5 +1437,22 @@ fn script(room: &mut LobbyRoom, net: &mut DuelNet, camp: &mut CampRes, game: &mu
             intend(room, net, game, Intent::Ready(true));
         }
         _ => {}
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn decide_lists_long_rows_and_toggles_the_rest() {
+        assert!(listed(RowKind::Keyblade, 20));
+        assert!(listed(RowKind::Ban(1), 30));
+        assert!(listed(RowKind::Damage, 20));
+        // Two choices: Decide steps (Ruleset, Ready); Info never lists.
+        assert!(!listed(RowKind::Ruleset, 2));
+        assert!(!listed(RowKind::Ready, 2));
+        assert!(!listed(RowKind::Info, 9));
+        assert!(!listed(RowKind::Kh3(0, 1), 3));
     }
 }

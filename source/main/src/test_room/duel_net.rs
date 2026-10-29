@@ -119,6 +119,8 @@ pub(crate) struct DuelNet {
     notice: Option<(String, visual::dialogue::TalkWindow)>,
     notices_closing: Vec<visual::dialogue::TalkWindow>,
     notice_sheets: Option<(usize, usize)>,
+    /// The match's art on the 2D layer (duel_match_room::MatchArt).
+    match_sheets: Option<[usize; 3]>,
 }
 
 /// YS::WINDOW_BALLOON's art as the world map reads it (msg/us/fontinfo.bar
@@ -312,6 +314,7 @@ impl DuelNet {
             notice: None,
             notices_closing: Vec::new(),
             notice_sheets: None,
+            match_sheets: None,
         })
     }
 
@@ -876,9 +879,34 @@ pub(crate) fn present(
     {
         frame.draws.push((white, vec![tinted(SCREEN, c)]));
     }
+    // The game's sprites of the match (the Struggle's sheets, registered
+    // once they are read), then the text that stays.
+    let art = duel_match
+        .as_ref()
+        .and_then(|m| m.art.as_ref())
+        .and_then(|a| a.as_ref().ok());
+    if net.match_sheets.is_none()
+        && let Some(a) = art
+    {
+        let mut add = |s: &Sheet| {
+            frame.add_sheet(
+                &mut images,
+                s.texture_rgba.clone(),
+                s.texture_size,
+                s.texel_scale as f32,
+            )
+        };
+        net.match_sheets = Some([add(&a.timer), add(&a.start), add(&a.end)]);
+    }
+    let drawn = net.match_sheets.filter(|_| art.is_some());
+    if let (Some(ids), Some(m)) = (drawn, duel_match.as_ref().filter(|_| !covered)) {
+        for (sheet, quads) in duel_match_room::sprites(m, &net, &game, in_camp) {
+            frame.draws.push((ids[sheet as usize], quads));
+        }
+    }
     let labels = duel_match
         .filter(|_| !covered)
-        .map(|m| duel_match_room::labels(&m, &net, &game, in_camp))
+        .map(|m| duel_match_room::labels(&m, &net, &game, in_camp, drawn.is_some()))
         .unwrap_or_default();
     for l in &labels {
         let width = field_command_menu::text_width(&l.text, &f, l.size);

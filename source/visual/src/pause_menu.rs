@@ -225,7 +225,19 @@ pub struct DuelPages {
     pub cancel: bool,
     /// The top level's Cancel and Start do not close the camp.
     pub keep_open: bool,
+    /// [Rewrite] Decide on a row that is not locked: (page, row), for the
+    /// caller to take (a toggle, or its pick list).
+    pub decided: Vec<(usize, usize)>,
+    /// [Rewrite] A pick list is up on the Config screen: Cancel goes to the
+    /// caller (`cancel`) instead of closing, and L2 / R2 stay on the page.
+    pub picking: bool,
+    /// [Rewrite] Puts the Config cursor on (page, row) once (taken).
+    pub cursor: Option<(usize, usize)>,
 }
+
+/// [Rewrite] Config rows on screen at once; a longer caller page scrolls
+/// to keep the cursor in view.
+const CONFIG_VISIBLE: usize = 8;
 
 /// One caller row: label, choices (game text), the chosen one, help, and
 /// whether this player may change it.
@@ -690,6 +702,8 @@ pub struct Camp {
     config_frame: Option<Id>,
     config_labels: Vec<Id>,
     config_page: usize,
+    /// The first Config row on screen (a caller page longer than 8).
+    config_scroll: usize,
     // Items.
     item_ui: items::Ui,
     // Abilities.
@@ -759,6 +773,7 @@ impl Camp {
             config_frame: None,
             config_labels: Vec::new(),
             config_page: 0,
+            config_scroll: 0,
             item_ui: items::Ui::default(),
             ability_ui: abilities::Ui::default(),
             party_ui: party::Ui::default(),
@@ -1963,16 +1978,44 @@ impl Camp {
         if self.state != State::Config || self.substate != 1 {
             return;
         }
+        // The caller's cursor: its page, then its row.
+        let want = self.data.duel.as_mut().and_then(|d| d.cursor.take());
+        if let Some((page, _)) = want
+            && page != self.config_page
+            && page < self.config_pages()
+        {
+            self.config_page = page;
+            let name = self.page_name();
+            self.tab_text(1, name);
+            self.build_config_rows(seq, want.map_or(0, |(_, r)| r));
+            self.config_help(seq);
+            self.duel_seen = self
+                .duel_rows()
+                .map(<[DuelRow]>::to_vec)
+                .unwrap_or_default();
+            return;
+        }
+        let name = self.page_name();
+        if self.config_pages() > 1 && self.pending_tab_text[1].is_none() {
+            let shown = self.tabs[1]
+                .as_ref()
+                .and_then(|t| self.sprites.get(t.id).text.as_ref())
+                .map(|t| t.bytes.clone());
+            if shown.is_some_and(|b| b != name) {
+                self.tab_text(1, name);
+            }
+        }
         let Some(rows) = self.duel_rows().map(<[DuelRow]>::to_vec) else {
             return;
         };
-        if rows == self.duel_seen {
+        if rows == self.duel_seen && want.is_none() {
             return;
         }
+        let cursor = want.map_or(self.config_list.cursor, |(_, r)| r);
         if rows.len() != self.choices.len() {
-            let cursor = self.config_list.cursor.min(rows.len().saturating_sub(1));
-            self.build_config_rows(seq, cursor);
+            self.build_config_rows(seq, cursor.min(rows.len().saturating_sub(1)));
         } else {
+            self.config_list.cursor = cursor.min(rows.len().saturating_sub(1));
             self.config_layout(seq);
         }
         self.config_help(seq);
@@ -2059,7 +2102,8 @@ impl Camp {
             rows.push(anchor);
         }
         self.config_list = MenuList::new(rows, cursor);
-        self.config_list.page = Some(8);
+        self.config_list.page = Some(CONFIG_VISIBLE);
+        self.config_scroll = 0;
         self.config_layout(seq);
         self.config_mask();
     }
@@ -2143,19 +2187,50 @@ impl Camp {
                 0xc_0000
             };
         let pages = if self.config_pages() > 1 { 0xc000 } else { 0 };
-        self.config_list.mask = base | sides | pages;
+        // The caller's rows also take Decide.
+        let decide = if self.data.duel.is_some() { 0x10 } else { 0 };
+        self.config_list.mask = base | sides | pages | decide;
     }
 
     /// FUN_140365a20: each row's choices (selected / unselected looks), the
     /// anchor rows on the selected choice, and the cursor frame.
     fn config_layout(&mut self, seq: &Sequence) {
-        for i in 0..self.choices.len() {
+        // [Rewrite] A page longer than the panel scrolls with the cursor.
+        let total = self.choices.len();
+        let cursor = self.config_list.cursor;
+        let mut top = self.config_scroll.min(total.saturating_sub(CONFIG_VISIBLE));
+        if cursor < top {
+            top = cursor;
+        } else if cursor >= top + CONFIG_VISIBLE {
+            top = cursor + 1 - CONFIG_VISIBLE;
+        }
+        self.config_scroll = top;
+        let pitch = seq.groups[CONFIG_LABEL].ui_padding as f32;
+        for i in 0..total {
             let view = self.config_view(i);
+            let shown = (top..top + CONFIG_VISIBLE).contains(&i);
+            let line = i as f32 - top as f32;
+            if let Some(&l) = self.config_labels.get(i) {
+                // A row off the panel draws nothing.
+                let group = if shown { CONFIG_LABEL } else { BLANK };
+                if self.sprites.get(l).player.group != group {
+                    self.sprites.set(seq, l, group, None);
+                }
+                let s = self.sprites.get_mut(l);
+                s.offset = [0., pitch * line];
+                if let Some(t) = s.text.as_mut() {
+                    t.bytes = if shown {
+                        view.label.clone()
+                    } else {
+                        Vec::new()
+                    };
+                }
+            }
             let n = view.shown.len().clamp(1, 3);
             let pair = CHOICES[n - 1];
             for c in 0..4 {
                 let id = self.choices[i][c];
-                if c >= n {
+                if c >= n || !shown {
                     self.sprites.set(seq, id, BLANK, None);
                     if let Some(t) = self.sprites.get_mut(id).text.as_mut() {
                         t.bytes.clear();
@@ -2168,7 +2243,7 @@ impl Camp {
                 }
                 let g = &seq.groups[group];
                 let s = self.sprites.get_mut(id);
-                s.offset = [g.ui_padding as f32 * c as f32, 26. * i as f32];
+                s.offset = [g.ui_padding as f32 * c as f32, 26. * line];
                 if let Some(t) = s.text.as_mut() {
                     t.bytes = view.shown.get(c).cloned().unwrap_or_default();
                     t.offset = [g.text_position_x as f32, 0.];
@@ -2274,7 +2349,32 @@ impl Camp {
             self.config_layout(seq);
             self.config_help(seq);
         }
+        let picking = self.data.duel.as_ref().is_some_and(|d| d.picking);
         match pick {
+            Pick::Row(row) if self.data.duel.is_some() => {
+                let page = self.config_page;
+                if let Some(d) = self.data.duel.as_mut() {
+                    if d.rows
+                        .get(page)
+                        .and_then(|r| r.get(row))
+                        .is_some_and(|r| r.locked)
+                    {
+                        sounds.pop();
+                        sounds.push(SOUND_INVALID);
+                    } else {
+                        d.decided.push((page, row));
+                    }
+                }
+            }
+            Pick::Cancel if picking => {
+                if let Some(d) = self.data.duel.as_mut() {
+                    d.cancel = true;
+                }
+            }
+            Pick::Next | Pick::Previous if picking => {
+                sounds.pop();
+                sounds.push(SOUND_INVALID);
+            }
             Pick::Left | Pick::Right => {
                 let row = self.config_list.cursor;
                 let page = self.config_page;

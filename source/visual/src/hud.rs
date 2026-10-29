@@ -30,6 +30,20 @@ pub fn load(
     name_hash: [u8; 16],
     name: &[u8; 4],
 ) -> Result<Sheet, Box<dyn std::error::Error>> {
+    load_nth(source, index, ordinal, name_hash, name, None)
+}
+
+/// `load` for archives that hold several sheets of one name (a mission's
+/// two `ed_?` ends): the `nth` IMGD and SEQD of that name, in BAR order.
+/// `None` asks for the only one.
+pub fn load_nth(
+    source: &ProbeSource,
+    index: &str,
+    ordinal: usize,
+    name_hash: [u8; 16],
+    name: &[u8; 4],
+    nth: Option<usize>,
+) -> Result<Sheet, Box<dyn std::error::Error>> {
     let invalid = |m: &str| io::Error::new(io::ErrorKind::InvalidData, m.to_owned());
     let mut checked = source.open_index(index)?;
     let entry = checked
@@ -54,15 +68,20 @@ pub fn load(
         .collect();
     let image_slot = images
         .iter()
-        .position(|e| &e.name_bytes == name)
+        .enumerate()
+        .filter(|(_, e)| &e.name_bytes == name)
+        .nth(nth.unwrap_or(0))
+        .map(|(k, _)| k)
         .ok_or("HUD IMGD absent")?;
     let sequences: Vec<_> = table
         .entries
         .iter()
         .filter(|e| e.entry_type == SEQD && &e.name_bytes == name)
         .collect();
-    let [seq_entry] = sequences.as_slice() else {
-        return Err("expected one HUD sequence".into());
+    let seq_entry = match (nth, sequences.as_slice()) {
+        (None, [one]) => *one,
+        (Some(k), all) => *all.get(k).ok_or("HUD sequence absent")?,
+        _ => return Err("expected one HUD sequence".into()),
     };
     let sequence = sprite_sequence::read(slice(seq_entry)?)?;
     let header = image_structure::read_imgd_header(slice(images[image_slot])?)?;
