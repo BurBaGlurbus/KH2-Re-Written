@@ -36,7 +36,8 @@ stencil in the alpha pass); runs in `research\issues-20261030\runs\`.
 | --- | --- |
 | Unit tests: the blur quads, the triangle class, the arif flag | PASS |
 | `cargo clippy` on the changed crates: no warnings in the changed files (HEAD's own warnings in `source/data/src/kh3` and `launcher.rs` fail `-D warnings` and are not from this change) | PASS for these files |
-| Release runs in tt01, tt05, tt06, tt08 and the Axel and Roxas event on a clean export of HEAD plus this change: no validation errors, exit 0 | PASS |
+| Release runs in tt01, tt05, tt06, tt08 and the Axel and Roxas event on a clean export of HEAD plus this change: no validation errors | PASS |
+| The tt08 autoplay's exit code | 1 with the glow on or off: its capture at tick 111 falls in the closed iris after the exit at tick 34, and a uniform capture fails the run. Not from this pass |
 | tt08 captures with the glow on and off (a test-only switch in the export): the sky and horizon bloom, and light bleeds over the roof edges, only with it on | PASS |
 | Side by side with the installed game | NOT RUN |
 
