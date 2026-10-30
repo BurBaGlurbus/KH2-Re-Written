@@ -107,13 +107,13 @@ mod enemy_tour;
 mod fighter;
 mod kh3_autose;
 mod kh3_book;
-mod kh3_retarget;
-mod kh3_core;
 mod kh3_camera;
+mod kh3_core;
 mod kh3_fx;
 mod kh3_hits;
 mod kh3_menu;
 mod kh3_model;
+mod kh3_retarget;
 mod mirage_arena;
 /// The executable's identity, which the launcher's LAN search compares.
 pub(crate) use duel_net::build_identity;
