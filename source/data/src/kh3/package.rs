@@ -393,7 +393,6 @@ pub(crate) mod testing {
         /// (uasset, uexp)
         pub fn build(&self) -> (Vec<u8>, Vec<u8>) {
             let mut body = Vec::new();
-            let name_at_slot;
             let mut h = Vec::new();
             h.extend_from_slice(&super::TAG.to_le_bytes());
             h.extend_from_slice(&(-7i32).to_le_bytes());
@@ -403,7 +402,7 @@ pub(crate) mod testing {
             h.extend_from_slice(&0i32.to_le_bytes());
             h.extend_from_slice(&fstring("None"));
             h.extend_from_slice(&0u32.to_le_bytes());
-            name_at_slot = h.len();
+            let name_at_slot = h.len();
             h.extend_from_slice(&[0; 8]);
             h.extend_from_slice(&[0; 8]);
             let export_slot = h.len();

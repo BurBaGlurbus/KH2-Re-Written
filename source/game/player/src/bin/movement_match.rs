@@ -18,6 +18,9 @@ fn sstm(brake_xz: f32, min_xz: f32, brake_up: f32) -> Sstm {
         hit_back: 0.,
         hit_back_small: 0.,
         hit_back_to_jump: 0.,
+        fly_blow_brake: 0.,
+        fly_blow_stop: 0.,
+        fly_blow_up: 0.,
     }
 }
 
