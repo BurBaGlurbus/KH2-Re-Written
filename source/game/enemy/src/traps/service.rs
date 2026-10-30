@@ -24,6 +24,24 @@ type Args = [Slot; 16];
 
 pub fn lookup(table: u16, index: u16) -> Option<TrapFn> {
     Some(match (table, index) {
+        // What the bosses' and field objects' scripts ask of hosts not here.
+        (1, 158) => bg_belt_conveyor,
+        (1, 159) => bg_uvscroll_speed,
+        (1, 200) => bg_collision_type,
+        (1, 275) => recov_holylight,
+        (1, 291) => levelup_unit,
+        (1, 293) => event_control_off,
+        (1, 334) => command_enable,
+        (1, 349) => effect_kill_all,
+        (1, 358) => sheet_attack_level,
+        (2, 0) => exec_damage,
+        (4, 5) => mission_set_count,
+        (4, 41) => mission_add_count,
+        (4, 50) => mission_warning_count,
+        (4, 57) => mission_warning_gauge,
+        (4, 58) => mission_reset_warning_count,
+        (6, 25) => tt_ball_blow,
+        (10, 43) => set_use_mp,
         // Lights.
         (1, 181) => light_create,
         (1, 182) => light_set_flag,
@@ -232,6 +250,23 @@ macro_rules! forward_traps {
 }
 
 forward_traps! {
+    bg_belt_conveyor = "bg_set_belt_conveyor", None, None, Some(0);
+    bg_uvscroll_speed = "bg_set_uvscroll_speed", None, None, None;
+    bg_collision_type = "obj_set_bg_collision_type", Some(0), None, None;
+    recov_holylight = "obj_recov_holylight", Some(0), None, None;
+    levelup_unit = "obj_levelup_unit", Some(0), None, None;
+    event_control_off = "event_control_off", None, None, None;
+    command_enable = "command_enable", None, None, None;
+    effect_kill_all = "obj_effect_kill_all", Some(0), None, None;
+    sheet_attack_level = "sheet_set_attack_level", None, None, None;
+    exec_damage = "enemy_exec_damage", Some(0), None, None;
+    mission_set_count = "mission_set_count", None, None, None;
+    mission_add_count = "mission_add_count", None, None, None;
+    mission_warning_count = "mission_warning_count", None, None, None;
+    mission_warning_gauge = "mission_warning_gauge", None, None, None;
+    mission_reset_warning_count = "mission_reset_warning_count", None, None, None;
+    tt_ball_blow = "obj_tt_ball_blow", Some(0), None, Some(1);
+    set_use_mp = "obj_set_use_mp", Some(0), None, None;
     obj_camera_start = "obj_camera_start", Some(0), Some(2), None;
     command_override = "command_override", None, Some(2), None;
     screen_whitein = "func_screen_whitein", None, None, None;

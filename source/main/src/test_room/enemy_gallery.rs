@@ -359,6 +359,13 @@ impl EnemyGallery {
         }
     }
 
+    /// An actor is still being made or armed.
+    pub fn spawns_pending(&self) -> bool {
+        self.pending
+            .iter()
+            .any(|r| matches!(r, Request::Battle { .. } | Request::Summon { .. }))
+    }
+
     pub fn queue_battle(&mut self) {
         if let Some(actor) = self.selected
             && self.pending.len() < MAX_PENDING

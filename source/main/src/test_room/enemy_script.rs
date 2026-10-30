@@ -743,8 +743,15 @@ impl ScriptBrain {
             commands: &self.commands,
             fx: &self.fx,
         };
+        // A fighter's OBJ_INIT waits for its first update, when the rest of
+        // its spawn set is in the list (B_CA050's searches for F_CA690_BTL).
         let id = self.setup.object_id;
-        self.object = Object::spawn(&mut self.world, &env, id, &self.payload, sys)
+        let object = if id != 0 {
+            Object::spawn_later(id, &self.payload, sys)
+        } else {
+            Object::spawn(&mut self.world, &env, id, &self.payload, sys)
+        };
+        self.object = object
             .map(Box::new)
             .map_err(|e| format!("object script rejected: {e:?}"))?;
         rng.0 = self.world.rng.0;

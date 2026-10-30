@@ -8,6 +8,7 @@ use crate::world::TrapFn;
 pub mod attack;
 pub mod flare;
 pub mod friend;
+pub mod gimmick;
 pub mod homing;
 pub mod limit;
 pub mod math;
@@ -46,5 +47,6 @@ pub fn lookup(table: u16, index: u16) -> Option<TrapFn> {
         .or_else(|| route::lookup(table, index))
         .or_else(|| presentation::lookup(table, index))
         .or_else(|| service::lookup(table, index))
+        .or_else(|| gimmick::lookup(table, index))
         .or_else(|| state::lookup(table, index))
 }

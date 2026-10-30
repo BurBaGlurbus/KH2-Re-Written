@@ -641,6 +641,10 @@ pub struct BattleActor {
     script_fx: Option<ScriptFx>,
     /// The bones of this tick's pose, for effects bound to them.
     pub bones: super::enemy_combat::ActorBones,
+    /// It has had its first update.
+    started: bool,
+    /// The ENMP row its assets were read with, until its OBJ_INIT has said.
+    sheet_row: u16,
 }
 
 /// A script brain's effects on the tracked effect path (`spell_fx`), as the
@@ -1062,7 +1066,8 @@ impl BattleActor {
                 prize_id: Some(2),
             }
         };
-        let mut assets = EnemyCombat::load(source, entry, kind, binding, level, difficulty)?;
+        let sheet_row = binding.enmp_id;
+        let assets = EnemyCombat::load(source, entry, kind, binding, level, difficulty)?;
         let clips = Arc::new(build_clips(kind, |m| assets.windows(m))?);
         let brain = if !port {
             let brain = super::enemy_script::ScriptBrain::load(
@@ -1088,18 +1093,6 @@ impl BattleActor {
                 super::boss::spawner(source).map(|s| Box::new(s) as Box<dyn enemy::world::Spawner>),
                 adopted,
             )?;
-            // The row the script bound (0: it bound none, the stand-in
-            // stays). Its EXP, prize and strength are the host's.
-            if let Ok(sheet) = u16::try_from(brain.sheet())
-                && sheet != 0
-                && sheet != binding.enmp_id
-            {
-                let binding = EnemyBinding {
-                    enmp_id: sheet,
-                    prize_id: None,
-                };
-                assets = EnemyCombat::load(source, entry, kind, binding, level, difficulty)?;
-            }
             Brain::Script(Box::new(brain))
         } else if entry.character == 1000 {
             Brain::Soldier(Box::new(soldier::Soldier::new(
@@ -1123,10 +1116,14 @@ impl BattleActor {
                 assets.sstm,
             )))
         };
+        // FUN_1403dacb0 starts motion 0 only if the set has it (N_CM020_BTL's
+        // has not): the pose is then its first motion's until the script
+        // starts one.
         let c = clips
             .0
             .get(&brain.motion())
-            .ok_or("initial source motion absent")?;
+            .or_else(|| clips.0.values().min_by_key(|c| c.choice))
+            .ok_or("the motion set has no motions")?;
         let frame = c.key(0);
         let (pose, bones) = assets.sample_shapes(kind, &c.motion, frame, position, yaw, false)?;
         let script_fx = matches!(brain, Brain::Script(_))
@@ -1147,6 +1144,8 @@ impl BattleActor {
             error: None,
             script_fx,
             bones,
+            started: false,
+            sheet_row,
         })
     }
     pub fn tick(
@@ -1194,12 +1193,11 @@ impl BattleActor {
             .motion_table()
             .and_then(|h| self.clips.hook(h))
             .unwrap_or(&self.clips);
-        let c = clips.0.get(&self.brain.motion()).ok_or_else(|| {
-            format!(
-                "AI requested unsupported source motion {}",
-                self.brain.motion()
-            )
-        })?;
+        // A script's object may be on a slot its set lacks (FUN_1403c65e0: it
+        // stops on an ended motion): the last pose stays.
+        let Some(c) = clips.0.get(&self.brain.motion()) else {
+            return Ok((0, self.frame));
+        };
         self.motion = c.motion.clone();
         self.serial = self.brain.serial();
         self.frame = c.clock(self.brain.elapsed()) as f32;
@@ -1276,6 +1274,11 @@ pub fn tick(mut game: ResMut<Game>, mut gallery: ResMut<EnemyGallery>) {
     // Scripts consume one shared stream. Summoning a new actor must not
     // restart that stream or give every actor an identical private seed.
     let mut rng = std::mem::take(&mut rt.rng);
+    // A spawn set's objects all exist before the first of them updates: a
+    // script's first act may search for another (B_CA050 for its F_CA690_BTL).
+    let spawning = gallery.spawns_pending();
+    let (level, difficulty) = (rt.battle_level, rt.difficulty);
+    let gallery = &mut *gallery;
     // FUN_14039c830 -> FUN_1403f6ea0 frees the teamwork blocks when the battle
     // world goes. [I] Here: once no actor is left.
     if gallery.actors.is_empty()
@@ -1292,9 +1295,10 @@ pub fn tick(mut game: ResMut<Game>, mut gallery: ResMut<EnemyGallery>) {
         let Some(battle) = actor.battle.as_mut() else {
             continue;
         };
-        if battle.error.is_some() {
+        if battle.error.is_some() || (spawning && !battle.started) {
             continue;
         }
+        battle.started = true;
         battle.paused = actor.paused || game.cheats.enemy_frozen;
         battle
             .brain
@@ -1353,6 +1357,28 @@ pub fn tick(mut game: ResMut<Game>, mut gallery: ResMut<EnemyGallery>) {
                     other.take_back_objects(me);
                 }
             }
+        }
+        // The row OBJ_INIT bound (0: it bound none, the stand-in stays). Its
+        // EXP, prize and strength are the host's.
+        let read_with = std::mem::take(&mut battle.sheet_row);
+        if read_with != 0
+            && let Brain::Script(me) = &battle.brain
+            && let Ok(row) = u16::try_from(me.sheet())
+            && row != 0
+            && row != read_with
+            && let Ok(assets) = EnemyCombat::load(
+                &gallery.source,
+                &gallery.catalog.entries[actor.entry],
+                &actor.kind,
+                EnemyBinding {
+                    enmp_id: row,
+                    prize_id: None,
+                },
+                level,
+                difficulty,
+            )
+        {
+            battle.assets = assets;
         }
         match ticked {
             Ok((choice, key)) => {

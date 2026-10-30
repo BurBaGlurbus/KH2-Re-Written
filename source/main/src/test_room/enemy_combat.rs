@@ -484,7 +484,11 @@ impl EnemyCombat {
             // A window may name a group the collision table has no ATTACK
             // shape in (M_EX540's group 3): the attack test walks the
             // table's shapes of that group, so the window hits nothing.
-            self.attack_steps(id, 0)?;
+            // [U] A window may also name an ATKP row the table does not have
+            // (B_EX110's): nothing here can come of it.
+            if self.attack_steps(id, 0).is_err() {
+                continue;
+            }
             let start = range.start_frame as u16 as f32;
             let end = range.end_frame as u16 as f32;
             if !end.is_finite() || end < start {

@@ -403,6 +403,10 @@ pub fn vacuum_pull(
 /// Bits of the executable's global status word (DAT_142a11400) that scripts
 /// set and read.
 pub mod status {
+    /// `status_secure_mode_start` / `_end`.
+    pub const SECURE_MODE: u32 = 1 << 1;
+    /// `status_close_pete_curtain` / `_open_pete_curtain`.
+    pub const PETE_CURTAIN: u32 = 1 << 20;
     /// `status_no_leave`: enemies may not leave.
     pub const NO_LEAVE: u32 = 1 << 2;
     /// `status_prize_drain_start` / `_end`.
@@ -517,6 +521,12 @@ pub struct World {
     pub shots: Option<crate::traps::trinity::Pool>,
     /// Static blocks of shot records a dropped pool left, to reuse.
     pub shots_freed: Vec<u32>,
+    /// The saved flags (DAT_1409abcb0) and menu flags (DAT_1409abc40) scripts
+    /// set: the room keeps them for the session.
+    pub save_flags: Vec<u32>,
+    pub menu_flags: Vec<u32>,
+    /// The spawn serials `obj_history_mark` listed (DAT_142ae6690).
+    pub history_marks: std::collections::BTreeSet<u16>,
     /// The shouts waiting for the frame's shout job.
     pub shouts: Vec<Shout>,
     /// Shouts of the other worlds of the host's list, for the same job.
@@ -631,6 +641,9 @@ impl Default for World {
             flares: None,
             shots: None,
             shots_freed: Vec::new(),
+            save_flags: Vec::new(),
+            menu_flags: Vec::new(),
+            history_marks: Default::default(),
             shouts: Vec::new(),
             heard: Vec::new(),
             sent: Vec::new(),
@@ -1505,6 +1518,19 @@ impl Host for Machine<'_> {
                 .as_deref()?
                 .sys
                 .peek_word(offset);
+        }
+        // Trigger 16's third argument is the effect FUN_1402c6b30 made, which
+        // B_EX390 copies as an AI object: the word at +4 names an object. [I]
+        // Taken as the object running, which started it.
+        if let Some(d) = address
+            .checked_sub(EFFECT_HANDLES)
+            .filter(|d| *d < 0x0100_0000)
+        {
+            return Some(if d % 16 == 4 {
+                object_handle(self.ctx.me.id)
+            } else {
+                0
+            });
         }
         if let Some(offset) = address.checked_sub(LOCKON_RECORD).filter(|o| *o < 16) {
             let t = crate::sysobj::Target {
