@@ -26,9 +26,11 @@
 //! inverse (the draw multiplies the view in twice); 2 the object list that
 //! only B_EX170_LAST's script fills, flagged unsupported where met.
 //!
-//! +8 != 0 draws the strip through FUN_1404b7530, a frame-buffer read like
-//! the refraction programs (#148): flagged unsupported where met. The restart
-//! hook's +0xb8 term feeds nothing the update or draw reads and is not kept.
+//! +8 != 0 draws the strip through FUN_1404b7530 instead: a refraction, each
+//! vertex sampling the frame at the point across the strip scaled about its
+//! middle by a strength (u3 block +0x18). Its blends other than the plain one
+//! (+0x15) are flagged unsupported where met. The restart hook's +0xb8 term
+//! feeds nothing the update or draw reads and is not kept.
 use crate::math::{self, Mat, Vec4};
 use crate::programs::{active, byte, float, use_val, word};
 use crate::{Ctx, Part, Quad};
@@ -58,6 +60,8 @@ pub(crate) struct Ribbon {
     /// strength value, rate, acceleration (+0xd0/+0xd4/+0xd8).
     pull: [Vec4; 3],
     strength: [f32; 3],
+    /// The refraction strip's strength: value, rate, acceleration (+0x18..).
+    refract: [f32; 3],
 }
 
 /// FUN_1404ba8c0: the first key's adds come back out of the integrated
@@ -217,7 +221,7 @@ pub(crate) fn update(p: &Program, cursor: usize, part: &mut Part, ctx: &mut Ctx)
     let single = byte(ctx, cursor + 9) != 0;
     let frozen = byte(ctx, cursor + 0xa) != 0;
     let space = byte(ctx, cursor + 0x11);
-    if byte(ctx, cursor + 8) != 0 {
+    if byte(ctx, cursor + 8) != 0 && byte(ctx, cursor + 0x15) != 0 {
         flag(ctx, 0x4000_0241);
     }
     if space == 2 {
@@ -322,6 +326,115 @@ fn wrap01(mut v: f32) -> f32 {
         v += 1.;
     }
     v
+}
+
+/// FUN_1404b7530: the strip as a refraction. Across a row a corner at `t`
+/// (0..1) stands at `t` between the edges and samples the frame at
+/// `(t - 0.5) · k + 0.5`, with `k = strength + 1`, or `strength · fade + 1`
+/// under the row fade (+0x17). The strength integrates here (u3 +0x18..+0x20,
+/// the key's adds at +0x20..+0x28); alpha is the colour's, across the width
+/// under +0x16; +0x14 turns the depth test off.
+fn refract(
+    cursor: usize,
+    part: &mut Part,
+    ctx: &mut Ctx,
+    u2: usize,
+    u3: usize,
+    edges: &[(Vec4, Vec4)],
+) {
+    let hit = crate::programs::key(ctx, part, cursor);
+    let moving = active(part);
+    let Some(r) = part.ribbons.get_mut(&u3) else {
+        return;
+    };
+    if moving {
+        r.refract[1] += r.refract[2];
+        r.refract[0] += r.refract[1];
+        if hit {
+            for i in 0..3 {
+                r.refract[i] += float(ctx, cursor + 0x20 + 4 * i);
+            }
+        }
+    }
+    let strength = r.refract[0];
+    let rows = edges.len().saturating_sub(1);
+    let cross = byte(ctx, cursor + 0x13) as usize + 1;
+    if rows == 0 || cross < 2 {
+        return;
+    }
+    let fade_on = byte(ctx, cursor + 0x17) != 0;
+    let edge_fade = byte(ctx, cursor + 0x16) != 0;
+    let n = rows as f32;
+    let up = if fade_on {
+        (n * float(ctx, cursor + 0x18)) as i32 as f32
+    } else {
+        0.
+    };
+    let down = n - up;
+    let (rise, fall) = (
+        if up > 0. { 1. / up } else { 0. },
+        if down > 0. { 1. / down } else { 0. },
+    );
+    let mut fade = if fade_on && up > 0. { 0f32 } else { 1. };
+    let mut falling = false;
+    let rgba: [u8; 4] = std::array::from_fn(|i| part.u8(u2 + 8 + i));
+    let depth_test = byte(ctx, cursor + 0x14) == 0;
+    let lerp = |a: Vec4, b: Vec4, t: f32| -> [f32; 3] {
+        std::array::from_fn(|k| b[k] + (a[k] - b[k]) * t)
+    };
+    let span = |t: f32, k: f32| (t - 0.5) * k + 0.5;
+    let width_alpha = |j: usize| -> u8 {
+        if !edge_fade {
+            return rgba[3];
+        }
+        // Rises to 1 at the middle and falls back.
+        let t = j as f32 / (cross - 1) as f32;
+        (f32::from(rgba[3]) * (1. - (2. * t - 1.).abs())) as u8
+    };
+    for row in 0..rows {
+        let k0 = if fade_on {
+            strength * fade + 1.
+        } else {
+            strength + 1.
+        };
+        if fade_on {
+            if !falling && fade < 1. {
+                fade += rise;
+            } else {
+                falling = true;
+                fade -= fall;
+            }
+            fade = fade.clamp(0., 1.);
+        }
+        let k1 = if fade_on {
+            strength * fade + 1.
+        } else {
+            strength + 1.
+        };
+        let (a0, b0) = edges[row];
+        let (a1, b1) = edges[row + 1];
+        let vertex = |row_a: Vec4, row_b: Vec4, k: f32, j: usize| {
+            let t = j as f32 / (cross - 1) as f32;
+            crate::RefractionVertex {
+                position: lerp(row_a, row_b, t),
+                sample: lerp(row_a, row_b, span(t, k)),
+                rgba: [rgba[0], rgba[1], rgba[2], width_alpha(j)],
+            }
+        };
+        let mut vertices = Vec::with_capacity((cross - 1) * 6);
+        for j in 0..cross - 1 {
+            let (p, q) = (vertex(a0, b0, k0, j), vertex(a0, b0, k0, j + 1));
+            let (s, u) = (vertex(a1, b1, k1, j), vertex(a1, b1, k1, j + 1));
+            vertices.extend([p, q, s, q, u, s]);
+        }
+        ctx.refractions.push(crate::Refraction {
+            source: crate::FrameSource::Current,
+            fan: false,
+            vertices,
+            depth_test,
+            order: crate::RefractionOrder::Sorted,
+        });
+    }
 }
 
 pub(crate) fn draw(p: &Program, cursor: usize, part: &mut Part, ctx: &mut Ctx) {
@@ -456,6 +569,10 @@ pub(crate) fn draw(p: &Program, cursor: usize, part: &mut Part, ctx: &mut Ctx) {
             *edge = (inward(edge.0), inward(edge.1));
             t = (t - 1. / steps as f32).max(0.);
         }
+    }
+    if byte(ctx, cursor + 8) != 0 {
+        refract(cursor, part, ctx, u2, u3, &edges);
+        return;
     }
     // The ribbon's texture: the first mesh of model +4.
     let model = word(ctx, cursor + 4);

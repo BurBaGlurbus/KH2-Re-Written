@@ -45,4 +45,4 @@ where met: +8 (the frame-buffer strip, #148) and space 2.
 
 ## Verdict
 
-PARTIAL. The geometry is translated; pair ribbons draw once the frame-buffer strip exists (#148). Space 2 needs the object list's writer.
+PARTIAL. The geometry is translated, and pair ribbons draw through T295. Space 2 needs the object list's writer (#65).

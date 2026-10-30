@@ -8999,6 +8999,11 @@ fn effects_tick(
             }
         }
     }
+    visual::refraction::publish(
+        visual::refraction::Host::Effects,
+        visual::refraction::room_scene(&view),
+        running.iter().map(|r| &r.instance),
+    );
     running.retain(|r| !r.instance.finished());
     *view_inverse = Mat4::from_cols_array_2d(&view).inverse();
     if tick.is_multiple_of(10) && !running.is_empty() {

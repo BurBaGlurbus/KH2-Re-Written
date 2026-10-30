@@ -1225,3 +1225,77 @@ fn sprite_texture_coordinates_are_fractions_of_the_tex0_page() {
     assert_eq!(q[0].uv[2], [96., 48.]);
     assert_eq!(q[0].blend, 0x48);
 }
+
+#[test]
+fn ke_shp_dtt_draws_a_fading_disc_that_samples_beside_itself() {
+    // A part at (0, 0, 100) turned a quarter about Z, its draw matrix kept
+    // in u1 = 80 by pppKeDMatFr; pppKeShpDtt with strength +10 at its key,
+    // radius 40, flags 0.
+    let progs = vec![
+        Prog {
+            kind: 40,
+            size: 16,
+            keys: vec![0, f(0.), f(0.), f(100.)],
+            use_val: vec![0],
+        },
+        unit_scale(32),
+        Prog {
+            kind: 41,
+            size: 16,
+            keys: vec![0, 0, 0, 0x4000],
+            use_val: vec![16],
+        },
+        colour(48),
+        Prog {
+            kind: 91,
+            size: 4,
+            keys: vec![0],
+            use_val: vec![0, 16, 32],
+        },
+        Prog {
+            kind: 117,
+            size: 4,
+            keys: vec![0],
+            use_val: vec![0, 80],
+        },
+        Prog {
+            kind: 160,
+            size: 0x1c,
+            keys: vec![0, f(10.), 0, 0, f(40.), f(40.), 0],
+            use_val: vec![144, 48, 80, 16],
+        },
+    ];
+    let dpd = build(&[(0, 8, progs)], &[], &[]);
+    let mut inst = Instance::new(dpd, 0, math::IDENTITY, 0.).unwrap();
+    let mut rng = Rng::default();
+    let mut found = None;
+    for _ in 0..4 {
+        inst.frame(&math::IDENTITY, &mut rng);
+        assert!(inst.unsupported.is_empty(), "{:?}", inst.unsupported);
+        if let Some(r) = inst.refractions.first() {
+            let c = r.vertices[0];
+            let shift = [c.sample[0] - c.position[0], c.sample[1] - c.position[1]];
+            if shift[0].hypot(shift[1]) > 1. {
+                found = Some(r.clone());
+                break;
+            }
+        }
+    }
+    let r = found.expect("a refraction with its strength");
+    assert!(r.fan && r.depth_test && r.source == FrameSource::Current);
+    assert_eq!(r.order, RefractionOrder::Last);
+    // The centre and eight rim corners, the first repeated to close the fan.
+    assert_eq!(r.vertices.len(), 10);
+    let c = r.vertices[0];
+    assert_eq!(c.position, [0., 0., 100.]);
+    assert_eq!(c.rgba, [128; 4]);
+    // The sample moves by the strength along the turned Y axis (−a·M[1]).
+    let shift = [c.sample[0] - c.position[0], c.sample[1] - c.position[1]];
+    assert!((shift[0].hypot(shift[1]) - 10.).abs() < 1e-3, "{shift:?}");
+    // North rim: 40 up, alpha 0, sampled with the same shift.
+    let n = r.vertices[1];
+    assert!((n.position[1] - 40.).abs() < 1e-3 && n.position[0].abs() < 1e-3);
+    assert_eq!(n.rgba[3], 0);
+    assert!((n.sample[0] - n.position[0] - shift[0]).abs() < 1e-3);
+    assert_eq!(r.vertices[9].position, r.vertices[1].position);
+}

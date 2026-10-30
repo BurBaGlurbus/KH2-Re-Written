@@ -29,18 +29,17 @@ pub(crate) const DRAW_MDL_TS: u32 = 133;
 pub(crate) const DRAW_MATRIX_NO_ROT: u32 = 114;
 /// pppRyjMatrixWorldXYZ (update FUN_1404c52e0, create FUN_1404c5460).
 pub(crate) const MATRIX_WORLD_XYZ: u32 = 99;
-/// pppKeMdlDtt (145) and pppKeShpDtt (160): redraws of the model or shape
-/// textured from the frame buffer (a heat-haze refraction). The frame-buffer
-/// pass has no draw form here, so they are neither stepped nor drawn.
 pub(crate) const VERTEX_ATTEND: u32 = 45;
 pub(crate) const VERTEX_AP_AT: u32 = 178;
-pub(crate) const KE_MDL_DTT: u32 = 145;
-pub(crate) const KE_SHP_DTT: u32 = 160;
 
 /// Kinds with no update function in the program table (or none that
 /// matters here).
 pub(crate) fn without_update(kind: u32) -> bool {
-    matches!(kind, DRAW_MDL | KE_MDL_DTT | KE_SHP_DTT)
+    // pppKeMdlDtt / pppKeShpDtt integrate in their draw (refraction.rs).
+    matches!(
+        kind,
+        DRAW_MDL | crate::refraction::KE_MDL_DTT | crate::refraction::KE_SHP_DTT
+    )
 }
 
 /// Kinds [`draw`] draws.

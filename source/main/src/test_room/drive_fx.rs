@@ -809,6 +809,11 @@ pub fn tick(
             quads.push((dpd.clone(), [0xff; 16], 0, list));
         }
     }
+    visual::refraction::publish(
+        visual::refraction::Host::Drive,
+        visual::refraction::room_scene(&view),
+        fx.running.iter().map(|r| &r.instance),
+    );
     for k in unsupported {
         game.event(serde_json::json!({"event":"drive_effect_unsupported","tick":tick,"program":k}));
     }

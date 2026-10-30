@@ -508,6 +508,14 @@ impl Fx {
             }
         }
         self.spawned_effects = alive;
+        visual::refraction::publish(
+            visual::refraction::Host::Effects,
+            to_scene,
+            self.running
+                .values()
+                .chain(&self.spawned_effects)
+                .map(|r| &r.instance),
+        );
         let scene = |p: [f32; 3]| to_scene.transform_point3(Vec3::from_array(p)).to_array();
         for (dpd, mask, layer, list) in quads {
             for q in list {

@@ -26,6 +26,7 @@ pub mod overlay;
 pub mod par;
 pub mod pause_definition;
 pub mod pause_menu;
+pub mod refraction;
 pub mod room;
 pub mod scenery;
 pub mod settings;

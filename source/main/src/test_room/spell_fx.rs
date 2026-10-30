@@ -580,6 +580,11 @@ pub fn tick(mut game: ResMut<Game>, rig: Res<CameraRig>, mut fx: ResMut<SpellFx>
     fx.running.retain(|r| !r.instance.finished());
     // A finished effect stays known as dead for one tick so the loops see it.
     game.fx_live = live;
+    visual::refraction::publish(
+        visual::refraction::Host::Spells,
+        visual::refraction::room_scene(&view),
+        fx.running.iter().map(|r| &r.instance),
+    );
     for k in unsupported {
         game.event(serde_json::json!({"event":"spell_effect_unsupported","tick":tick,"program":k}));
     }

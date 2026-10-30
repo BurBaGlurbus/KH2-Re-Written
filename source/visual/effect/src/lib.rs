@@ -17,6 +17,8 @@ mod mega_model;
 mod models;
 pub mod prize;
 mod programs;
+mod refraction;
+pub use refraction::{FrameSource, Refraction, RefractionOrder, RefractionVertex};
 mod ribbon;
 mod shipoly;
 mod tail;
@@ -234,6 +236,7 @@ pub(crate) struct Ctx<'a> {
     pub quads: &'a mut Vec<Quad>,
     pub model_draws: &'a mut Vec<ModelDraw>,
     pub triangles: &'a mut Vec<Triangle>,
+    pub refractions: &'a mut Vec<Refraction>,
     /// Screen units per view unit at depth 1 (x, y) of the exe's
     /// view→screen matrix: pppKeTh widths are screen offsets.
     pub screen: [f32; 2],
@@ -272,6 +275,9 @@ pub struct Instance {
     pub model_draws: Vec<ModelDraw>,
     /// Untextured gouraud triangles of the last [`Instance::frame`].
     pub triangles: Vec<Triangle>,
+    /// Frame-buffer redraws (pppKeShpDtt / pppKeMdlDtt) of the last
+    /// [`Instance::frame`].
+    pub refractions: Vec<Refraction>,
     /// Screen units per view unit at depth 1 (x, y) for screen-space
     /// widths ([`DEFAULT_SCREEN_SCALE`] unless the camera says otherwise).
     pub screen_scale: [f32; 2],
@@ -324,6 +330,7 @@ impl Instance {
             unsupported: Vec::new(),
             model_draws: Vec::new(),
             triangles: Vec::new(),
+            refractions: Vec::new(),
             screen_scale: DEFAULT_SCREEN_SCALE,
             trail: None,
             flags: [0; 3],
@@ -404,6 +411,7 @@ impl Instance {
         let mut quads = Vec::new();
         self.model_draws.clear();
         self.triangles.clear();
+        self.refractions.clear();
         if self.finished {
             return quads;
         }
@@ -440,6 +448,7 @@ impl Instance {
         let mut unsupported = std::mem::take(&mut self.unsupported);
         let mut model_draws = Vec::new();
         let mut triangles = Vec::new();
+        let mut refractions = Vec::new();
         let mut flags = self.flags;
         let mut ctx = Ctx {
             dpd: &dpd,
@@ -456,6 +465,7 @@ impl Instance {
             quads: &mut quads,
             model_draws: &mut model_draws,
             triangles: &mut triangles,
+            refractions: &mut refractions,
             screen: self.screen_scale,
             heads: Vec::new(),
             births: Vec::new(),
@@ -469,6 +479,7 @@ impl Instance {
         self.unsupported = unsupported;
         self.model_draws = model_draws;
         self.triangles = triangles;
+        self.refractions = refractions;
         self.flags = flags;
         // FUN_1404b08e0: time stands still while the instance is paused.
         if !skip && flags[1] == 0 {

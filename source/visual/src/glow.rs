@@ -585,6 +585,10 @@ fn glow(
     }
 }
 
+/// The glow's render system, for what must draw into the frame before it.
+#[derive(SystemSet, Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub(crate) struct GlowPass;
+
 pub struct GlowPlugin;
 
 impl Plugin for GlowPlugin {
@@ -593,6 +597,7 @@ impl Plugin for GlowPlugin {
         app.add_plugins((
             ExtractComponentPlugin::<Glow>::default(),
             crate::lens_probe::LensProbePlugin,
+            crate::refraction::RefractionPlugin,
         ))
         .add_systems(PostUpdate, clear_stencil);
         let Some(render) = app.get_sub_app_mut(RenderApp) else {
@@ -603,7 +608,11 @@ impl Plugin for GlowPlugin {
             .init_resource::<GlowGeometry>()
             .add_systems(RenderStartup, init_pipeline)
             .add_systems(Render, prepare.in_set(RenderSystems::PrepareResources))
-            .add_systems(Core3d, glow.in_set(Core3dSystems::EarlyPostProcess));
+            .add_systems(
+                Core3d,
+                glow.in_set(Core3dSystems::EarlyPostProcess)
+                    .in_set(GlowPass),
+            );
     }
 }
 
