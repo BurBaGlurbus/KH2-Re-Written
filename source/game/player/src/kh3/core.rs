@@ -703,6 +703,26 @@ const OWNED: &[&str] = &[
     "CRITICAL_HALF x2",
 ];
 
+/// The menu changed the abilities: the status is built on them again, the gauges staying.
+pub fn reequip(sora: &mut ks::Sora, set: &super::ability::Set) {
+    let list = match loadout(set) {
+        Ok(l) => l,
+        Err(why) => {
+            eprintln!("KH3 Sora's loadout: {why}");
+            return;
+        }
+    };
+    let (hp, mp, focus) = {
+        let s = sora.status();
+        (s.hp, s.mp, s.focus)
+    };
+    let status = sora.status_mut();
+    *status = ks::status::Status::from_loadout(&list);
+    status.hp = hp.min(status.hp_max);
+    status.mp = mp;
+    status.focus = focus.min(status.focus_max);
+}
+
 fn loadout(set: &super::ability::Set) -> Result<ks::status::Loadout, String> {
     use ks::status::LoadoutValue as V;
     let list = |v: &[&str]| V::List(v.iter().map(|s| (*s).to_owned()).collect());

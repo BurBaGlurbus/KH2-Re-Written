@@ -180,8 +180,7 @@ pub(crate) fn tick(
     if set != game.sora.kh3.abilities {
         game.sora.kh3.abilities = set;
         let tick = game.tick;
-        game.event(serde_json::json!({"event":"kh3_abilities","tick":tick,
-            "set":set.0.to_string(),"ap":set.ap()}));
+        game.event(abilities_event(set, tick));
     }
     if let Some(d) = menu.data.duel.as_mut() {
         d.rows = pages(set, fresh(&note, game.tick).as_deref())
@@ -225,6 +224,12 @@ const SCRIPT: [(u64, u64); 10] = [
     (760, PRESS_CANCEL),
 ];
 
+/// The log's line for a change: the set is wider than a JSON number.
+fn abilities_event(set: Set, tick: u64) -> serde_json::Value {
+    serde_json::json!({"event":"kh3_abilities","tick":tick,
+        "set":set.0.to_string(),"ap":set.ap()})
+}
+
 /// [Test] Unattended Test KH3 mode (`--kh3-test --autoplay`): the menu's
 /// presses, on the camp's pad as the lobby's script's are; a second Cancel
 /// after the first shuts the menu.
@@ -253,6 +258,21 @@ fn script(game: &mut Game, at: &mut usize) {
 mod tests {
     use super::*;
     use player::kh3::ability::Ability;
+
+    #[test]
+    fn every_ability_equips_and_logs() {
+        let mut all = Set::NONE;
+        for info in player::kh3::ability::ALL.iter() {
+            let mut one = Set::NONE;
+            one.put(info.ability, info.most);
+            assert!(one.has(info.ability) && one.valid(), "{}", info.name);
+            assert_eq!(abilities_event(one, 1)["set"], one.0.to_string());
+            all.put(info.ability, info.most);
+        }
+        // The whole list at once, past the top of a JSON number.
+        assert!(all.0 > u128::from(u64::MAX));
+        assert_eq!(abilities_event(all, 1)["set"], all.0.to_string());
+    }
 
     #[test]
     fn the_pages_list_every_ability_once_after_the_ap() {

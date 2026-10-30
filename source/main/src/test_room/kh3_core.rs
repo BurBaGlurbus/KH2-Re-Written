@@ -483,3 +483,71 @@ pub(crate) fn install(paks: &Paks, data: &SoraData) -> Result<()> {
     kh3_sora::anim::install(anim_tables(data)?);
     Ok(())
 }
+
+#[cfg(test)]
+mod every_ability {
+    use super::*;
+    use kh3_sora as ks;
+    use player::kh3::ability::{ALL, Set};
+
+    /// A step of a Sora who tries everything: each button in turn, the stick, the jump.
+    fn press(tick: u32) -> ks::Input {
+        use ks::PadButton as B;
+        const BUTTONS: [B; 8] = [
+            B::FaceRight,
+            B::FaceLeft,
+            B::FaceTop,
+            B::LeftShoulder,
+            B::RightShoulder,
+            B::LeftTrigger,
+            B::RightTrigger,
+            B::FaceBottom,
+        ];
+        let at = |t: u32| BUTTONS[(t / 12) as usize % BUTTONS.len()];
+        let mut held = ks::PadButtons::default();
+        if tick % 12 < 6 {
+            held.set(at(tick), true);
+        }
+        let mut before = ks::PadButtons::default();
+        if tick > 0 && (tick - 1) % 12 < 6 {
+            before.set(at(tick - 1), true);
+        }
+        let turn = tick as f32 * 0.05;
+        ks::Input {
+            move_stick: ks::Vec2::new(turn.sin(), turn.cos()),
+            ..ks::Input::default()
+        }
+        .with_pad(ks::PadState::from_held(held, before))
+    }
+
+    fn run(sora: &mut ks::Sora, world: &ks::test_world::TestWorld) {
+        for tick in 0..1200 {
+            sora.step(1. / 60., &press(tick), world);
+        }
+    }
+
+    /// Needs the player's own KH3: `KH3_FOLDER=<install> cargo test -- --ignored every_ability`.
+    #[test]
+    #[ignore = "reads the KH3 install named by KH3_FOLDER"]
+    fn each_and_all_of_them_run() {
+        let folder = std::env::var("KH3_FOLDER").expect("KH3_FOLDER");
+        let found = data::kh3::admit(std::path::Path::new(&folder)).expect("the install");
+        let paks = Paks::open(&found, None, true).expect("the paks");
+        let sora = SoraData::load(&paks).expect("Sora");
+        install(&paks, &sora).expect("the sheets");
+        let world = ks::test_world::TestWorld::floor();
+        let mut all = Set::NONE;
+        for info in ALL.iter() {
+            let mut one = Set::NONE;
+            one.put(info.ability, info.most);
+            all.put(info.ability, info.most);
+            let mut core = player::kh3::core::new_sora([0.; 3], 0., &one);
+            run(&mut core, &world);
+            // Changed while it runs, as the menu does.
+            player::kh3::core::reequip(&mut core, &Set::NONE);
+            run(&mut core, &world);
+        }
+        let mut core = player::kh3::core::new_sora([0.; 3], 0., &all);
+        run(&mut core, &world);
+    }
+}

@@ -435,6 +435,8 @@ pub struct Kh3 {
     pub core_hp: (i32, i32),
     /// Where the last step left him.
     core_at: Vec3,
+    /// The abilities the core's status was built on.
+    core_set: ability::Set,
 }
 
 impl Default for Kh3 {
@@ -499,6 +501,7 @@ impl Default for Kh3 {
             core_held: kh3_sora::input::PadButtons::NONE,
             core_hp: (0, 0),
             core_at: [0.; 3],
+            core_set: ability::Set::NONE,
         }
     }
 }
@@ -895,6 +898,13 @@ impl Kh3 {
                     &self.abilities,
                 )));
                 self.core_at = player.position;
+                self.core_set = self.abilities;
+            }
+            if self.core_set != self.abilities {
+                if let Some(sora) = self.core.0.as_mut() {
+                    core::reequip(sora, &self.abilities);
+                }
+                self.core_set = self.abilities;
             }
             self.foe = scene.foe.map(|f| f.centre);
             out.core = self.core_tick(player, input, pad, scene, g);
