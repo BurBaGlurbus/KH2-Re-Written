@@ -432,13 +432,16 @@ pub(crate) fn install(paks: &Paks, data: &SoraData) -> Result<()> {
     if kh3_sora::sheets::installed() {
         return Ok(());
     }
-    if !sheets::has_constants() {
+    let read = sheets::read(paks);
+    if read
+        .missing
+        .first()
+        .is_some_and(|m| m.0 == sheets::OTHER_BUILD)
+    {
         return Err(data::kh3::bad_text(
-            "this build was made without KH3's constants (they are not in the repository)"
-                .to_owned(),
+            "the KH3 ruleset is unavailable: this build of KINGDOM HEARTS III's executable is not supported",
         ));
     }
-    let read = sheets::read(paks);
     if let Some((sheet, id, why)) = read
         .missing
         .iter()

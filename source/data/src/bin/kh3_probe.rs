@@ -372,7 +372,7 @@ fn main() -> Result<()> {
                 out,
                 serde_json::to_string(&serde_json::json!({"params": params, "tables": tables}))?,
             )?;
-            println!("{} missing", sheets.missing.len());
+            println!("{} missing, executable digest {}", sheets.missing.len(), sheets.exe_digest);
         }
         ("texture", [path]) => {
             let p = package(path)?;

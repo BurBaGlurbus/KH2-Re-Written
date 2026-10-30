@@ -1,10 +1,14 @@
 //! The numbers of KH3's Sora (`game/kh3_sora`), read from the player's own install at run time. Each row of
 //! `recipes/*.tsv` says where its value is, not what it is: a DataTable cell, a blueprint default, a clip's
-//! notify, or (`~`) a constant of the executable's code, which `build.rs` embeds from a private sheet when this
-//! machine has one. No KH3 value is in Git; a build without the sheet has no KH3 ruleset (`has_constants`).
+//! notify, or (`X`) bytes of the player's executable. No KH3 value is in Git or in this program: without the player's
+//! install there are none, and an executable of another build fails the digest of what was read (`EXE_DIGEST`), which
+//! leaves the KH3 ruleset unavailable.
 //!
 //! Recipes (`|`-separated):
-//! - `~`: a constant from the private sheet, by sheet, row and column.
+//! - `X|<place>`: from the executable, by file offset (hexadecimal). `f@`, `i@`, `u@`, `d@`: an f32, an i32, a u32, an
+//!   f64; `b@a,b,c,d`: an f32 from four single bytes; `q@a,b`: the f32 at a over the f32 at b; `t@`: a byte, not zero; `s@at+len,...`: text from these pieces.
+//!   `X|A|p;p`: a list of numbers, `X|L|p;p`: of texts. `X|N`: no value. `X|O`: a value of a form the sheet has only as
+//!   information.
 //! - `=<json>`: a table row's own id (only in a table's first column).
 //! - `T|package|row|path[|mode]`: a DataTable cell.
 //! - `P|package|export|path[|mode]`: a property of an export.
@@ -17,6 +21,7 @@
 use super::package::Package;
 use super::props::{self, Props, Value};
 use super::{Paks, Result, bad, material};
+use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -43,6 +48,8 @@ pub struct Sheets {
     pub tables: Vec<(&'static str, Cells)>,
     /// Rows whose recipe found nothing in this install: (sheet, id, why).
     pub missing: Vec<(&'static str, String, String)>,
+    /// The digest of what was read from the executable.
+    pub exe_digest: String,
 }
 
 macro_rules! recipes {
@@ -51,23 +58,11 @@ macro_rules! recipes {
     };
 }
 
-/// `sheet<TAB>row<TAB>column<TAB>json`: a parameter row by its id, a table row by its index.
-const CONSTANTS: &str = include_str!(concat!(env!("OUT_DIR"), "/kh3_constants.tsv"));
+/// SHA-256 of the executable's bytes the recipes read, on the build they were made for.
+const EXE_DIGEST: &str = "f54098f6af2dc1f7eb894cd5bf20f6188eead542a39be963a129528be31e1860";
 
-/// Whether this build embeds the private sheet of constants.
-pub fn has_constants() -> bool {
-    !CONSTANTS.is_empty()
-}
-
-fn constants() -> HashMap<(&'static str, &'static str, &'static str), &'static str> {
-    CONSTANTS
-        .lines()
-        .filter_map(|l| {
-            let mut c = l.splitn(4, '\t');
-            Some(((c.next()?, c.next()?, c.next()?), c.next()?))
-        })
-        .collect()
-}
+/// The sheet `missing` names for an executable of another build.
+pub const OTHER_BUILD: &str = "executable";
 
 const PARAMS: &[(&str, &str)] = recipes![
     "sora-movement",
@@ -113,6 +108,111 @@ struct Loaded {
 struct Reader<'a> {
     paks: &'a Paks,
     open: HashMap<String, Option<Loaded>>,
+    exe: ExeBytes,
+}
+
+/// The executable's bytes and the digest of those read.
+struct ExeBytes {
+    image: Vec<u8>,
+    digest: Sha256,
+}
+
+impl ExeBytes {
+    fn new(image: Vec<u8>) -> Self {
+        Self {
+            image,
+            digest: Sha256::new(),
+        }
+    }
+
+    fn take(&mut self, at: &str, len: usize) -> Result<&[u8]> {
+        let at = usize::from_str_radix(at, 16).map_err(|_| bad("a bad offset"))?;
+        let bytes = at
+            .checked_add(len)
+            .and_then(|end| self.image.get(at..end))
+            .ok_or_else(|| bad("past the executable's end"))?;
+        self.digest.update(bytes);
+        Ok(bytes)
+    }
+
+    fn word(&mut self, at: &str) -> Result<[u8; 4]> {
+        let b = self.take(at, 4)?;
+        Ok([b[0], b[1], b[2], b[3]])
+    }
+
+    /// One place: a number, a flag or a text.
+    fn place(&mut self, place: &str) -> Result<Val> {
+        let (kind, at) = place.split_once('@').ok_or_else(|| bad("a bad place"))?;
+        Ok(match kind {
+            "f" => Val::N(f32::from_le_bytes(self.word(at)?)),
+            "i" => Val::N(i32::from_le_bytes(self.word(at)?) as f32),
+            "u" => Val::N(u32::from_le_bytes(self.word(at)?) as f32),
+            "d" => {
+                let b = self.take(at, 8)?;
+                let mut x = [0; 8];
+                x.copy_from_slice(b);
+                Val::N(f64::from_le_bytes(x) as f32)
+            }
+            "q" => {
+                let (a, b) = at.split_once(',').ok_or_else(|| bad("a bad quotient"))?;
+                let a = f32::from_le_bytes(self.word(a)?);
+                Val::N(a / f32::from_le_bytes(self.word(b)?))
+            }
+            // Four bytes, each from its own place.
+            "b" => {
+                let mut x = [0; 4];
+                for (slot, at) in x.iter_mut().zip(at.split(',')) {
+                    *slot = self.take(at, 1)?[0];
+                }
+                Val::N(f32::from_le_bytes(x))
+            }
+            "t" => Val::B(self.take(at, 1)?[0] != 0),
+            "s" => {
+                let mut text = Vec::new();
+                for piece in at.split(',').filter(|p| !p.is_empty()) {
+                    let (at, len) = piece.split_once('+').ok_or_else(|| bad("a bad piece"))?;
+                    let len = usize::from_str_radix(len, 16).map_err(|_| bad("a bad length"))?;
+                    text.extend_from_slice(self.take(at, len)?);
+                }
+                Val::S(String::from_utf8_lossy(&text).into_owned())
+            }
+            _ => return Err(bad("a bad place")),
+        })
+    }
+
+    fn value(&mut self, recipe: &str) -> Result<Val> {
+        let places = |list: &'_ str| -> Vec<String> {
+            list.split(';')
+                .filter(|p| !p.is_empty())
+                .map(str::to_owned)
+                .collect()
+        };
+        match recipe {
+            "N" => Ok(Val::Nil),
+            "O" => Err(bad("an object constant")),
+            _ => {
+                if let Some(list) = recipe.strip_prefix("A|") {
+                    let mut out = Vec::new();
+                    for p in places(list) {
+                        if let Val::N(n) = self.place(&p)? {
+                            out.push(n);
+                        }
+                    }
+                    Ok(Val::A(out))
+                } else if let Some(list) = recipe.strip_prefix("L|") {
+                    let mut out = Vec::new();
+                    for p in places(list) {
+                        if let Val::S(s) = self.place(&p)? {
+                            out.push(s);
+                        }
+                    }
+                    Ok(Val::L(out))
+                } else {
+                    self.place(recipe)
+                }
+            }
+        }
+    }
 }
 
 fn to_game(pkg: &str) -> String {
@@ -361,12 +461,12 @@ fn notify_time(item: &Value) -> Option<f32> {
     Some(link + p.f32("TriggerTimeOffset").unwrap_or(0.))
 }
 
-fn evaluate(r: &mut Reader, recipe: &str, constant: Option<&str>) -> Result<Val> {
+fn evaluate(r: &mut Reader, recipe: &str) -> Result<Val> {
     if let Some(json) = recipe.strip_prefix('=') {
         return literal(json);
     }
-    if recipe == "~" {
-        return literal(constant.ok_or_else(|| bad("a constant this build has no copy of"))?);
+    if let Some(place) = recipe.strip_prefix("X|") {
+        return r.exe.value(place);
     }
     let mut parts = recipe.split('|');
     let kind = parts.next().unwrap_or("");
@@ -438,19 +538,19 @@ fn evaluate(r: &mut Reader, recipe: &str, constant: Option<&str>) -> Result<Val>
 /// Reads every sheet. A row that cannot be read is listed in `missing`; a caller treats any as an unsupported
 /// install.
 pub fn read(paks: &Paks) -> Sheets {
+    let image = std::fs::read(&paks.exe).unwrap_or_default();
     let mut r = Reader {
         paks,
         open: HashMap::new(),
+        exe: ExeBytes::new(image),
     };
     let mut out = Sheets::default();
-    let constants = constants();
     for (name, text) in PARAMS {
         let mut rows = Vec::new();
         for line in text.lines().filter(|l| !l.is_empty()) {
             let mut cols = line.split('\t');
             let (id, recipe) = (cols.next().unwrap_or(""), cols.next().unwrap_or(""));
-            let constant = constants.get(&(*name, id, "")).copied();
-            match evaluate(&mut r, recipe, constant) {
+            match evaluate(&mut r, recipe) {
                 Ok(v) => rows.push((id.to_owned(), v)),
                 Err(e) => out.missing.push((name, id.to_owned(), e.to_string())),
             }
@@ -462,12 +562,10 @@ pub fn read(paks: &Paks) -> Sheets {
         let mut lines = text.lines();
         let cols: Vec<&str> = lines.next().unwrap_or("").split('\t').collect();
         let mut rows = Vec::new();
-        for (index, line) in lines.filter(|l| !l.is_empty()).enumerate() {
-            let index = index.to_string();
+        for line in lines.filter(|l| !l.is_empty()) {
             let mut cells = Vec::with_capacity(cols.len());
             for (col, recipe) in cols.iter().zip(line.split('\t')) {
-                let constant = constants.get(&(*name, index.as_str(), *col)).copied();
-                match evaluate(&mut r, recipe, constant) {
+                match evaluate(&mut r, recipe) {
                     Ok(v) => cells.push(((*col).to_owned(), v)),
                     Err(e) => out
                         .missing
@@ -478,12 +576,48 @@ pub fn read(paks: &Paks) -> Sheets {
         }
         out.tables.push((name, rows));
     }
+    let digest: String = r
+        .exe
+        .digest
+        .finalize()
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect();
+    if digest != EXE_DIGEST {
+        out.missing.insert(
+            0,
+            (
+                OTHER_BUILD,
+                digest.clone(),
+                "this build of the game's executable is not supported".to_owned(),
+            ),
+        );
+    }
+    out.exe_digest = digest;
     out
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn places_read_the_executable() {
+        let mut image = vec![0u8; 16];
+        image[4..8].copy_from_slice(&2.5f32.to_le_bytes());
+        image[8..12].copy_from_slice(&(-3i32).to_le_bytes());
+        image[12..16].copy_from_slice(b"rock");
+        let mut e = ExeBytes::new(image);
+        assert_eq!(e.value("f@4").unwrap(), Val::N(2.5));
+        assert_eq!(e.value("i@8").unwrap(), Val::N(-3.));
+        assert_eq!(e.value("q@4,4").unwrap(), Val::N(1.));
+        assert_eq!(e.value("t@4").unwrap(), Val::B(false));
+        assert_eq!(e.value("s@c+2,e+2").unwrap(), Val::S("rock".to_owned()));
+        assert_eq!(e.value("A|f@4;i@8").unwrap(), Val::A(vec![2.5, -3.]));
+        assert_eq!(e.value("L|s@c+4").unwrap(), Val::L(vec!["rock".to_owned()]));
+        assert_eq!(e.value("N").unwrap(), Val::Nil);
+        assert!(e.value("f@ff").is_err());
+    }
 
     /// The recipes name where a value is. Only a table row's id may be written out.
     #[test]

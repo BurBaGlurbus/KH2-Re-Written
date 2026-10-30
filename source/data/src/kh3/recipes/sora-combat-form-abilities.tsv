@@ -1,7 +1,7 @@
 id	wear_form	ability	ability_id	copies
-="HIGHJUMP"	~	~	~	~
-="OVERCOME"	~	~	~	~
-="COMBO_MASTER"	~	~	~	~
-="MASTER_DRAW"	~	~	~	~
-="LUCK_UP"	~	~	~	~
-="MP_HASTE"	~	~	~	~
+="HIGHJUMP"	X|s@7a18e26+3,7a63a44+3,7a19851+4,769e32b+4,6efa5a9+3	X|s@7a3ee34+4,64e81dc+4	X|f@5d77398	X|f@5c8158c
+="OVERCOME"	X|s@7a18e26+3,7a63a44+3,7a19851+4,769e32b+4,6efa5a9+3	X|s@637de96+4,71d5c28+3,5c0c251+1	X|f@5d490cc	X|f@5c8158c
+="COMBO_MASTER"	X|s@7a18e26+3,7a63a44+3,7a19851+4,769e32b+4,6efa5a9+3	X|s@71d5c28+3,5cf7f21+2,7a189fd+4,73db8d2+3	X|f@5c86b34	X|f@5c8158c
+="MASTER_DRAW"	X|s@7a18e26+3,7a63a44+3,7a19851+4,769e32b+4,6efa5a9+3	X|s@7a189fe+3,7a48532+4,6a21ba1+3,5c0c8e1+1	X|f@7cc7b20	X|f@5c8158c
+="LUCK_UP"	X|s@7a18e26+3,7a63a44+3,7a19851+4,769e32b+4,6efa5a9+3	X|s@7ab1b4c+3,7aa88d2+3,5c0c490+1	X|f@7cc7020	X|f@5c8158c
+="MP_HASTE"	X|s@7a18e26+3,7a63a44+3,7a19851+4,769e32b+4,6efa5a9+3	X|s@64e81de+3,64e8969+3,637df6c+2	X|f@7cc7720	X|f@5c8158c

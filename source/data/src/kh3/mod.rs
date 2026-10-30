@@ -161,6 +161,8 @@ pub fn detect(libraries: &[PathBuf]) -> Vec<PathBuf> {
 /// The install's mounted paks with their key.
 pub struct Paks {
     pub mounted: pak::Mounted,
+    /// The executable, which some of Sora's numbers are read from.
+    pub exe: PathBuf,
     /// The key's place in the executable, for a faster next session.
     pub key_offset: u64,
 }
@@ -182,6 +184,7 @@ impl Paks {
             None => pak::find_key(&exe, probe)?,
         };
         Ok(Self {
+            exe,
             mounted: pak::Mounted::open(&install.pak_dir(), &key, keep_names)?,
             key_offset,
         })
