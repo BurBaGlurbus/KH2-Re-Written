@@ -83,7 +83,7 @@ impl SourceReader {
 
     /// A reader whose chunks recorded as "" are recorded on their first
     /// read (one entry per CHUNK_SIZE chunk of `len`).
-    pub(crate) fn recording(file: File, len: u64, chunks: &[String]) -> std::io::Result<Self> {
+    pub fn recording(file: File, len: u64, chunks: &[String]) -> std::io::Result<Self> {
         let n = len.div_ceil(validation::CHUNK_SIZE) as usize;
         if chunks.len() != n {
             return Err(std::io::Error::new(
@@ -113,7 +113,7 @@ impl SourceReader {
 
     /// The chunk digests as now known (hex; "" for none), and whether any
     /// was recorded since the reader opened.
-    pub(crate) fn chunk_record(&self) -> (Vec<String>, bool) {
+    pub fn chunk_record(&self) -> (Vec<String>, bool) {
         let hex = |d: &[u8; 32]| d.iter().map(|b| format!("{b:02x}")).collect::<String>();
         (
             self.expected

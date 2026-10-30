@@ -552,13 +552,13 @@ pub struct Player {
     /// The Drive gauge (stats +0x1b0..+0x1b2).
     pub drive: drive::Gauge,
     /// The cast in progress and the spell it released this tick.
-    cast: Option<CastState>,
+    pub cast: Option<CastState>,
     released: Option<Released>,
     /// Knock-slide (FUN_1403d4960 / FUN_1403d4570), for hits and the guard
     /// recoil alike.
-    knock: Option<actor_physics::Knock>,
+    pub knock: Option<actor_physics::Knock>,
     /// A blow in flight (physics mode 4) and the ticks it has run.
-    flight: Option<Flight>,
+    pub flight: Option<Flight>,
     /// Dead and still falling (physics mode 0x29).
     dead_air: bool,
     /// The item-use trigger fired this tick (frame trigger 6).
@@ -567,7 +567,7 @@ pub struct Player {
     pub fmab: growth::Fmab,
     /// obj+0x124 bit 1: an Aerial Dodge is available (set on leaving the
     /// ground, cleared by the dodge, a command or a hit).
-    dodge_ready: bool,
+    pub dodge_ready: bool,
     /// obj+0x124 bit 2: Square still held since Quick Run or Glide began.
     square_held: bool,
     /// obj+0xd70: invulnerability frames left (FUN_1403d7e40).
@@ -582,13 +582,13 @@ pub struct Player {
     /// inside such a range and is cleared outside one (FUN_1403b4980).
     command_lock: f32,
     /// Quick Run's mode 0x10 state.
-    quick_run: Option<growth::QuickRun>,
+    pub quick_run: Option<growth::QuickRun>,
     /// The speed effect Quick Run started this tick: element 0x6c + the
     /// ability's level of Sora's own effects, for levels above 1
     /// (FUN_1403a96c0 / FUN_1403a9830 → FUN_1403b6670).
     pub quick_run_effect: Option<u16>,
     /// Gliding (modes 0x11 / 0x12): the row in use (obj+0x108).
-    glide: Option<growth::Row>,
+    pub glide: Option<growth::Row>,
     /// obj+0xe0 with +0xec set: the take-off velocity of the last arc
     /// started by FUN_1403cbb00 (a glide restarts from it).
     launch_velocity: Option<[f32; 2]>,
@@ -608,7 +608,7 @@ pub struct Player {
 /// A blow in flight: mode 4's velocity with the SSTM brakes it runs on, and
 /// the time in the mode (obj+0x110).
 #[derive(Clone, Copy, Debug, PartialEq)]
-struct Flight {
+pub struct Flight {
     blow: actor_physics::Blow,
     sstm: actor_physics::Sstm,
     time: f32,
@@ -631,7 +631,7 @@ pub struct Hit {
 
 /// A cast waiting for its release tick (obj+0xda0).
 #[derive(Clone, Copy, Debug, PartialEq)]
-struct CastState {
+pub struct CastState {
     start: magic::Start,
     magic_type: u8,
     level: u8,
@@ -1413,7 +1413,7 @@ impl Player {
     /// FUN_1403b4980 then the frame trigger: the lockout counts down while a
     /// range 0 to 2 holds and is cleared when none does; trigger 16 at this
     /// frame sets it anew. [I] The order within the frame is not traced.
-    fn command_lockout(&mut self, clips: &Clips) {
+    pub fn command_lockout(&mut self, clips: &Clips) {
         if self.command_lock > 0. {
             self.command_lock = if self.actionable(clips) {
                 self.command_lock - 1.
