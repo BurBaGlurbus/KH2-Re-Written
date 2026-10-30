@@ -302,7 +302,7 @@ pub fn tick(
     }
     // [Tour setup] And he goes to the nearest enemy still fighting, so its
     // close-range acts and its reaction commands come up.
-    if game.enemy_battle_tour && tick >= 60 && tick % TOUR_CLOSE_TICKS == 0 {
+    if game.enemy_battle_tour && tick >= 60 && tick.is_multiple_of(TOUR_CLOSE_TICKS) {
         let sora = Vec3::from_array(game.sora.player.position);
         let nearest = gallery
             .actors

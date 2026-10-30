@@ -972,6 +972,7 @@ impl BattleActor {
         level: u16,
         difficulty: combat::Difficulty,
         spawn_serial: u16,
+        adopted: Option<Box<enemy::world::Object>>,
     ) -> Result<Self, String> {
         if !supported(entry) {
             return Err(
@@ -1033,9 +1034,12 @@ impl BattleActor {
                     spawn_serial,
                     character: entry.character,
                     entry_flags: entry.flags,
-                    object_id: super::enemy_script::next_fighter_id(),
+                    object_id: adopted
+                        .as_ref()
+                        .map_or_else(super::enemy_script::next_fighter_id, |o| o.id),
                 },
                 super::boss::spawner(source).map(|s| Box::new(s) as Box<dyn enemy::world::Spawner>),
+                adopted,
             )?;
             // The row the script bound (0: it bound none, the stand-in
             // stays). Its EXP, prize and strength are the host's.

@@ -1038,6 +1038,7 @@ fn spawn(game: &mut Game, s: &Summoned, gallery: &EnemyGallery) -> Result<Actor,
             ..Default::default()
         },
         None,
+        None,
     )?;
     let friend = Personality::of_character(object.character).map(|p| {
         let (walk, run) = prty_speeds(&mut library, object.neo_moveset).unwrap_or((2., 8.));

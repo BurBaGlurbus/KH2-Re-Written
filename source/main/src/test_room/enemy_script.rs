@@ -646,6 +646,7 @@ impl ScriptBrain {
         clips: Arc<Clips>,
         setup: ScriptSetup,
         spawner: Option<Box<dyn enemy::world::Spawner>>,
+        adopted: Option<Box<Object>>,
     ) -> Result<Self, String> {
         let payload = script_payload(source, model)?;
         if setup.object_id != 0 {
@@ -695,7 +696,10 @@ impl ScriptBrain {
         };
         // The spawner is there for OBJ_INIT's own `sysobj_appear` (M_EX870's).
         brain.world.spawner = spawner;
-        brain.build(position, yaw, stats, sstm, &mut ScriptRandom::default())?;
+        match adopted {
+            Some(object) => brain.adopt(object, stats, sstm),
+            None => brain.build(position, yaw, stats, sstm, &mut ScriptRandom::default())?,
+        }
         Ok(brain)
     }
 
@@ -708,35 +712,10 @@ impl ScriptBrain {
         rng: &mut ScriptRandom,
     ) -> Result<(), String> {
         let mut sys = Sysobj::new(0, position, yaw, stats, sstm);
-        sys.turn_rate = actor_physics::ObjParams::defaults(sstm.fall_max).turn;
         sys.appear_way = 2;
         sys.set_class(self.setup.object_type);
-        sys.entry_id = self.setup.entry_id;
-        sys.spawn_serial = self.setup.spawn_serial;
-        sys.entry_fly = self.setup.entry_flags >> 3 & 1 != 0;
-        // FUN_140411700, which every battle object's constructor starts
-        // with (types 3, 4, 12, 13, 21): team 2 (+0x4dc) unless
-        // FUN_1403baa60 (character 0x417 to 0x423).
-        if matches!(self.setup.object_type, 3 | 4 | 12 | 13 | 21)
-            && !(0x417..0x424).contains(&self.setup.character)
-        {
-            sys.team = 2;
-        }
-        let spawner = self.world.spawner.take();
-        self.world = EnemyWorld::default();
-        self.world.spawner = spawner;
-        self.world.tolerate_missing = true;
-        if self.setup.object_id != 0 {
-            self.world.in_list = true;
-            self.world.make_id = Some(next_made_id);
-            self.world.teamwork = fighters_teamwork();
-        }
-        self.world.patn = self.setup.patn.clone();
-        self.world.sheets = self
-            .setup
-            .sheets
-            .clone()
-            .map(|s| Box::new(s) as Box<dyn enemy::world::SheetSource>);
+        self.entry_fields(&mut sys);
+        self.fresh_world();
         self.world.rng.0 = rng.0;
         let env = BrainEnv {
             room: None,
@@ -756,6 +735,68 @@ impl ScriptBrain {
             .map_err(|e| format!("object script rejected: {e:?}"))?;
         rng.0 = self.world.rng.0;
         Ok(())
+    }
+
+    /// What the engine's constructor takes from the objentry and the spawn.
+    fn entry_fields(&self, sys: &mut Sysobj) {
+        sys.turn_rate = actor_physics::ObjParams::defaults(sys.sstm.fall_max).turn;
+        sys.entry_id = self.setup.entry_id;
+        sys.spawn_serial = self.setup.spawn_serial;
+        sys.entry_fly = self.setup.entry_flags >> 3 & 1 != 0;
+        // FUN_140411700, which every battle object's constructor starts
+        // with (types 3, 4, 12, 13, 21): team 2 (+0x4dc) unless
+        // FUN_1403baa60 (character 0x417 to 0x423).
+        if matches!(self.setup.object_type, 3 | 4 | 12 | 13 | 21)
+            && !(0x417..0x424).contains(&self.setup.character)
+        {
+            sys.team = 2;
+        }
+    }
+
+    fn fresh_world(&mut self) {
+        let spawner = self.world.spawner.take();
+        self.world = EnemyWorld::default();
+        self.world.spawner = spawner;
+        self.world.tolerate_missing = true;
+        if self.setup.object_id != 0 {
+            self.world.in_list = true;
+            self.world.make_id = Some(next_made_id);
+            self.world.teamwork = fighters_teamwork();
+        }
+        self.world.patn = self.setup.patn.clone();
+        self.world.sheets = self
+            .setup
+            .sheets
+            .clone()
+            .map(|s| Box::new(s) as Box<dyn enemy::world::SheetSource>);
+    }
+
+    /// An object another fighter's script made becomes a fighter of its own
+    /// (its script already started, in the maker's world). The engine has one
+    /// list; the maker's handle to it still reaches it through
+    /// [`Self::lend_objects`].
+    fn adopt(
+        &mut self,
+        mut object: Box<Object>,
+        stats: combat::TargetStats,
+        sstm: actor_physics::Sstm,
+    ) {
+        self.fresh_world();
+        let sys = &mut object.sys;
+        sys.model = 0;
+        sys.sstm = sstm;
+        // Its script's `btlobj_set_sheet` set these if it ran.
+        if sys.sheet == 0 {
+            sys.hp = stats.max_hp;
+            sys.stats = stats;
+        }
+        self.entry_fields(&mut object.sys);
+        self.object = object;
+    }
+
+    /// A made object leaves this script's world.
+    pub fn take_made(&mut self, id: u32) -> Option<Box<Object>> {
+        self.world.objects.get_mut(id as usize)?.take()
     }
 
     pub fn tick(&mut self, room: &RoomWorld, player: Vec3, rng: &mut ScriptRandom) {
@@ -1030,7 +1071,7 @@ impl ScriptBrain {
             Err(failed) => {
                 let (e, world, object) = *failed;
                 self.world = world;
-                self.object = Box::new(object);
+                *self.object = object;
                 Err(e)
             }
         }

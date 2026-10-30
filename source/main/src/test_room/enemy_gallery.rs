@@ -578,6 +578,24 @@ pub fn service(
                     .enemy
                     .as_ref()
                     .ok_or("source-bound Sora combat sheet absent in this room")?;
+                let link = gallery
+                    .actors
+                    .iter()
+                    .find(|a| a.id == id)
+                    .ok_or("actor absent")?
+                    .made;
+                // A made enemy leaves its maker's world and fights as this
+                // actor; its maker still reaches it through the list.
+                let adopted = link.and_then(|(maker, object)| {
+                    let maker = gallery.actors.iter_mut().find(|a| a.id == maker)?;
+                    match &mut maker.battle.as_mut()?.brain {
+                        super::enemy_battle::Brain::Script(s) => s.take_made(object),
+                        _ => None,
+                    }
+                });
+                if link.is_some() && adopted.is_none() {
+                    return Err("its maker no longer holds the made object".into());
+                }
                 let actor = gallery
                     .actors
                     .iter()
@@ -592,6 +610,7 @@ pub fn service(
                     rt.battle_level,
                     rt.difficulty,
                     actor.spawn_serial,
+                    adopted,
                 )?;
                 // A boss's captures of Sora last as long as his kit's clips.
                 if let super::enemy_battle::Brain::Script(a) = &mut battle.brain {
@@ -607,6 +626,8 @@ pub fn service(
                     .find(|a| a.id == id)
                     .ok_or("actor absent")?;
                 actor.battle = Some(battle);
+                actor.made = None;
+                actor.made_shown = (1., false);
                 actor.paused = false;
                 actor.apply_root = false;
                 actor.error = None;
@@ -634,6 +655,10 @@ pub fn service(
                 if let Some(a) = gallery.actors.last_mut() {
                     a.spawn_serial = serial;
                     a.made = made;
+                    if made.is_some() {
+                        let actor = a.id;
+                        gallery.pending.push(Request::Battle { actor });
+                    }
                 }
             }),
             Request::Motion { actor, choice } => load_motion(&mut gallery, actor, choice),
