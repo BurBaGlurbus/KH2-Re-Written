@@ -227,10 +227,10 @@ fn kine(raw: &J, bones: &[Bone]) -> Result<J> {
     let mut written = vec![false; bones.len()];
     for o in &operators {
         let kind = o["type"].as_str().unwrap_or("");
-        if kind == "ComputeSpaceBases" || kind.starts_with("Target") {
-            if let Some(t) = o["target"].as_i64().filter(|t| *t >= 0) {
-                written[t as usize] = true;
-            }
+        if (kind == "ComputeSpaceBases" || kind.starts_with("Target"))
+            && let Some(t) = o["target"].as_i64().filter(|t| *t >= 0)
+        {
+            written[t as usize] = true;
         }
     }
     let table: Vec<J> = written

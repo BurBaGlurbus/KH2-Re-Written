@@ -1121,8 +1121,28 @@ fn masked_image(color: Option<&Texture>, mask: &Texture) -> Option<Image> {
         TextureFormat::Rgba8Unorm,
         bevy::asset::RenderAssetUsages::RENDER_WORLD,
     );
-    image.sampler = sampler();
+    image.sampler = sampler_of(mask);
     Some(image)
+}
+
+/// `AddressX` / `AddressY` of a texture (the class default wraps).
+fn address(t: &Texture, name: &str) -> ImageAddressMode {
+    match t.props.str(name) {
+        Some(mode) if mode.ends_with("TA_Clamp") => ImageAddressMode::ClampToEdge,
+        Some(mode) if mode.ends_with("TA_Mirror") => ImageAddressMode::MirrorRepeat,
+        _ => ImageAddressMode::Repeat,
+    }
+}
+
+fn sampler_of(t: &Texture) -> ImageSampler {
+    ImageSampler::Descriptor(ImageSamplerDescriptor {
+        address_mode_u: address(t, "AddressX"),
+        address_mode_v: address(t, "AddressY"),
+        mag_filter: ImageFilterMode::Linear,
+        min_filter: ImageFilterMode::Linear,
+        mipmap_filter: ImageFilterMode::Linear,
+        ..default()
+    })
 }
 
 fn sampler() -> ImageSampler {
@@ -1166,7 +1186,7 @@ fn stored_image(t: &Texture) -> Option<Image> {
             .flat_map(|m| m.bytes.iter().copied())
             .collect(),
     );
-    image.sampler = sampler();
+    image.sampler = sampler_of(t);
     Some(image)
 }
 

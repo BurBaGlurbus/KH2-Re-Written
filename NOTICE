@@ -165,6 +165,9 @@ in this project's code. For the KH3 mode (T282): its readers' formats were
 reimplemented in source/data/src/kh3 (pak, package, tagged properties, skeletal and
 static meshes, animations, textures, SEAD, HCA), its attack and magic states in
 source/game/player/src/kh3, and its crates/kh-vfx was ported, with its notice kept,
-as source/visual/effect/src/cascade. Its generated tables and anything embedding
+as source/visual/effect/src/cascade. For the KH3 ruleset's 1:1 pass (T300): its crates/kh-core
+was ported as source/game/kh3_sora, the KineDriver and Bonamik solvers of its crates/kh-anim as
+source/game/kh3_rig, and the auto SE detector of its crates/kh-audio as
+source/main/src/test_room/kh3_autose.rs. Its generated tables and anything embedding
 KH3 data were not copied, and no KH3 data is in this repository: the KH3 mode
 reads the player's own install at run time.

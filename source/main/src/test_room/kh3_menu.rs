@@ -14,7 +14,7 @@ use visual::pause_menu::{DuelPages, DuelRow};
 /// The camp screen id (duel_camp.rs's LOBBY, VOTE, RESULT, FORFEIT are 1-4).
 pub(crate) const SCREEN: u8 = 5;
 /// The top level's entries: the pages (the Config entry's id) and Close.
-const ENTRY_PAGES: u8 = 7;
+const ENTRY_PAGES: u8 = 9;
 const ENTRY_CLOSE: u8 = pause_menu::CALLER_ENTRY + 1;
 /// se000: open, refused.
 const SE_OPEN: u32 = 3;
@@ -24,7 +24,7 @@ const NOTE_TICKS: u64 = 300;
 
 /// The pages: name and how many of `ALL` (in its order) each lists after
 /// the AP row (eight fit the Config screen's panel).
-pub(crate) const PAGES: [(&str, usize); 7] = [
+pub(crate) const PAGES: [(&str, usize); 9] = [
     ("KH3 Movement", 8),
     ("KH3 Actions", 8),
     ("KH3 Attacks", 7),
@@ -32,6 +32,8 @@ pub(crate) const PAGES: [(&str, usize); 7] = [
     ("KH3 Swings", 8),
     ("KH3 Counters", 4),
     ("KH3 Magic", 6),
+    ("KH3 Survival", 8),
+    ("KH3 System", 8),
 ];
 
 /// Where page `page` starts in `ALL`.

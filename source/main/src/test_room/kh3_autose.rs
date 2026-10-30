@@ -418,6 +418,8 @@ mod tests {
         for _ in 0..6 {
             assert!(d.step(1. / 60., &frame(30., true), 1., true, &s).is_empty());
         }
+        // It comes down, then lands.
+        assert!(d.step(1. / 60., &frame(20., true), 1., true, &s).is_empty());
         let events = d.step(1. / 60., &frame(5., true), 1., true, &s);
         assert_eq!(events[0].motion, Motion::Walk);
         assert_eq!(events[0].part, Part::Foot(0));

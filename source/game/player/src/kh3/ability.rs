@@ -622,13 +622,16 @@ pub const AP_MAX: u32 = 180;
 pub struct Set(pub u128);
 
 impl Default for Set {
-    /// Every move the ruleset had before its menu (the layer's whole kit),
+    /// Every move the ruleset had before its menu (the layer's whole kit), Second Chance and Withstand Combo,
     /// no combo supports.
     fn default() -> Self {
         let mut s = Set(0);
         for i in ALL.iter().take_while(|i| i.ability != Ability::SpeedSlash) {
             s.put(i.ability, 1);
         }
+        // Leave Sora standing as KH3's learned Sora does.
+        s.put(Ability::SecondChance, 1);
+        s.put(Ability::WithstandCombo, 1);
         s
     }
 }

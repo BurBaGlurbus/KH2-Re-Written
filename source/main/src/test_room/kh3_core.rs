@@ -466,6 +466,19 @@ pub(crate) fn install(paks: &Paks, data: &SoraData) -> Result<()> {
             .collect();
         store.tables.insert((*name).to_owned(), rows);
     }
+    if let Some(p) = paks
+        .game_package("/Game/Load/Common/EnemyBaseStatus")
+        .ok()
+        .flatten()
+        && let Some(t) = p.export_of_class("DataTable")
+        && let Ok(rows) = data::kh3::props::data_table_rows(&p, t)
+    {
+        let table = rows
+            .iter()
+            .map(|(_, r)| r.int("m_BaseDefensePower").unwrap_or(0) as i32)
+            .collect();
+        let _ = kh3_sora::abilities::xs::ENEMY_BASE_DEFENSE.set(table);
+    }
     kh3_sora::sheets::install(store);
     kh3_sora::anim::install(anim_tables(data)?);
     Ok(())

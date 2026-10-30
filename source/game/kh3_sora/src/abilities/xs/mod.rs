@@ -355,7 +355,11 @@ pub(crate) fn overcome_stats(cx: &Ctx, target: TargetId, strength: i32, magic: i
 /// The floor of battle level `level` (1 .. 99): `EnemyBaseStatus[level].m_BaseDefensePower + ceil(0.15 level + 1.5)`.
 pub fn overcome_floor(level: u8) -> i32 {
     let level = level.clamp(1, 99) as usize;
-    let defense = ENEMY_BASE_DEFENSE.get(level - 1).copied().unwrap_or(0);
+    let defense = ENEMY_BASE_DEFENSE
+        .get()
+        .and_then(|t| t.get(level - 1))
+        .copied()
+        .unwrap_or(0);
     defense + crate::status::math::ue_ceil(0.15 * level as f32 + 1.5)
 }
 
@@ -373,15 +377,8 @@ pub fn region_battle_level(depth: Option<u8>) -> u8 {
     v.clamp(1.0, 99.0) as u8
 }
 
-/// `EnemyBaseStatus` (sheets/entities/Load/Common/EnemyBaseStatus.json) `m_BaseDefensePower` by battle level 1 .. 99
-/// [A: read from the game's table; pinned by a test against the sheet].
-pub const ENEMY_BASE_DEFENSE: [i32; 99] = [
-    8, 8, 9, 9, 10, 10, 11, 11, 12, 12, 13, 13, 14, 14, 15, 15, 16, 16, 17, 17, 18, 18, 19, 19, 20,
-    20, 21, 21, 22, 22, 23, 23, 24, 24, 25, 25, 26, 26, 27, 27, 28, 28, 29, 29, 30, 30, 31, 31, 32,
-    32, 33, 33, 34, 34, 35, 35, 36, 36, 37, 37, 38, 38, 39, 39, 40, 40, 41, 41, 42, 42, 43, 43, 44,
-    44, 45, 45, 46, 46, 47, 47, 48, 48, 49, 49, 50, 50, 51, 51, 52, 52, 53, 53, 54, 54, 55, 55, 56,
-    56, 57,
-];
+/// `EnemyBaseStatus` `m_BaseDefensePower` by battle level 1 .. 99, read from the player's install.
+pub static ENEMY_BASE_DEFENSE: std::sync::OnceLock<Vec<i32>> = std::sync::OnceLock::new();
 
 /// CRITICAL COUNTER, the Elden Ring addition (XS 2.10, ours): a just guard against a STRONG body takes
 /// `critical_counter.strong_rp` off its reaction endurance (`Targets::take_reaction_power`; no damage). Called by the

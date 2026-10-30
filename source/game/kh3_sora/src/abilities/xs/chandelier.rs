@@ -106,25 +106,8 @@ pub struct Chandelier {
 /// in the actor's own frame every piece lay 3-4 m under the ground; in the root bone's frame the pieces assemble the
 /// eight-armed chandelier at 2.5-5 m and burst. The attach frame of SQEX_ATTACH_OBJECT_NAME was not traced; the others
 /// keep the actor's frame (XW-c).
-pub const PAWN_FX: [(f32, &str, [f32; 3], f32); 17] = [
-    (0.0001, "vw_so088_fin_rsn01", [0.0, 0.0, 0.0], 0.0),
-    (0.590, "vw_so088_fin_kira00", [0.0, 0.0, 0.0], 0.0),
-    (0.779, "vw_so088_fin_kira00", [0.0, 0.0, -30.0], 0.0),
-    (0.943, "vw_so088_fin_kira00", [0.0, 0.0, 0.0], 0.0),
-    (1.187, "vw_so088_fin_kira00", [0.0, 0.0, -30.0], 0.0),
-    (1.268, "vw_so088_fin_kira00", [0.0, 0.0, 15.0], 0.0),
-    (1.377, "vw_so088_fin_kira01", [0.0, 0.0, 20.0], 0.0),
-    (1.606, "vw_so088_fin_kira00", [0.0, 0.0, 0.0], 180.0),
-    (4.554, "vw_so088_fin_han00", [0.0, 0.0, 0.0], 0.0),
-    (4.554, "vw_so088_fin_han01", [0.0, 0.0, 0.0], 0.0),
-    (4.830, "vw_so088_fin_han01", [0.0, 0.0, 0.0], 0.0),
-    (4.837, "vw_so088_fin_hahen00", [0.0, 0.0, 0.0], -90.0),
-    (4.990, "vw_so088_fin_hahen01", [0.0, 0.0, 0.0], -90.0),
-    (5.105, "vw_so088_fin_hahen02", [0.0, 0.0, 0.0], -90.0),
-    (5.226, "vw_so088_fin_han01", [0.0, 0.0, 0.0], 0.0),
-    (5.233, "vw_so088_fin_hahen03", [0.0, 0.0, 0.0], -90.0),
-    (5.494, "vw_so088_fin_mat", [0.0, 0.0, 0.0], 0.0),
-];
+// The clip's notifies are not played: the chandelier has no place in a duel.
+pub const PAWN_FX: [(f32, &str, [f32; 3], f32); 0] = [];
 
 /// (XW-c) The effects of the pawn's clip between two of its times `(from, to]`: (effect, world point, rotation (pitch, yaw,
 /// roll) degrees) for a chandelier standing at `ground` turned `yaw`.
