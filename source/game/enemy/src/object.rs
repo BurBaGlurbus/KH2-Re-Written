@@ -545,6 +545,12 @@ impl Object {
             match effect {
                 Effect::Takeoff => self.sys.take_off(env),
                 Effect::JumpMode7 => self.sys.enter_mode7(),
+                // FUN_14040dd70 cases 0x17 / 0x18, unless leaving (+0x9b8 bit 4).
+                Effect::AlphaFade { to, ticks } => {
+                    if !self.sys.left {
+                        self.sys.fade.start(1. - to, to, f32::from(ticks));
+                    }
+                }
                 // FUN_14040dd70 cases 0xd / 0xe -> vt+0xa0 (FUN_1403dad90 for
                 // the ZAKO / ENEMY classes): a request to the object's voice
                 // player (+0xbb4, YS::VOICE_IOP; FUN_1403ce580 keeps the

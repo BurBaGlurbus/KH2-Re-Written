@@ -211,6 +211,14 @@ impl Brain {
             Self::Soldier(a) => a.motion_serial,
         }
     }
+    /// The object's alpha (+0xa08) and whether the class hid it (`obj_hide`,
+    /// `obj_model_hide`).
+    pub fn shown(&self) -> (f32, bool) {
+        match self {
+            Self::Script(a) => a.shown(),
+            _ => (1., false),
+        }
+    }
     pub fn scale_y(&self) -> f32 {
         match self {
             Self::Script(a) => a.scale_y(),

@@ -1268,6 +1268,11 @@ impl ScriptBrain {
         let s = self.object.friend.as_deref()?.stitch.as_deref()?;
         s.valid.then_some(s.screen)
     }
+    /// See [`super::enemy_battle::Brain::shown`].
+    pub fn shown(&self) -> (f32, bool) {
+        let s = &self.object.sys;
+        (s.fade.value, s.hidden || s.model_hidden)
+    }
     /// The object's fade (+0xa08): its alpha and whether it is falling.
     pub fn fade(&self) -> (f32, bool) {
         let f = &self.object.sys.fade;
@@ -1389,7 +1394,7 @@ impl ScriptBrain {
             "y":s.position[1],"wall_radius":self.wall_radius,
             "map_body":s.map_body.map(|b| [b.radius, b.height, b.offset, b.mode as f32, b.class as f32]),
             "no_floor":s.no_floor,"motion_tick":s.motion.tick,"blend":s.motion.blend,
-            "pending_mode":s.pending_mode,"acts_flags":self.object.acts.flags,
+            "pending_mode":s.pending_mode,"acts_flags":self.object.acts.flags,"turn_rate":s.turn_rate,
             "pc":[self.object.script.main.as_ref().map(|t| t.pc),
                   self.object.script.act_thread.as_ref().map(|t| t.pc)],
             "made":self.world.objects.iter().flatten().filter(|o| !o.sys.gone)

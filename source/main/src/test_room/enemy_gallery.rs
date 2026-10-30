@@ -22,6 +22,8 @@ pub struct GalleryRoot(pub u64);
 
 #[derive(Component)]
 pub struct GalleryPart {
+    /// The alpha last given to the part's material.
+    alpha: f32,
     actor: u64,
     ordinal: usize,
     revision: u64,
@@ -702,6 +704,7 @@ fn summon(
                 actor: id,
                 ordinal,
                 revision: 0,
+                alpha: 1.,
             });
         }
     }
@@ -1097,6 +1100,7 @@ type PartQuery = (
     &'static mut GalleryPart,
     &'static Mesh3d,
     &'static mut Visibility,
+    &'static MeshMaterial3d<FogMaterial>,
 );
 type SkeletonQuery = (
     &'static mut GallerySkeleton,
@@ -1110,13 +1114,18 @@ pub fn present(
     mut parts: Query<PartQuery, (Without<GalleryRoot>, Without<GallerySkeleton>)>,
     mut skeletons: Query<SkeletonQuery, Without<GalleryRoot>>,
     mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<FogMaterial>>,
 ) {
     for (root, mut transform, mut visibility) in &mut roots {
         if let Some(actor) = gallery.actors.iter().find(|a| a.id == root.0) {
             transform.translation = actor.position;
             transform.rotation = Quat::from_rotation_y(actor.yaw);
             transform.scale.y = actor.battle.as_ref().map_or(1., |b| b.brain.scale_y());
-            *visibility = if actor.battle.as_ref().is_some_and(|b| b.brain.gone()) {
+            *visibility = if actor
+                .battle
+                .as_ref()
+                .is_some_and(|b| b.brain.gone() || b.brain.shown().1)
+            {
                 Visibility::Hidden
             } else {
                 Visibility::Inherited
@@ -1128,8 +1137,27 @@ pub fn present(
     } else {
         Visibility::Inherited
     };
-    for (mut part, mesh, mut visibility) in &mut parts {
+    for (mut part, mesh, mut visibility, material) in &mut parts {
         visibility.set_if_neq(model_visibility);
+        // The object's alpha (+0xa08), scripts' fades and frame events 0x17
+        // and 0x18. A part is opaque again once the fade has run out.
+        let alpha = gallery
+            .actors
+            .iter()
+            .find(|a| a.id == part.actor)
+            .and_then(|a| a.battle.as_ref())
+            .map_or(1., |b| b.brain.shown().0);
+        if part.alpha != alpha {
+            part.alpha = alpha;
+            if let Some(mut m) = materials.get_mut(material.0.id()) {
+                m.base.base_color.set_alpha(alpha);
+                m.base.alpha_mode = if alpha < 1. {
+                    AlphaMode::Blend
+                } else {
+                    AlphaMode::Opaque
+                };
+            }
+        }
         if let Some(actor) = gallery.actors.iter().find(|a| a.id == part.actor)
             && part.revision != actor.revision
             && let Some(mut mesh) = meshes.get_mut(mesh.0.id())
@@ -1561,6 +1589,7 @@ mod tests {
             .world_mut()
             .spawn((
                 GalleryPart {
+                    alpha: 1.,
                     actor: 1,
                     ordinal: 0,
                     revision: 0,

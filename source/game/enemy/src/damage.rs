@@ -90,18 +90,22 @@ impl Sysobj {
 
     /// FUN_1403d4260 (`enemy_exec_damage_small`, and reaction class 3 of
     /// FUN_1403d2fe0). In the air: the aerial flinch with motion 4 behind it
-    /// and (FUN_1403d4800, the mode's slot 3) a hop 50 high at the strength
-    /// times HitBackToJump.
+    /// and (FUN_1403d4800 -> the mode's slot 3, FUN_140409ad0 in every mode:
+    /// FUN_1403cbb00 and mode 1) a jump 50 high at the strength times
+    /// HitBackToJump, which lands as any armed jump does.
     pub(crate) fn exec_damage_small(&mut self, strength: f32, clips: &dyn crate::env::Clips) {
         if self.mode_flags() & 0x10 != 0 {
             self.air_flinch(0, clips);
             self.damage_knock(strength);
         } else if self.damage_in_air() {
             self.air_flinch(4, clips);
-            if self.mode_flags() & 1 != 0 {
-                let speed = strength * self.sstm.hit_back_to_jump;
-                self.start_jump(horizontal(self.damage_direction), 50., speed);
-            }
+            let speed = strength * self.sstm.hit_back_to_jump;
+            self.jump_motions = crate::sysobj::JumpMotions::default();
+            self.steer = None;
+            self.fly = None;
+            self.fly_blow = None;
+            self.airborne = true;
+            self.start_jump(horizontal(self.damage_direction), 50., speed);
         } else {
             self.end_fly_blow();
             self.flinch(clips);

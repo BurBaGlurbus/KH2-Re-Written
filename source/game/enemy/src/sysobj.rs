@@ -753,7 +753,10 @@ impl Sysobj {
             wish_yaw: None,
             scale: [1.; 3],
             alpha: 1.,
-            fade: Fade::default(),
+            fade: Fade {
+                value: 1.,
+                rate: 0.,
+            },
             hidden: false,
             left: false,
             gone: false,
