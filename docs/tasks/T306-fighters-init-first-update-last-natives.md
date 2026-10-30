@@ -60,6 +60,10 @@ FUN_140430930) and `obj_is_hook` (FUN_14053ede0). FUN_1403dacb0 starts motion 0 
 
 PARTIAL. Runs in tours; not compared with the installed game.
 
+## Pause
+
+Work paused at the owner's request on 2026-10-30. Both sweeps were stopped unfinished: `sweep8` at 44 of 81 programs (105 models, no faults), `boss4` at 51 of 70 programs (84 models, no refusals, the two faults above). The private run folder is now `%LOCALAPPDATA%\KH2FinalRewrite\research\enemy-1to1-20261027\runs-20261030`.
+
 ## Next
 
-B_EX180 and B_EX390; the rest of both sweeps; `obj_set_stealth`, range 0x17; the Gambler's capture.
+Everything left is listed in issue #163.
