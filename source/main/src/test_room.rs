@@ -107,8 +107,7 @@ mod enemy_tour;
 mod fighter;
 mod kh3_autose;
 mod kh3_book;
-mod kh3_cloth;
-mod kh3_material;
+mod kh3_retarget;
 mod kh3_core;
 mod kh3_camera;
 mod kh3_fx;
@@ -11826,6 +11825,9 @@ fn present(
     mut meshes: ResMut<Assets<Mesh>>,
     mut shown_target: Local<ShownTarget>,
 ) {
+    if kh3_model::shows_kh3(&game) {
+        return;
+    }
     let action = game.sora.player.action;
     let started = game.action_started;
     let previous = game.shown_action;
@@ -15880,7 +15882,6 @@ fn run(mut args: Vec<PathBuf>) -> Result<AppExit, Box<dyn std::error::Error>> {
                 .set(early_renderer.plugin()),
         )
         .add_plugins(FogPlugin)
-        .add_plugins(MaterialPlugin::<kh3_material::Kh3Material>::default())
         .add_plugins(visual::frame_limit::FrameLimitPlugin)
         .add_plugins(visual::texel_upload::TexelUploadPlugin)
         .add_plugins(visual::smoothing::SmoothingPlugin)

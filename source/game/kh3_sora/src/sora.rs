@@ -771,6 +771,11 @@ impl Sora {
     }
 
     /// Level, gauges, abilities, magic, items (data only until the stats rules exist).
+    /// The Keyblade is out.
+    pub fn weapon_out(&self) -> bool {
+        self.pawn.actions.weapon_out
+    }
+
     pub fn status(&self) -> &Status {
         &self.pawn.status
     }

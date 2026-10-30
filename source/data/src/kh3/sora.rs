@@ -3,11 +3,10 @@
 //! with each clip's notifies. Paths and rules from StrawHatPro's documents
 //! (MIT; see CREDITS.md).
 use super::anim::{AnimSequence, BonePose, nlerp};
-use super::material::{self, MaterialParams, import_path};
+use super::material::import_path;
 use super::package::Package;
 use super::props::{Props, Value, export_props};
 use super::skeletal::{Bone, SkeletalMesh};
-use super::texture::Texture;
 use super::{Paks, Result, bad};
 use std::collections::HashMap;
 use std::sync::Mutex;
@@ -16,8 +15,8 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 pub const MESH: &str = "/Game/Character/pc/p_ex001/mdl/p_ex001_0";
 pub const SKELETON: &str = "/Game/Character/pc/p_ex001/mdl/p_ex001_0_Skeleton";
 pub const ANIM_SET: &str = "/Game/Character/pc/p_ex001/anm/p_ex001_AnimSet";
+const WEAPON: &str = "/Game/Blueprints/Player/p_ex001/w_so010_Wep";
 pub const KEYBLADE: &str = "/Game/Character/wep/w_so010/mdl/w_so010_0";
-const MOUTH: &str = "/Game/Shader/Material_set/SQEX_MouthTexSet/Mouth_M_0d00";
 
 /// A socket on a skeleton.
 #[derive(Clone, Debug, PartialEq)]
@@ -308,95 +307,24 @@ pub fn root_delta(clip: &Clip, from: f32, to: f32) -> [f32; 4] {
     [y, -x, b[2] - a[2], by - ay]
 }
 
-/// What a material slot draws: a good-enough look from the parameters.
-#[derive(Clone, Debug, Default)]
-pub struct SlotLook {
-    pub name: String,
-    pub color: Option<String>,
-    pub normal: Option<String>,
-    /// A flat colour in place of (or tinting) the texture, linear.
-    pub flat: Option<[f32; 4]>,
-    /// The texture only gives alpha.
-    pub alpha_only: bool,
-    pub skip: bool,
-    pub translucent: bool,
-    pub two_sided: bool,
+/// A Keyblade's show and hide (`TresWeaponBase`, its class default).
+#[derive(Clone, Copy, Debug, Default)]
+pub struct BladeTimes {
+    pub appear_delay: f32,
+    pub disappear_delay: f32,
+    pub disappear_dither: f32,
 }
 
-fn mean(a: [f32; 4], b: [f32; 4]) -> [f32; 4] {
-    [
-        (a[0] + b[0]) / 2.,
-        (a[1] + b[1]) / 2.,
-        (a[2] + b[2]) / 2.,
-        1.,
-    ]
-}
-
-/// The look of a material by what its root is.
-pub fn slot_look(slot: &str, m: &MaterialParams) -> SlotLook {
-    let mut look = SlotLook {
-        name: slot.to_owned(),
-        two_sided: m.two_sided,
-        normal: ["NormalTex", "Normalmap", "EyeNormalTexture"]
-            .iter()
-            .find_map(|k| m.textures.get(*k).cloned()),
-        ..SlotLook::default()
-    };
-    let vector = |k: &str| m.vectors.get(k).copied();
-    match m.root.as_str() {
-        "SQEX_KHHairBaseMat" => {
-            look.flat = Some(match (vector("HairColor"), vector("HairPointEndColor")) {
-                (Some(a), Some(b)) => mean(a, b),
-                _ => [0.1, 0.05, 0.02, 1.],
-            });
-        }
-        "SQEX_Mouth" => look.color = Some(MOUTH.to_owned()),
-        "SQEX_WhiteEyeMaterial" => look.color = m.textures.get("EyeTexture").cloned(),
-        "SQEX_EyeLens" => look.skip = true,
-        "SQEX_IrisTexEyeMaterial" => {
-            look.flat = Some(match (vector("Color"), vector("Color_Dark")) {
-                (Some(a), Some(b)) => mean(a, b),
-                _ => [0.1, 0.5, 0.9, 1.],
-            });
-        }
-        "SQEX_BaseEyelashes" => {
-            look.color = m.textures.get("EyelashesMask").cloned();
-            look.flat = vector("EyelashesColor");
-            look.alpha_only = true;
-            look.translucent = true;
-        }
-        _ => {
-            look.color = ["FormChangeTex0", "BaseColorTex", "BaseTexture"]
-                .iter()
-                .find_map(|k| m.textures.get(*k).cloned());
-        }
-    }
-    look
-}
-
-/// The `/Game/...` path of a mesh's material slot.
-fn slot_material(p: &Package, object: i32) -> Option<String> {
-    import_path(p, object)
-}
-
-/// Everything the duel's model needs, in memory.
+/// Everything the duel needs of KH3's Sora, in memory.
 #[derive(Debug, Default)]
 pub struct SoraData {
     pub mesh: SkeletalMesh,
-    pub looks: Vec<SlotLook>,
     pub sockets: Vec<Socket>,
     pub keyblade: SkeletalMesh,
-    pub keyblade_looks: Vec<SlotLook>,
     pub keyblade_sockets: Vec<Socket>,
-    pub textures: HashMap<String, Texture>,
+    pub blade_times: BladeTimes,
     pub anims: AnimSet,
     pub reference: Vec<BonePose>,
-    pub rig: super::rig::RigData,
-    /// (slot name, material asset) of each mesh's slots.
-    pub material_paths: Vec<(String, Option<String>)>,
-    pub keyblade_material_paths: Vec<(String, Option<String>)>,
-    /// The slots' materials as the game shades them.
-    pub materials: super::charmat::CharMaterials,
 }
 
 fn read_sockets(p: &Package) -> Vec<Socket> {
@@ -725,22 +653,20 @@ pub fn read_anim_set(paks: &Paks, path: &str) -> Result<AnimSet> {
     Ok(set)
 }
 
-fn looks_of(paks: &Paks, p: &Package, mesh: &SkeletalMesh) -> Vec<SlotLook> {
-    let paths: Vec<(String, Option<String>)> = mesh
-        .materials
-        .iter()
-        .map(|s| (s.slot.clone(), slot_material(p, s.object)))
-        .collect();
-    parallel(&paths, |(slot, path)| {
-        path.as_deref()
-            .and_then(|path| material::read(paks, path).ok())
-            .map_or_else(
-                || SlotLook {
-                    name: slot.clone(),
-                    ..SlotLook::default()
-                },
-                |m| slot_look(slot, &m),
-            )
+/// The Kingdom Key's class default.
+fn blade_times(paks: &Paks) -> Result<BladeTimes> {
+    let Some(p) = paks.game_package(WEAPON)? else {
+        return Ok(BladeTimes::default());
+    };
+    let Some(i) = p.export_named("Default__w_so010_Wep_C") else {
+        return Ok(BladeTimes::default());
+    };
+    let (props, _) = export_props(&p, i)?;
+    let time = |name: &str| props.f32(name).unwrap_or(0.);
+    Ok(BladeTimes {
+        appear_delay: time("m_AppearVisibleDelayTime"),
+        disappear_delay: time("m_DisappearVisibleDelayTime"),
+        disappear_dither: time("m_DisappearDitherAnimTime"),
     })
 }
 
@@ -757,65 +683,27 @@ fn reference_of(bones: &[Bone]) -> Vec<BonePose> {
 
 impl SoraData {
     pub fn load(paks: &Paks) -> Result<Self> {
-        let (mesh_package, mesh) = read_mesh(paks, MESH)?;
-        let looks = looks_of(paks, &mesh_package, &mesh);
+        let (_, mesh) = read_mesh(paks, MESH)?;
         let skeleton = paks
             .game_package(SKELETON)?
             .ok_or_else(|| bad("Sora's skeleton is missing"))?;
         let sockets = read_sockets(&skeleton);
         let (blade_package, keyblade) = read_mesh(paks, KEYBLADE)?;
-        let keyblade_looks = looks_of(paks, &blade_package, &keyblade);
         let mut keyblade_sockets = read_sockets(&blade_package);
         let blade_skeleton = format!("{KEYBLADE}_Skeleton");
         if let Some(p) = paks.game_package(&blade_skeleton)? {
             keyblade_sockets.extend(read_sockets(&p));
         }
-        let slots = |p: &Package, m: &SkeletalMesh| -> Vec<(String, Option<String>)> {
-            m.materials
-                .iter()
-                .map(|s| (s.slot.clone(), slot_material(p, s.object)))
-                .collect()
-        };
-        let material_paths = slots(&mesh_package, &mesh);
-        let keyblade_material_paths = slots(&blade_package, &keyblade);
-        let materials = super::charmat::read(paks, &material_paths, &keyblade_material_paths);
         let anims = read_anim_set(paks, ANIM_SET)?;
-        let mut wanted: Vec<String> = looks
-            .iter()
-            .chain(&keyblade_looks)
-            .filter(|l| !l.skip)
-            .flat_map(|l| l.color.iter().chain(&l.normal).cloned())
-            .collect();
-        wanted.extend(
-            materials
-                .body
-                .iter()
-                .chain(&materials.blade)
-                .flat_map(|s| s.textures.iter().flatten().cloned()),
-        );
-        wanted.sort_unstable();
-        wanted.dedup();
-        let textures = parallel(&wanted, |path| {
-            let p = paks.game_package(path).ok().flatten()?;
-            let i = p.export_of_class("Texture2D")?;
-            Texture::read(&p, i).ok().map(|t| (path.clone(), t))
-        });
         let reference = reference_of(&mesh.bones);
-        let rig = super::rig::read(paks, &mesh.bones, &keyblade.bones)?;
         Ok(Self {
             mesh,
-            looks,
             sockets,
             keyblade,
-            keyblade_looks,
             keyblade_sockets,
-            textures: textures.into_iter().flatten().collect(),
+            blade_times: blade_times(paks)?,
             anims,
             reference,
-            rig,
-            material_paths,
-            keyblade_material_paths,
-            materials,
         })
     }
 
@@ -1015,23 +903,6 @@ mod tests {
         let q = quat_of_rotator([0., 90., 0.]);
         let v = rotate(q, [1., 0., 0.]);
         assert!((v[1] - 1.).abs() < 1e-5, "{v:?}");
-    }
-
-    #[test]
-    fn looks_follow_the_root_material() {
-        let mut m = MaterialParams {
-            root: "SQEX_KHHairBaseMat".into(),
-            ..MaterialParams::default()
-        };
-        m.vectors.insert("HairColor".into(), [0., 0., 0., 1.]);
-        m.vectors
-            .insert("HairPointEndColor".into(), [1., 1., 1., 1.]);
-        assert_eq!(slot_look("h", &m).flat, Some([0.5, 0.5, 0.5, 1.]));
-        m.root = "SQEX_EyeLens".into();
-        assert!(slot_look("e", &m).skip);
-        m.root = "p_ex001_Basemat".into();
-        m.textures.insert("FormChangeTex0".into(), "/Game/T".into());
-        assert_eq!(slot_look("b", &m).color.as_deref(), Some("/Game/T"));
     }
 
     fn set_with_two_clips() -> AnimSet {

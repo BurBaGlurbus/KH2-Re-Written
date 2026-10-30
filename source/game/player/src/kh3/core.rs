@@ -923,7 +923,7 @@ impl Kh3 {
             StateId::Run => Action::Walk,
             _ => Action::Idle,
         };
-        player.armed = true;
+        player.armed = sora.weapon_out();
         let status = sora.status();
         player.mp.cur = status.mp;
         player.mp.max = status.max_mp();

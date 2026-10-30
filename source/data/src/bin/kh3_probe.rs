@@ -138,27 +138,14 @@ fn main() -> Result<()> {
             let t = std::time::Instant::now();
             let d = kh3::sora::SoraData::load(&paks)?;
             println!(
-                "loaded in {:.2} s: {} rows, {} clips, {} textures, {} sockets, blade {} verts, {} blade sockets",
+                "loaded in {:.2} s: {} rows, {} clips, {} sockets, {} keyblade verts, {} keyblade sockets",
                 t.elapsed().as_secs_f32(),
                 d.anims.rows.len(),
                 d.anims.clips.len(),
-                d.textures.len(),
                 d.sockets.len(),
                 d.keyblade.lod.positions.len(),
                 d.keyblade_sockets.len()
             );
-            for l in d.looks.iter().chain(&d.keyblade_looks) {
-                println!("{l:?}");
-            }
-            for (path, tex) in &d.textures {
-                println!(
-                    "{path} {} {}x{} mips {}",
-                    tex.format,
-                    tex.width,
-                    tex.height,
-                    tex.mips.len()
-                );
-            }
             let mut classes = std::collections::BTreeMap::<String, usize>::new();
             for c in &d.anims.clips {
                 for n in &c.notifies {
@@ -379,17 +366,6 @@ fn main() -> Result<()> {
             );
         }
         // `materials <out file>`: Sora's and the Keyblade's translated materials.
-        ("materials", [out]) => {
-            let data = kh3::sora::SoraData::load(&paks)?;
-            let m = &data.materials;
-            for s in m.body.iter().chain(&m.blade) {
-                match s.owner {
-                    Some(o) => println!("{} {} {} rows? textures {:?}", s.name, o, m.owners[o].blend, s.textures),
-                    None => println!("{} NOT TRANSLATED: {}", s.name, s.why),
-                }
-            }
-            std::fs::write(out, kh3::charmat::wgsl(&m.owners))?;
-        }
         ("texture", [path]) => {
             let p = package(path)?;
             let i = p.export_of_class("Texture2D").ok_or("no Texture2D")?;

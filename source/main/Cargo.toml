@@ -16,7 +16,6 @@ collision = { path = "../game/collision" }
 event = { path = "../game/event" }
 data = { path = "../data" }
 player = { path = "../game/player" }
-kh3_rig = { path = "../game/kh3_rig" }
 kh3_sora = { path = "../game/kh3_sora" }
 enemy = { path = "../game/enemy" }
 save = { path = "../game/save" }

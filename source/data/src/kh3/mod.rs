@@ -8,17 +8,13 @@
 #![allow(clippy::chunks_exact_to_as_chunks)]
 
 pub mod anim;
-pub mod charmat;
-pub mod dxbc;
 pub mod effect_json;
 pub mod hca;
 pub mod material;
 pub mod package;
 pub mod pak;
 pub mod props;
-pub mod rig;
 pub mod sead;
-pub mod shadermap;
 pub mod sheets;
 pub mod skeletal;
 pub mod sora;

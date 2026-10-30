@@ -134,11 +134,11 @@ pub(crate) struct Rival {
     /// (the map keeps the room Sora's own).
     floor: Option<([f32; 3], u8)>,
     /// What the presenter showed (crossfades between motions).
-    shown: Shown,
+    pub(crate) shown: Shown,
 }
 
 #[derive(Default)]
-struct Shown {
+pub(crate) struct Shown {
     key: Option<(usize, usize)>,
     target: Vec<Vec3>,
     display: Vec<Vec3>,
@@ -146,8 +146,8 @@ struct Shown {
     blend_from: Option<(Vec<Vec3>, u64)>,
     spawned: bool,
     /// The model's parts' vertex indices, and each Keyblade's.
-    part_indices: Vec<Vec<u32>>,
-    weapon_indices: [Vec<Vec<u32>>; 2],
+    pub(crate) part_indices: Vec<Vec<u32>>,
+    pub(crate) weapon_indices: [Vec<Vec<u32>>; 2],
 }
 
 /// The second slot's id.
@@ -1138,6 +1138,9 @@ pub(crate) fn present(
     weapon_parts: Query<(&RivalWeaponPart, &Mesh3d)>,
     mut meshes: ResMut<Assets<Mesh>>,
 ) {
+    if kh3_model::shows_kh3(&game) {
+        return;
+    }
     let game = &mut *game;
     let now = game.tick;
     for rival in &mut game.rivals {

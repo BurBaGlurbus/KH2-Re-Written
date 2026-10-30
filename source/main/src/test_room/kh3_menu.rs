@@ -181,7 +181,7 @@ pub(crate) fn tick(
         game.sora.kh3.abilities = set;
         let tick = game.tick;
         game.event(serde_json::json!({"event":"kh3_abilities","tick":tick,
-            "set":set.0,"ap":set.ap()}));
+            "set":set.0.to_string(),"ap":set.ap()}));
     }
     if let Some(d) = menu.data.duel.as_mut() {
         d.rows = pages(set, fresh(&note, game.tick).as_deref())

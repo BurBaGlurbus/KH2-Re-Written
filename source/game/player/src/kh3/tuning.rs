@@ -1,12 +1,11 @@
 //! The KH3 ruleset's numbers. The behaviour reference (StrawHatPro's MIT
 //! reimplementation of KH3's Sora, CREDITS.md) gives centimetres, seconds
-//! and degrees for a Sora 180 tall; this controller runs 60 ticks a second
-//! in KH2's units, where Sora stands about 160. Every length is scaled by
-//! [`SCALE`], so the moves keep their size against Sora's body and their
-//! timing. Values the reference does not give are marked [duel choice].
+//! and degrees; this controller runs 60 ticks a second in KH2's units, and
+//! its Sora is KH2's model. Every length is scaled by [`SCALE`], so the moves
+//! keep their size against his body and their timing. Values the reference does not give are marked [duel choice].
 
-/// KH2 Sora's height over KH3 Sora's.
-pub const SCALE: f32 = 160. / 180.;
+/// KH2 Sora's hip height over KH3 Sora's.
+pub const SCALE: f32 = 0.98;
 
 /// cm/s to units per tick.
 const fn speed(cm_s: f32) -> f32 {
