@@ -1259,6 +1259,9 @@ mod tests {
                 hit_back: 30.,
                 hit_back_small: 10.,
                 hit_back_to_jump: 0.1,
+                fly_blow_brake: 1.,
+                fly_blow_stop: 0.,
+                fly_blow_up: 1.,
             },
         )
     }

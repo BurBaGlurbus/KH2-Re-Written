@@ -545,6 +545,44 @@ fn an_unblended_start_fires_the_frame_events_at_frame_0() {
     assert!(!s.effects.contains(&crate::motion::Effect::Takeoff));
 }
 #[test]
+fn a_fly_jump_plays_its_own_motions_and_goes_back_to_flying() {
+    // M_EX890's `obj_flyjump(v, 3, 0, 1)`: fall on 4 near the apex
+    // (FUN_1403cb610), land on 5 (FUN_1403cb2a0), back in mode 5 (+0x108).
+    let mut s = Sysobj::bare();
+    let steer = Steer {
+        inertia: 0.9,
+        hover: false,
+    };
+    s.steer = Some(steer);
+    s.airborne = true;
+    s.position = [0., 300., 0.];
+    s.motion_start(3, 0., &Thirty);
+    s.launch_jump([0., 0., 1.], 100., 0.);
+    s.pending_mode = 3;
+    s.pending_fly = Some(PendingFly {
+        direction: [0., 0., 1.],
+        height: 100.,
+        speed: 0.,
+    });
+    s.jump_motions = JumpMotions { fall: 4, land: 5 };
+    s.effects.clear();
+    s.take_off(&Flat);
+    assert!(s.is_jump());
+    let mut fell = false;
+    for _ in 0..600 {
+        s.end_tick(&Flat);
+        fell |= s.motion.slot == 4;
+        if s.fly.is_none() {
+            break;
+        }
+    }
+    assert!(fell);
+    assert!(s.fly.is_none());
+    assert_eq!(s.motion.slot, 5);
+    assert_eq!(s.steer, Some(steer));
+    assert_ne!(s.flags & 0x800_0000, 0);
+}
+#[test]
 fn mode_7_rises_straight_turns_to_156_and_lands_on_157() {
     // FUN_1404229f0 / FUN_140422af0 / FUN_140422b30.
     let mut s = Sysobj::bare();

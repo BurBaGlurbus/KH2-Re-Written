@@ -242,6 +242,16 @@ pub fn tick(
         state.placed = Some(here);
         // FUN_1403a2170: the list starts empty with the area.
         state.listed.clear();
+        // [Tour setup] Points that start disabled wait for a mission or event
+        // signal the room does not send (hb25's 1000 Heartless); the tour
+        // opens the group points itself.
+        if game.enemy_battle_tour {
+            for o in &mut area.current.state.objects {
+                if o.point.kind == 2 {
+                    o.flags &= !1;
+                }
+            }
+        }
         let spawns = area.current.spawns.clone();
         for s in &spawns {
             list(

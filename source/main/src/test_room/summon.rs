@@ -1152,7 +1152,7 @@ fn prty_words(library: &mut data::path_lookup::Library, index: i32) -> Option<[u
 /// model script, its class from the entry's type byte, and its HIT spheres.
 pub(super) struct Spawner {
     source: Arc<data::probe_source::ProbeSource>,
-    models: std::collections::HashMap<u32, (String, u8)>,
+    models: std::collections::HashMap<u32, (String, u8, u16)>,
     scripts: std::collections::HashMap<u32, Option<Vec<u8>>>,
     shapes: std::collections::HashMap<u32, Vec<([f32; 3], f32)>>,
 }
@@ -1172,6 +1172,7 @@ impl Spawner {
                         (
                             String::from_utf8_lossy(&o.model_name).into_owned(),
                             o.object_type,
+                            o.flags,
                         ),
                     )
                 })
@@ -1189,15 +1190,17 @@ impl enemy::world::Spawner for Spawner {
             .scripts
             .entry(entry)
             .or_insert_with(|| {
-                let (model, _) = self.models.get(&entry)?;
+                let (model, ..) = self.models.get(&entry)?;
                 super::enemy_script::script_payload(&self.source, model).ok()
             })
             .clone();
         let mut sys = enemy::sysobj::Sysobj::bare();
         sys.appear_way = 2;
         sys.model = entry;
-        if let Some(&(_, kind)) = self.models.get(&entry) {
+        if let Some(&(_, kind, flags)) = self.models.get(&entry) {
             sys.set_class(kind);
+            // FUN_1403ba700: `obj_is_entry_fly`.
+            sys.entry_fly = flags >> 3 & 1 != 0;
         }
         sys.hit_shapes = self
             .shapes
@@ -1205,7 +1208,7 @@ impl enemy::world::Spawner for Spawner {
             .or_insert_with(|| {
                 self.models
                     .get(&entry)
-                    .map(|(model, _)| super::enemy_script::hit_spheres(&self.source, model))
+                    .map(|(model, ..)| super::enemy_script::hit_spheres(&self.source, model))
                     .unwrap_or_default()
             })
             .clone();

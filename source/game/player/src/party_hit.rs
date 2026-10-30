@@ -471,9 +471,9 @@ mod tests {
     }
 
     fn sstm() -> Sstm {
-        let mut record = [0u8; 0x3c];
+        let mut record = [0u8; 0x48];
         let set =
-            |r: &mut [u8; 0x3c], at: usize, v: f32| r[at..at + 4].copy_from_slice(&v.to_le_bytes());
+            |r: &mut [u8; 0x48], at: usize, v: f32| r[at..at + 4].copy_from_slice(&v.to_le_bytes());
         set(&mut record, 0x14, 16.);
         set(&mut record, 0x18, 0.8);
         set(&mut record, 0x1c, 0.1);

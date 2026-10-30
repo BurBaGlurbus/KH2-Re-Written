@@ -443,6 +443,8 @@ pub struct ScriptSetup {
     pub spawn_serial: u16,
     /// The objentry character id (+0x4c).
     pub character: u16,
+    /// The objentry's +0x48 word (bit 3: it flies, `obj_is_entry_fly`).
+    pub entry_flags: u16,
 }
 
 pub struct ScriptBrain {
@@ -655,6 +657,7 @@ impl ScriptBrain {
         sys.set_class(self.setup.object_type);
         sys.entry_id = self.setup.entry_id;
         sys.spawn_serial = self.setup.spawn_serial;
+        sys.entry_fly = self.setup.entry_flags >> 3 & 1 != 0;
         // FUN_140411700, which every battle object's constructor starts
         // with (types 3, 4, 12, 13, 21): team 2 (+0x4dc) unless
         // FUN_1403baa60 (character 0x417 to 0x423).

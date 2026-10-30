@@ -969,6 +969,7 @@ impl BattleActor {
                     patn: assets.patn.clone(),
                     spawn_serial,
                     character: entry.character,
+                    entry_flags: entry.flags,
                 },
                 super::boss::spawner(source).map(|s| Box::new(s) as Box<dyn enemy::world::Spawner>),
             )?;

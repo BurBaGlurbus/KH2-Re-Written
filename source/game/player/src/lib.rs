@@ -4206,6 +4206,9 @@ mod tests {
             hit_back: 200.,
             hit_back_small: 200.,
             hit_back_to_jump: 0.048,
+            fly_blow_brake: 1.,
+            fly_blow_stop: 0.,
+            fly_blow_up: 1.,
         }
     }
 

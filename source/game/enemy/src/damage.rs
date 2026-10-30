@@ -12,7 +12,7 @@
 use crate::env::Env;
 use crate::object::DAMAGE;
 use crate::script::Slot;
-use crate::sysobj::{Reaction, Vec3, class_flag, hlen, state_flag};
+use crate::sysobj::{Reaction, Sysobj, Vec3, class_flag, hlen, state_flag};
 use crate::traps::target::PLAYER_TARGET;
 use crate::world::{Event, Object, World, object_handle};
 use player::{actor_physics, combat};
@@ -23,6 +23,159 @@ pub const DAMAGE_RECORD_OFFSET: u32 = 0x400;
 /// The damage record's handle (the argument OBJ_DAMAGE receives).
 pub fn damage_handle(id: u32) -> u32 {
     object_handle(id) + DAMAGE_RECORD_OFFSET
+}
+
+impl Sysobj {
+    /// The heading the record's direction gives: away from the attack with
+    /// the attack behind the object (`true`), toward it otherwise
+    /// (FUN_1403b56e0, FUN_140140200, FUN_1403b6420).
+    fn face_damage(&mut self) -> bool {
+        let d = self.damage_direction;
+        let back = self.yaw.sin() * d[0] + self.yaw.cos() * d[2] >= 0.;
+        let (x, z) = if back { (d[0], d[2]) } else { (-d[0], -d[2]) };
+        if x != 0. || z != 0. {
+            self.yaw = x.atan2(z);
+            self.wish_yaw = None;
+        }
+        back
+    }
+
+    /// `first`, or (FUN_1403c7d30) `other` when the motion set has no `first`.
+    fn present(clips: &dyn crate::env::Clips, first: usize, other: usize) -> usize {
+        if clips.length(first) != 0 {
+            first
+        } else {
+            other
+        }
+    }
+
+    /// FUN_1403d43b0: motions 10 to 13 by side and height (DAT_14074c390),
+    /// with the other height when the set lacks it.
+    fn flinch(&mut self, clips: &dyn crate::env::Clips) {
+        let d = self.damage_direction;
+        let back = self.yaw.sin() * d[0] + self.yaw.cos() * d[2] >= 0.;
+        let base = if back { 12 } else { 10 };
+        let (first, other) = if self.damage_high {
+            (base, base + 1)
+        } else {
+            (base + 1, base)
+        };
+        self.reaction = Reaction::Flinch;
+        self.flinch_next = 0;
+        self.motion_start(Self::present(clips, first, other), 0., clips);
+    }
+
+    /// FUN_1403d3840: motion 14 toward the attack or 15 away from it
+    /// (DAT_1405c63f8), with `next` behind it.
+    fn air_flinch(&mut self, next: usize, clips: &dyn crate::env::Clips) {
+        let back = self.face_damage();
+        let (first, other) = if back { (15, 14) } else { (14, 15) };
+        self.reaction = Reaction::Flinch;
+        self.flinch_next = next;
+        self.motion_start(Self::present(clips, first, other), 0., clips);
+    }
+
+    /// FUN_1403d4960: the knock slide.
+    fn damage_knock(&mut self, strength: f32) {
+        self.knock = actor_physics::Knock::new(horizontal(self.damage_direction), strength, 0.);
+    }
+
+    /// FUN_1403ba9a0: a jump mode, a range with `+0x18c` bit 5 or 24, or
+    /// `+0x120` bit 23.
+    fn damage_in_air(&self) -> bool {
+        self.mode_flags() & 1 != 0
+            || self.motion.flags.word & 0x100_0020 != 0
+            || self.flags >> 23 & 1 != 0
+    }
+
+    /// FUN_1403d4260 (`enemy_exec_damage_small`, and reaction class 3 of
+    /// FUN_1403d2fe0). In the air: the aerial flinch with motion 4 behind it
+    /// and (FUN_1403d4800, the mode's slot 3) a hop 50 high at the strength
+    /// times HitBackToJump.
+    pub(crate) fn exec_damage_small(&mut self, strength: f32, clips: &dyn crate::env::Clips) {
+        if self.mode_flags() & 0x10 != 0 {
+            self.air_flinch(0, clips);
+            self.damage_knock(strength);
+        } else if self.damage_in_air() {
+            self.air_flinch(4, clips);
+            if self.mode_flags() & 1 != 0 {
+                let speed = strength * self.sstm.hit_back_to_jump;
+                self.start_jump(horizontal(self.damage_direction), 50., speed);
+            }
+        } else {
+            self.end_fly_blow();
+            self.flinch(clips);
+            self.damage_knock(strength);
+        }
+        self.damage_exec = true;
+    }
+
+    /// FUN_1403d3f50 (`enemy_exec_damage_blow`, and reaction class 4 of
+    /// FUN_1403d2fe0): `front` with the attack before the object, `back`
+    /// with it behind; thrown along the record's direction, then the mode
+    /// FUN_140409d30 picks: 4, or 8 for an object flying or in a range with
+    /// `+0x18c` bit 6.
+    pub(crate) fn exec_damage_blow(
+        &mut self,
+        front: usize,
+        back: usize,
+        up: f32,
+        speed: f32,
+        clips: &dyn crate::env::Clips,
+    ) {
+        let behind = self.face_damage();
+        let motion = if behind { back } else { front };
+        let d = horizontal(self.damage_direction);
+        let flying = self.mode_flags() & 2 != 0 || self.motion.flags.word >> 6 & 1 != 0;
+        let steer = self.steer;
+        self.knock = None;
+        self.jump = None;
+        self.mode7 = false;
+        self.hop = None;
+        self.steer = None;
+        self.fly = None;
+        self.pending_fly = None;
+        self.fly_blow = None;
+        self.blow = None;
+        self.sampler.reset();
+        if flying {
+            let velocity = [d[0] * speed, up * self.sstm.fly_blow_up, d[2] * speed];
+            let [x, y, z] = velocity;
+            self.fly_blow = Some(crate::sysobj::FlyBlow {
+                velocity,
+                stop: (x * x + y * y + z * z).sqrt() * self.sstm.fly_blow_stop,
+                steer,
+            });
+            self.reaction = Reaction::FlyBlow;
+        } else {
+            self.blow = Some(actor_physics::Blow::new(
+                [d[0] * speed, up, d[2] * speed],
+                &self.sstm,
+            ));
+            self.airborne = true;
+            self.reaction = Reaction::Blow { land: motion + 1 };
+        }
+        self.motion_start(motion, 0., clips);
+        self.damage_exec = true;
+    }
+
+    /// FUN_1403d4120 (`enemy_exec_damage_hitback`): the knock slide alone.
+    pub(crate) fn exec_damage_hitback(&mut self, strength: f32) {
+        self.damage_knock(strength);
+        self.damage_exec = true;
+    }
+
+    /// FUN_1403d4140 (`enemy_exec_damage_large`, and reaction class 14 of
+    /// FUN_1403d2fe0): motion 24 with the attack behind, else 23; idle
+    /// behind it; the knock slide.
+    pub(crate) fn exec_damage_large(&mut self, strength: f32, clips: &dyn crate::env::Clips) {
+        let back = self.face_damage();
+        self.reaction = Reaction::Flinch;
+        self.flinch_next = 0;
+        self.motion_start(if back { 24 } else { 23 }, 0., clips);
+        self.damage_knock(strength);
+        self.damage_exec = true;
+    }
 }
 
 /// One hit as the attack hands it to its target (the damage record
@@ -131,6 +284,8 @@ impl Object {
         sys.damage_attack_type = attack.attack_type;
         sys.damage_parts = hit.pool;
         sys.damage_exec = false;
+        sys.damage_direction = hit.direction;
+        sys.damage_high = hit.high;
         sys.last_attacker = Some(PLAYER_TARGET);
         // [U] Hits reach here from Sora's side only; a party member's hit
         // would name the member.
@@ -293,25 +448,16 @@ impl Object {
         let orig = sys.damage_orig_reaction as u8;
         let direction = hit.direction;
         let class = combat::reaction_class(reaction);
-        let back = sys.yaw.sin() * direction[0] + sys.yaw.cos() * direction[2] >= 0.;
         let clips = env.clips(sys.model);
         let kb = sys.sstm.knock_strength(
             hit.attack.knockback[0],
             combat::reaction_class(orig),
             reaction,
         );
-        let flinch = 10 + (back as usize) * 2 + (!hit.high) as usize;
         match class {
             1 => sys.knock = actor_physics::Knock::new(horizontal(direction), kb, 0.),
-            2 => {
-                sys.reaction = Reaction::Flinch;
-                sys.motion_start(flinch, 0., clips);
-            }
-            3 => {
-                sys.reaction = Reaction::Flinch;
-                sys.motion_start(flinch, 0., clips);
-                sys.knock = actor_physics::Knock::new(horizontal(direction), kb, 0.);
-            }
+            2 => sys.flinch(clips),
+            3 => sys.exec_damage_small(kb, clips),
             4 => {
                 let [mut up, mut speed] = [0., 0.];
                 if combat::reaction_class(orig) == 4 {
@@ -321,25 +467,11 @@ impl Object {
                     up = sys.sstm.blow_up;
                     speed = sys.sstm.blow_speed;
                 }
-                let d = horizontal(direction);
-                sys.blow = Some(actor_physics::Blow::new(
-                    [d[0] * speed, up, d[2] * speed],
-                    &sys.sstm,
-                ));
-                sys.knock = None;
-                sys.jump = None;
-                sys.mode7 = false;
-                sys.hop = None;
-                sys.steer = None;
-                sys.fly = None;
-                sys.pending_fly = None;
-                sys.sampler.reset();
-                sys.airborne = true;
-                sys.reaction = Reaction::Blow { back };
-                sys.motion_start(if back { 18 } else { 16 }, 0., clips);
+                sys.exec_damage_blow(16, 18, up, speed, clips);
             }
+            14 => sys.exec_damage_large(kb, clips),
             // Class 5 only captures (the host calls `capture`); 0 and 6..13
-            // do nothing. [U] Class 14's special motions are not played.
+            // do nothing.
             _ => {}
         }
         sys.damage_exec = true;
@@ -377,7 +509,8 @@ impl Object {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::env::NullEnv;
+    use crate::env::{Env, NullEnv};
+    use crate::sysobj::Steer;
 
     fn boss(hp: i32) -> (World, Object) {
         let mut o = Object::bare(1);
@@ -447,6 +580,104 @@ mod tests {
             reaction_boost_enabled: false,
         },
     };
+
+    /// Every motion exists and lasts 30 ticks.
+    struct AnyMotion;
+    impl crate::env::Clips for AnyMotion {
+        fn length(&self, _: usize) -> u32 {
+            30
+        }
+        fn loop_start(&self, _: usize) -> u32 {
+            0
+        }
+        fn root_delta(&self, _: usize, _: u32) -> Vec3 {
+            [0.; 3]
+        }
+        fn events(&self, _: usize) -> Option<&crate::motion::MotionEvents> {
+            None
+        }
+    }
+    impl Env for AnyMotion {
+        fn floor(&self, _: f32, _: f32, _: f32) -> Option<f32> {
+            Some(0.)
+        }
+        fn clips(&self, _: u32) -> &dyn crate::env::Clips {
+            self
+        }
+        fn player_position(&self) -> Vec3 {
+            [0.; 3]
+        }
+        fn target_position(&self, _: u32) -> Option<Vec3> {
+            None
+        }
+    }
+
+    fn struck_from(o: &mut Object, direction: Vec3) {
+        o.sys.damage_direction = direction;
+        o.sys.damage_high = true;
+        o.sys.position = [0.; 3];
+        o.sys.yaw = 0.;
+    }
+
+    #[test]
+    fn the_scripts_blow_plays_its_own_motion_and_lands_on_the_next() {
+        // FUN_1403d3f50: the attack behind the object (direction along its
+        // forward) takes the second motion and keeps the heading.
+        let mut o = Object::bare(1);
+        struck_from(&mut o, [0., 0., 1.]);
+        o.sys.exec_damage_blow(30, 32, 20., 10., &AnyMotion);
+        assert_eq!(o.sys.motion.slot, 32);
+        assert_eq!(o.sys.reaction, Reaction::Blow { land: 33 });
+        assert_eq!(o.sys.yaw, 0.);
+        assert!(o.sys.damage_exec);
+        assert_eq!(o.sys.blow.unwrap().velocity, [0., 20., 10.]);
+        // From the front it takes the first and turns to face the attack.
+        struck_from(&mut o, [0., 0., -1.]);
+        o.sys.exec_damage_blow(30, 32, 20., 10., &AnyMotion);
+        assert_eq!(o.sys.motion.slot, 30);
+        assert_eq!(o.sys.yaw, 0.);
+    }
+
+    #[test]
+    fn a_flying_object_takes_the_flying_blow_and_flies_on() {
+        // FUN_140409d30 mode 8: the velocity brakes until it is below its
+        // stop speed, then the next motion, back to mode 5.
+        let mut o = Object::bare(1);
+        o.sys.sstm.fly_blow_brake = 0.5;
+        o.sys.sstm.fly_blow_stop = 0.25;
+        o.sys.sstm.fly_blow_up = 0.5;
+        let steer = Steer {
+            inertia: 0.9,
+            hover: false,
+        };
+        o.sys.steer = Some(steer);
+        struck_from(&mut o, [0., 0., 1.]);
+        o.sys.exec_damage_blow(16, 18, 20., 0., &AnyMotion);
+        assert_eq!(o.sys.reaction, Reaction::FlyBlow);
+        assert_eq!(o.sys.mode_flags(), 0x142);
+        assert_eq!(o.sys.fly_blow.unwrap().velocity, [0., 10., 0.]);
+        for _ in 0..12 {
+            o.sys.end_tick(&AnyMotion);
+        }
+        assert!(o.sys.fly_blow.is_none());
+        assert_eq!(o.sys.steer, Some(steer));
+        assert_eq!(o.sys.motion.slot, 19);
+    }
+
+    #[test]
+    fn a_small_hit_in_a_jump_flinches_in_the_air_and_hops() {
+        // FUN_1403d4260 in the air: FUN_1403d3840 with motion 4 behind it,
+        // and the mode's jump (FUN_1403d4800).
+        let mut o = Object::bare(1);
+        o.sys.sstm.hit_back_to_jump = 0.1;
+        o.sys.start_jump([0., 0., 1.], 100., 0.);
+        struck_from(&mut o, [0., 0., -1.]);
+        o.sys.exec_damage_small(100., &AnyMotion);
+        assert_eq!(o.sys.reaction, Reaction::Flinch);
+        assert_eq!(o.sys.flinch_next, 4);
+        assert!(o.sys.is_jump());
+        assert!(o.sys.knock.is_none());
+    }
 
     #[test]
     fn obj_damage_reads_the_attacker_from_the_damage_record() {

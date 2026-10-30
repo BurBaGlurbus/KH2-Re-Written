@@ -987,7 +987,7 @@ mod tests {
         }
     }
     fn actor() -> Soldier {
-        let mut record = [0u8; 0x3c];
+        let mut record = [0u8; 0x48];
         record[0x14..0x18].copy_from_slice(&20f32.to_le_bytes());
         Soldier::new(
             [0.; 3],

@@ -1066,26 +1066,54 @@ fn is_damage_motion(ctx: &mut Ctx<'_>, m: &mut Memory<'_>, args: &mut Args) -> R
     Ok(())
 }
 
-macro_rules! exec_damage_traps {
-    ($($name:ident = $label:literal;)*) => {$(
-        /// The script performs a damage reaction itself. [U] The engine's
-        /// reaction already ran when the hit was taken; the call is recorded.
-        fn $name(ctx: &mut Ctx<'_>, m: &mut Memory<'_>, args: &mut Args) -> Result<(), Fault> {
-            let id = ctx.sys_of_ai(m, args[0].value)?;
-            ctx.object(id)?.sys.damage_exec = true;
-            ctx.world.events.push(Event::Unsupported($label));
-            Ok(())
-        }
-    )*};
+/// 2:1 FUN_140431b60 -> FUN_1403d3f50: the script's own blow of the object it
+/// holds the damage record of: the motions (attack before, attack behind), up
+/// and speed.
+fn exec_damage_blow(ctx: &mut Ctx<'_>, m: &mut Memory<'_>, args: &mut Args) -> Result<(), Fault> {
+    let id = ctx.sys_of_ai(m, args[0].value)?;
+    let env = ctx.env;
+    let sys = &mut ctx.object(id)?.sys;
+    let clips = env.clips(sys.model);
+    sys.exec_damage_blow(
+        args[2].as_int().max(0) as usize,
+        args[3].as_int().max(0) as usize,
+        args[4].as_float(),
+        args[5].as_float(),
+        clips,
+    );
+    Ok(())
 }
 
-exec_damage_traps! {
-    exec_damage_blow = "enemy_exec_damage_blow";
-    exec_damage_small = "enemy_exec_damage_small";
-    exec_damage_hitback = "enemy_exec_damage_hitback";
-    exec_damage_large = "enemy_exec_damage_large";
+/// 2:2 FUN_140431c40 -> FUN_1403d4260.
+fn exec_damage_small(ctx: &mut Ctx<'_>, m: &mut Memory<'_>, args: &mut Args) -> Result<(), Fault> {
+    let id = ctx.sys_of_ai(m, args[0].value)?;
+    let env = ctx.env;
+    let sys = &mut ctx.object(id)?.sys;
+    let clips = env.clips(sys.model);
+    sys.exec_damage_small(args[2].as_float(), clips);
+    Ok(())
 }
 
+/// 2:3 FUN_140431c90 -> FUN_1403d4120.
+fn exec_damage_hitback(
+    ctx: &mut Ctx<'_>,
+    m: &mut Memory<'_>,
+    args: &mut Args,
+) -> Result<(), Fault> {
+    let id = ctx.sys_of_ai(m, args[0].value)?;
+    ctx.object(id)?.sys.exec_damage_hitback(args[2].as_float());
+    Ok(())
+}
+
+/// 2:87 FUN_140431bf0 -> FUN_1403d4140.
+fn exec_damage_large(ctx: &mut Ctx<'_>, m: &mut Memory<'_>, args: &mut Args) -> Result<(), Fault> {
+    let id = ctx.sys_of_ai(m, args[0].value)?;
+    let env = ctx.env;
+    let sys = &mut ctx.object(id)?.sys;
+    let clips = env.clips(sys.model);
+    sys.exec_damage_large(args[2].as_float(), clips);
+    Ok(())
+}
 /// 0:8 FUN_14041d1a0: a debug print that does nothing in the shipped build.
 fn vector_dump(_: &mut Ctx<'_>, _: &mut Memory<'_>, _: &mut Args) -> Result<(), Fault> {
     Ok(())

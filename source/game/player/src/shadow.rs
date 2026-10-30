@@ -447,6 +447,21 @@ impl Shadow {
             ..combat::TargetState::full(self.stats.max_hp)
         };
         let dmg = combat::damage_with(attacker, attack, &self.stats, &state);
+        self.take_damage(dmg, direction, high, attack, by_player)
+    }
+
+    /// A hit whose damage is already known: the damage and the reaction.
+    pub fn take_damage(
+        &mut self,
+        dmg: i32,
+        direction: Vec3,
+        high: bool,
+        attack: &AttackParams,
+        by_player: bool,
+    ) -> Option<i32> {
+        if !self.targetable() {
+            return None;
+        }
         self.hp = (self.hp - dmg).max(0);
         if self.dummy {
             if self.hp <= 0 {
@@ -1227,6 +1242,9 @@ mod tests {
             hit_back_small: 200.,
             blow_to_hit_back: 8.,
             hit_back_to_jump: 0.048,
+            fly_blow_brake: 1.,
+            fly_blow_stop: 0.,
+            fly_blow_up: 1.,
         }
     }
 

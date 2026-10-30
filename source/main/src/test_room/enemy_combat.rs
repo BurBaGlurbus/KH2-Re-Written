@@ -907,7 +907,7 @@ mod tests {
             level: 1,
             stats: combat::TargetStats::enemy(100, 10000, 0, [100; 7], 20, 2),
             attacker: combat::AttackerStats::default(),
-            sstm: actor_physics::Sstm::read(&[0; 0x3c]).unwrap(),
+            sstm: actor_physics::Sstm::read(&[0; 0x48]).unwrap(),
             difficulty: combat::Difficulty::Standard,
             lock_range: 1000.,
             body,

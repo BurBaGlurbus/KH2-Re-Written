@@ -1923,7 +1923,7 @@ mod tests {
         s
     }
     pub(super) fn test_sstm() -> Sstm {
-        let mut record = [0u8; 0x3c];
+        let mut record = [0u8; 0x48];
         for (at, v) in [
             (0x14usize, 16f32),
             (0x18, 0.8),

@@ -84,8 +84,26 @@ pub enum Ground {
 pub enum Reaction {
     None,
     Flinch,
-    Blow { back: bool },
+    /// Physics mode 4: `land` plays on touching down (the blow's motion + 1,
+    /// FUN_140422700).
+    Blow {
+        land: usize,
+    },
     BlowLand,
+    /// Physics mode 8 (a flying object's blow, see [`FlyBlow`]).
+    FlyBlow,
+}
+
+/// Physics mode 8, entered instead of the blow by an object that was flying
+/// or in a range with `+0x18c` bit 6 (FUN_140409d30).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct FlyBlow {
+    /// Y-up.
+    pub velocity: Vec3,
+    /// +0x10c (FUN_140410460): it ends below this speed.
+    pub stop: f32,
+    /// The flight it goes back to (mode 5's parameters stay in the object).
+    pub steer: Option<Steer>,
 }
 
 /// A request to leave the ground once a motion's take-off event fires
@@ -234,6 +252,8 @@ pub struct PendingHop {
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Fly {
+    /// Mode 5's parameters, for going back to it (+0x108 keeps the mode).
+    pub steer: Option<Steer>,
     pub arc: actor_physics::Arc,
     pub velocity: [f32; 2],
     pub initial_height: f32,
@@ -356,6 +376,14 @@ pub struct Sysobj {
     pub damage_attacker: Option<u32>,
     /// The reaction value of the damage record being handled (+0x26).
     pub damage_reaction: u32,
+    /// The damage record's direction (+0, attack toward object) and whether
+    /// the struck shape is a high one (+0x24).
+    pub damage_direction: Vec3,
+    pub damage_high: bool,
+    /// What a flinch leaves behind when its motion ends (FUN_1403c8310 after
+    /// the motion: 0, or 4 for an aerial flinch).
+    pub flinch_next: usize,
+    pub fly_blow: Option<FlyBlow>,
     /// +0xa58/+0xa64: the second movement request (`trap_obj_move_request`).
     pub request_direction: Vec3,
     pub request_speed: f32,
@@ -703,6 +731,9 @@ impl Sysobj {
             hit_back: 0.,
             hit_back_small: 0.,
             hit_back_to_jump: 0.,
+            fly_blow_brake: 1.,
+            fly_blow_stop: 0.,
+            fly_blow_up: 1.,
         };
         Self::new(0, [0.; 3], 0., stats, sstm)
     }
@@ -748,6 +779,10 @@ impl Sysobj {
             entry_fly: false,
             last_attacker: None,
             damage_attacker: None,
+            damage_direction: [0.; 3],
+            damage_high: true,
+            flinch_next: 0,
+            fly_blow: None,
             damage_reaction: 0,
             request_direction: [0.; 3],
             request_speed: 0.,
@@ -860,6 +895,8 @@ impl Sysobj {
             0x100
         } else if self.blow.is_some() {
             0x1c1
+        } else if self.fly_blow.is_some() {
+            0x142
         } else if self.jump.is_some() {
             0x181
         } else if self.hop.is_some() {
@@ -1228,8 +1265,9 @@ impl Sysobj {
             3 => {
                 if let Some(launch) = self.pending_fly.take() {
                     let floor = env.floor(self.position[0], self.position[2], self.position[1]);
-                    self.steer = None;
+                    let steer = self.steer.take();
                     self.fly = Some(Fly {
+                        steer,
                         arc: actor_physics::Arc::launch(self.position[1], launch.height),
                         velocity: [
                             launch.direction[0] * launch.speed,
@@ -1670,20 +1708,37 @@ impl Sysobj {
 
     fn update_fly(&mut self, clips: &dyn Clips, env: &dyn Env) {
         let mut fly = self.fly.expect("active fly jump");
+        // FUN_1403cb680 (slot 7) -> FUN_1403cb610: the fall motion the jump
+        // was armed with (+0x118, none by default), once, near the apex.
         if !fly.fall_started && fly.arc.falling_motion() && self.reaction == Reaction::None {
-            if !self.motion_start(155 + 1, actor_physics::MOTION_BLEND, clips) {
-                return;
+            if self.jump_motions.fall >= 0 {
+                self.motion_start(
+                    self.jump_motions.fall as usize,
+                    actor_physics::MOTION_BLEND,
+                    clips,
+                );
             }
             fly.fall_started = true;
         }
         let height = env
             .floor(self.position[0], self.position[2], self.position[1])
             .map_or(0., |f| (self.position[1] - f).max(0.));
+        // FUN_140423360 -> FUN_1404233e0 -> FUN_1403cb2a0: back at the height
+        // it left, the land motion (+0x11c, motion 5 if the set has one) with
+        // idle behind it, and the mode it left (+0x108).
         if fly.arc.t >= fly.arc.rise && height <= fly.initial_height {
             self.airborne = fly.original_airborne;
+            self.steer = fly.steer;
             self.fly = None;
             self.sampler.reset();
-            self.motion_start(155 + 2, 0., clips);
+            let land = self.jump_motions.land;
+            if land >= 0
+                && (land != 5 || clips.length(5) != 0)
+                && self.motion_start(land as usize, 0., clips)
+            {
+                self.motion_queue.push((0, 0.));
+            }
+            self.flags |= 0x800_0000;
             return;
         }
         let frozen = self.gravity_frozen();
@@ -1717,7 +1772,9 @@ impl Sysobj {
     }
 
     fn update_reaction(&mut self, clips: &dyn Clips, env: &dyn Env) {
-        if let Reaction::Blow { back } = self.reaction {
+        if self.reaction == Reaction::FlyBlow {
+            self.update_fly_blow(clips, env);
+        } else if let Reaction::Blow { land } = self.reaction {
             if let Some(blow) = &mut self.blow {
                 if self.sampler.due(0.) {
                     self.sampler.store(blow.step(
@@ -1746,7 +1803,7 @@ impl Sysobj {
                     self.blow = None;
                     self.airborne = false;
                     self.reaction = Reaction::BlowLand;
-                    self.motion_start(if back { 19 } else { 17 }, 0., clips);
+                    self.motion_start(land, 0., clips);
                 }
             }
         } else {
@@ -1761,8 +1818,50 @@ impl Sysobj {
             }
             if clips.ended(self.motion.slot, self.motion.tick) {
                 self.reaction = Reaction::None;
-                self.motion_start(0, 0., clips);
+                let next = std::mem::take(&mut self.flinch_next);
+                self.motion_start(next, 0., clips);
             }
+        }
+    }
+
+    /// Physics mode 8 (slots FUN_140410390, FUN_140410330): the velocity
+    /// brakes each step; below its stop speed the object plays the motion
+    /// after the blow's, stands still and goes back to mode 5, or mode 0
+    /// in a range with `+0x18c` bit 6.
+    fn update_fly_blow(&mut self, clips: &dyn Clips, env: &dyn Env) {
+        let Some(mut blow) = self.fly_blow else {
+            self.reaction = Reaction::None;
+            return;
+        };
+        if self.sampler.due(0.) {
+            blow.velocity = blow.velocity.map(|c| c * self.sstm.fly_blow_brake);
+            self.sampler
+                .store(blow.velocity.map(|c| c * actor_physics::PHYSICS_STEP));
+        }
+        self.fly_blow = Some(blow);
+        let d = self.sampler.displacement();
+        self.apply_movement(d, env);
+        let [x, y, z] = blow.velocity;
+        if (x * x + y * y + z * z).sqrt() < blow.stop {
+            self.end_fly_blow();
+            self.reaction = Reaction::BlowLand;
+            self.motion_start(self.motion.slot + 1, 0., clips);
+        }
+    }
+
+    /// FUN_140410300: out of the flying blow with no velocity, into mode 5
+    /// or (`+0x18c` bit 6) mode 0.
+    pub(crate) fn end_fly_blow(&mut self) {
+        let Some(blow) = self.fly_blow.take() else {
+            return;
+        };
+        self.velocity = [0.; 4];
+        self.sampler.reset();
+        if self.motion.flags.word >> 6 & 1 == 0 {
+            self.steer = blow.steer.or(Some(Steer {
+                inertia: actor_physics::AIR_INERTIA,
+                hover: false,
+            }));
         }
     }
 
@@ -1790,7 +1889,7 @@ impl Sysobj {
     }
 
     /// Enter the jump physics mode now.
-    fn start_jump(&mut self, direction: Vec3, height: f32, speed: f32) {
+    pub(crate) fn start_jump(&mut self, direction: Vec3, height: f32, speed: f32) {
         let len = hlen(direction);
         let dir = if len > 0. {
             [direction[0] / len, direction[2] / len]
@@ -2029,7 +2128,7 @@ impl Sysobj {
         self.pending_fly = None;
         self.sampler.reset();
         self.airborne = true;
-        self.reaction = Reaction::Blow { back: false };
+        self.reaction = Reaction::Blow { land: 17 };
     }
 
     /// FUN_140418800: set routine option flag `index`.

@@ -150,6 +150,13 @@ pub struct Sstm {
     /// +0x38 HitBackToJump: the horizontal speed of the hop an aerial hit
     /// gives, per unit of knock strength.
     pub hit_back_to_jump: f32,
+    /// +0x3c: the share of a flying blow's velocity kept each step (mode 8,
+    /// FUN_140410330); +0x40: it ends below this share of its first speed
+    /// (FUN_140410460); +0x44: its upward speed is scaled by this
+    /// (FUN_140409d30).
+    pub fly_blow_brake: f32,
+    pub fly_blow_stop: f32,
+    pub fly_blow_up: f32,
 }
 
 impl Sstm {
@@ -172,6 +179,9 @@ impl Sstm {
             hit_back: f(0x30)?,
             hit_back_small: f(0x34)?,
             hit_back_to_jump: f(0x38)?,
+            fly_blow_brake: f(0x3c)?,
+            fly_blow_stop: f(0x40)?,
+            fly_blow_up: f(0x44)?,
         })
     }
 
@@ -584,6 +594,9 @@ mod tests {
             hit_back: 0.,
             hit_back_small: 0.,
             hit_back_to_jump: 0.,
+            fly_blow_brake: 1.,
+            fly_blow_stop: 0.,
+            fly_blow_up: 1.,
         };
         let mut b = Blow::new([d[0], 0., d[2]], &s);
         b.step(&s, 16., DT);
@@ -604,6 +617,9 @@ mod tests {
             hit_back_small: 200.,
             blow_to_hit_back: 8.,
             hit_back_to_jump: 0.048,
+            fly_blow_brake: 1.,
+            fly_blow_stop: 0.,
+            fly_blow_up: 1.,
         };
         let mut b = Blow::new([40., 24., 0.], &s);
         assert!((b.min_xz - 4.).abs() < 1e-6);

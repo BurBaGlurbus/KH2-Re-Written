@@ -233,7 +233,7 @@ mod tests {
 
     fn walls() -> WallHit {
         WallHit::new(
-            actor_physics::Sstm::read(&[0; 0x3c]).unwrap(),
+            actor_physics::Sstm::read(&[0; 0x48]).unwrap(),
             Vec::new(),
             character_kit::Blade::new(),
         )

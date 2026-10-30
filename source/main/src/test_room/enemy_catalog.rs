@@ -34,6 +34,8 @@ impl Category {
 
 #[derive(Clone, Debug)]
 pub struct Entry {
+    /// The objentry's +0x48 word.
+    pub flags: u16,
     pub object_id: u32,
     pub character: u16,
     pub object_type: u8,
@@ -444,6 +446,7 @@ fn entry(
         .filter(|n| !n.is_empty())
         .unwrap_or_else(|| model_name.clone());
     Ok(Entry {
+        flags: object.flags,
         object_id: object.object_id,
         character: object.character,
         object_type: object.object_type,
