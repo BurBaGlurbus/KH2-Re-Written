@@ -1,0 +1,5 @@
+id	game_level	base_hp	base_mp	hp_up	mp_up	player_damage	enemy_damage	enemy_attack_add	ap_add	mp_charge_time	start_abilities
+="BEGINNER"	~	~	~	~	~	~	~	~	~	~	~
+="STANDARD"	~	~	~	~	~	~	~	~	~	~	~
+="PROUD"	~	~	~	~	~	~	~	~	~	~	~
+="CRITICAL"	~	~	~	~	~	~	~	~	~	~	~

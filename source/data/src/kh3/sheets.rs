@@ -1,9 +1,11 @@
 //! The numbers of KH3's Sora (`game/kh3_sora`), read from the player's own install at run time. Each row of
 //! `recipes/*.tsv` says where its value is, not what it is: a DataTable cell, a blueprint default, a clip's
-//! notify, or (`=`) a constant of the executable's code.
+//! notify, or (`~`) a constant of the executable's code, which `build.rs` embeds from a private sheet when this
+//! machine has one. No KH3 value is in Git; a build without the sheet has no KH3 ruleset (`has_constants`).
 //!
 //! Recipes (`|`-separated):
-//! - `=<json>`: a constant.
+//! - `~`: a constant from the private sheet, by sheet, row and column.
+//! - `=<json>`: a table row's own id (only in a table's first column).
 //! - `T|package|row|path[|mode]`: a DataTable cell.
 //! - `P|package|export|path[|mode]`: a property of an export.
 //! - `C|package`: the name of the blueprint's class.
@@ -47,6 +49,24 @@ macro_rules! recipes {
     ($($name:literal),* $(,)?) => {
         &[$(($name, include_str!(concat!("recipes/", $name, ".tsv")))),*]
     };
+}
+
+/// `sheet<TAB>row<TAB>column<TAB>json`: a parameter row by its id, a table row by its index.
+const CONSTANTS: &str = include_str!(concat!(env!("OUT_DIR"), "/kh3_constants.tsv"));
+
+/// Whether this build embeds the private sheet of constants.
+pub fn has_constants() -> bool {
+    !CONSTANTS.is_empty()
+}
+
+fn constants() -> HashMap<(&'static str, &'static str, &'static str), &'static str> {
+    CONSTANTS
+        .lines()
+        .filter_map(|l| {
+            let mut c = l.splitn(4, '\t');
+            Some(((c.next()?, c.next()?, c.next()?), c.next()?))
+        })
+        .collect()
 }
 
 const PARAMS: &[(&str, &str)] = recipes![
@@ -341,9 +361,12 @@ fn notify_time(item: &Value) -> Option<f32> {
     Some(link + p.f32("TriggerTimeOffset").unwrap_or(0.))
 }
 
-fn evaluate(r: &mut Reader, recipe: &str) -> Result<Val> {
+fn evaluate(r: &mut Reader, recipe: &str, constant: Option<&str>) -> Result<Val> {
     if let Some(json) = recipe.strip_prefix('=') {
         return literal(json);
+    }
+    if recipe == "~" {
+        return literal(constant.ok_or_else(|| bad("a constant this build has no copy of"))?);
     }
     let mut parts = recipe.split('|');
     let kind = parts.next().unwrap_or("");
@@ -420,12 +443,14 @@ pub fn read(paks: &Paks) -> Sheets {
         open: HashMap::new(),
     };
     let mut out = Sheets::default();
+    let constants = constants();
     for (name, text) in PARAMS {
         let mut rows = Vec::new();
         for line in text.lines().filter(|l| !l.is_empty()) {
             let mut cols = line.split('\t');
             let (id, recipe) = (cols.next().unwrap_or(""), cols.next().unwrap_or(""));
-            match evaluate(&mut r, recipe) {
+            let constant = constants.get(&(*name, id, "")).copied();
+            match evaluate(&mut r, recipe, constant) {
                 Ok(v) => rows.push((id.to_owned(), v)),
                 Err(e) => out.missing.push((name, id.to_owned(), e.to_string())),
             }
@@ -437,10 +462,12 @@ pub fn read(paks: &Paks) -> Sheets {
         let mut lines = text.lines();
         let cols: Vec<&str> = lines.next().unwrap_or("").split('\t').collect();
         let mut rows = Vec::new();
-        for line in lines.filter(|l| !l.is_empty()) {
+        for (index, line) in lines.filter(|l| !l.is_empty()).enumerate() {
+            let index = index.to_string();
             let mut cells = Vec::with_capacity(cols.len());
             for (col, recipe) in cols.iter().zip(line.split('\t')) {
-                match evaluate(&mut r, recipe) {
+                let constant = constants.get(&(*name, index.as_str(), *col)).copied();
+                match evaluate(&mut r, recipe, constant) {
                     Ok(v) => cells.push(((*col).to_owned(), v)),
                     Err(e) => out
                         .missing
@@ -457,6 +484,24 @@ pub fn read(paks: &Paks) -> Sheets {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The recipes name where a value is. Only a table row's id may be written out.
+    #[test]
+    fn recipes_carry_no_values() {
+        for (name, text) in PARAMS {
+            for line in text.lines().filter(|l| !l.is_empty()) {
+                let recipe = line.split('\t').nth(1).unwrap_or("");
+                assert!(!recipe.starts_with('='), "{name}: {line}");
+            }
+        }
+        for (name, text) in TABLES {
+            for line in text.lines().skip(1) {
+                for recipe in line.split('\t').skip(1) {
+                    assert!(!recipe.starts_with('='), "{name}: {line}");
+                }
+            }
+        }
+    }
 
     #[test]
     fn paths_walk_structs_lists_and_keys() {

@@ -24,7 +24,9 @@
 !/validation/Cargo.toml
 !/validation/src/**/*.rs
 !/source/data/Cargo.toml
+!/source/data/build.rs
 !/source/data/src/**/*.rs
+!/source/data/src/kh3/recipes/*.tsv
 !/source/audio/Cargo.toml
 !/source/audio/src/**/*.rs
 !/source/net/Cargo.toml

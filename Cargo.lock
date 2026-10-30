@@ -2776,6 +2776,7 @@ dependencies = [
  "fontdue",
  "glam 0.32.1",
  "image",
+ "kh3_sora",
  "net",
  "player",
  "save",

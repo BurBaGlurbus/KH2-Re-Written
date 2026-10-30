@@ -432,6 +432,12 @@ pub(crate) fn install(paks: &Paks, data: &SoraData) -> Result<()> {
     if kh3_sora::sheets::installed() {
         return Ok(());
     }
+    if !sheets::has_constants() {
+        return Err(data::kh3::bad_text(
+            "this build was made without KH3's constants (they are not in the repository)"
+                .to_owned(),
+        ));
+    }
     let read = sheets::read(paks);
     if let Some((sheet, id, why)) = read
         .missing
