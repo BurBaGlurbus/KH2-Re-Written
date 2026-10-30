@@ -795,6 +795,10 @@ fn tour_press(game: &Game, shown: Option<rc::Candidate>, tick: u64) -> bool {
         rc::Source::Shape if c.target.owner == TALK => {
             game.autoplay.is_some() && AUTOPLAY_TALK.contains(&tick)
         }
+        // The area tour takes every reaction command an enemy offers.
+        rc::Source::Shape if game.enemy_battle_tour && area_enemies::enabled() => {
+            tick.is_multiple_of(10)
+        }
         rc::Source::Shape => {
             game.sephiroth_tour
                 && super::sephiroth::tour_reaction(
@@ -824,7 +828,7 @@ fn carry_out(game: &mut Game, actors: &mut [GalleryActor], c: rc::Candidate, tic
                 .and_then(|a| a.battle.as_mut())
             {
                 // FUN_1403b5fa0: trigger 11 on the target's script.
-                battle.brain.command(c.command);
+                battle.brain.command(c.command, c.target.group);
                 let action = format!("{:?}", game.sora.player.action);
                 let frame = game.sora.player.frame;
                 game.event(serde_json::json!({"event":"reaction_executed","tick":tick,

@@ -2162,6 +2162,24 @@ impl Sysobj {
                 Some(self.velocity[((offset - 0x20) / 4) as usize].to_bits())
             }
             0x134 => Some(self.turn_rate.to_bits()),
+            // The rest of the spec block `obj_spec` hands out (+0x128): what
+            // a script wrote, or the block's defaults (FUN_14040a440).
+            0x128 | 0x12c | 0x130 | 0x138 | 0x13c | 0x140 => {
+                self.raw_words.get(&offset).copied().or_else(|| {
+                    let p = actor_physics::ObjParams::defaults(self.sstm.fall_max);
+                    Some(
+                        match offset {
+                            0x128 => p.walk,
+                            0x12c => p.run,
+                            0x130 => p.jump,
+                            0x138 => p.fall_max,
+                            0x13c => p.word8,
+                            _ => p.word10,
+                        }
+                        .to_bits(),
+                    )
+                })
+            }
             _ => self.raw_words.get(&offset).copied(),
         }
     }

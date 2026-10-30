@@ -739,7 +739,7 @@ pub fn tick(mut game: ResMut<Game>, gallery: Res<EnemyGallery>, rig: Res<super::
         a.sora_hp = hp;
         // A form picked from the deck goes to Genie (trigger 11).
         if let Some(cmd) = game.genie_command.take() {
-            a.brain.command(cmd);
+            a.brain.command(cmd, 0);
             game.event(serde_json::json!({"event":"genie_command","tick":tick,"command":cmd}));
         }
         // The room's effect update as the script's effect tests see it.
@@ -1155,6 +1155,8 @@ pub(super) struct Spawner {
     models: std::collections::HashMap<u32, (String, u8, u16)>,
     scripts: std::collections::HashMap<u32, Option<Vec<u8>>>,
     shapes: std::collections::HashMap<u32, Vec<([f32; 3], f32)>>,
+    /// The ordinary enemies among the entries: those made get their motions.
+    fighters: std::collections::HashMap<u32, objentry::ObjectEntry>,
 }
 
 impl Spawner {
@@ -1179,6 +1181,11 @@ impl Spawner {
                 .collect(),
             scripts: Default::default(),
             shapes: Default::default(),
+            fighters: objects
+                .iter()
+                .filter(|o| matches!(o.object_type, 4 | 21))
+                .map(|o| (o.object_id, o.clone()))
+                .collect(),
         }
     }
 }
@@ -1194,6 +1201,9 @@ impl enemy::world::Spawner for Spawner {
                 super::enemy_script::script_payload(&self.source, model).ok()
             })
             .clone();
+        if let Some(object) = self.fighters.get(&entry) {
+            super::enemy_battle::load_made_kind(&self.source, object);
+        }
         let mut sys = enemy::sysobj::Sysobj::bare();
         sys.appear_way = 2;
         sys.model = entry;

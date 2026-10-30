@@ -13,6 +13,8 @@ use super::*;
 
 /// How long the tour stays in one group point's zone.
 const TOUR_ZONE_TICKS: u64 = 450;
+/// How often the tour puts Sora near the nearest enemy.
+const TOUR_CLOSE_TICKS: u64 = 120;
 
 #[derive(Resource, Default)]
 pub struct AreaEnemies {
@@ -25,6 +27,8 @@ pub struct AreaEnemies {
     /// The group zone the tour put Sora in last, and when.
     tour_zone: usize,
     tour_moved: Option<u64>,
+    /// The low bits of the last summoned fighter's serial.
+    summon_serial: u16,
     /// The free-point search's generator and lap counter (DAT_142ae5d78).
     rng: enemy::world::Lcg,
     ring_counter: u32,
@@ -296,6 +300,28 @@ pub fn tick(
             );
         }
     }
+    // [Tour setup] And he goes to the nearest enemy still fighting, so its
+    // close-range acts and its reaction commands come up.
+    if game.enemy_battle_tour && tick >= 60 && tick % TOUR_CLOSE_TICKS == 0 {
+        let sora = Vec3::from_array(game.sora.player.position);
+        let nearest = gallery
+            .actors
+            .iter()
+            .filter_map(|a| a.battle.as_ref())
+            .filter(|b| b.brain.alive() && !b.brain.gone())
+            .map(|b| Vec3::from_array(b.brain.position()))
+            .min_by(|p, q| {
+                p.distance_squared(sora)
+                    .total_cmp(&q.distance_squared(sora))
+            });
+        if let Some(at) = nearest
+            && at.distance(sora) > 300.
+        {
+            let away = (sora - at) * Vec3::new(1., 0., 1.);
+            let to = at + away.normalize_or_zero() * 150.;
+            game.sora.player.position = to.to_array();
+        }
+    }
     let groups = std::mem::take(&mut area.groups);
     let area = &mut *area;
     for object in groups {
@@ -325,6 +351,37 @@ pub fn tick(
             let wave = area.current.state.objects[object].wave;
             game.event(serde_json::json!({"event":"area_group_spawn","tick":tick,
                 "point":area.current.state.objects[object].point.id,"wave":wave,"enemies":placed}));
+        }
+    }
+    // A summoner's call (M_EX740, `enemy_summon_entry`) adds a fighter of its
+    // own, with a serial past the area's.
+    let summoned: Vec<_> = gallery
+        .actors
+        .iter_mut()
+        .filter_map(|a| a.battle.as_mut())
+        .filter_map(|b| match &mut b.brain {
+            enemy_battle::Brain::Script(s) => Some(s.take_summoned()),
+            _ => None,
+        })
+        .flatten()
+        .collect();
+    for (object, at, yaw) in summoned {
+        if gallery.actors.len() >= enemy_gallery::MAX_ACTORS {
+            break;
+        }
+        if let Some(entry) = fighter(&gallery, object) {
+            state.summon_serial = state.summon_serial.wrapping_add(1);
+            gallery.queue_spawn(
+                entry,
+                Vec3::from_array(at),
+                yaw,
+                0xf000 | state.summon_serial,
+            );
+            let model = gallery.catalog.entries[entry].model_name.clone();
+            game.event(
+                serde_json::json!({"event":"area_enemy_summoned","tick":tick,
+                "model":model,"position":at}),
+            );
         }
     }
     // Every placed enemy gets its AI once its summon has been made.

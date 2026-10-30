@@ -47,6 +47,10 @@ pub struct PreviewOverlays {
 }
 
 pub struct GalleryActor {
+    /// Drawn for this object of the actor that made it (its maker, its id).
+    pub made: Option<(u64, u32)>,
+    /// A made object's alpha and whether it is hidden.
+    pub made_shown: (f32, bool),
     pub battle: Option<super::enemy_battle::BattleActor>,
     pub id: u64,
     pub entry: usize,
@@ -258,6 +262,8 @@ enum Request {
         position: Vec3,
         yaw: f32,
         serial: u16,
+        /// It is drawn for an object its maker's script runs.
+        made: Option<(u64, u32)>,
     },
     Motion {
         actor: u64,
@@ -332,6 +338,7 @@ impl EnemyGallery {
                 position,
                 yaw,
                 serial,
+                made: None,
             });
         } else {
             self.status = "Inspection placement must be finite".into();
@@ -605,6 +612,7 @@ pub fn service(
                 position,
                 yaw,
                 serial,
+                made,
             } => summon(
                 &mut commands,
                 &mut gallery,
@@ -619,6 +627,7 @@ pub fn service(
             .map(|()| {
                 if let Some(a) = gallery.actors.last_mut() {
                     a.spawn_serial = serial;
+                    a.made = made;
                 }
             }),
             Request::Motion { actor, choice } => load_motion(&mut gallery, actor, choice),
@@ -751,6 +760,8 @@ fn summon(
         blend_from: None,
         shown_serial: None,
         spawn_serial: 0,
+        made: None,
+        made_shown: (1., false),
     });
     gallery.selected = Some(id);
     gallery.status = format!("Summoned inspection actor {id}; select a source motion slot");
@@ -1019,13 +1030,77 @@ pub fn tick(mut gallery: ResMut<EnemyGallery>) {
     advance(&mut gallery, 1.);
 }
 
+/// Enemies a script made (M_EX870's M_EX960): an actor stands for each, posed
+/// from the object its maker's script runs.
+fn draw_made(gallery: &mut EnemyGallery) {
+    let made: Vec<_> = gallery
+        .actors
+        .iter()
+        .filter_map(|a| Some((a.id, a.battle.as_ref()?)))
+        .filter_map(|(id, b)| match &b.brain {
+            super::enemy_battle::Brain::Script(s) => Some((id, s.made_fighters())),
+            _ => None,
+        })
+        .flat_map(|(id, list)| list.into_iter().map(move |m| (id, m)))
+        .collect();
+    let forward_only = gallery.forward_kinematics_only;
+    for actor in &mut gallery.actors {
+        let Some(link) = actor.made else {
+            continue;
+        };
+        let Some((_, m)) = made.iter().find(|(id, m)| (*id, m.id) == link) else {
+            actor.made_shown = (0., true);
+            continue;
+        };
+        actor.position = Vec3::from_array(m.position);
+        actor.yaw = m.yaw;
+        actor.made_shown = (m.alpha, m.hidden);
+        if let Some(kind) = super::enemy_battle::made_kind(m.entry)
+            && let Some((choice, motion, key)) = kind.clips.pose_key(m.slot, m.tick, m.blending)
+            && let Ok(sampled) = sample(&actor.kind, &motion, key, false, forward_only)
+        {
+            actor.pose = sampled.points;
+            actor.joints = sampled.joints;
+            actor.motion_choice = Some(choice);
+            actor.frame = key;
+            actor.revision += 1;
+        }
+    }
+    for (parent, m) in made {
+        let link = (parent, m.id);
+        let exists = gallery.actors.iter().any(|a| a.made == Some(link))
+            || gallery
+                .pending
+                .iter()
+                .any(|r| matches!(r, Request::Summon { made: Some(l), .. } if *l == link));
+        if exists || gallery.actors.len() >= MAX_ACTORS {
+            continue;
+        }
+        if let Some(entry) = gallery
+            .catalog
+            .entries
+            .iter()
+            .position(|e| e.object_id == m.entry && e.model_available)
+        {
+            gallery.pending.push(Request::Summon {
+                entry,
+                position: Vec3::from_array(m.position),
+                yaw: m.yaw,
+                serial: 0,
+                made: Some(link),
+            });
+        }
+    }
+}
+
 pub fn advance(gallery: &mut EnemyGallery, ticks: f32) {
     if !ticks.is_finite() || ticks < 0. {
         return;
     }
+    draw_made(gallery);
     let mut idle_previews = Vec::new();
     for actor in &mut gallery.actors {
-        if actor.battle.is_some() {
+        if actor.battle.is_some() || actor.made.is_some() {
             continue;
         }
         if !actor.paused
@@ -1121,10 +1196,11 @@ pub fn present(
             transform.translation = actor.position;
             transform.rotation = Quat::from_rotation_y(actor.yaw);
             transform.scale.y = actor.battle.as_ref().map_or(1., |b| b.brain.scale_y());
-            *visibility = if actor
-                .battle
-                .as_ref()
-                .is_some_and(|b| b.brain.gone() || b.brain.shown().1)
+            *visibility = if actor.made_shown.1
+                || actor
+                    .battle
+                    .as_ref()
+                    .is_some_and(|b| b.brain.gone() || b.brain.shown().1)
             {
                 Visibility::Hidden
             } else {
@@ -1145,8 +1221,11 @@ pub fn present(
             .actors
             .iter()
             .find(|a| a.id == part.actor)
-            .and_then(|a| a.battle.as_ref())
-            .map_or(1., |b| b.brain.shown().0);
+            .map_or(1., |a| {
+                a.battle
+                    .as_ref()
+                    .map_or(a.made_shown.0, |b| b.brain.shown().0)
+            });
         if part.alpha != alpha {
             part.alpha = alpha;
             if let Some(mut m) = materials.get_mut(material.0.id()) {
@@ -1361,6 +1440,8 @@ mod tests {
             blend_from: None,
             shown_serial: None,
             spawn_serial: 0,
+            made: None,
+            made_shown: (1., false),
         }
     }
 

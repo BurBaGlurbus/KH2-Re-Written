@@ -445,6 +445,9 @@ pub struct World {
     static_words: Vec<u32>,
     /// Traps a script called that nothing implements yet.
     pub missing: Vec<(u16, u16)>,
+    /// Entries `enemy_summon_entry` drew: objects of these the script makes
+    /// are fighters of their own, which the host takes over.
+    pub summoned: Vec<u32>,
     /// Sora's attackers (DAT_140ad6a30, at most 8, newest last), pushed by
     /// FUN_1401b56e0 mode 0 when he is hit and taken by the friend traps.
     pub player_attackers: Vec<ObjId>,
@@ -571,6 +574,7 @@ impl Default for World {
             statics: HashMap::new(),
             static_words: Vec::new(),
             missing: Vec::new(),
+            summoned: Vec::new(),
             player_attackers: Vec::new(),
             player_notify: crate::friend::PlayerNotify::default(),
             trace: None,

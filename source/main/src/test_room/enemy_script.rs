@@ -249,9 +249,15 @@ impl Env for BrainEnv<'_> {
         })
     }
     // Objects the script made (`sysobj_appear`) carry their entry as the
-    // model and have no motions of their own here.
+    // model; only made enemies have motions of their own here.
     fn clips(&self, model: u32) -> &dyn EnemyClips {
-        if model == 0 { &self.clips } else { &NoClips }
+        if model == 0 {
+            return &self.clips;
+        }
+        match super::enemy_battle::made_kind(model) {
+            Some(made) => &made.clips,
+            None => &NoClips,
+        }
     }
     fn player_position(&self) -> Vec3 {
         self.player
@@ -445,6 +451,20 @@ pub struct ScriptSetup {
     pub character: u16,
     /// The objentry's +0x48 word (bit 3: it flies, `obj_is_entry_fly`).
     pub entry_flags: u16,
+}
+
+/// An enemy a script made, as the gallery draws it.
+#[derive(Clone, Copy, Debug)]
+pub struct MadeFighter {
+    pub id: u32,
+    pub entry: u32,
+    pub position: Vec3,
+    pub yaw: f32,
+    pub slot: usize,
+    pub tick: u32,
+    pub blending: bool,
+    pub alpha: f32,
+    pub hidden: bool,
 }
 
 pub struct ScriptBrain {
@@ -1077,6 +1097,14 @@ impl ScriptBrain {
                     words,
                     ..
                 } => self.genie_form = Some(words[0] as u8),
+                // 6:1 FUN_14053dba0 -> FUN_1403dc170: the prize row's drops at a
+                // place the script names (M_EX590 scatters as it is struck).
+                Event::Service {
+                    name: "prize_appear",
+                    words,
+                    vector: Some(v),
+                    ..
+                } => self.prizes.push((words[1] as i32, [v[0], v[1], v[2]])),
                 // FUN_1403b2850: the script offers a command on a record.
                 Event::Service {
                     name: "command_override",
@@ -1267,6 +1295,40 @@ impl ScriptBrain {
     pub fn stitch_screen(&self) -> Option<[f32; 4]> {
         let s = self.object.friend.as_deref()?.stitch.as_deref()?;
         s.valid.then_some(s.screen)
+    }
+    /// The enemies the script made that the gallery draws for it.
+    pub fn made_fighters(&self) -> Vec<MadeFighter> {
+        self.world
+            .objects
+            .iter()
+            .flatten()
+            .filter(|o| !o.sys.gone && super::enemy_battle::made_kind(o.sys.model).is_some())
+            .map(|o| MadeFighter {
+                id: o.id,
+                entry: o.sys.model,
+                position: o.sys.position,
+                yaw: o.sys.yaw,
+                slot: o.sys.motion.slot,
+                tick: o.sys.motion.tick,
+                blending: o.sys.motion.blend_weight().is_some(),
+                alpha: o.sys.fade.value,
+                hidden: o.sys.hidden || o.sys.model_hidden,
+            })
+            .collect()
+    }
+    /// Objects the script made of an entry `enemy_summon_entry` drew: each
+    /// leaves this script's world (their entry, place and heading) to fight
+    /// as an actor of its own.
+    pub fn take_summoned(&mut self) -> Vec<(u32, Vec3, f32)> {
+        let summoned = std::mem::take(&mut self.world.summoned);
+        let mut out = Vec::new();
+        for o in self.world.objects.iter_mut().flatten() {
+            if !o.sys.gone && summoned.contains(&o.sys.model) {
+                o.sys.gone = true;
+                out.push((o.sys.model, o.sys.position, o.sys.yaw));
+            }
+        }
+        out
     }
     /// See [`super::enemy_battle::Brain::shown`].
     pub fn shown(&self) -> (f32, bool) {
@@ -1661,8 +1723,17 @@ impl ScriptBrain {
 
     /// FUN_1403b5fa0 (from FUN_1403a8b10, Sora's decided command): trigger
     /// 11 of the object's script with Sora, the command and the target
-    /// record [I: no record; 0].
-    pub fn command(&mut self, command: u16) {
+    /// record (Sora's reaction slot +0x10, FUN_1403a8b10): a four-word record
+    /// whose first word is the object it names.
+    pub fn command(&mut self, command: u16, group: u8) {
+        let record = self.world.static_cell(0xffff, 11, 0);
+        let handle = enemy::world::object_handle(self.object.id);
+        for (k, word) in [handle, u32::from(group), handle, u32::MAX]
+            .into_iter()
+            .enumerate()
+        {
+            self.world.static_write(record + k as u32 * 4, word);
+        }
         let env = BrainEnv {
             room: None,
             clips: ClipView {
@@ -1682,7 +1753,7 @@ impl ScriptBrain {
             &[
                 enemy::script::Slot::address(enemy::world::PLAYER_HANDLE),
                 enemy::script::Slot::int(i32::from(command)),
-                enemy::script::Slot::address(0),
+                enemy::script::Slot::address(record),
             ],
         );
         self.drain_events();

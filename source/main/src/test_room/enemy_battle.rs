@@ -149,9 +149,9 @@ impl Brain {
     }
     /// FUN_1403b5fa0: Sora executed reaction command `command` on this
     /// actor (its script's trigger 11).
-    pub fn command(&mut self, command: u16) {
+    pub fn command(&mut self, command: u16, group: u8) {
         if let Self::Script(a) = self {
-            a.command(command);
+            a.command(command, group);
         }
     }
     /// Development aid: set a script actor's HP.
@@ -791,6 +791,44 @@ pub fn lock_range(source: &ProbeSource) -> Result<f32, String> {
     }
     Ok(range)
 }
+/// An enemy a script made (`sysobj_appear`, M_EX870's M_EX960): its model and
+/// motions. It lives in its maker's script world; the gallery draws it. Each
+/// entry is read once and kept for the session, so a borrowed environment can
+/// hand its clips out. [I] Its motions' attack windows are not read.
+pub(super) struct MadeKind {
+    pub clips: Clips,
+}
+
+fn made_kinds() -> &'static std::sync::Mutex<HashMap<u32, &'static MadeKind>> {
+    static KINDS: std::sync::OnceLock<std::sync::Mutex<HashMap<u32, &'static MadeKind>>> =
+        std::sync::OnceLock::new();
+    KINDS.get_or_init(Default::default)
+}
+
+/// The kind of a made enemy already read.
+pub(super) fn made_kind(entry: u32) -> Option<&'static MadeKind> {
+    made_kinds().lock().ok()?.get(&entry).copied()
+}
+
+/// Reads a made enemy's motions the first time its entry is made.
+pub(super) fn load_made_kind(source: &ProbeSource, object: &data::objentry::ObjectEntry) {
+    if made_kind(object.object_id).is_some() {
+        return;
+    }
+    let Ok(entry) = super::enemy_catalog::plain_entry(source, object) else {
+        return;
+    };
+    let Ok(kind) = super::enemy_catalog::load_entry_kind(source, &entry) else {
+        return;
+    };
+    let Ok(clips) = build_clips(&kind, |_| Ok(Vec::new())) else {
+        return;
+    };
+    if let Ok(mut kinds) = made_kinds().lock() {
+        kinds.insert(object.object_id, Box::leak(Box::new(MadeKind { clips })));
+    }
+}
+
 /// The clips of a kind's motion set: native clock, root motion, the attack
 /// windows `windows` gives and the trigger tables the engine reads.
 pub(super) fn build_clips(

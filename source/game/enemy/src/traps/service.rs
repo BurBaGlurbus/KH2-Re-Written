@@ -733,6 +733,22 @@ fn pad_is_trigger(ctx: &mut Ctx<'_>, _: &mut Memory<'_>, args: &mut Args) -> Res
 
 /// A trap that returns a number the host knows (`argument` is the index of
 /// the argument handed over with the query, if any).
+/// 7:33 FUN_14053fa90 -> FUN_140542030: one of eight enemies (DAT_140788b18:
+/// objentry 122, 73, 123, 125, 18, 7, 306, 305), at random. [I] All eight
+/// count as available: the executable leaves out those FUN_1403e0160 reports
+/// in resident heap 0 or FUN_1403a1f00 finds over the area's capacity, and
+/// falls back on the caller's own entry. The entry is remembered so the host
+/// can make the object a fighter of its own (`World::summoned`).
+fn enemy_summon_entry(ctx: &mut Ctx<'_>, _: &mut Memory<'_>, args: &mut Args) -> Result<(), Fault> {
+    const TABLE: [u32; 8] = [122, 73, 123, 125, 18, 7, 306, 305];
+    let draw = ctx.world.rng.step();
+    let divisor = (TABLE.len() as u64 - 1 + 0x1_0000_0000) / TABLE.len() as u64;
+    let entry = TABLE[(u64::from(draw) / divisor) as usize];
+    ctx.world.summoned.push(entry);
+    args[0] = Slot::int(entry as i32);
+    Ok(())
+}
+
 macro_rules! host_value_traps {
     ($($name:ident = $label:literal, $argument:expr;)*) => {$(
         fn $name(ctx: &mut Ctx<'_>, _: &mut Memory<'_>, args: &mut Args) -> Result<(), Fault> {
@@ -754,7 +770,7 @@ host_value_traps! {
     player_can_capture_form = "player_can_capture_form", None;
     prize_num_ca = "prize_num_ca", None;
     prize_vacuum_ca = "prize_vacuum_ca", Some(2);
-    enemy_summon_entry = "enemy_summon_entry", Some(0);
+
     mission_get_count = "mission_get_count", None;
     mission_get_timer_second = "mission_get_timer_second", None;
 }
