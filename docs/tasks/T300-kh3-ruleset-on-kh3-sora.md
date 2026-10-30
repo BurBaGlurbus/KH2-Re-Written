@@ -72,8 +72,10 @@ edits).
 | Loopback host and join, release | PASS: both show KH2's Sora with KH3's animation, damage on KH3's numbers, no panic. `runs\r3` |
 | FPS, one window, release | 100 (the cap) in play, 33-60 in the heaviest effects, single frames up to 250 ms. Two windows on one PC: 7-46 on the host. `runs\r4`, `runs\r3` |
 | Second Form in a run, gauge forced by a temporary edit | PASS: StyleChange, finish command, StyleFinish (`runs\e09`) |
-| Clean copy `cargo build --locked` at `d53517d` | PASS, without a private file. Later commits NOT RUN at task-record time |
-| `cargo clippy` | FAIL: `enemy_catalog.rs:572`, another thread's commit; none in this task's files |
+| Clean copy `cargo build --locked` | PASS at `487aa21`, without a private file (the next commit only reorders `mod` lines) |
+| `cargo test` | PASS, full workspace default members, private tree |
+| `cargo fmt --check` | FAIL: `drive_room.rs:630`, another thread's; none in this task's files |
+| `cargo clippy` | FAIL: `enemy_catalog.rs:577`, another thread's commit; none in this task's files |
 
 ## Verdict
 
