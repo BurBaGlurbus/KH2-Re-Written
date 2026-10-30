@@ -79,6 +79,8 @@
 !/tools/test_progress.py
 # Performance record and trace summaries (read private run outputs, hold none).
 !/tools/perf_report.py
+!/tools/census_report.py
+!/tools/room_survey_report.py
 !/tools/trace_summary.py
 !/docs/progress/coverage.json
 !/docs/progress/summary.json

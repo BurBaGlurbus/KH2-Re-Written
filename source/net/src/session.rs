@@ -95,6 +95,8 @@ pub struct Session {
     start: Instant,
     last_update: Duration,
     last_heard: Duration,
+    /// When a joiner's first Hello went (its wait for the host runs from it).
+    first_hello: Option<Duration>,
     last_sent: Duration,
     events: VecDeque<Event>,
     closed: bool,
@@ -186,6 +188,7 @@ impl Session {
             start: Instant::now(),
             last_update: Duration::ZERO,
             last_heard: Duration::ZERO,
+            first_hello: None,
             last_sent: Duration::ZERO,
             events: VecDeque::new(),
             closed: false,
@@ -247,6 +250,7 @@ impl Session {
         self.last_update = now;
         let timeout = self.config.timeout;
         let silent = now.saturating_sub(self.last_heard);
+        let first_hello = &mut self.first_hello;
         match &mut self.side {
             Side::Host { server, peer } => {
                 server.update(delta);
@@ -265,7 +269,10 @@ impl Session {
             } => {
                 client.update(delta);
                 if welcomed.is_none() {
-                    if now > timeout {
+                    // The wait starts with the first Hello: a joiner's own
+                    // load, before its first update, does not count.
+                    let waited = now.saturating_sub(*first_hello.get_or_insert(now));
+                    if waited > timeout {
                         self.closed = true;
                         self.events.push_back(Event::Disconnected(format!(
                             "no answer from {host}: check the address, that the host is waiting, and the firewall"
@@ -901,6 +908,21 @@ mod tests {
         assert!(
             matches!(join.next_event(), Some(Event::Disconnected(r)) if r.contains("no answer"))
         );
+    }
+
+    #[test]
+    fn a_slow_load_does_not_use_up_the_join_s_wait() {
+        let silent = UdpSocket::bind("127.0.0.1:0").unwrap();
+        let free = silent.local_addr().unwrap();
+        let mut cfg = config("Joiner", 1);
+        cfg.timeout = Duration::from_millis(100);
+        let mut join = Session::join(free, cfg).unwrap();
+        std::thread::sleep(Duration::from_millis(250));
+        join.update();
+        assert!(!join.is_closed());
+        std::thread::sleep(Duration::from_millis(150));
+        join.update();
+        assert!(join.is_closed());
     }
 
     #[test]

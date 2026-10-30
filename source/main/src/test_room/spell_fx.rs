@@ -372,6 +372,63 @@ pub struct SpellFx {
 }
 
 impl SpellFx {
+    /// Ends every running spell effect: over `frames` event frames, or at
+    /// once for 0. Returns how many.
+    pub(crate) fn end_all(&mut self, frames: f32) -> usize {
+        for r in &mut self.running {
+            r.instance.release();
+            r.instance.fade_out(frames);
+            r.sound = None;
+        }
+        self.running.len()
+    }
+
+    /// Past the ceiling the oldest elements go.
+    fn cap_running(&mut self) -> usize {
+        let over = self
+            .running
+            .len()
+            .saturating_sub(super::cleanup::MAX_RUNNING);
+        self.running.drain(..over);
+        over
+    }
+
+    /// Drops what the caches keep for containers nothing else holds.
+    pub(crate) fn release_unused(&mut self) -> super::cleanup::Released {
+        let stale = super::cleanup::stale_dpds(&mut self.dpds);
+        let mut out = super::cleanup::Released {
+            dpds: stale.len(),
+            ..Default::default()
+        };
+        if stale.is_empty() {
+            return out;
+        }
+        out.pages = self.images.forget(&stale);
+        let before = self.materials.len();
+        self.materials
+            .retain(|k, _| k.texture.is_none_or(|t| !stale.contains(&t.dpd)));
+        out.materials = before - self.materials.len();
+        let before = self.models.len();
+        self.models.retain(|k, _| !stale.contains(&k.0));
+        out.models = before - self.models.len();
+        self.missing.retain(|m| !stale.contains(&m.0));
+        out
+    }
+
+    /// How many of this presenter's things are alive (the census).
+    pub(crate) fn count(&self) -> super::cleanup::FxCount {
+        super::cleanup::FxCount {
+            running: self.running.len(),
+            spawned: self.spawned.len(),
+            models: self.models.len(),
+            materials: self.materials.len(),
+            pages: self.images.len(),
+            dpds: self.dpds.len(),
+            batches: self.batches.len(),
+            parts: self.running.iter().map(|r| r.instance.live_parts()).sum(),
+        }
+    }
+
     pub fn new(common: Option<Arc<Dpd>>) -> Self {
         SpellFx {
             common,
@@ -502,6 +559,13 @@ pub fn tick(mut game: ResMut<Game>, rig: Res<CameraRig>, mut fx: ResMut<SpellFx>
                 }
             }
         }
+    }
+    let evicted = fx.cap_running();
+    if evicted > 0 {
+        log.push(
+            serde_json::json!({"event":"effect_ceiling","tick":tick,"kind":"spell",
+            "evicted":evicted}),
+        );
     }
     for s in sounds {
         game.sound_queue.push((s, "spell_effect_se"));
@@ -771,7 +835,7 @@ pub fn present(
     }
     let batches = std::mem::take(&mut fx.batches);
     for (key, batch) in &batches {
-        if batch.positions.is_empty() {
+        if batch.positions.is_empty() || fx.spawned.len() >= super::cleanup::MAX_EFFECT_ENTITIES {
             continue;
         }
         let material = match fx.materials.get(key) {

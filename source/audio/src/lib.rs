@@ -102,7 +102,16 @@ impl Mixer {
             return;
         }
         if self.voices.len() >= MAX_VOICES {
-            self.voices.remove(0);
+            // The oldest one-shot goes first, then the oldest loop; the
+            // music (and a voice's only copy of a bed) last.
+            let music = &self.gains.music_keys;
+            let oldest = self
+                .voices
+                .iter()
+                .position(|v| v.clip.loop_frames.is_none() && !music.contains(&v.key))
+                .or_else(|| self.voices.iter().position(|v| !music.contains(&v.key)))
+                .unwrap_or(0);
+            self.voices.remove(oldest);
         }
         let step = clip.rate as f64 / RATE as f64 * pitch as f64;
         self.voices.push(Voice {
@@ -142,6 +151,22 @@ impl Mixer {
 
     pub fn paused(&self, key: u32) -> bool {
         self.voices.iter().any(|v| v.key == key && v.paused)
+    }
+
+    /// Fades out every looping voice `keep` does not name, over `seconds`.
+    /// Returns how many.
+    pub fn stop_loops(&mut self, seconds: f32, keep: impl Fn(u32) -> bool) -> usize {
+        let frames = (seconds * RATE as f32).max(1.);
+        let mut n = 0;
+        for v in self
+            .voices
+            .iter_mut()
+            .filter(|v| v.clip.loop_frames.is_some() && !keep(v.key))
+        {
+            v.fade = Some((-v.gain / frames, 0., FadeEnd::Stop));
+            n += 1;
+        }
+        n
     }
 
     pub fn stop(&mut self, key: u32) {
@@ -300,6 +325,27 @@ mod tests {
             samples: samples.into(),
             loop_frames: None,
         }
+    }
+
+    #[test]
+    fn past_the_limit_the_music_stays_and_loops_end_when_asked() {
+        let mut mixer = Mixer::default();
+        mixer.set_gains(1., 1., &[77]);
+        let mut looped = clip(&[1, 2, 3, 4], 1, RATE);
+        looped.loop_frames = Some((0, 3));
+        mixer.play(looped.clone(), 77, 1., 1.);
+        mixer.play(looped.clone(), 5, 1., 1.);
+        for k in 0..MAX_VOICES as u32 {
+            mixer.play(clip(&[1, 2], 1, RATE), 100 + k, 1., 1.);
+        }
+        assert_eq!(mixer.voices(), MAX_VOICES);
+        assert!(mixer.playing(77));
+        assert!(mixer.playing(5));
+        assert_eq!(mixer.stop_loops(0.001, |key| key == 77), 1);
+        let mut out = vec![0; 2048];
+        mixer.mix(&mut out);
+        assert!(mixer.playing(77));
+        assert!(!mixer.playing(5));
     }
 
     #[test]

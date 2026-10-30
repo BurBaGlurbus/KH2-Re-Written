@@ -98,6 +98,8 @@ pub(crate) struct MatchRoom {
     forfeit_armed: bool,
     /// [Test] `--duel-forfeit` has forfeited.
     forfeit_done: bool,
+    /// The phase, round and start the last cleanup looked at.
+    swept: Option<(Phase, u8, u64)>,
     /// The local tick the result's Results page came up (its numbers count
     /// up from there).
     results_at: Option<u64>,
@@ -194,23 +196,30 @@ fn refill(game: &mut Game) {
     p.mp = magic::Mp::new(p.mp.max);
     p.mp_charging = false;
     p.drive.refill();
-    if let Some(d) = game.drive.as_mut() {
-        d.change = None;
-        d.request = None;
+    drive_room::end_form(game);
+}
+
+/// The cleanup a change of the match's phase calls for.
+fn round_change(
+    before: Option<(Phase, u8, u64)>,
+    now: Option<(Phase, u8, u64)>,
+) -> Option<cleanup::Scope> {
+    use cleanup::Scope;
+    if before == now {
+        return None;
     }
-    drive_room::show_form(game, 0);
+    match now {
+        Some((Phase::RoundOver, ..)) => Some(Scope::RoundEnd),
+        Some((Phase::Over, ..)) => Some(Scope::MatchEnd),
+        Some((Phase::Countdown, ..)) => Some(Scope::RoundStart),
+        Some((Phase::Fight, ..)) => None,
+        None => Some(Scope::MatchEnd),
+    }
 }
 
 /// Host: both Soras refilled and at the arena's starts.
 fn reset_round(game: &mut Game) {
-    refill(game);
-    let mut rivals = std::mem::take(&mut game.rivals);
-    for r in &mut rivals {
-        rival::swap(game, r);
-        refill(game);
-        rival::swap(game, r);
-    }
-    game.rivals = rivals;
+    cleanup::each_sora(game, refill);
     duel_arena::place(game);
 }
 
@@ -270,6 +279,9 @@ pub(crate) fn tick(
     // A session that ended keeps its result on screen; a new one starts
     // with no match.
     if !playing && !matches!(net.status, Status::Ended(..)) {
+        if room.swept.is_some() {
+            game.cleanups.push(cleanup::Scope::MatchEnd);
+        }
         *room = MatchRoom {
             art: room.art.take(),
             art_job: room.art_job.take(),
@@ -383,6 +395,12 @@ pub(crate) fn tick(
         m.phase = Phase::Over;
         m.since = now;
     }
+    // What a round leaves ends with it, on both instances.
+    let seen = room.m.map(|m| (m.phase, m.round, m.began));
+    if let Some(scope) = round_change(room.swept, seen) {
+        game.cleanups.push(scope);
+    }
+    room.swept = seen;
     game.duel_match = room.m.is_some();
     game.duel_frozen = lobby.up || room.m.is_some_and(|m| !m.fighting());
     sounds(room, seat, now, game);
@@ -1200,4 +1218,35 @@ pub(crate) fn labels(
         }
     }
     out
+}
+
+#[cfg(test)]
+mod cleanup_tests {
+    use super::*;
+    use cleanup::Scope;
+
+    #[test]
+    fn a_round_s_every_end_and_start_asks_for_a_cleanup() {
+        let at = |p| Some((p, 1, 10));
+        assert_eq!(round_change(None, None), None);
+        assert_eq!(
+            round_change(None, at(Phase::Countdown)),
+            Some(Scope::RoundStart)
+        );
+        assert_eq!(round_change(at(Phase::Countdown), at(Phase::Fight)), None);
+        assert_eq!(
+            round_change(at(Phase::Fight), at(Phase::RoundOver)),
+            Some(Scope::RoundEnd)
+        );
+        assert_eq!(
+            round_change(at(Phase::RoundOver), Some((Phase::Countdown, 2, 20))),
+            Some(Scope::RoundStart)
+        );
+        assert_eq!(
+            round_change(at(Phase::RoundOver), at(Phase::Over)),
+            Some(Scope::MatchEnd)
+        );
+        assert_eq!(round_change(at(Phase::Over), None), Some(Scope::MatchEnd));
+        assert_eq!(round_change(at(Phase::Fight), at(Phase::Fight)), None);
+    }
 }

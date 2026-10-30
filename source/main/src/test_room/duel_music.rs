@@ -18,7 +18,7 @@ use net::{RELIABLE, Role};
 use std::thread::JoinHandle;
 
 /// The duel's music voice.
-const KEY: u32 = 9_000_002;
+pub(crate) const KEY: u32 = 9_000_002;
 /// Fades in and out, in seconds.
 const FADE_IN: f32 = 1.;
 const FADE_OUT: f32 = 2.;

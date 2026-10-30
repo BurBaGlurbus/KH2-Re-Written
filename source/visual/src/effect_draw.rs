@@ -140,6 +140,21 @@ pub fn page_image(dpd: &Dpd, key: TexKey, repeat: bool) -> Image {
 pub struct PageCache(HashMap<(TexKey, bool), Handle<Image>>);
 
 impl PageCache {
+    pub fn len(&self) -> usize {
+        self.0.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    /// Forgets the pages of these DPDs (by address); returns how many.
+    pub fn forget(&mut self, dpds: &[usize]) -> usize {
+        let before = self.0.len();
+        self.0.retain(|(key, _), _| !dpds.contains(&key.dpd));
+        before - self.0.len()
+    }
+
     /// The image of `key` with its address mode, made from the DPD `find`
     /// returns (a clear page when it has none).
     pub fn image<'a>(

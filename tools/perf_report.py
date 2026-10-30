@@ -51,6 +51,13 @@ def frames(path, skip_ms, ticks=None):
     return rows
 
 
+def heap_range(rows):
+    heap = [int(r["heap_bytes"]) / 2**20 for r in rows if r.get("heap_bytes")]
+    if not heap:
+        return None
+    return {"first": round(heap[0], 1), "last": round(heap[-1], 1), "max": round(max(heap), 1)}
+
+
 def summary(rows):
     ms = [float(r["frame_ms"]) for r in rows]
     s = sorted(ms)
@@ -76,6 +83,7 @@ def summary(rows):
         "over_33ms": sum(1 for v in ms if v > 1000.0 / 30.0),
         "entities": {"min": min(ents), "max": max(ents)},
         "process_gib": {"min": round(min(mem), 3), "max": round(max(mem), 3)} if mem else None,
+        "heap_mib": heap_range(rows),
         "allocations_per_frame": {
             "avg": round(sum(allocs) / len(allocs), 1),
             "p50": percentile(allocs, 50),

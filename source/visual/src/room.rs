@@ -992,7 +992,11 @@ pub fn draw_order(
 ) -> Vec<u32> {
     let key = |c: usize| {
         let (texture, f6, _, fa, fc) = descriptors[c];
-        let class = if fc & 0x40 != 0 { 2 } else { u32::from(fc >> 7 & 1) };
+        let class = if fc & 0x40 != 0 {
+            2
+        } else {
+            u32::from(fc >> 7 & 1)
+        };
         u32::from(texture)
             | if fa != 0 { 0x20000 } else { 0 }
             | (u32::from(fc & 0x3f) << 2 | u32::from(f6 & 1)) << 16
@@ -1034,7 +1038,6 @@ pub fn isolated_textures(chunks: usize, words: [u32; 8]) -> &'static [u16] {
         &[]
     }
 }
-
 
 #[cfg(test)]
 mod texa_tests {

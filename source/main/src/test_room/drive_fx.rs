@@ -133,6 +133,8 @@ impl Default for Style {
 
 /// The fade of an element whose `Style::life` ran out (event frames).
 const LIFE_FADE: f32 = 4.;
+/// An object's effects fade with it (FUN_1402c4480's caller, event frames).
+const OWNER_LEFT_FADE: f32 = 15.;
 
 /// A draw's colour times a look's tint.
 fn tinted(c: [f32; 4], tint: [f32; 4]) -> [f32; 4] {
@@ -268,6 +270,108 @@ pub struct DriveFx {
 }
 
 impl DriveFx {
+    /// How many of this presenter's things are alive (the census).
+    pub(crate) fn count(&self) -> super::cleanup::FxCount {
+        super::cleanup::FxCount {
+            running: self.running.len(),
+            spawned: self.spawned.len(),
+            models: self.models.len(),
+            materials: self.materials.len(),
+            pages: self.images.len(),
+            dpds: self.dpds.len(),
+            batches: self.batches.len(),
+            parts: self.running.iter().map(|r| r.instance.live_parts()).sum(),
+        }
+    }
+
+    /// A replaced object's effects fade with it: only that Sora's.
+    fn fade_owner(&mut self, sora: Option<u8>, owner: u8) {
+        for r in self
+            .running
+            .iter_mut()
+            .filter(|r| r.owner == owner && r.rival == sora)
+        {
+            r.instance.fade_out(OWNER_LEFT_FADE);
+        }
+    }
+
+    /// Ends the Soras' own elements (the map's and a save point's stay):
+    /// over `frames` event frames, or at once for 0. Returns how many.
+    pub(crate) fn end_fighters(&mut self, frames: f32, sound_stops: &mut Vec<u32>) -> usize {
+        let mut ended = 0;
+        for r in self
+            .running
+            .iter_mut()
+            .filter(|r| r.group.is_none() && r.owner != super::reaction_command::SAVE_PULSE)
+        {
+            r.instance.release();
+            r.instance.fade_out(frames);
+            r.life = None;
+            r.bullet = None;
+            r.sound = None;
+            if let Some(id) = r.sound_id.take() {
+                sound_stops.push(id);
+            }
+            ended += 1;
+        }
+        ended
+    }
+
+    /// The looping sounds the map's and the save point's elements hold.
+    pub(crate) fn held_sounds(&self) -> Vec<u32> {
+        self.running.iter().filter_map(|r| r.sound_id).collect()
+    }
+
+    /// Past the ceiling the oldest elements go, the map's last.
+    fn cap_running(&mut self) -> usize {
+        let over = self
+            .running
+            .len()
+            .saturating_sub(super::cleanup::MAX_RUNNING);
+        if over == 0 {
+            return 0;
+        }
+        let mut left = over;
+        self.running.retain(|r| {
+            let go = left > 0 && r.group.is_none();
+            left -= usize::from(go);
+            !go
+        });
+        self.running.drain(..left);
+        over
+    }
+
+    /// Drops what the caches keep for containers nothing else holds.
+    pub(crate) fn release_unused(&mut self) -> super::cleanup::Released {
+        let stale = super::cleanup::stale_dpds(&mut self.dpds);
+        let mut out = super::cleanup::Released {
+            dpds: stale.len(),
+            ..Default::default()
+        };
+        if stale.is_empty() {
+            return out;
+        }
+        out.pages = self.images.forget(&stale);
+        let before = self.materials.len();
+        self.materials
+            .retain(|k, _| k.texture.is_none_or(|t| !stale.contains(&t.dpd)));
+        out.materials = before - self.materials.len();
+        let before = self.models.len();
+        self.models.retain(|k, _| !stale.contains(&k.0));
+        out.models = before - self.models.len();
+        self.missing.retain(|m| !stale.contains(&m.0));
+        out
+    }
+
+    /// The running elements by owner kit (0xff the system's).
+    pub(crate) fn owners(&self) -> std::collections::BTreeMap<u8, usize> {
+        let mut out = std::collections::BTreeMap::new();
+        for r in &self.running {
+            *out.entry(r.owner).or_default() += 1;
+        }
+        out
+    }
+
     pub fn new(common: Option<Dpd>, prize: Option<Arc<Pax>>) -> Self {
         let prize = prize.and_then(|pax| {
             let dpd = pax.dpds.first()?.clone();
@@ -470,7 +574,8 @@ pub fn tick(
         .map(|p| (p, Style::default()))
         .collect();
     requests.append(&mut game.fx_styled);
-    let mut swapped = None;
+    // Objects replaced this tick: the Sora (None the room's) and the kit.
+    let mut swapped: Vec<(Option<u8>, u8)> = Vec::new();
     if let Some(d) = game.drive.as_mut() {
         requests.extend(std::mem::take(&mut d.fx_requests).into_iter().map(|req| {
             (
@@ -481,7 +586,17 @@ pub fn tick(
                 Style::default(),
             )
         }));
-        swapped = d.fx_owner_left.take();
+        swapped.extend(d.fx_owner_left.take().map(|old| (None, old)));
+    }
+    for r in &mut game.rivals {
+        let old = r.own.drive.as_mut().and_then(|d| d.fx_owner_left.take());
+        swapped.extend(old.map(|old| (Some(r.slot), old)));
+    }
+    // A Sora who left takes his effects with him.
+    {
+        let rivals = &game.rivals;
+        fx.running
+            .retain(|r| r.rival.is_none_or(|s| rivals.iter().any(|o| o.slot == s)));
     }
     let enemy_at = game
         .enemy
@@ -566,10 +681,8 @@ pub fn tick(
     }
     // An object's effects fade with it when it is replaced (the swap
     // re-points only elements with flag 0x200, FUN_1402c4480).
-    if let Some(old) = swapped {
-        for r in fx.running.iter_mut().filter(|r| r.owner == old) {
-            r.instance.fade_out(15.);
-        }
+    for (sora, old) in swapped {
+        fx.fade_owner(sora, old);
     }
     for (Placed { req, anchor }, style) in requests {
         let element = match anchor {
@@ -747,6 +860,13 @@ pub fn tick(
                 styled: style.life.map(|_| tick),
             });
         }
+    }
+    let evicted = fx.cap_running();
+    if evicted > 0 {
+        game.event(
+            serde_json::json!({"event":"effect_ceiling","tick":tick,"kind":"drive",
+            "evicted":evicted}),
+        );
     }
     for s in sounds {
         game.sound_queue.push((s, "drive_effect_se"));
@@ -1153,7 +1273,7 @@ pub fn present(
     }
     let batches = std::mem::take(&mut fx.batches);
     for (key, batch) in &batches {
-        if batch.positions.is_empty() {
+        if batch.positions.is_empty() || fx.spawned.len() >= super::cleanup::MAX_EFFECT_ENTITIES {
             continue;
         }
         let material = match fx.materials.get(key) {
@@ -1194,6 +1314,103 @@ pub fn present(
 mod tests {
     use super::*;
     use std::f32::consts::FRAC_PI_2;
+
+    fn running(owner: u8, rival: Option<u8>, group: Option<u8>) -> Running {
+        let dpd = super::super::cleanup::tests::effect_dpd();
+        Running {
+            instance: Instance::new(dpd.clone(), 0, ::effect::math::IDENTITY, 0.).unwrap(),
+            dpd,
+            bind: None,
+            rival,
+            owner,
+            enemy_element: None,
+            actor_element: None,
+            trail: None,
+            group,
+            sound_id: None,
+            spark: 0,
+            bullet: None,
+            sound: None,
+            sound_wait: 0.,
+            tint: [1.; 4],
+            life: None,
+            styled: None,
+            camera: None,
+            motion: None,
+            end: MotionEnd::Stay,
+        }
+    }
+
+    /// Steps every element until `frames` game frames have passed, as the
+    /// tick does, and drops the finished.
+    fn step(fx: &mut DriveFx, frames: usize) {
+        let mut rng = Rng::default();
+        for _ in 0..frames {
+            for r in &mut fx.running {
+                r.instance.frame(&::effect::math::IDENTITY, &mut rng);
+            }
+            fx.running.retain(|r| !r.instance.finished());
+        }
+    }
+
+    #[test]
+    fn a_form_s_effects_end_with_it_on_the_sora_who_left_it_only() {
+        let mut fx = DriveFx::default();
+        fx.running.push(running(forms_final(), None, None));
+        fx.running.push(running(forms_final(), Some(1), None));
+        fx.running.push(running(0xff, Some(1), None));
+        fx.fade_owner(Some(1), forms_final());
+        step(&mut fx, 40);
+        let left: Vec<_> = fx.running.iter().map(|r| (r.owner, r.rival)).collect();
+        assert_eq!(left, [(forms_final(), None), (0xff, Some(1))]);
+    }
+
+    fn forms_final() -> u8 {
+        player::forms::FINAL
+    }
+
+    #[test]
+    fn a_round_s_end_ends_every_sora_s_effects_and_keeps_the_map_s() {
+        let mut fx = DriveFx::default();
+        fx.running.push(running(forms_final(), None, None));
+        fx.running.push(running(forms_final(), Some(1), None));
+        fx.running.push(running(0xff, Some(1), None));
+        fx.running.push(running(0xfd, None, Some(3)));
+        let mut stops = Vec::new();
+        assert_eq!(fx.end_fighters(8., &mut stops), 3);
+        step(&mut fx, 20);
+        let left: Vec<_> = fx.running.iter().map(|r| r.group).collect();
+        assert_eq!(left, [Some(3)]);
+    }
+
+    #[test]
+    fn the_ceiling_takes_the_oldest_and_the_map_s_last() {
+        let mut fx = DriveFx::default();
+        fx.running.push(running(1, None, Some(0)));
+        for k in 0..super::super::cleanup::MAX_RUNNING + 2 {
+            fx.running.push(running((k % 200) as u8, None, None));
+        }
+        assert_eq!(fx.cap_running(), 3);
+        assert_eq!(fx.running.len(), super::super::cleanup::MAX_RUNNING);
+        assert_eq!(fx.running[0].group, Some(0));
+        assert_eq!(fx.running[1].owner, 3);
+    }
+
+    #[test]
+    fn a_container_nothing_holds_leaves_the_caches() {
+        let mut fx = DriveFx::default();
+        let held = super::super::cleanup::tests::effect_dpd();
+        fx.dpds.push(held.clone());
+        fx.dpds.push(super::super::cleanup::tests::effect_dpd());
+        let gone = Arc::as_ptr(&fx.dpds[1]) as usize;
+        let kept = Arc::as_ptr(&held) as usize;
+        fx.models.insert((gone, 1), None);
+        fx.models.insert((kept, 1), None);
+        let out = fx.release_unused();
+        assert_eq!((out.dpds, out.models), (1, 1));
+        assert_eq!(fx.dpds.len(), 1);
+        assert!(fx.models.contains_key(&(kept, 1)));
+    }
 
     #[test]
     fn weapon_codes_sit_on_the_tip_the_grip_and_the_middle() {

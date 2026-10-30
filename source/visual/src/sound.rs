@@ -98,6 +98,9 @@ pub struct Request {
 pub struct Banks {
     banks: HashMap<u16, Vec<u8>>,
     decoded: HashMap<(u16, usize), Option<Clip>>,
+    /// When each decoded clip was last asked for (a counter of requests).
+    used: HashMap<(u16, usize), u64>,
+    requests: u64,
 }
 
 impl Banks {
@@ -106,6 +109,47 @@ impl Banks {
         let number = scd::read(&bytes)?.number;
         self.banks.insert(number, bytes);
         Ok(number)
+    }
+
+    /// Past `budget` bytes the clips asked for longest ago are dropped (a
+    /// playing voice keeps its own reference; the next request decodes
+    /// again). Returns how many.
+    pub fn trim_clips(&mut self, budget: usize) -> usize {
+        let bytes = |c: &Option<Clip>| c.as_ref().map_or(0, |c| c.samples.len() * size_of::<i16>());
+        let mut total: usize = self.decoded.values().map(bytes).sum();
+        if total <= budget {
+            return 0;
+        }
+        let mut order: Vec<((u16, usize), u64)> = self
+            .decoded
+            .keys()
+            .map(|k| (*k, self.used.get(k).copied().unwrap_or(0)))
+            .collect();
+        order.sort_by_key(|o| o.1);
+        let mut dropped = 0;
+        for (key, _) in order {
+            if total <= budget {
+                break;
+            }
+            if let Some(clip) = self.decoded.remove(&key) {
+                total -= bytes(&clip);
+                dropped += 1;
+            }
+            self.used.remove(&key);
+        }
+        dropped
+    }
+
+    /// Banks held and their bytes, sounds decoded and their bytes.
+    pub fn census(&self) -> (usize, usize, usize, usize) {
+        let bank_bytes = self.banks.values().map(Vec::len).sum();
+        let clip_bytes = self
+            .decoded
+            .values()
+            .flatten()
+            .map(|c| c.samples.len() * size_of::<i16>())
+            .sum();
+        (self.banks.len(), bank_bytes, self.decoded.len(), clip_bytes)
     }
 
     pub fn numbers(&self) -> Vec<u16> {
@@ -126,7 +170,9 @@ impl Banks {
             return Ok(None);
         };
         let mut layers = Vec::new();
+        self.requests += 1;
         for &audio in &sound.audio {
+            self.used.insert((number, audio as usize), self.requests);
             let decoded = match self.decoded.entry((number, audio as usize)) {
                 std::collections::hash_map::Entry::Occupied(e) => e.into_mut(),
                 std::collections::hash_map::Entry::Vacant(e) => {
@@ -216,4 +262,31 @@ pub fn decode_music_in_background(bytes: Vec<u8>) -> MusicSlot {
         }
     });
     slot
+}
+
+#[cfg(test)]
+mod budget_tests {
+    use super::*;
+
+    fn clip(frames: usize) -> Option<Clip> {
+        Some(Clip {
+            channels: 1,
+            rate: 44_100,
+            samples: vec![0i16; frames].into(),
+            loop_frames: None,
+        })
+    }
+
+    #[test]
+    fn past_the_budget_the_clips_asked_for_longest_ago_go() {
+        let mut banks = Banks::default();
+        for (k, used) in [(0usize, 3u64), (1, 1), (2, 2)] {
+            banks.decoded.insert((7, k), clip(1000));
+            banks.used.insert((7, k), used);
+        }
+        assert_eq!(banks.trim_clips(1 << 20), 0);
+        assert_eq!(banks.trim_clips(2000), 2);
+        assert!(banks.decoded.contains_key(&(7, 0)));
+        assert_eq!(banks.census().2, 1);
+    }
 }

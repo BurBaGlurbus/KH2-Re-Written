@@ -83,3 +83,20 @@ slower across the board, so its frame rates are not compared. Raw records stay p
   kept only on the GPU; GPU memory not measured).
 - Frame rate: unchanged within noise; the HD textures did not measurably slow drawing.
 
+## A long session and the slow rooms (T298)
+
+Measured 2026-10-30 on the same PC with other sessions' compilers running, so frame times swing about 2x between runs. "Before" is
+`f69c1b4` with only the census added; "after" the same tree with [T298](../tasks/T298-session-cleanup-and-map-merge.md). Raw records
+stay private in the output folder outside the checkout (`b-*`, `a-*`).
+
+| | Before | After |
+|---|---|---|
+| Scripted duel, 5 min: running effects at the end, host / joiner | 121 / 99 | 0 / 0 |
+| Walk through all 278 rooms: effect containers kept | 212 | 2 |
+| Walk: heap, first to last sixth (MiB) | 1,407 to 1,485 | 1,386 to 1,397 |
+| Rooms over 50 ms median, of 276 | 81 | 21 |
+| Median room: frame (ms), meshes drawn | 39.7, 1,285 | 26.4, 303 |
+| lm09, hb34, eh22 (ms, three alternating runs) | 196, 157, 145 | 31, 32, 31 |
+
+The worst rooms were rewriting one material per UV-scrolled chunk every tick, allocating 30 to 80 MiB a frame. The room's five-minute
+soak with no duel or doors was already flat in both.

@@ -35,6 +35,20 @@ pub fn set_chain() {
     CHAIN.store(true, Ordering::Relaxed);
 }
 
+/// `--soak`: the schedule's first part over and over. `--room-survey`: no
+/// schedule at all (Sora stands).
+static LOOPED: AtomicBool = AtomicBool::new(false);
+static IDLE: AtomicBool = AtomicBool::new(false);
+const LOOP_LENGTH: u64 = FINISH_START;
+
+pub fn set_looped() {
+    LOOPED.store(true, Ordering::Relaxed);
+}
+
+pub fn set_idle() {
+    IDLE.store(true, Ordering::Relaxed);
+}
+
 /// Whether Combo Master is on this tick.
 pub fn chain(tick: u64, shift: u64) -> bool {
     CHAIN.load(Ordering::Relaxed) && probing(tick, shift)
@@ -43,6 +57,12 @@ pub fn chain(tick: u64, shift: u64) -> bool {
 /// The schedule's tick for the room's `tick`.
 fn at(tick: u64, shift: u64) -> Option<u64> {
     let t = tick.checked_sub(shift)?;
+    if IDLE.load(Ordering::Relaxed) {
+        return None;
+    }
+    if LOOPED.load(Ordering::Relaxed) {
+        return Some(t % LOOP_LENGTH);
+    }
     if MOVES_ONLY.load(Ordering::Relaxed) {
         t.checked_sub(MOVES_LEAD).map(|t| t + MOVES_START)
     } else {

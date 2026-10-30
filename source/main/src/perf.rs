@@ -67,6 +67,8 @@ struct Row {
     process_gib: f64,
     allocations: usize,
     allocated_bytes: usize,
+    /// Heap in use at the end of the frame.
+    heap_bytes: i64,
     /// Mesh and image assets added and modified this frame (each one is
     /// uploaded to the GPU again).
     meshes_added: u32,
@@ -115,6 +117,9 @@ fn record_frame(
         .and_then(|d| d.value())
         .unwrap_or(0.);
     let stats = record.region.change_and_reset();
+    let total = GLOBAL.stats();
+    // (A reallocation's change is already in the two totals.)
+    let heap_bytes = total.bytes_allocated as i64 - total.bytes_deallocated as i64;
     let (meshes_added, meshes_modified) = count(&mut meshes);
     let (images_added, images_modified) = count(&mut images);
     let row = Row {
@@ -126,6 +131,7 @@ fn record_frame(
         process_gib,
         allocations: stats.allocations + stats.reallocations,
         allocated_bytes: stats.bytes_allocated + stats.bytes_reallocated.max(0) as usize,
+        heap_bytes,
         meshes_added,
         meshes_modified,
         images_added,
@@ -151,12 +157,12 @@ fn write_record(mut exit: MessageReader<AppExit>, mut record: ResMut<PerfRecord>
     let _ = writeln!(
         out,
         "at_ms,frame_ms,paused,fixed_ticks,entities,process_gib,allocations,allocated_bytes,\
-         meshes_added,meshes_modified,images_added,images_modified"
+         heap_bytes,meshes_added,meshes_modified,images_added,images_modified"
     );
     for r in &record.rows {
         let _ = writeln!(
             out,
-            "{:.3},{:.4},{},{},{},{:.4},{},{},{},{},{},{}",
+            "{:.3},{:.4},{},{},{},{:.4},{},{},{},{},{},{},{}",
             r.at_ms,
             r.frame_ms,
             u8::from(r.paused),
@@ -165,6 +171,7 @@ fn write_record(mut exit: MessageReader<AppExit>, mut record: ResMut<PerfRecord>
             r.process_gib,
             r.allocations,
             r.allocated_bytes,
+            r.heap_bytes,
             r.meshes_added,
             r.meshes_modified,
             r.images_added,

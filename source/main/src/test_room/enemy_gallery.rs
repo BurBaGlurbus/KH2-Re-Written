@@ -291,6 +291,12 @@ pub struct EnemyGallery {
 }
 
 impl EnemyGallery {
+    /// Actors removed whose entities still wait for their despawn (the
+    /// census).
+    pub(crate) fn garbage_len(&self) -> usize {
+        self.garbage.len()
+    }
+
     pub fn new(source: Arc<ProbeSource>, catalog: Catalog, forward_kinematics_only: bool) -> Self {
         Self {
             target_params: None,

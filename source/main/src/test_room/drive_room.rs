@@ -1143,26 +1143,7 @@ fn finish_change(game: &mut Game, abilities: Option<&[u16]>) -> Result<(), Strin
     } else {
         d.active = false;
         game.sora.player.drive.leave_form();
-        // FUN_140400440: the absorbed members come back around Sora.
-        let stored = std::mem::take(&mut d.stored);
-        let (mut seed, mut sector) = (d.seed, d.sector);
-        for (i, _) in stored {
-            let spot = forms::return_spot(
-                &game.world,
-                game.sora.player.position,
-                &mut seed,
-                &mut sector,
-            );
-            if let Some(m) = game.party.get_mut(i) {
-                m.stored = false;
-                m.follower.position = spot.0;
-                m.follower.yaw = spot.1;
-                m.follower.attack = None;
-            }
-        }
-        if let Some(d) = game.drive.as_mut() {
-            (d.seed, d.sector) = (seed, sector);
-        }
+        members_return(game);
     }
     game.sora.player.shoot = f == forms::WISDOM;
     rebuild_abilities(game, abilities);
@@ -1173,6 +1154,66 @@ fn finish_change(game: &mut Game, abilities: Option<&[u16]>) -> Result<(), Strin
         "bars":gauge.bars,"time":gauge.time,"drive_level":gauge.level}),
     );
     Ok(())
+}
+
+/// FUN_140400440: the absorbed members come back around Sora.
+fn members_return(game: &mut Game) {
+    let Some(d) = game.drive.as_mut() else { return };
+    let stored = std::mem::take(&mut d.stored);
+    let (mut seed, mut sector) = (d.seed, d.sector);
+    for (i, _) in stored {
+        let spot = forms::return_spot(
+            &game.world,
+            game.sora.player.position,
+            &mut seed,
+            &mut sector,
+        );
+        if let Some(m) = game.party.get_mut(i) {
+            m.stored = false;
+            m.follower.position = spot.0;
+            m.follower.yaw = spot.1;
+            m.follower.attack = None;
+        }
+    }
+    if let Some(d) = game.drive.as_mut() {
+        (d.seed, d.sector) = (seed, sector);
+    }
+}
+
+/// Ends the swapped-in Sora's form now, with no motion or effect of its own
+/// (a duel round's end, a room change [rewrite rule, the owner's request]):
+/// no change running, no afterimage or grey overlay, no bullets, the base
+/// kit shown, the gauge in Drive mode and the form's abilities gone. The
+/// form's effects fade through `fx_owner_left`.
+pub fn end_form(game: &mut Game) {
+    let Some(d) = game.drive.as_mut() else { return };
+    let changing = d.change.is_some();
+    d.change = None;
+    d.request = None;
+    d.limit_request = None;
+    d.after = None;
+    d.overlay = 0.;
+    d.overlay_step = 0.;
+    d.fx_requests.clear();
+    let bullets = std::mem::take(&mut d.bullets);
+    d.bullet_ends.extend(bullets.iter().map(|b| (b.key, false)));
+    let in_form = d.shown != 0 || d.active;
+    if !in_form && !changing {
+        return;
+    }
+    members_return(game);
+    show_form(game, 0);
+    let p = &mut game.sora.player;
+    p.drive.leave_form();
+    p.shoot = false;
+    if !p.dead() {
+        let airborne = p.in_air();
+        p.arrive(0, airborne, &game.clips);
+        game.action_started = game.tick;
+    }
+    rebuild_abilities(game, None);
+    let tick = game.tick;
+    game.event(serde_json::json!({"event":"form_ended","tick":tick}));
 }
 
 /// The duel's joiner: shows the form the host's snapshot names (its kit
@@ -1193,6 +1234,10 @@ pub fn show_form(game: &mut Game, form: u8) -> bool {
     }
     if swap_kit(game, form).is_err() {
         return false;
+    }
+    // The old object's effects fade with it, on this instance too.
+    if let Some(d) = game.drive.as_mut() {
+        d.fx_owner_left = Some(d.previous_shown);
     }
     game.sora.player.shoot = form == forms::WISDOM;
     true
@@ -1361,6 +1406,19 @@ pub fn tick(game: &mut Game, abilities: Option<&[u16]>) {
             d.request = Some(if anti { forms::VALOR } else { game.magic_form });
         }
         // [Tour setup] The form's time stays full: the tour outlasts it.
+        if d.active {
+            let g = &mut game.sora.player.drive;
+            g.time = g.max_time;
+        }
+    }
+    // [Test] `--soak`: a form in turn, each held then reverted.
+    if game.soak {
+        if let Some(form) = super::soak_tour::form_request(game.tick) {
+            if form != 0 {
+                game.sora.player.drive.refill();
+            }
+            d.request = Some(form);
+        }
         if d.active {
             let g = &mut game.sora.player.drive;
             g.time = g.max_time;

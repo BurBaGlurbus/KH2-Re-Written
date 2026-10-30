@@ -37,6 +37,14 @@ pub const SORA_BODY: Body = Body {
     class: 0,
 };
 
+/// How many worlds the world table has.
+pub const WORLD_COUNT: usize = progress::WORLDS.len();
+
+/// A world's two-letter code.
+pub fn world_code(world: u8) -> Option<&'static str> {
+    progress::WORLDS.get(world as usize).copied()
+}
+
 /// Debug-menu names of the worlds in `progress::WORLDS` order (rewrite
 /// labels, not game text); the code where none is known.
 pub fn world_name(world: u8) -> &'static str {

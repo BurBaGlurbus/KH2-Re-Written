@@ -68,6 +68,7 @@ mod ability_inventory;
 mod actor_push;
 mod boss;
 mod character_kit;
+mod cleanup;
 mod command_layout;
 mod debug_menu;
 pub(crate) use debug_menu::DebugMenu;
@@ -140,6 +141,7 @@ mod rival;
 mod second_deck;
 mod sephiroth;
 mod settings_room;
+mod soak_tour;
 mod spell_fx;
 mod summon;
 mod summon_tour;
@@ -1103,6 +1105,10 @@ struct Game {
     sephiroth_tour: bool,
     /// `--magic-tour`: the scripted spell and combo run (magic_tour.rs).
     magic_tour: bool,
+    /// `--soak`: the magic tour's first part again and again, with Drive
+    /// forms (soak_tour.rs); `--room-survey`: Sora stands, the view turns.
+    soak: bool,
+    room_survey: bool,
     /// The Drive form the tour casts in (`--magic-form`, 0 = none) and the
     /// ticks its change takes before the first cast.
     magic_form: u8,
@@ -1417,6 +1423,8 @@ struct Game {
     /// Action start tick and clip tick already scanned for sound triggers.
     sound_frame: Option<(u64, u32)>,
     effect_queue: Vec<EffectRequest>,
+    /// Cleanups asked for (cleanup.rs).
+    cleanups: Vec<cleanup::Scope>,
     /// Elements to start next tick at a place other than Sora's own.
     fx_queue: Vec<drive_fx::Placed>,
     /// [KH3 ruleset] Elements of a composite look, each with its style
@@ -4935,6 +4943,9 @@ pub(crate) fn spawn_model(
     images: &mut Assets<Image>,
 ) -> Vec<(usize, Option<Entity>)> {
     let mut spawned = Vec::new();
+    // Parts with the same texture share a material: writes to a model's
+    // materials (fades, tints) go to all its parts alike.
+    let mut shared: HashMap<Option<AssetId<Image>>, Handle<FogMaterial>> = HashMap::new();
     for (ordinal, part) in model.parts.iter().enumerate() {
         if part.indices.is_empty() {
             spawned.push((ordinal, None));
@@ -4961,18 +4972,24 @@ pub(crate) fn spawn_model(
                 texture = Some(model_texture(set, image, images));
             }
         }
-        let entity = commands
-            .spawn((
-                ChildOf(parent),
-                Mesh3d(meshes.add(mesh(positions, uvs, vec![[1.; 4]; part.indices.len()]))),
-                MeshMaterial3d(materials.add_fogged(StandardMaterial {
+        let material = shared
+            .entry(texture.as_ref().map(Handle::id))
+            .or_insert_with(|| {
+                materials.add_fogged(StandardMaterial {
                     base_color: Color::WHITE,
                     base_color_texture: texture,
                     unlit: true,
                     cull_mode: None,
                     alpha_mode: AlphaMode::Opaque,
                     ..default()
-                })),
+                })
+            })
+            .clone();
+        let entity = commands
+            .spawn((
+                ChildOf(parent),
+                Mesh3d(meshes.add(mesh(positions, uvs, vec![[1.; 4]; part.indices.len()]))),
+                MeshMaterial3d(material),
                 Transform::default(),
             ))
             .id();
@@ -5223,7 +5240,8 @@ fn area_transition(
     };
     let decoded = started.elapsed();
     for part in &parts {
-        commands.entity(part).despawn();
+        // (A part's parent may be going in the same pass.)
+        commands.entity(part).try_despawn();
     }
     let show = game.show_collision;
     spawn_room(
@@ -5260,7 +5278,14 @@ fn area_transition(
     game.step_bank = step_room_bank(&game.step_info, next.world, next.area);
     game.ambient = room_ambient(&game.step_info, next.world, next.area);
     let (position, yaw) = next.player;
-    game.sora.player = Player::new(position.to_array(), yaw);
+    // A new object in the new room; what belongs to Sora stays his.
+    let mut fresh = Player::new(position.to_array(), yaw);
+    let old = &mut game.sora.player;
+    fresh.abilities = std::mem::take(&mut old.abilities);
+    fresh.fmab = std::mem::take(&mut old.fmab);
+    fresh.mp = old.mp;
+    fresh.drive = old.drive;
+    game.sora.player = fresh;
     rig.collision = CameraCollision::new(&room);
     rig.camera = FollowCamera::new(
         follow_camera::OUTDOOR,
@@ -5292,6 +5317,7 @@ fn area_transition(
     // The old area's effects end with it; the new area's start next tick.
     game.fx_clear_map.push(None);
     game.map_fx_pending = true;
+    game.cleanups.push(cleanup::Scope::RoomChange);
     if let Some(t) = area.transition.as_mut() {
         t.stage = Stage::Opening;
         t.iris = hud
@@ -5368,7 +5394,7 @@ pub(crate) fn spawn_bobs(
 fn bob_present(
     game: Res<Game>,
     area: Option<Res<AreaRes>>,
-    parts: Query<(&BobPart, &Mesh3d)>,
+    parts: Query<(&BobPart, &Mesh3d, &InheritedVisibility)>,
     added: Query<(), Added<BobPart>>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut shown: Local<Option<u64>>,
@@ -5379,9 +5405,12 @@ fn bob_present(
         return;
     }
     *shown = Some(game.tick);
-    for (part, handle) in &parts {
+    for (part, handle, seen) in &parts {
         let p = &area.current.bobs.placements[part.placement];
-        if p.motion < 0 {
+        // (Its background group hidden: nothing to upload; the pose reads
+        // the motion by time when the group comes back. Off screen still
+        // uploads: a moving object's bounds come from its pose.)
+        if p.motion < 0 || !seen.get() {
             continue;
         }
         let Some(Some(bob)) = area.current.bobs.models.get(p.model) else {
@@ -5810,6 +5839,19 @@ fn field_npc_present(
 /// Spawns a room's map models and its collision overlay under `parent`,
 /// tagged so an area change can remove them.
 #[allow(clippy::too_many_arguments)]
+/// One mesh of a room: the map chunks merged into it, in chunk order.
+struct MergedChunk {
+    /// Texture slot, blend, background group and UV scroll record (0: none).
+    key: (Option<usize>, u8, u8, u32),
+    bit: u8,
+    positions: Vec<[f32; 3]>,
+    uvs: Vec<[f32; 2]>,
+    colors: Vec<[f32; 4]>,
+    material: Handle<FogMaterial>,
+    scroll: Option<UvScroll>,
+}
+
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn spawn_room(
     commands: &mut Commands,
     meshes: &mut Assets<Mesh>,
@@ -5877,9 +5919,6 @@ pub(crate) fn spawn_room(
                 });
             }
         }
-        // Chunks drawn with the same texture and blend share one material,
-        // so the renderer can batch them; UV-scrolled chunks keep their own.
-        let mut shared: HashMap<(Option<usize>, u8), Handle<FogMaterial>> = HashMap::new();
         // The alpha pass in the exe's batch order (draw-01 §3.3): all the map's
         // chunks sit at one origin, so a fraction of a unit orders them in the
         // transparent sort and is too small to bias the depth.
@@ -5906,7 +5945,22 @@ pub(crate) fn spawn_room(
             )
         };
         let order_step = 1. / (order.len() + 1) as f32;
-        for (chunk_index, chunk) in part.model.chunks.iter().enumerate() {
+        // Opaque chunks drawn with the same texture and UV scroll record share
+        // one material, so the renderer can batch them and a scroll rewrites
+        // one material a tick, not one per chunk.
+        let mut shared: HashMap<(Option<usize>, u32), Handle<FogMaterial>> = HashMap::new();
+        // Rooms hold thousands of small chunks, each a draw of its own (and
+        // an entity to extract every frame). Chunks that also share a
+        // background group become one mesh: opaque ones anywhere in the
+        // list (depth decides), alpha ones only with their neighbour in the
+        // batch order, so the blending order stands.
+        let mut merged: Vec<MergedChunk> = Vec::new();
+        let mut opaque: HashMap<(Option<usize>, u8, u32), usize> = HashMap::new();
+        let mut last_alpha = None;
+        let mut in_order: Vec<usize> = (0..part.model.chunks.len()).collect();
+        in_order.sort_by_key(|&c| order[c]);
+        for chunk_index in in_order {
+            let chunk = &part.model.chunks[chunk_index];
             if chunk.indices.is_empty() {
                 continue;
             }
@@ -5916,7 +5970,7 @@ pub(crate) fn spawn_room(
                 .copied()
                 .unwrap_or(visual::room::NO_GROUP);
             let vertex = |i: &u32| &chunk.vertices[*i as usize];
-            let positions = chunk
+            let positions: Vec<[f32; 3]> = chunk
                 .indices
                 .iter()
                 .map(|i| vertex(i).position_bits.map(f32::from_bits))
@@ -5928,7 +5982,7 @@ pub(crate) fn spawn_room(
             let (scale, offset) = texture_slot.map_or(([1.; 2], [0.; 2]), |i| {
                 (regions[i].scale, regions[i].offset)
             });
-            let uvs = chunk
+            let uvs: Vec<[f32; 2]> = chunk
                 .indices
                 .iter()
                 .map(|i| {
@@ -5941,7 +5995,6 @@ pub(crate) fn spawn_room(
                 .iter()
                 .map(|i| vertex(i).color_bits.map(f32::from_bits))
                 .collect();
-            let alphas: Vec<f32> = colors.iter().map(|c| c[3]).collect();
             let texture = texture_slot.map(|i| handles[i].clone());
             // UVSC: fc bits 1..5 hold the record index + 1; repeat modes only.
             let scroll_id = (chunk.header_words[3] >> 1) & 0x1f;
@@ -5989,49 +6042,83 @@ pub(crate) fn spawn_room(
                     materials.add_fogged(base)
                 }
             };
-            let material = if scroll.is_some() || blend != 0 {
-                add(base)
+            let record_id = if scroll.is_some() { scroll_id } else { 0 };
+            let key = (texture_slot, blend, bit, record_id);
+            let into = if blend == 0 {
+                opaque.get(&(texture_slot, bit, record_id)).copied()
             } else {
+                last_alpha.filter(|&last: &usize| merged[last].key == key)
+            };
+            if let Some(i) = into {
+                let m = &mut merged[i];
+                m.positions.extend(positions);
+                m.uvs.extend(uvs);
+                m.colors.extend(colors);
+                continue;
+            }
+            // (An alpha run's material holds its place in the order.)
+            let material = if blend == 0 {
                 shared
-                    .entry((texture_slot, blend))
+                    .entry((texture_slot, record_id))
                     .or_insert_with(|| add(base))
                     .clone()
+            } else {
+                add(base)
             };
-            let mut entity = commands.spawn((
-                ChildOf(parent),
-                RoomPart,
-                BgChunk(bit),
-                if visual::room::chunk_visible(bit, bg_mask) {
-                    Visibility::Inherited
-                } else {
-                    Visibility::Hidden
-                },
-                Mesh3d(meshes.add({
-                    let m = mesh(positions, uvs, colors);
-                    // The opaque pass's glow stencil (FUN_1401ba2c0).
-                    if blend == 0 {
-                        m.with_inserted_attribute(
-                            Mesh::ATTRIBUTE_UV_1,
-                            visual::glow::triangle_classes(&alphas),
-                        )
-                    } else {
-                        m
-                    }
-                })),
-                MeshMaterial3d(material.clone()),
-                Transform::default(),
-            ));
-            if let Some((record, slot)) = scroll {
+            let scroll = scroll.map(|(record, slot)| {
                 let r = &regions[slot];
-                entity.insert(UvScroll {
-                    material,
+                UvScroll {
+                    material: material.clone(),
                     speed: [record.1, record.2],
                     ratio: [
                         if r.wrap[0] { r.scroll_ratio[0] } else { 0. },
                         if r.wrap[1] { r.scroll_ratio[1] } else { 0. },
                     ],
                     scale: r.scale,
-                });
+                }
+            });
+            if blend == 0 {
+                opaque.insert((texture_slot, bit, record_id), merged.len());
+            } else {
+                last_alpha = Some(merged.len());
+            }
+            merged.push(MergedChunk {
+                key,
+                bit,
+                positions,
+                uvs,
+                colors,
+                material,
+                scroll,
+            });
+        }
+        for m in merged {
+            let mut entity = commands.spawn((
+                ChildOf(parent),
+                RoomPart,
+                BgChunk(m.bit),
+                if visual::room::chunk_visible(m.bit, bg_mask) {
+                    Visibility::Inherited
+                } else {
+                    Visibility::Hidden
+                },
+                Mesh3d(meshes.add({
+                    let classes = (m.key.1 == 0).then(|| {
+                        let alphas: Vec<f32> = m.colors.iter().map(|c| c[3]).collect();
+                        visual::glow::triangle_classes(&alphas)
+                    });
+                    let drawn = mesh(m.positions, m.uvs, m.colors);
+                    // The opaque pass's glow stencil (FUN_1401ba2c0).
+                    match classes {
+                        Some(c) => drawn.with_inserted_attribute(Mesh::ATTRIBUTE_UV_1, c),
+                        None => drawn,
+                    }
+                })),
+                MeshMaterial3d(m.material),
+                Transform::default(),
+            ));
+            if let Some(scroll) = m.scroll {
+                entity.insert(scroll);
             }
         }
     }
@@ -8464,6 +8551,10 @@ fn simulate(
     if game.autoplay.is_some() {
         // Unattended runs orbit 180 degrees to check Sora from the front.
         if (660..720).contains(&tick) && !game.sephiroth_tour {
+            turn = 1.;
+        }
+        // The survey looks all around each room.
+        if game.room_survey {
             turn = 1.;
         }
     } else {
@@ -13924,6 +14015,14 @@ fn run(mut args: Vec<PathBuf>) -> Result<AppExit, Box<dyn std::error::Error>> {
     let mut sephiroth_result: Option<PathBuf> = None;
     let mut sephiroth_tour = false;
     let mut magic_tour = false;
+    let mut soak = false;
+    let mut soak_ticks = soak_tour::DEFAULT_TICKS;
+    let mut soak_rooms: Vec<(u8, u8)> = Vec::new();
+    let mut soak_rooms_every = soak_tour::DEFAULT_ROOMS_EVERY;
+    let mut room_survey = false;
+    let mut survey_rooms: Vec<(u8, u8)> = Vec::new();
+    let mut survey_ms = soak_tour::DEFAULT_SURVEY_MS;
+    let mut survey_settle = soak_tour::DEFAULT_SURVEY_SETTLE;
     let mut party_hit_tour = false;
     let mut party_anim_tour = false;
     let mut magic_form = 0u8;
@@ -14207,6 +14306,60 @@ fn run(mut args: Vec<PathBuf>) -> Result<AppExit, Box<dyn std::error::Error>> {
                         .cloned()
                         .ok_or("magic tour capture directory absent")?,
                 );
+            }
+            Some("--soak") if autoplay.is_none() => {
+                magic_tour = true;
+                soak = true;
+                magic_tour::set_looped();
+                autoplay = Some(options.next().cloned().ok_or("soak directory absent")?);
+            }
+            Some("--soak-ticks") => {
+                soak_ticks = options
+                    .next()
+                    .and_then(|v| v.to_str())
+                    .ok_or("soak ticks absent")?
+                    .parse()?;
+            }
+            Some("--soak-rooms") => {
+                soak_rooms = options
+                    .next()
+                    .and_then(|v| v.to_str())
+                    .and_then(soak_tour::parse_rooms)
+                    .ok_or("soak rooms: world:area,...")?;
+            }
+            Some("--soak-rooms-every") => {
+                soak_rooms_every = options
+                    .next()
+                    .and_then(|v| v.to_str())
+                    .ok_or("soak room time absent")?
+                    .parse()?;
+            }
+            Some("--room-survey") if autoplay.is_none() => {
+                magic_tour = true;
+                room_survey = true;
+                magic_tour::set_idle();
+                autoplay = Some(options.next().cloned().ok_or("survey directory absent")?);
+            }
+            Some("--survey-rooms") => {
+                survey_rooms = options
+                    .next()
+                    .and_then(|v| v.to_str())
+                    .and_then(soak_tour::parse_rooms)
+                    .ok_or("survey rooms: world:area,...")?;
+            }
+            Some("--survey-ms") => {
+                survey_ms = options
+                    .next()
+                    .and_then(|v| v.to_str())
+                    .ok_or("survey time absent")?
+                    .parse()?;
+            }
+            Some("--survey-settle") => {
+                survey_settle = options
+                    .next()
+                    .and_then(|v| v.to_str())
+                    .ok_or("survey settle absent")?
+                    .parse()?;
             }
             // The party-hit tour runs inside the magic tour's setup (an
             // invincible Sora, a frozen Shadow, no menus) with its own
@@ -14521,7 +14674,7 @@ fn run(mut args: Vec<PathBuf>) -> Result<AppExit, Box<dyn std::error::Error>> {
                     job: None,
                 }
             }),
-            explore: !stay,
+            explore: !stay && !soak && !room_survey,
             talk_npc: None,
             was_talking: false,
         }
@@ -14591,6 +14744,8 @@ fn run(mut args: Vec<PathBuf>) -> Result<AppExit, Box<dyn std::error::Error>> {
         NPC_TOUR_CAPTURES.to_vec()
     } else if save_point_tour {
         reaction_command::SAVE_TOUR_CAPTURES.to_vec()
+    } else if soak || room_survey {
+        capture_at.clone().unwrap_or_default()
     } else if magic_tour {
         // `--capture-at` replaces the tour's own shots (frame-by-frame checks).
         capture_at
@@ -14643,6 +14798,11 @@ fn run(mut args: Vec<PathBuf>) -> Result<AppExit, Box<dyn std::error::Error>> {
         NPC_TOUR_END
     } else if save_point_tour {
         reaction_command::SAVE_TOUR_END
+    } else if soak {
+        soak_ticks
+    } else if room_survey {
+        // The survey sets its end when the last room is done.
+        u64::MAX
     } else if magic_tour {
         magic_tour::end() + magic_shift
     } else if prize_tour {
@@ -14710,6 +14870,8 @@ fn run(mut args: Vec<PathBuf>) -> Result<AppExit, Box<dyn std::error::Error>> {
         sephiroth_result,
         sephiroth_tour,
         magic_tour,
+        soak,
+        room_survey,
         magic_form,
         magic_shift,
         growth_tour,
@@ -14807,7 +14969,8 @@ fn run(mut args: Vec<PathBuf>) -> Result<AppExit, Box<dyn std::error::Error>> {
         debug_blow: false,
         cheats: debug_menu::Cheats {
             invincible: magic_tour,
-            enemy_frozen: magic_tour,
+            // The survey's rooms keep their enemies moving.
+            enemy_frozen: magic_tour && !room_survey,
         },
         shortcuts: ROOM_SHORTCUTS,
         drive: None,
@@ -14966,6 +15129,7 @@ fn run(mut args: Vec<PathBuf>) -> Result<AppExit, Box<dyn std::error::Error>> {
         effect_queue: Vec::new(),
         fx_queue: Vec::new(),
         fx_styled: Vec::new(),
+        cleanups: Vec::new(),
         actor_poses: HashMap::new(),
         actor_bones: HashMap::new(),
         actor_scan: HashMap::new(),
@@ -15484,6 +15648,19 @@ fn run(mut args: Vec<PathBuf>) -> Result<AppExit, Box<dyn std::error::Error>> {
                 .chain(),
         );
     }
+    if soak {
+        app.insert_resource(soak_tour::SoakRooms::new(soak_rooms, soak_rooms_every));
+        app.add_systems(Update, soak_tour::soak_rooms);
+    }
+    if room_survey {
+        app.insert_resource(soak_tour::Survey::new(
+            survey_rooms,
+            survey_settle,
+            survey_ms,
+        ));
+        app.add_systems(Last, soak_tour::survey);
+    }
+    app.add_systems(Last, cleanup::census);
     app.insert_resource(duel_loadout);
     // The PC version's key bindings; unattended runs keep the exe's
     // defaults so they read the same on any PC, and read no device at all
@@ -15663,6 +15840,7 @@ fn run(mut args: Vec<PathBuf>) -> Result<AppExit, Box<dyn std::error::Error>> {
                 debug_menu::tick,
                 (enemy_gallery::service, enemy_assets::service).chain(),
                 area_transition,
+                cleanup::run,
                 area_glow,
                 transition_time,
                 bg_visibility,

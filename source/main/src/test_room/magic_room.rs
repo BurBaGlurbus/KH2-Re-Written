@@ -186,6 +186,18 @@ pub struct CastFx {
 }
 
 impl MagicRt {
+    /// Every spell ends now (a round's end, a room change); a cast still in
+    /// its motion ends with the motion, as an interrupted one does.
+    pub(crate) fn end_spells(&mut self) {
+        self.spells.clear();
+        self.barrier = None;
+        self.barrier_count = 0;
+        self.feedback = Default::default();
+        self.reflected.clear();
+        self.volumes.clear();
+        self.last_hits.clear();
+    }
+
     pub fn new(src: MagicSource, levels: [u8; 6]) -> Self {
         MagicRt {
             src,
