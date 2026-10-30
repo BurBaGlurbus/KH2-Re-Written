@@ -76,13 +76,15 @@ const MARGIN: f32 = 1.1;
 const ASPECT: f32 = 0.5625;
 /// 0x1405defa0: solver passes when the two are apart.
 const PASSES: usize = 4;
-/// ATresCameraTargetOTS: pitch limits -40 / 40, rotation rate 8; blends as
-/// the lock's.
-const AIM_PITCH: f32 = 40.;
-/// [duel choice] The OTS camera's Blueprint values: 220 cm back, the
-/// pivot 55 cm to Sora's right and 25 cm up.
+/// `TresCameraShootFlow`'s constructor: pitch limits -70 / 70, rotation rate
+/// 8; blends as the lock's.
+const AIM_PITCH: f32 = 70.;
+/// Its spring (0x1405FD484) and local offset (0x14141984D): 200 cm back, the
+/// look point 50 forward and 100 right of the socket `Zup_Cam` (102.338 up)
+/// and its target offset (50 up, 0x14141981D).
 const AIM_DISTANCE: f32 = 200.;
-const AIM_SHOULDER: [f32; 2] = [55., 25.];
+const AIM_OFFSET: [f32; 2] = [50., 100.];
+const AIM_HEIGHT: f32 = 152.338;
 
 /// The exe's approach: `cur` moves `rate / 60` of the gap a 1/60 s step.
 fn approach(cur: f32, target: f32, rate: f32, dt: f32) -> f32 {
@@ -496,19 +498,20 @@ impl Lock {
 
 impl Aim {
     fn new(f: &Frame, target: Vec3) -> Aim {
-        let mut r = Rot::look(target - player_point(f.feet));
+        let mut r = Rot::look(target - (f.feet + Vec3::Y * cm(AIM_HEIGHT)));
         r.pitch = r.pitch.clamp(-AIM_PITCH, AIM_PITCH);
         Aim { shown: r, target }
     }
 
-    /// 0x14062d850: the shoulder pivot in camera space, looking at the
-    /// target; no distance smoothing.
+    /// The look point in camera space, looking at the target; no distance
+    /// smoothing.
     fn tick(&mut self, f: &Frame, dt: f32) -> boss::OverlayView {
-        let point = player_point(f.feet);
         let forward = self.shown.forward();
         let right = forward.cross(Vec3::Y).normalize_or(Vec3::X);
-        let up = right.cross(forward);
-        let pivot = point + right * cm(AIM_SHOULDER[0]) + up * cm(AIM_SHOULDER[1]);
+        let pivot = f.feet
+            + Vec3::Y * cm(AIM_HEIGHT)
+            + forward * cm(AIM_OFFSET[0])
+            + right * cm(AIM_OFFSET[1]);
         let mut r = Rot::look(self.target - pivot);
         r.pitch = r.pitch.clamp(-AIM_PITCH, AIM_PITCH);
         self.shown = self.shown.approach(r, ROTATION_RATE, dt);

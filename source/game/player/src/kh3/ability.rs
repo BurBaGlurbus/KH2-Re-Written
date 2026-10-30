@@ -44,6 +44,24 @@ pub enum Ability {
     ComboMaster,
     ComboBoost,
     AirComboBoost,
+    QuickSlash,
+    FlashStep,
+    RadialBlaster,
+    LastCharge,
+    AerialSweep,
+    AerialDive,
+    Groundbreaker,
+    FallingSlash,
+    CounterImpact,
+    CounterKick,
+    CriticalCounter,
+    CounterBoost,
+    FireBoost,
+    BlizzardBoost,
+    ThunderBoost,
+    WaterBoost,
+    AeroBoost,
+    MagicComboBoost,
 }
 
 /// An ability's list entry: name, AP a copy, copies allowed, the help line,
@@ -79,7 +97,7 @@ const fn info(
 /// The list in menu order: movement, then reprisals and actions, then the
 /// combo finishers and supports. Block's check was not found in the
 /// executable (REFLECT_GUARD is the likeliest entry).
-pub const ALL: [Info; 28] = [
+pub const ALL: [Info; 46] = [
     info(
         Ability::DodgeRoll,
         "Dodge Roll",
@@ -299,20 +317,165 @@ pub const ALL: [Info; 28] = [
     info(
         Ability::AirComboBoost,
         "Air Combo Boost",
-        5,
+        4,
         2,
         "AIRCOMBO_UP",
         "Air combos hit harder as they go on.",
     ),
+    info(
+        Ability::QuickSlash,
+        "Quick Slash",
+        3,
+        1,
+        "QUICK_SHAFT",
+        "The first of the combo's swings is a faster one.",
+    ),
+    info(
+        Ability::FlashStep,
+        "Flash Step",
+        3,
+        1,
+        "FLASH_STEP",
+        "The long reach swing rushes at the target.",
+    ),
+    info(
+        Ability::RadialBlaster,
+        "Radial Blaster",
+        3,
+        1,
+        "RADIAL_CUT",
+        "The third swing hits all around.",
+    ),
+    info(
+        Ability::LastCharge,
+        "Last Charge",
+        7,
+        1,
+        "FINAL_HEAVEN",
+        "A last finisher that charges through the target.",
+    ),
+    info(
+        Ability::AerialSweep,
+        "Aerial Sweep",
+        2,
+        1,
+        "AERIAL_SWEEP",
+        "The rising swing sweeps upward.",
+    ),
+    info(
+        Ability::AerialDive,
+        "Aerial Dive",
+        2,
+        1,
+        "AERIAL_DIVE",
+        "The swing that falls dives on the target.",
+    ),
+    info(
+        Ability::Groundbreaker,
+        "Groundbreaker",
+        3,
+        1,
+        "AIR_ROLL_BEAT",
+        "Jump in a combo strikes down from the air.",
+    ),
+    info(
+        Ability::FallingSlash,
+        "Falling Slash",
+        2,
+        1,
+        "AIR_DOWN",
+        "From high above, the swing dives to the ground.",
+    ),
+    info(
+        Ability::CounterImpact,
+        "Counter Impact",
+        4,
+        1,
+        "REVENGEIMPACT",
+        "The counter after a guard is a burst around you.",
+    ),
+    info(
+        Ability::CounterKick,
+        "Counter Kick",
+        4,
+        1,
+        "REVENGEDIVE",
+        "The counter after a guard is a diving kick.",
+    ),
+    info(
+        Ability::CriticalCounter,
+        "Critical Counter",
+        5,
+        1,
+        "CRITICAL_COUNTER",
+        "A counter after a well timed guard does double damage.",
+    ),
+    info(
+        Ability::CounterBoost,
+        "Counter Boost",
+        3,
+        2,
+        "COUNTER_UP",
+        "Counters hit harder.",
+    ),
+    info(
+        Ability::FireBoost,
+        "Fire Boost",
+        4,
+        3,
+        "FIRE_UP",
+        "Fire hits harder.",
+    ),
+    info(
+        Ability::BlizzardBoost,
+        "Blizzard Boost",
+        4,
+        3,
+        "BLIZZARD_UP",
+        "Blizzard hits harder.",
+    ),
+    info(
+        Ability::ThunderBoost,
+        "Thunder Boost",
+        4,
+        3,
+        "THUNDER_UP",
+        "Thunder hits harder.",
+    ),
+    info(
+        Ability::WaterBoost,
+        "Water Boost",
+        4,
+        3,
+        "WATER_UP",
+        "Water hits harder.",
+    ),
+    info(
+        Ability::AeroBoost,
+        "Aero Boost",
+        4,
+        3,
+        "AERO_UP",
+        "Aero hits harder.",
+    ),
+    info(
+        Ability::MagicComboBoost,
+        "Magic Combo Boost",
+        5,
+        2,
+        "MAGIC_COMBO_UP",
+        "Spells in a combo hit harder as it goes on.",
+    ),
 ];
 
-/// [duel choice] The AP a KH3 build may use: enough for the movement and
-/// most reprisals, not for every combo support as well.
-pub const AP_MAX: u32 = 60;
+/// The AP a KH3 build may use: level 99's `m_AbilityPoint` in KH3's level-up
+/// table. How many copies of an ability may be worn (`Info::most`) is the
+/// duel's choice: the table's `m_MaxEquip` is 1 even for those KH3 stacks.
+pub const AP_MAX: u32 = 180;
 
 /// Copies equipped, two bits an ability, in `ALL` order.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct Set(pub u64);
+pub struct Set(pub u128);
 
 impl Default for Set {
     /// Every move the ruleset had before its menu (the layer's whole kit),
@@ -347,7 +510,7 @@ impl Set {
     /// Sets the copies of `a` (clamped to its most).
     pub fn put(&mut self, a: Ability, n: u8) {
         let i = index(a);
-        let n = u64::from(n.min(ALL[i].most).min(3));
+        let n = u128::from(n.min(ALL[i].most).min(3));
         self.0 = self.0 & !(3 << (i * 2)) | n << (i * 2);
     }
 

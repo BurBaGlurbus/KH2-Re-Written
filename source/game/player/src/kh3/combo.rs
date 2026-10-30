@@ -27,6 +27,8 @@ pub mod id {
     pub const SPEED_SLASH: u8 = 5;
     pub const TRIPLE_RUSH: u8 = 6;
     pub const MAGIC_FLASH: u8 = 7;
+    /// Last Charge (FINAL_HEAVEN).
+    pub const LAST_CHARGE: u8 = 0x0c;
     /// The jump up to a target above (1308).
     pub const JUMP_UP: u8 = 8;
     /// The aerial down slash (1310).
@@ -35,6 +37,8 @@ pub mod id {
     pub const AERIAL: u8 = 0x0f;
     /// Rising Spiral's launch (1319).
     pub const LAUNCH: u8 = 0x1c;
+    /// Groundbreaker's.
+    pub const LAUNCH_AIR: u8 = 0x1d;
     /// The post-guard counter, Counter Slash's (RevengeSlash).
     pub const COUNTER: u8 = 0x21;
     /// Payback Strike's attack out of the recovery (BlowCounter).
@@ -62,7 +66,7 @@ pub fn combo_max(set: &Set, grounded: bool) -> u32 {
 /// 0x141433a60: how many of the chain's last attacks are finishers.
 pub fn finisher_count(set: &Set) -> u32 {
     1 + u32::from(set.has(A::SpeedSlash) || set.has(A::TripleRush))
-        + u32::from(set.has(A::MagicFlash))
+        + u32::from(set.has(A::MagicFlash) || set.has(A::LastCharge))
 }
 
 /// What the selector reads of the moment (0x141330d30's geometry).
@@ -103,6 +107,8 @@ pub struct Chain {
     finisher: u8,
     /// Rising Spiral: 1 available this chain, 2 used.
     launch: u8,
+    /// Groundbreaker the same.
+    launch_air: u8,
     /// The chain's last attack was a finisher that ends it.
     pub done: bool,
 }
@@ -121,6 +127,7 @@ impl Chain {
     pub fn start(&mut self, set: &Set) {
         *self = Chain {
             launch: u8::from(set.has(A::RisingSpiral)),
+            launch_air: u8::from(set.has(A::Groundbreaker)),
             ..Chain::default()
         };
     }
@@ -153,13 +160,43 @@ impl Chain {
         })
     }
 
+    /// A launch is left: Rising Spiral from the ground, either from the air
+    /// only if Groundbreaker is.
+    pub fn launch_ready(&self, air: bool) -> bool {
+        self.launch_air == 1 || (self.launch == 1 && !air)
+    }
+
+    /// The launch by KH3's rule 5 (`Decide`): Groundbreaker without Rising
+    /// Spiral left, or in the air with the target under 100 cm above.
+    pub fn launch_in(&mut self, c: &Ctx) -> Option<Pick> {
+        if !self.launch_ready(c.air) {
+            return None;
+        }
+        let spiral = self.launch == 1 && !(self.launch_air == 1 && c.air && c.dz < cm(HIGH));
+        let id = if spiral { id::LAUNCH } else { id::LAUNCH_AIR };
+        if spiral {
+            self.launch = 2;
+        } else {
+            self.launch_air = 2;
+        }
+        self.n = 0;
+        self.finisher = 0;
+        self.prev = id;
+        self.done = false;
+        Some(Pick {
+            id,
+            finisher: false,
+            last: false,
+        })
+    }
+
     /// 0x14134aca0: the next attack of the chain (the n-th), then counted.
     pub fn next(&mut self, set: &Set, c: &Ctx) -> Pick {
         let n = self.n;
         let max = combo_max(set, !c.air);
         let fin = finisher_count(set);
         let mut first = false;
-        if n == 0 || self.prev == id::LAUNCH {
+        if n == 0 || matches!(self.prev, id::LAUNCH | id::LAUNCH_AIR) {
             self.pattern = if c.far() {
                 1
             } else if c.crowd > 1 {
@@ -171,14 +208,32 @@ impl Chain {
         }
         let slot_a = set.has(A::SpeedSlash) || set.has(A::TripleRush);
         // The second and third finishers: the standard one moves second
-        // when slot A takes the first; Magic Flash comes last.
-        let (second, third) = match (slot_a, set.has(A::MagicFlash)) {
-            (true, true) => (id::FINISH, id::MAGIC_FLASH),
-            (false, true) => (id::MAGIC_FLASH, 0),
-            (true, false) => (id::FINISH, 0),
-            (false, false) => (0, 0),
+        // when slot A takes the first; Magic Flash, or Last Charge at a lone
+        // target, comes last.
+        let last_one = if set.has(A::MagicFlash) {
+            if set.has(A::LastCharge) && c.crowd < 2 {
+                id::LAST_CHARGE
+            } else {
+                id::MAGIC_FLASH
+            }
+        } else if set.has(A::LastCharge) {
+            id::LAST_CHARGE
+        } else {
+            0
+        };
+        let (second, third) = if slot_a {
+            (id::FINISH, last_one)
+        } else {
+            (last_one, 0)
         };
         let prev = self.prev;
+        // Falling Slash (rule 9): the target at least 250 cm below, on the
+        // ground [duel: taken as so at that height], within reach.
+        let dive = set.has(A::FallingSlash)
+            && c.air
+            && c.dz <= cm(-250.)
+            && !matches!(prev, 0x0d | 0x0e)
+            && !c.far();
         let regular = n + fin < max;
         let mut pick;
         if regular {
@@ -238,10 +293,16 @@ impl Chain {
                     id += id::AERIAL;
                 }
                 id
+            } else if dive {
+                0x0d
             } else {
                 id::AIR_DOWN
             };
             self.finisher = 0;
+        } else if c.air && c.dz < cm(BELOW) && dive {
+            // Rule 20.
+            pick = 0x0e;
+            self.finisher += 1;
         } else {
             let k = self.finisher;
             pick = match k {
@@ -267,6 +328,18 @@ impl Chain {
             }
             self.finisher = k + 1;
         }
+        // `upgrade`: the abilities that replace a swing.
+        pick = match pick {
+            1 if set.has(A::QuickSlash) => 9,
+            2 if set.has(A::FlashStep) => 0x0a,
+            3 if set.has(A::RadialBlaster) => 0x0b,
+            0x10 if set.has(A::QuickSlash) => 0x18,
+            0x11 if set.has(A::FlashStep) => 0x19,
+            0x12 if set.has(A::RadialBlaster) => 0x1a,
+            id::JUMP_UP if set.has(A::AerialSweep) => 0x1f,
+            id::AIR_DOWN if set.has(A::AerialDive) => 0x20,
+            other => other,
+        };
         let last = !regular && (u32::from(self.finisher) >= fin || n + 1 >= max);
         self.prev = pick;
         self.n = n + 1;

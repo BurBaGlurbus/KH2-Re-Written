@@ -232,7 +232,7 @@ pub fn choose(k: &Kh3, player: &Player) -> Choice {
         Mode::Launch { .. } => once("1319"),
         Mode::Chase { .. } => once("ChaseAttack"),
         Mode::Risk { warp: false, .. } => once("UnderSlide"),
-        Mode::Risk { .. } => once("WarpSlash"),
+        Mode::Risk { .. } => once("ShootFlowStart"),
         Mode::Recover { .. } => Choice {
             blend: 0.,
             ..once("AirRecovery")

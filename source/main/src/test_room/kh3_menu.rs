@@ -1,6 +1,7 @@
 //! The KH3 ruleset's ability menu [T279]: KH3's abilities with their AP
 //! (`player::kh3::ability`), on the camp's Config screen as the duel's own
-//! pages are, four pages of them (movement, actions, attacks, combo) so
+//! pages are, seven pages of them (movement, actions, attacks, combo and
+//! so on) so
 //! each fits the screen. The lobby shows them while the builds are made
 //! (duel_lobby_room.rs); Test KH3 mode opens them on START. What is
 //! equipped gates the moves at once (the layer reads `Kh3::abilities`).
@@ -23,11 +24,14 @@ const NOTE_TICKS: u64 = 300;
 
 /// The pages: name and how many of `ALL` (in its order) each lists after
 /// the AP row (eight fit the Config screen's panel).
-pub(crate) const PAGES: [(&str, usize); 4] = [
+pub(crate) const PAGES: [(&str, usize); 7] = [
     ("KH3 Movement", 8),
     ("KH3 Actions", 8),
     ("KH3 Attacks", 7),
     ("KH3 Combo", 5),
+    ("KH3 Swings", 8),
+    ("KH3 Counters", 4),
+    ("KH3 Magic", 6),
 ];
 
 /// Where page `page` starts in `ALL`.

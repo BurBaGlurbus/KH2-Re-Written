@@ -59,7 +59,7 @@ impl DuelPrefs {
             "rules": self.rules.map(|r| rules_json(&r)),
             "build": self.build.as_ref().map(|b| json!({
                 "keyblade": b.keyblade, "abilities": b.abilities, "items": b.items,
-                "kh3": b.kh3,
+                "kh3": b.kh3 as u64, "kh3_high": (b.kh3 >> 64) as u64,
             })),
         });
         if let Ok(text) = serde_json::to_string_pretty(&v)
@@ -141,6 +141,7 @@ fn build_from(v: &Value) -> Option<Loadout> {
         items: ids(&v["items"])?,
         kh3: v["kh3"]
             .as_u64()
+            .map(|k| u128::from(k) | u128::from(v["kh3_high"].as_u64().unwrap_or(0)) << 64)
             .filter(|&k| player::kh3::ability::Set(k).valid())
             .unwrap_or(player::kh3::ability::Set::default().0),
     })

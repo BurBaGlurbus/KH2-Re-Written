@@ -366,6 +366,11 @@ pub struct Kh3 {
     /// Blow's chase) and its hits landed so far.
     flow: Option<(u8, bool)>,
     flow_hits: u8,
+    /// The Risk Dodge counter the open counter window plays (0x28, 0x2B).
+    risk_counter: Option<u8>,
+    guard_ticks: u32,
+    /// The last guard was a just guard (Critical Counter).
+    pub just_guard: bool,
     /// Final Blow is offered (ticks left).
     chase_offer: u32,
     /// The duel's Risk Dodge is offered: ticks left, the attacker's feet,
@@ -448,6 +453,9 @@ impl Default for Kh3 {
             last_pole: None,
             flow: None,
             flow_hits: 0,
+            risk_counter: None,
+            guard_ticks: 0,
+            just_guard: false,
             chase_offer: 0,
             risk_offer: None,
             focus_empty: false,
@@ -609,6 +617,13 @@ impl Kh3 {
         }
     }
 
+    /// His KH3 attack landed: focus and the chain's hit (the gauge is the
+    /// row's `m_FormPoint`).
+    pub fn attack_landed(&mut self) {
+        self.focus = (self.focus + t::FOCUS_HIT_DEALT).min(t::FOCUS_MAX);
+        self.chain_hit = true;
+    }
+
     /// He was hit: focus (a large prize).
     pub fn hit_taken(&mut self) {
         self.focus = (self.focus + t::FOCUS_HIT_TAKEN).min(t::FOCUS_MAX);
@@ -702,7 +717,10 @@ impl Kh3 {
             syphon: shown.syphon,
             ..Aim::default()
         });
-        self.offer = (shown.offer != 0).then_some((shown.offer, 1));
+        self.offer =
+            (shown.offer != 0 && shown.offer < spell::GRAND_FIRST).then_some((shown.offer, 1));
+        self.grand_offer =
+            (shown.offer >= spell::GRAND_FIRST).then_some((u16::from(shown.offer), 1));
         self.counter = u32::from(shown.counter);
         self.chase_offer = u32::from(shown.chase);
         self.risk_offer = shown.risk.then_some((1, [0.; 3], false));
@@ -724,7 +742,9 @@ impl Kh3 {
             counter: self.counter_open(),
             chase: self.chase_open(),
             risk: self.risk_open(),
-            offer: self.offer.map_or(0, |o| o.0),
+            offer: self
+                .grand_offer
+                .map_or(self.offer.map_or(0, |o| o.0), |g| g.0 as u8),
             lean: self.lean,
             row: u16::MAX,
             serial: 0,
@@ -867,7 +887,10 @@ impl Kh3 {
         self.shotlock_button(player, input, pad, scene, &mut out);
         if let Some((cmd, left)) = self.grand_offer {
             self.grand_offer = (left > 1).then_some((cmd, left - 1));
-            if pad.situation && !player.dead() && self.start_cast(player, cmd, input, scene, clips, &mut out.step) {
+            if pad.situation
+                && !player.dead()
+                && self.start_cast(player, cmd, input, scene, clips, &mut out.step)
+            {
                 self.grand_offer = None;
                 self.style = 0.;
             }
@@ -932,6 +955,9 @@ impl Kh3 {
         self.focus = (self.focus + t::FOCUS_REGEN).min(t::FOCUS_MAX);
         self.slide_cooldown = self.slide_cooldown.saturating_sub(1);
         self.counter = self.counter.saturating_sub(1);
+        if self.counter == 0 {
+            self.risk_counter = None;
+        }
         self.style_idle += 1;
         if self.style_idle > t::STYLE_IDLE {
             self.style = (self.style - t::STYLE_DECAY).max(0.);
@@ -1075,10 +1101,17 @@ impl Kh3 {
                 .is_some_and(|r| r.flags & ptya::flag::FINISHER != 0),
             _ => false,
         };
-        // A successful guard opens the counter window.
+        // A successful guard opens the counter window; early in the guard it
+        // is a just guard (`guard.just_guard_time`).
         if player.action == Action::GuardRecoil && player.frame <= 1 {
             self.counter = t::COUNTER_WINDOW;
+            self.just_guard = self.guard_ticks <= t::JUST_GUARD;
         }
+        self.guard_ticks = if player.action == Action::Guard {
+            self.guard_ticks.saturating_add(1)
+        } else {
+            0
+        };
         // The duel's Risk Dodge out of a guarded heavy hit.
         if input.jump
             && matches!(player.action, Action::GuardRecoil | Action::Guard)
@@ -1097,7 +1130,7 @@ impl Kh3 {
         }
         if input.attack
             && self.counter > 0
-            && self.has(A::CounterSlash)
+            && self.counter_ready()
             && matches!(player.action, Action::GuardRecoil | Action::Guard)
             && self.counter_swing_now(player, input, scene, clips, &mut out.step)
         {
@@ -1361,7 +1394,7 @@ impl Kh3 {
         out: &mut Outcome,
         start: bool,
     ) -> bool {
-        if start && self.chain.prev != combo::id::LAUNCH {
+        if start && !matches!(self.chain.prev, combo::id::LAUNCH | combo::id::LAUNCH_AIR) {
             self.chain.start(&self.abilities);
         }
         if !self.chain.open() {
@@ -1433,6 +1466,14 @@ impl Kh3 {
         true
     }
 
+    /// A counter may answer the open window.
+    fn counter_ready(&self) -> bool {
+        self.risk_counter.is_some()
+            || self.has(A::CounterSlash)
+            || self.has(A::CounterImpact)
+            || self.has(A::CounterKick)
+    }
+
     /// Counter Slash: KH3's clip, or its KH2 stand-in without the book.
     fn counter_swing_now(
         &mut self,
@@ -1443,7 +1484,17 @@ impl Kh3 {
         step: &mut Step,
     ) -> bool {
         if scene.book.is_some() {
-            return self.start_attack(player, combo::id::COUNTER, false, true, scene, step, clips);
+            let id = self.risk_counter.take().unwrap_or_else(|| {
+                // `guard_counter_kind` (0x141437E28).
+                if self.has(A::CounterKick) {
+                    0x24
+                } else if self.has(A::CounterImpact) {
+                    0x23
+                } else {
+                    combo::id::COUNTER
+                }
+            });
+            return self.start_attack(player, id, false, true, scene, step, clips);
         }
         self.play_record(player, record::COUNTER, input, clips)
     }
@@ -1666,11 +1717,13 @@ impl Kh3 {
                     }
                     if self.counter > 0
                         && input.attack
-                        && self.has(A::CounterSlash)
-                        && self.play_record(player, record::COUNTER, input, clips)
+                        && self.counter_ready()
+                        && self.counter_swing_now(player, input, scene, clips, &mut out.step)
                     {
                         self.counter = 0;
-                        self.mode = Mode::Kh2;
+                        if scene.book.is_none() {
+                            self.mode = Mode::Kh2;
+                        }
                         out.began.push("counter");
                         return;
                     }
@@ -1737,8 +1790,16 @@ impl Kh3 {
                 player.invulnerable = player.invulnerable.max(2.);
                 if (t::HOP_INPUT..t::HOP_CHANGE).contains(&tick) {
                     if input.attack
-                        && self.has(A::SonicSlash)
-                        && self.start_flow(player, record::SONIC, input, clips)
+                        && self.flow_attack(
+                            player,
+                            0x36,
+                            record::SONIC,
+                            A::SonicSlash,
+                            input,
+                            scene,
+                            clips,
+                            &mut out.step,
+                        )
                     {
                         return;
                     }
@@ -1870,11 +1931,13 @@ impl Kh3 {
         let (m, dir) = stick(input);
         if self.counter > 0
             && input.attack
-            && self.has(A::CounterSlash)
-            && self.play_record(player, record::COUNTER, input, clips)
+            && self.counter_ready()
+            && self.counter_swing_now(player, input, scene, clips, &mut out.step)
         {
             self.counter = 0;
-            self.mode = Mode::Kh2;
+            if scene.book.is_none() {
+                self.mode = Mode::Kh2;
+            }
             out.began.push("counter");
             return;
         }
@@ -2081,11 +2144,13 @@ impl Kh3 {
         // Commands.
         if input.attack {
             if self.counter > 0
-                && self.has(A::CounterSlash)
-                && self.play_record(player, record::COUNTER, input, clips)
+                && self.counter_ready()
+                && self.counter_swing_now(player, input, scene, clips, &mut out.step)
             {
                 self.counter = 0;
-                self.mode = Mode::Kh2;
+                if scene.book.is_none() {
+                    self.mode = Mode::Kh2;
+                }
                 out.began.push("counter");
                 return;
             }
@@ -2417,8 +2482,16 @@ impl Kh3 {
         let _ = world;
         let tick = tick + 1;
         if input.attack
-            && self.has(A::BuzzSaw)
-            && self.start_flow(player, record::SPIN, input, clips)
+            && self.flow_attack(
+                player,
+                0x38,
+                record::SPIN,
+                A::BuzzSaw,
+                input,
+                scene,
+                clips,
+                &mut out.step,
+            )
         {
             self.last_pole = Some(pole.centre);
             return;
@@ -2535,8 +2608,16 @@ impl Kh3 {
             return;
         }
         if input.attack
-            && self.has(A::SonicSlash)
-            && self.start_flow(player, record::SONIC, input, clips)
+            && self.flow_attack(
+                player,
+                0x36,
+                record::SONIC,
+                A::SonicSlash,
+                input,
+                scene,
+                clips,
+                &mut out.step,
+            )
         {
             return;
         }
@@ -2684,10 +2765,25 @@ impl Kh3 {
             }
             return;
         }
-        if input.attack && scene.foe.is_some() && self.has(A::SonicCleave) {
+        if input.attack && scene.foe.is_some() && (scene.book.is_some() || self.has(A::SonicCleave))
+        {
             player.position[0] += off[0];
             player.position[2] += off[1];
-            if self.start_flow(player, record::WALL_ATTACK, input, clips) {
+            let started = if scene.book.is_some() {
+                let class = if up {
+                    0
+                } else if side >= 0. {
+                    1
+                } else {
+                    2
+                };
+                let kind = self.wall_run_kind(player, scene, class);
+                self.chain.start(&self.abilities);
+                self.start_attack(player, kind, false, false, scene, &mut out.step, clips)
+            } else {
+                self.start_flow(player, record::WALL_ATTACK, input, clips)
+            };
+            if started {
                 return;
             }
             player.position[0] -= off[0];
@@ -2849,7 +2945,16 @@ impl Kh3 {
                     world,
                 );
             }
-            if self.has(A::SonicSlash) && self.start_flow(player, record::SONIC, input, clips) {
+            if self.flow_attack(
+                player,
+                0x36,
+                record::SONIC,
+                A::SonicSlash,
+                input,
+                scene,
+                clips,
+                &mut out.step,
+            ) {
                 return;
             }
         }
@@ -3458,7 +3563,8 @@ pub struct Shown {
     pub counter: bool,
     pub chase: bool,
     pub risk: bool,
-    /// The offered grand magic's type (0: none).
+    /// The offered grand magic: its KH2 type, from `spell::GRAND_FIRST`
+    /// its KH3 command (0: none).
     pub offer: u8,
     pub lean: [f32; 2],
     /// KH3's animation by the anim set's row, its play, clock (1/240 s),

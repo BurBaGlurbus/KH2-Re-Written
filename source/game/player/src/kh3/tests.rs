@@ -1252,7 +1252,10 @@ fn every_move_and_moment_has_its_kh2_stand_in_and_nothing_stacks() {
     // Every move the layer names (bar locomotion, the KH2 side and the moves
     // KH3's own notifies present) is an event.
     for m in MODE_NAMES {
-        if !matches!(m, "kh2" | "ground" | "air" | "land" | "takeoff" | "attack" | "cast") {
+        if !matches!(
+            m,
+            "kh2" | "ground" | "air" | "land" | "takeoff" | "attack" | "cast"
+        ) {
             assert!(EVENTS.contains(&m), "{m}");
         }
     }

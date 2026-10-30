@@ -122,6 +122,7 @@ pub(crate) fn damage(
     set: &player::kh3::ability::Set,
     step: u32,
     air: bool,
+    just_guard: bool,
 ) -> f32 {
     let ceil = |v: f32| v.ceil();
     let a = if row.magic {
@@ -145,6 +146,29 @@ pub(crate) fn damage(
     if !row.magic {
         let n = set.count(if air { A::AirComboBoost } else { A::ComboBoost });
         x += ceil(step as f32 * f32::from(n) * 0.05 * x);
+    } else {
+        // 0x1406328DE.
+        let n = set.count(A::MagicComboBoost);
+        x += ceil(step as f32 * f32::from(n) * 0.1 * x);
+    }
+    if row.counter {
+        // 0x140632927, 0x140632971.
+        x += ceil(f32::from(set.count(A::CounterBoost)) * 0.5 * x);
+        if just_guard && set.has(A::CriticalCounter) {
+            x += x;
+        }
+    }
+    // 0x1406329BD.
+    let boost = match row.attribute.as_str() {
+        "FIRE" => Some(A::FireBoost),
+        "BLIZZARD" => Some(A::BlizzardBoost),
+        "THUNDER" => Some(A::ThunderBoost),
+        "WATER" => Some(A::WaterBoost),
+        "AERO" => Some(A::AeroBoost),
+        _ => None,
+    };
+    if let Some(b) = boost {
+        x += ceil(f32::from(set.count(b)) * 0.2 * x);
     }
     if x == 0. { 0.1 } else { x }
 }
@@ -250,6 +274,7 @@ fn land_on_sora(
     victim: usize,
     step: u32,
     set: player::kh3::ability::Set,
+    just_guard: bool,
     contact: [f32; 3],
     tick: u64,
 ) -> bool {
@@ -291,7 +316,7 @@ fn land_on_sora(
         fighter.kh3.dodged();
         return false;
     }
-    let raw = damage(book, row, &set, step, attacker_air);
+    let raw = damage(book, row, &set, step, attacker_air, just_guard);
     // KH3's HP against the duel's gauge.
     let max = fighter.vitals.target.max_hp;
     let scaled = ((raw / book.stats[3].max(1.)) * max as f32).round().max(1.) as i32;
@@ -328,7 +353,7 @@ fn land_on_dummy(
     set: player::kh3::ability::Set,
 ) -> bool {
     let air = false;
-    let raw = damage(book, row, &set, step, air);
+    let raw = damage(book, row, &set, step, air, game.sora.kh3.just_guard);
     let Some(rt) = game.enemy.as_mut() else {
         return false;
     };
@@ -468,7 +493,7 @@ fn bolts_tick(game: &mut Game, book: &Book, count: usize, tick: u64) {
             if dummy {
                 land_on_dummy(game, book, &row, at, 0, set);
             } else if let Some(v) = target {
-                land_on_sora(game, book, &row, at, air, v, 0, set, on, tick);
+                land_on_sora(game, book, &row, at, air, v, 0, set, false, on, tick);
             }
         }
     }
@@ -501,13 +526,18 @@ fn actors_tick(game: &mut Game, book: &Book, count: usize, tick: u64) {
     let radius = BODY_RADIUS * length_of(1.);
     for attacker in 0..count {
         let dummy = count == 1;
-        let (at, air, set) = {
+        let (at, air, set, step) = {
             let f = if attacker == 0 {
                 &game.sora
             } else {
                 &game.rivals[attacker - 1].fighter
             };
-            (f.player.position, f.player.in_air(), f.kh3.abilities)
+            (
+                f.player.position,
+                f.player.in_air(),
+                f.kh3.abilities,
+                f.kh3.chain.n,
+            )
         };
         let targets: Vec<usize> = (0..count).filter(|v| *v != attacker).collect();
         // The dummy, or the other Sora.
@@ -555,11 +585,11 @@ fn actors_tick(game: &mut Game, book: &Book, count: usize, tick: u64) {
                 continue;
             };
             let landed = if dummy {
-                land_on_dummy(game, book, row, at, 0, set)
+                land_on_dummy(game, book, row, at, step, set)
             } else {
-                targets
-                    .first()
-                    .is_some_and(|v| land_on_sora(game, book, row, at, air, *v, 0, set, on, tick))
+                targets.first().is_some_and(|v| {
+                    land_on_sora(game, book, row, at, air, *v, step, set, false, on, tick)
+                })
             };
             if landed {
                 let f = if attacker == 0 {
@@ -619,6 +649,7 @@ pub(crate) fn tick(mut game: ResMut<Game>) {
         let attacker_air = fighter.player.in_air();
         let step = fighter.kh3.chain.n;
         let set = fighter.kh3.abilities;
+        let just_guard = fighter.kh3.just_guard;
         let radius = BODY_RADIUS * length_of(1.);
         // The dummy, when it stands instead of a second Sora.
         if count == 1 {
@@ -635,8 +666,13 @@ pub(crate) fn tick(mut game: ResMut<Game>) {
                 if let Some(row) = book.row(&c.row)
                     && land_on_dummy(game, &book, row, attacker_at, step, set)
                 {
-                    game.sora.kh3.landed(true);
+                    game.sora.kh3.attack_landed();
                     game.sora.kh3.form_point(row.form_point, None);
+                    if row.counter {
+                        game.sora
+                            .kh3
+                            .struck(player::kh3::Source::Counter, strike_of(row));
+                    }
                     game.sora.kh3.fx.push(hit_fx(&book, c.hit_se, c.at));
                 }
                 let _ = c.window;
@@ -672,6 +708,7 @@ pub(crate) fn tick(mut game: ResMut<Game>) {
                     victim,
                     step,
                     set,
+                    just_guard,
                     c.at,
                     tick,
                 ) {
@@ -681,8 +718,11 @@ pub(crate) fn tick(mut game: ResMut<Game>) {
                         &mut game.rivals[attacker - 1].fighter
                     };
                     a.kh3.fx.push(hit_fx(&book, c.hit_se, c.at));
-                    a.kh3.landed(true);
+                    a.kh3.attack_landed();
                     a.kh3.form_point(row.form_point, None);
+                    if row.counter {
+                        a.kh3.struck(player::kh3::Source::Counter, strike_of(row));
+                    }
                     a.player.connected = true;
                 }
             }
@@ -728,7 +768,7 @@ mod tests {
         };
         // (66 - 59) is under the floor 13; 13 x 0.6 rounds up to 8.
         let set = player::kh3::ability::Set::default();
-        assert_eq!(damage(&book, &row, &set, 0, false), 8.);
+        assert_eq!(damage(&book, &row, &set, 0, false, false), 8.);
     }
 
     #[test]

@@ -625,6 +625,23 @@ impl Kh3 {
         if input.attack
             && self.has(A::PaybackStrike)
             && scene.foe.is_some()
+            && scene.book.is_some()
+            && self.start_attack(
+                player,
+                combo::id::BLOW_COUNTER,
+                false,
+                true,
+                scene,
+                &mut out.step,
+                clips,
+            )
+        {
+            out.began.push("payback_strike");
+            return;
+        }
+        if input.attack
+            && self.has(A::PaybackStrike)
+            && scene.foe.is_some()
             && self.play_record(
                 player,
                 combo::stand_in(combo::id::BLOW_COUNTER),
@@ -734,6 +751,12 @@ impl Kh3 {
         Self::travel(player, disp, true, p, world);
         player.yaw = yaw_of(u);
         out.began.push("chase_warp");
+        if scene.book.is_some() {
+            if !self.start_attack(player, 0x22, false, true, scene, &mut out.step, clips) {
+                self.fall(player, [0.; 3], clips, &mut out.step);
+            }
+            return;
+        }
         if !self.start_flow(player, record::WALL_ATTACK, input, clips) {
             self.fall(player, [0.; 3], clips, &mut out.step);
             return;
@@ -849,6 +872,7 @@ impl Kh3 {
             // Round to face him, and the counter is offered.
             player.yaw = wrap(player.yaw + PI);
             self.counter = t::RISK_COUNTER;
+            self.risk_counter = Some(if warp { 0x2b } else { 0x28 });
             if warp && !moved.on_floor {
                 self.fall(player, [0.; 3], clips, &mut out.step);
             } else {

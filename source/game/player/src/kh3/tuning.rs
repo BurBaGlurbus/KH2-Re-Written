@@ -372,6 +372,8 @@ pub const RISK_MAX: f32 = length(1000.);
 pub const RISK_BEHIND: f32 = length(150.);
 pub const RISK_WARP: u32 = ticks(0.2);
 pub const RISK_COUNTER: u32 = ticks(2.0);
+/// `guard.just_guard_time`.
+pub const JUST_GUARD: u32 = ticks(0.133_33);
 
 /// Focus Syphon (shotlock kind 36): with the focus gauge emptied (until it
 /// is full again) the shotlock takes up to 18 locks, each after 0.0002 s

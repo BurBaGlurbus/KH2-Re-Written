@@ -416,6 +416,76 @@ impl Kh3 {
         true
     }
 
+    /// A flow attack out of a traversal state (TryAttack cases 7, 0x14 - 0x17,
+    /// 0x141437330): KH3's, or the KH2 stand-in record without the book.
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn flow_attack(
+        &mut self,
+        player: &mut Player,
+        forced: u8,
+        record: u8,
+        ability: super::ability::Ability,
+        input: &Input,
+        scene: &Scene,
+        clips: &crate::Clips,
+        step: &mut crate::Step,
+    ) -> bool {
+        if scene.book.is_none() {
+            return self.has(ability) && self.start_flow(player, record, input, clips);
+        }
+        let kind = self.flow_refine(player, scene, forced);
+        self.chain.start(&self.abilities);
+        self.start_attack(player, kind, false, false, scene, step, clips)
+    }
+
+    /// Slot 124 (0x1413325F0): the flowmotion attack by distance, and an
+    /// ordinary air attack for one whose ability is off. A duel has one enemy,
+    /// so its "two or more around" Buzz Saw never applies.
+    fn flow_refine(&self, player: &Player, scene: &Scene, forced: u8) -> u8 {
+        use super::ability::Ability as A;
+        let (dist, dz) = metrics(player, scene).map_or((0., 0.), |m| ((m.0 - 50.).max(0.), m.1));
+        let mut kind = forced;
+        if matches!(kind, 0x36 | 0x37) {
+            if dist > 800. && self.has(A::SonicSlash) {
+                kind = 0x36;
+            } else if dist < dz.abs() && self.has(A::SonicCleave) {
+                kind = 0x37;
+            }
+        }
+        let ability = match kind {
+            0x36 => A::SonicSlash,
+            0x37 => A::SonicCleave,
+            _ => A::BuzzSaw,
+        };
+        if self.has(ability) { kind } else { 0x10 }
+    }
+
+    /// The attack out of a wall run of `class` (0 up, 1 and 2 along):
+    /// `Decide`'s rule 4, kinds 0x31 - 0x34.
+    pub(super) fn wall_run_kind(&self, player: &Player, scene: &Scene, class: u8) -> u8 {
+        let Some((flat, dz, d)) = metrics(player, scene) else {
+            return 0x31;
+        };
+        let dist = (flat - 50.).max(0.);
+        if dz > 400. && dist <= 400. {
+            return 0x31;
+        }
+        if dz < -250. && dist <= 400. {
+            return 0x34;
+        }
+        let l = d[0].hypot(d[1]).max(1e-3);
+        let to = [d[0] / l, d[1] / l];
+        let dot = player.yaw.sin() * to[0] + player.yaw.cos() * to[1];
+        let right = -player.yaw.cos() * to[0] + player.yaw.sin() * to[1];
+        let along = |one: bool| if one { 0x32 } else { 0x33 };
+        match class {
+            0 if dot.abs() >= 0.643 => 0x31,
+            0 => along(right < 0.),
+            1 => along(dot >= 0.),
+            _ => along(dot < 0.),
+        }
+    }
+
     /// The attack's tick. Returns with the mode changed when it ended.
     #[allow(clippy::too_many_arguments)]
     pub(super) fn attack_tick(
@@ -632,15 +702,23 @@ impl Kh3 {
             && a.swing_started
             && enable_input
             && !a.finisher
-            && !player.in_air()
-            && !air
             && self.chain.open()
             && self.chain_hit
-            && self.has(super::ability::Ability::RisingSpiral)
+            && self.chain.launch_ready(air || player.in_air())
             && !self.launched
         {
             a.queued = true;
             a.launch = true;
+        }
+        // Final Blow: the attack button after a counter that blew him away.
+        if input.attack && self.chase_offer > 0 && a.swing_started && enable_input {
+            let keep = self.velocity;
+            self.attack = None;
+            if self.start_chase(player, scene, clips, &mut out.step) {
+                return;
+            }
+            self.velocity = keep;
+            self.mode = Mode::Attack;
         }
         let ended = time >= info.length;
         let chain_now = a.queued && (enable_change || ended);
@@ -674,10 +752,10 @@ impl Kh3 {
             let launch = a.launch;
             let grounded = moved.on_floor || !self.airborne_attack(player, world, p);
             self.finish_attack(air && !grounded);
+            let ctx = self.ctx(player, scene, air);
             let next = if launch {
-                self.chain.launch()
+                self.chain.launch_in(&ctx)
             } else {
-                let ctx = self.ctx(player, scene, air);
                 Some(self.chain.next(&self.abilities, &ctx))
             };
             if let Some(pick) = next

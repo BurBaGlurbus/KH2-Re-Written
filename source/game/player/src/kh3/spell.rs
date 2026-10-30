@@ -215,6 +215,9 @@ fn cast_row(
     }
 }
 
+/// The wire's offer: a KH2 spell below this, a KH3 grand command from it.
+pub const GRAND_FIRST: u8 = 110;
+
 /// The offer's command one tier above the highest cast (S_FIRA is 110, three
 /// a family; Fire is 29, four a family).
 pub fn grand_of(cmd: u16) -> Option<u16> {

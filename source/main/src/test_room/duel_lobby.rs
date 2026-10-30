@@ -31,7 +31,7 @@ pub(crate) struct Loadout {
     pub items: Vec<u16>,
     /// The KH3 ruleset's abilities (`player::kh3::ability::Set`); the KH2
     /// ruleset ignores them.
-    pub kh3: u64,
+    pub kh3: u128,
 }
 
 /// Where a player is in the lobby (the other player sees it).
@@ -295,7 +295,8 @@ fn put_loadout(w: &mut Writer, l: &Loadout) {
     w.u16(l.keyblade);
     put_list(w, &l.abilities);
     put_list(w, &l.items);
-    w.u64(l.kh3);
+    w.u64(l.kh3 as u64);
+    w.u64((l.kh3 >> 64) as u64);
 }
 
 fn get_loadout(r: &mut Reader) -> Option<Loadout> {
@@ -303,7 +304,7 @@ fn get_loadout(r: &mut Reader) -> Option<Loadout> {
         keyblade: r.u16()?,
         abilities: get_list(r, 255)?,
         items: get_list(r, 16)?,
-        kh3: r.u64()?,
+        kh3: u128::from(r.u64()?) | u128::from(r.u64()?) << 64,
     })
 }
 
@@ -539,7 +540,7 @@ mod tests {
         };
         assert!(l.check(&kh3, &[]).is_err());
         let odd = Loadout {
-            kh3: u64::MAX,
+            kh3: u128::MAX,
             ..ok.clone()
         };
         assert!(l.check(&odd, &[]).is_err());

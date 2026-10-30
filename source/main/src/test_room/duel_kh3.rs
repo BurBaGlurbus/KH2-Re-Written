@@ -261,10 +261,9 @@ pub(crate) fn kh3_cast(game: &mut Game, magic_type: u8) -> bool {
     if game.kh3_book.is_none() {
         return false;
     }
-    let level = game
-        .magic
-        .as_ref()
-        .map_or(1, |m| m.levels.get(usize::from(magic_type)).copied().unwrap_or(1));
+    let level = game.magic.as_ref().map_or(1, |m| {
+        m.levels.get(usize::from(magic_type)).copied().unwrap_or(1)
+    });
     let tier = u16::from(level.saturating_sub(1).min(2));
     let family = match magic_type {
         player::magic::FIRE => 29,
@@ -924,6 +923,16 @@ pub(crate) fn present(
             player::magic::FIRE => "Grand Fire",
             player::magic::BLIZZARD => "Grand Blizzard",
             _ => "Grand Thunder",
+        };
+        texts.push((format!("{name}   TRIANGLE"), OFFER, true));
+    }
+    if let Some((cmd, _)) = k.grand_offer {
+        let name = match cmd.saturating_sub(110) / 3 {
+            0 => "Grand Fire",
+            1 => "Grand Blizzard",
+            2 => "Grand Thunder",
+            3 => "Grand Water",
+            _ => "Grand Aero",
         };
         texts.push((format!("{name}   TRIANGLE"), OFFER, true));
     }
