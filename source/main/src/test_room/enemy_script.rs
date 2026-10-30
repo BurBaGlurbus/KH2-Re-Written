@@ -255,7 +255,7 @@ impl Env for BrainEnv<'_> {
             return &self.clips;
         }
         match super::enemy_battle::made_kind(model) {
-            Some(made) => &made.clips,
+            Some(made) => &*made.clips,
             None => &NoClips,
         }
     }
@@ -451,6 +451,32 @@ pub struct ScriptSetup {
     pub character: u16,
     /// The objentry's +0x48 word (bit 3: it flies, `obj_is_entry_fly`).
     pub entry_flags: u16,
+    /// Its id in the engine's list ([`next_fighter_id`]); 0 for an object
+    /// alone in its world.
+    pub object_id: u32,
+}
+
+/// Fighters' own objects take ids from 1 and what their scripts make from
+/// here, so a handle names one object across their worlds.
+const MADE_IDS: u32 = 0x200;
+
+/// The id of a new fighter's object.
+pub fn next_fighter_id() -> u32 {
+    static NEXT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+    NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed) % (MADE_IDS - 1) + 1
+}
+
+fn next_made_id() -> u32 {
+    static NEXT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+    NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed) % (enemy::world::OBJECT_IDS - MADE_IDS)
+        + MADE_IDS
+}
+
+/// The teamwork blocks all fighters share (DAT_142ae75d0).
+pub fn fighters_teamwork() -> Arc<std::sync::Mutex<enemy::world::Teamwork>> {
+    static STORE: std::sync::OnceLock<Arc<std::sync::Mutex<enemy::world::Teamwork>>> =
+        std::sync::OnceLock::new();
+    STORE.get_or_init(Default::default).clone()
 }
 
 /// An enemy a script made, as the gallery draws it.
@@ -470,7 +496,11 @@ pub struct MadeFighter {
 pub struct ScriptBrain {
     setup: ScriptSetup,
     world: EnemyWorld,
-    object: Object,
+    object: Box<Object>,
+    /// What stands in `object` while the object is lent to another fighter's
+    /// world, and the made objects lent with it.
+    stub: Option<Box<Object>>,
+    lent_made: Vec<u32>,
     clips: Arc<Clips>,
     /// Lengths of the captured motions (see [`ClipView`]).
     captured: std::collections::HashMap<usize, u32>,
@@ -618,10 +648,16 @@ impl ScriptBrain {
         spawner: Option<Box<dyn enemy::world::Spawner>>,
     ) -> Result<Self, String> {
         let payload = script_payload(source, model)?;
+        if setup.object_id != 0 {
+            super::enemy_battle::register_fighter_kind(setup.entry_id, &clips);
+        }
+        let id = setup.object_id;
         let mut brain = Self {
             setup,
             world: EnemyWorld::default(),
-            object: Object::bare(0),
+            object: Box::new(Object::bare(id)),
+            stub: Some(Box::new(Object::bare(id))),
+            lent_made: Vec::new(),
             clips,
             payload,
             spawn: position,
@@ -690,6 +726,11 @@ impl ScriptBrain {
         self.world = EnemyWorld::default();
         self.world.spawner = spawner;
         self.world.tolerate_missing = true;
+        if self.setup.object_id != 0 {
+            self.world.in_list = true;
+            self.world.make_id = Some(next_made_id);
+            self.world.teamwork = fighters_teamwork();
+        }
         self.world.patn = self.setup.patn.clone();
         self.world.sheets = self
             .setup
@@ -709,7 +750,9 @@ impl ScriptBrain {
             commands: &self.commands,
             fx: &self.fx,
         };
-        self.object = Object::spawn(&mut self.world, &env, 0, &self.payload, sys)
+        let id = self.setup.object_id;
+        self.object = Object::spawn(&mut self.world, &env, id, &self.payload, sys)
+            .map(Box::new)
             .map_err(|e| format!("object script rejected: {e:?}"))?;
         rng.0 = self.world.rng.0;
         Ok(())
@@ -770,6 +813,68 @@ impl ScriptBrain {
         }
         rng.0 = self.world.rng.0;
         self.record_faults();
+    }
+
+    /// The engine has one object list; each fighter runs in a world of its
+    /// own. While `to` runs, this fighter's objects stand in its list, which
+    /// its searches and handles reach and which nothing there runs. The
+    /// object's model is its entry there, so `to`'s environment finds its
+    /// motions.
+    pub fn lend_objects(&mut self, to: &mut Self) {
+        fn put(list: &mut Vec<Option<Box<Object>>>, mut o: Box<Object>) {
+            o.lent = true;
+            let at = o.id as usize;
+            if list.len() <= at {
+                list.resize_with(at + 1, || None);
+            }
+            list[at] = Some(o);
+        }
+        let Some(stub) = self.stub.take() else {
+            return;
+        };
+        let mut own = std::mem::replace(&mut self.object, stub);
+        own.sys.model = own.sys.entry_id;
+        put(&mut to.world.objects, own);
+        for slot in &mut self.world.objects {
+            if let Some(o) = slot.take() {
+                self.lent_made.push(o.id);
+                put(&mut to.world.objects, o);
+            }
+        }
+    }
+
+    /// Back from `from`, after its tick.
+    pub fn take_back_objects(&mut self, from: &mut Self) {
+        let id = self.object.id as usize;
+        if let Some(mut own) = from.world.objects.get_mut(id).and_then(Option::take) {
+            own.lent = false;
+            own.sys.model = 0;
+            self.stub = Some(std::mem::replace(&mut self.object, own));
+        }
+        for id in self.lent_made.drain(..) {
+            if let Some(mut o) = from
+                .world
+                .objects
+                .get_mut(id as usize)
+                .and_then(Option::take)
+            {
+                o.lent = false;
+                self.world.objects[id as usize] = Some(o);
+            }
+        }
+        while from.world.objects.last().is_some_and(Option::is_none) {
+            from.world.objects.pop();
+        }
+    }
+
+    /// Shouts this fighter's objects made, once its own were told.
+    pub fn take_sent_shouts(&mut self) -> Vec<enemy::world::Shout> {
+        std::mem::take(&mut self.world.sent)
+    }
+
+    /// Shouts of the other fighters: its next shout job tells its objects.
+    pub fn hear_shouts(&mut self, shouts: &[enemy::world::Shout]) {
+        self.world.heard.extend_from_slice(shouts);
     }
 
     /// The attack objects the script has placed, for the host's hit tests.
@@ -915,7 +1020,7 @@ impl ScriptBrain {
     ) -> Result<(), String> {
         let id = self.object.id;
         let world = std::mem::take(&mut self.world);
-        let object = std::mem::replace(&mut self.object, Object::bare(id));
+        let object = *std::mem::replace(&mut self.object, Box::new(Object::bare(id)));
         match enemy::limit_scene::Scene::summon(world, object, command, time, player) {
             Ok(mut scene) => {
                 scene.swap_parts(&mut self.world, &mut self.object);
@@ -925,7 +1030,7 @@ impl ScriptBrain {
             Err(failed) => {
                 let (e, world, object) = *failed;
                 self.world = world;
-                self.object = object;
+                self.object = Box::new(object);
                 Err(e)
             }
         }
@@ -1724,11 +1829,19 @@ impl ScriptBrain {
     /// FUN_1403b5fa0 (from FUN_1403a8b10, Sora's decided command): trigger
     /// 11 of the object's script with Sora, the command and the target
     /// record (Sora's reaction slot +0x10, FUN_1403a8b10): a four-word record
-    /// whose first word is the object it names.
-    pub fn command(&mut self, command: u16, group: u8) {
+    /// whose first word is the object it names and whose third is the
+    /// attack (`attack`: its serial) for an attack-borne offer.
+    pub fn command(&mut self, command: u16, group: u8, attack: Option<u32>) {
         let record = self.world.static_cell(0xffff, 11, 0);
         let handle = enemy::world::object_handle(self.object.id);
-        for (k, word) in [handle, u32::from(group), handle, u32::MAX]
+        let slot = attack.and_then(|serial| {
+            let live = |a: &Option<enemy::attack::Attack>| {
+                a.as_ref().is_some_and(|a| a.serial as u32 == serial)
+            };
+            self.world.attacks.iter().position(live)
+        });
+        let third = slot.map_or(handle, |k| enemy::world::ATTACK_HANDLES + 0x100 * k as u32);
+        for (k, word) in [handle, u32::from(group), third, u32::MAX]
             .into_iter()
             .enumerate()
         {

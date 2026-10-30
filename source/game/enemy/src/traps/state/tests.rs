@@ -61,8 +61,8 @@ fn spec_word_12_is_the_turn_rate() {
 fn teamwork_blocks_are_shared_by_key() {
     let mut world = World::default();
     let mut obj = Object::bare(0);
-    let a = world.alloc(8);
-    world.teamwork.insert(7, a);
+    let (a, new) = world.teamwork_block(7, 8);
+    assert!(new);
     assert_eq!(world.static_read(a), Some(0));
     let mut ctx = Ctx {
         world: &mut world,

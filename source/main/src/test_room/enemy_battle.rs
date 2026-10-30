@@ -149,9 +149,9 @@ impl Brain {
     }
     /// FUN_1403b5fa0: Sora executed reaction command `command` on this
     /// actor (its script's trigger 11).
-    pub fn command(&mut self, command: u16, group: u8) {
+    pub fn command(&mut self, command: u16, group: u8, attack: Option<u32>) {
         if let Self::Script(a) = self {
-            a.command(command, group);
+            a.command(command, group, attack);
         }
     }
     /// Development aid: set a script actor's HP.
@@ -796,7 +796,7 @@ pub fn lock_range(source: &ProbeSource) -> Result<f32, String> {
 /// entry is read once and kept for the session, so a borrowed environment can
 /// hand its clips out. [I] Its motions' attack windows are not read.
 pub(super) struct MadeKind {
-    pub clips: Clips,
+    pub clips: Arc<Clips>,
 }
 
 fn made_kinds() -> &'static std::sync::Mutex<HashMap<u32, &'static MadeKind>> {
@@ -808,6 +808,18 @@ fn made_kinds() -> &'static std::sync::Mutex<HashMap<u32, &'static MadeKind>> {
 /// The kind of a made enemy already read.
 pub(super) fn made_kind(entry: u32) -> Option<&'static MadeKind> {
     made_kinds().lock().ok()?.get(&entry).copied()
+}
+
+/// A fighter's motions under its entry: other fighters' scripts can reach its
+/// object, and a script can make one of its entry.
+pub(super) fn register_fighter_kind(entry: u32, clips: &Arc<Clips>) {
+    if let Ok(mut kinds) = made_kinds().lock() {
+        kinds.entry(entry).or_insert_with(|| {
+            Box::leak(Box::new(MadeKind {
+                clips: clips.clone(),
+            }))
+        });
+    }
 }
 
 /// Reads a made enemy's motions the first time its entry is made.
@@ -825,7 +837,12 @@ pub(super) fn load_made_kind(source: &ProbeSource, object: &data::objentry::Obje
         return;
     };
     if let Ok(mut kinds) = made_kinds().lock() {
-        kinds.insert(object.object_id, Box::leak(Box::new(MadeKind { clips })));
+        kinds.insert(
+            object.object_id,
+            Box::leak(Box::new(MadeKind {
+                clips: Arc::new(clips),
+            })),
+        );
     }
 }
 
@@ -1016,6 +1033,7 @@ impl BattleActor {
                     spawn_serial,
                     character: entry.character,
                     entry_flags: entry.flags,
+                    object_id: super::enemy_script::next_fighter_id(),
                 },
                 super::boss::spawner(source).map(|s| Box::new(s) as Box<dyn enemy::world::Spawner>),
             )?;
@@ -1151,6 +1169,48 @@ impl BattleActor {
     }
 }
 
+/// A fighter still in the fight, whose objects are in the engine's list.
+fn fighter_brain(
+    actor: &mut super::enemy_gallery::GalleryActor,
+) -> Option<&mut super::enemy_script::ScriptBrain> {
+    let battle = actor.battle.as_mut().filter(|b| b.error.is_none())?;
+    if battle.brain.gone() {
+        return None;
+    }
+    match &mut battle.brain {
+        Brain::Script(a) => Some(&mut **a),
+        _ => None,
+    }
+}
+
+/// FUN_1403c9d40 tells every object of the list; each fighter's own objects
+/// were told in its tick, the others hear it in their next.
+fn pass_shouts(game: &mut Game, actors: &mut [super::enemy_gallery::GalleryActor], tick: u64) {
+    let mut sent: Vec<(usize, Vec<enemy::world::Shout>)> = Vec::new();
+    for (k, actor) in actors.iter_mut().enumerate() {
+        if let Some(a) = fighter_brain(actor) {
+            let shouts = a.take_sent_shouts();
+            if !shouts.is_empty() {
+                sent.push((k, shouts));
+            }
+        }
+    }
+    for (from, shouts) in &sent {
+        for shout in shouts {
+            game.event(serde_json::json!({"event":"enemy_shout","tick":tick,
+                "actor":actors[*from].id,"name":String::from_utf8_lossy(&shout.name),
+                "shouter":shout.shouter,"delay":shout.delay}));
+        }
+        for (k, actor) in actors.iter_mut().enumerate() {
+            if k != *from
+                && let Some(a) = fighter_brain(actor)
+            {
+                a.hear_shouts(shouts);
+            }
+        }
+    }
+}
+
 pub fn tick(mut game: ResMut<Game>, mut gallery: ResMut<EnemyGallery>) {
     let tick = game.tick.saturating_sub(1);
     let forward_kinematics_only = gallery.forward_kinematics_only;
@@ -1160,7 +1220,19 @@ pub fn tick(mut game: ResMut<Game>, mut gallery: ResMut<EnemyGallery>) {
     // Scripts consume one shared stream. Summoning a new actor must not
     // restart that stream or give every actor an identical private seed.
     let mut rng = std::mem::take(&mut rt.rng);
-    for actor in &mut gallery.actors {
+    // FUN_14039c830 -> FUN_1403f6ea0 frees the teamwork blocks when the battle
+    // world goes. [I] Here: once no actor is left.
+    if gallery.actors.is_empty()
+        && let Ok(mut team) = super::enemy_script::fighters_teamwork().lock()
+    {
+        team.keys.clear();
+        team.words.clear();
+    }
+    for k in 0..gallery.actors.len() {
+        let (before, rest) = gallery.actors.split_at_mut(k);
+        let Some((actor, after)) = rest.split_first_mut() else {
+            break;
+        };
         let Some(battle) = actor.battle.as_mut() else {
             continue;
         };
@@ -1205,12 +1277,28 @@ pub fn tick(mut game: ResMut<Game>, mut gallery: ResMut<EnemyGallery>) {
                     .is_some_and(|_| game.sora.vitals.invulnerable > 0.);
         }
         let prior = (battle.brain.motion(), battle.brain.serial());
-        match battle.tick(
+        // The engine's one object list: the others' objects, while it runs.
+        if let Brain::Script(me) = &mut battle.brain {
+            for other in before.iter_mut().chain(after.iter_mut()) {
+                if let Some(other) = fighter_brain(other) {
+                    other.lend_objects(me);
+                }
+            }
+        }
+        let ticked = battle.tick(
             &game.world,
             game.sora.player.position,
             &actor.kind,
             &mut rng,
-        ) {
+        );
+        if let Brain::Script(me) = &mut battle.brain {
+            for other in before.iter_mut().chain(after.iter_mut()) {
+                if let Some(other) = fighter_brain(other) {
+                    other.take_back_objects(me);
+                }
+            }
+        }
+        match ticked {
             Ok((choice, key)) => {
                 // FUN_1403b9090 → FUN_14040ad70: Sora and the actor push
                 // each other apart by weight. [I] Once a tick after the
@@ -1329,6 +1417,7 @@ pub fn tick(mut game: ResMut<Game>, mut gallery: ResMut<EnemyGallery>) {
         }
     }
     game.enemy.as_mut().expect("combat session retained").rng = rng;
+    pass_shouts(&mut game, &mut gallery.actors, tick);
     super::enemy_battle_hits::tick(&mut game, &mut gallery.actors, tick);
     super::enemy_battle_hits::retire(&mut game, &mut gallery.actors, tick);
     super::boss::requests(&mut game, &mut gallery.actors);

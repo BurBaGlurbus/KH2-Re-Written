@@ -739,7 +739,7 @@ pub fn tick(mut game: ResMut<Game>, gallery: Res<EnemyGallery>, rig: Res<super::
         a.sora_hp = hp;
         // A form picked from the deck goes to Genie (trigger 11).
         if let Some(cmd) = game.genie_command.take() {
-            a.brain.command(cmd, 0);
+            a.brain.command(cmd, 0, None);
             game.event(serde_json::json!({"event":"genie_command","tick":tick,"command":cmd}));
         }
         // The room's effect update as the script's effect tests see it.

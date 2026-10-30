@@ -362,3 +362,70 @@ fn a_battle_object_turns_toward_its_target_under_range_0x16_and_frame_0xf() {
     o.carry_out_motion_effects(&mut world, &near);
     assert!((o.sys.yaw - std::f32::consts::FRAC_PI_2).abs() < 1e-5);
 }
+
+#[test]
+fn a_lent_object_hears_nothing_here_and_a_shout_is_handed_on_for_the_other_worlds() {
+    let (mut world, mut obj) = with_avoid(2);
+    world.in_list = true;
+    let (_, mut lent) = with_avoid(2);
+    lent.id = 1;
+    lent.lent = true;
+    world.objects = vec![None, Some(Box::new(lent))];
+    world.shouts.push(Shout {
+        name: b"avoid".to_vec(),
+        shouter: 0,
+        delay: 0.,
+    });
+    world.deliver_shouts(&NullEnv, Some(&mut obj));
+    assert_eq!(work_word(&obj, 0), 0x55, "its own object was told");
+    let lent = world.objects[1].as_ref().unwrap();
+    assert_eq!(work_word(lent, 0), 0, "its owner's job tells the lent one");
+    assert_eq!(world.sent.len(), 1);
+    // What another world handed over is told here and not handed on again.
+    let (mut world, mut obj) = with_avoid(2);
+    world.in_list = true;
+    world.heard.push(Shout {
+        name: b"avoid".to_vec(),
+        shouter: 7,
+        delay: 0.,
+    });
+    world.deliver_shouts(&NullEnv, Some(&mut obj));
+    assert_eq!(work_word(&obj, 4), object_handle(7), "the shouter");
+    assert!(world.sent.is_empty());
+}
+
+#[test]
+fn a_handle_to_an_object_elsewhere_in_the_list_is_no_fault() {
+    let (mut world, mut obj) = with_avoid(2);
+    let mut ctx = crate::world::Ctx {
+        world: &mut world,
+        me: &mut obj,
+        env: &NullEnv,
+    };
+    assert!(ctx.object(5).is_err(), "alone in its world: a bad handle");
+    ctx.world.in_list = true;
+    let absent = ctx.object(5).expect("elsewhere");
+    assert_eq!(absent.id, 5);
+    assert!(absent.sys.gone);
+}
+
+#[test]
+fn nothing_runs_a_lent_object() {
+    let mut world = World::default();
+    let mut lent = Object::bare(1);
+    lent.lent = true;
+    lent.sys.capture = Some(crate::sysobj::Capture {
+        captor: 0,
+        motion: 0,
+        token: 1,
+        remaining: 5,
+        length: 5,
+        loop_start: None,
+        next: None,
+    });
+    world.objects = vec![None, Some(Box::new(lent))];
+    world.tick_captures(None);
+    world.tick_objects(&NullEnv, None);
+    let o = world.objects[1].as_ref().unwrap();
+    assert_eq!(o.sys.capture.as_ref().unwrap().remaining, 5);
+}

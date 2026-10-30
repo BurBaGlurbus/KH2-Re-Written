@@ -9,6 +9,7 @@ use crate::env::Env;
 use crate::script::{self, Callback, Exit, Fault, Host, Instance, Memory, Slot, Thread};
 use crate::sysobj::Sysobj;
 use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
 
 pub type ObjId = u32;
 
@@ -42,6 +43,9 @@ pub struct Object {
     pub friend: Option<Box<crate::friend::Friend>>,
     /// Detached threads of this object's program (see [`SideThread`]).
     pub threads: Vec<SideThread>,
+    /// It belongs to another world's host and is in this one's list only for
+    /// searches and handle lookups: nothing here runs it.
+    pub lent: bool,
 }
 
 /// A detached thread of an object's own program that shares its work
@@ -68,6 +72,7 @@ impl Object {
             pending: Vec::new(),
             friend: None,
             threads: Vec::new(),
+            lent: false,
             script: ScriptSpace {
                 instance: Instance::placeholder(),
                 stack_bytes: 0,
@@ -269,6 +274,14 @@ pub struct Shout {
 /// DAT_142a23d50 holds 64 shouts.
 pub const SHOUT_QUEUE: usize = 64;
 
+/// The `teamwork_alloc` blocks (DAT_142ae75d0, FUN_1403f6df0): zeroed blocks by
+/// key, the same for every object of the engine's list.
+#[derive(Debug, Default)]
+pub struct Teamwork {
+    pub keys: HashMap<i32, u32>,
+    pub words: Vec<u32>,
+}
+
 /// A light a script made (`light_create`, FUN_1403f6f80): a 0x28-byte block
 /// of the executable's light pool. The host draws what these say.
 #[derive(Clone, Debug, PartialEq)]
@@ -466,8 +479,9 @@ pub struct World {
     next_effect: u32,
     /// Copies of target records (`trap_target_dup`), by slot.
     pub target_dups: Vec<Option<crate::sysobj::Target>>,
-    /// `teamwork_alloc` blocks by key (DAT_142ae75d0).
-    pub teamwork: HashMap<i32, u32>,
+    /// `teamwork_alloc` blocks by key; a host running several worlds as one
+    /// list gives them all the same store.
+    pub teamwork: Arc<Mutex<Teamwork>>,
     next_magic: u32,
     /// The global control-off bits (DAT_142a171e8) and the hidden map parts.
     pub control_off: Vec<u32>,
@@ -502,6 +516,19 @@ pub struct World {
     pub shots_freed: Vec<u32>,
     /// The shouts waiting for the frame's shout job.
     pub shouts: Vec<Shout>,
+    /// Shouts of the other worlds of the host's list, for the same job.
+    pub heard: Vec<Shout>,
+    /// This world's shouts the job handed on, for the host to pass to the
+    /// other worlds of its list.
+    pub sent: Vec<Shout>,
+    /// The host runs several worlds as one engine list: an object not lent to
+    /// this one at the moment is elsewhere, not a bad handle.
+    pub in_list: bool,
+    /// What a handle to an object not here reaches (see [`World::in_list`]).
+    pub absent: Option<Box<Object>>,
+    /// Makes the id of each object `sysobj_appear` builds, for a host whose
+    /// worlds share a list; `None` numbers them in this world.
+    pub make_id: Option<fn() -> ObjId>,
     /// The engine's own random generator (DAT_140783ca0), which the shout
     /// delay draws from; the scripts' generator is [`World::rng`].
     pub engine_rng: Lcg,
@@ -584,7 +611,7 @@ impl Default for World {
             tolerate_missing: false,
             next_effect: 0,
             target_dups: Vec::new(),
-            teamwork: HashMap::new(),
+            teamwork: Default::default(),
             next_magic: 0,
             control_off: Vec::new(),
             bg_hidden: 0,
@@ -602,6 +629,11 @@ impl Default for World {
             shots: None,
             shots_freed: Vec::new(),
             shouts: Vec::new(),
+            heard: Vec::new(),
+            sent: Vec::new(),
+            in_list: false,
+            absent: None,
+            make_id: None,
             engine_rng: Lcg::default(),
             hit_mark: [[0.; 4]; 2],
             status: 0,
@@ -654,7 +686,10 @@ impl World {
         entry: u32,
         built: Appeared,
     ) -> Option<ObjId> {
-        let id = (self.objects.len() as u32).max(me + 1).max(1);
+        let id = match self.make_id {
+            Some(make) => make(),
+            None => (self.objects.len() as u32).max(me + 1).max(1),
+        };
         let mut sys = built.sys;
         sys.entry_id = entry;
         let object = match built.payload {
@@ -707,7 +742,9 @@ impl World {
             }
         }
         for object in self.objects.iter_mut().flatten() {
-            step(object);
+            if !object.lent {
+                step(object);
+            }
         }
         if let Some(object) = me {
             step(object);
@@ -737,7 +774,11 @@ impl World {
         };
         // Carried objects of the list (the holder may be `me`).
         for id in 0..self.objects.len() {
-            let Some(a) = self.objects[id].as_ref().and_then(|o| o.sys.attached) else {
+            let Some(a) = self.objects[id]
+                .as_ref()
+                .filter(|o| !o.lent)
+                .and_then(|o| o.sys.attached)
+            else {
                 continue;
             };
             if let Some(p) = place(a.to, a.bone, self, me.as_deref())
@@ -760,8 +801,19 @@ impl World {
     /// share of it from the engine's generator and waits; without one the
     /// receiver's act of that name calls its timeout routine now.
     pub fn deliver_shouts(&mut self, env: &dyn Env, mut me: Option<&mut Object>) {
-        for shout in std::mem::take(&mut self.shouts) {
-            let mut ids: Vec<ObjId> = self.objects.iter().flatten().map(|o| o.id).collect();
+        let own = std::mem::take(&mut self.shouts);
+        if self.in_list {
+            self.sent.extend(own.iter().cloned());
+        }
+        let heard = std::mem::take(&mut self.heard);
+        for shout in own.into_iter().chain(heard) {
+            let mut ids: Vec<ObjId> = self
+                .objects
+                .iter()
+                .flatten()
+                .filter(|o| !o.lent)
+                .map(|o| o.id)
+                .collect();
             ids.sort_unstable();
             if let Some(object) = me.as_deref_mut() {
                 self.shout_to(env, object, &shout);
@@ -796,7 +848,7 @@ impl World {
     /// is running itself).
     pub fn tick_objects(&mut self, env: &dyn Env, skip: Option<ObjId>) {
         for id in 0..self.objects.len() {
-            if skip == Some(id as ObjId) {
+            if skip == Some(id as ObjId) || self.objects[id].as_ref().is_some_and(|o| o.lent) {
                 continue;
             }
             if let Some(mut object) = self.objects[id].take() {
@@ -883,6 +935,23 @@ impl World {
         let at = self.static_words.len() as u32 * 4;
         self.static_words.extend(std::iter::repeat_n(0, words));
         script::EXTERN_SEGMENT + STATIC_BASE + at
+    }
+
+    /// A zeroed block of `bytes` in the teamwork store under `key`, new if the
+    /// key has none; whether it was new.
+    pub fn teamwork_block(&mut self, key: i32, bytes: u32) -> (u32, bool) {
+        let Ok(mut team) = self.teamwork.lock() else {
+            return (0, false);
+        };
+        if let Some(&h) = team.keys.get(&key) {
+            return (h, false);
+        }
+        let at = team.words.len() as u32 * 4;
+        team.words
+            .extend(std::iter::repeat_n(0, bytes.div_ceil(4).max(1) as usize));
+        let handle = TEAMWORK_HANDLES + at;
+        team.keys.insert(key, handle);
+        (handle, true)
     }
 
     /// An AI object reference for the engine object `handle` (the word at
@@ -1024,11 +1093,33 @@ impl World {
     }
 
     pub fn static_read(&self, handle: u32) -> Option<u32> {
+        if let Some(at) = handle
+            .checked_sub(TEAMWORK_HANDLES)
+            .filter(|&a| a < TEAMWORK_SPAN)
+        {
+            let team = self.teamwork.lock().ok()?;
+            return team.words.get((at / 4) as usize).copied();
+        }
         let at = handle.checked_sub(script::EXTERN_SEGMENT + STATIC_BASE)?;
         self.static_words.get((at / 4) as usize).copied()
     }
 
     pub fn static_write(&mut self, handle: u32, value: u32) -> bool {
+        if let Some(at) = handle
+            .checked_sub(TEAMWORK_HANDLES)
+            .filter(|&a| a < TEAMWORK_SPAN)
+        {
+            let Ok(mut team) = self.teamwork.lock() else {
+                return false;
+            };
+            return match team.words.get_mut((at / 4) as usize) {
+                Some(w) => {
+                    *w = value;
+                    true
+                }
+                None => false,
+            };
+        }
         let Some(at) = handle.checked_sub(script::EXTERN_SEGMENT + STATIC_BASE) else {
             return false;
         };
@@ -1045,6 +1136,10 @@ impl World {
 /// Engine handles: statics at 0x6000_0000, objects at 0x6100_0000 + id.
 const STATIC_BASE: u32 = 0;
 pub const OBJECT_HANDLES: u32 = script::EXTERN_SEGMENT + 0x0100_0000;
+
+/// Teamwork blocks, which every world of a host's list reads the same.
+const TEAMWORK_HANDLES: u32 = script::EXTERN_SEGMENT + 0x00e0_0000;
+const TEAMWORK_SPAN: u32 = 0x0010_0000;
 
 /// Sora's handle (the player is not one of the script-driven objects).
 pub const PLAYER_HANDLE: u32 = script::EXTERN_SEGMENT + 0x00f0_0000;
@@ -1071,6 +1166,9 @@ pub const PLAYER_ENTRY: u32 = 0x236;
 /// scripts call the same traps on her as on any object; those reach a stand-in
 /// whose position and heading follow the host's player.
 pub const PLAYER_OBJECT: ObjId = 0x00ff_ffff;
+
+/// An object field's handle range holds this many object ids.
+pub const OBJECT_IDS: ObjId = 0x1000;
 
 pub fn object_handle(id: ObjId) -> u32 {
     if id == PLAYER_OBJECT {
@@ -1139,6 +1237,24 @@ impl Ctx<'_> {
         }
         if let Some(k) = self.world.held.iter().position(|o| o.id == id) {
             return Ok(&mut self.world.held[k]);
+        }
+        let listed = self
+            .world
+            .objects
+            .get(id as usize)
+            .is_some_and(Option::is_some);
+        if !listed && self.world.in_list && id < OBJECT_IDS {
+            let absent = self
+                .world
+                .absent
+                .get_or_insert_with(|| Box::new(Object::bare(id)));
+            absent.id = id;
+            absent.sys.gone = true;
+            self.world
+                .events
+                .push(Event::Unsupported("object_elsewhere"));
+            let absent = self.world.absent.as_deref_mut();
+            return absent.ok_or(Fault::Memory(object_handle(id)));
         }
         self.world
             .objects
@@ -1329,6 +1445,17 @@ impl Host for Machine<'_> {
             if offset < 16 {
                 return Some(if offset == 4 { object_handle(id) } else { 0 });
             }
+            if id != self.ctx.me.id
+                && self.ctx.world.in_list
+                && self
+                    .ctx
+                    .world
+                    .objects
+                    .get(id as usize)
+                    .is_none_or(Option::is_none)
+            {
+                return Some(0);
+            }
             let record = offset.wrapping_sub(crate::damage::DAMAGE_RECORD_OFFSET);
             if record == 0x10 || record == 0x14 {
                 // The damage record OBJ_DAMAGE receives (FUN_1403ce740): +0x10
@@ -1428,7 +1555,7 @@ impl Host for Machine<'_> {
             }
             return match self.ctx.world.objects.get_mut(id as usize) {
                 Some(Some(o)) => o.sys.poke_word(offset, value),
-                _ => false,
+                _ => self.ctx.world.in_list,
             };
         }
         self.ctx.world.static_write(address, value)

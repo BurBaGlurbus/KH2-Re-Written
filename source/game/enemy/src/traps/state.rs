@@ -250,18 +250,11 @@ fn side_slot(handle: u32) -> u32 {
 /// A second request for the key sets the block's first byte.
 fn teamwork_alloc(ctx: &mut Ctx<'_>, m: &mut Memory<'_>, args: &mut Args) -> Result<(), Fault> {
     let (key, size) = (args[0].as_int(), args[1].as_int().max(0) as u32);
-    let handle = match ctx.world.teamwork.get(&key).copied() {
-        Some(h) => {
-            let first = ctx.read_u32(m, h).unwrap_or(0);
-            ctx.write_u32(m, h, first & !0xff | 1);
-            h
-        }
-        None => {
-            let h = ctx.world.alloc(size + 1);
-            ctx.world.teamwork.insert(key, h);
-            h
-        }
-    };
+    let (handle, new) = ctx.world.teamwork_block(key, size + 1);
+    if !new {
+        let first = ctx.read_u32(m, handle).unwrap_or(0);
+        ctx.write_u32(m, handle, first & !0xff | 1);
+    }
     args[0] = Slot::address(handle);
     Ok(())
 }
@@ -522,36 +515,6 @@ fn damage_attack_param_id(
     args[0] = Slot::int(v as i32);
     Ok(())
 }
-
-/// A trap that returns a vector this build cannot compute. Records the call
-/// and hands back a zero vector in the trap's own cell. [U]
-fn unsupported_vector(
-    ctx: &mut Ctx<'_>,
-    m: &mut Memory<'_>,
-    args: &mut Args,
-    table: u16,
-    index: u16,
-    name: &'static str,
-) -> Result<(), Fault> {
-    ctx.world.events.push(Event::Unsupported(name));
-    let cell = ctx.world.static_cell(table, index, 0);
-    for k in 0..3 {
-        ctx.write_f32(m, cell + 4 * k, 0.);
-    }
-    ctx.write_f32(m, cell + 12, 1.);
-    args[0] = Slot::address(cell);
-    Ok(())
-}
-
-macro_rules! unsupported_vector_traps {
-    ($($name:ident = ($table:literal, $index:literal, $label:literal);)*) => {$(
-        fn $name(ctx: &mut Ctx<'_>, m: &mut Memory<'_>, args: &mut Args) -> Result<(), Fault> {
-            unsupported_vector(ctx, m, args, $table, $index, $label)
-        }
-    )*};
-}
-
-unsupported_vector_traps! {}
 
 /// 1:0 FUN_14042b130 -> FUN_1403df930: `sysobj_appear`, make an object of the
 /// entry appear (at the routine's default position; scripts place it
@@ -946,8 +909,14 @@ fn start_mpdrive(ctx: &mut Ctx<'_>, m: &mut Memory<'_>, args: &mut Args) -> Resu
     Ok(())
 }
 
-unsupported_vector_traps! {
-    target_attack = (1, 166, "target_attack");
+/// 1:166 FUN_140430510: the word at +8 of a target record, the attack of an
+/// attack-borne reaction (FUN_140407b40 offers it, FUN_1403a8b10 hands the
+/// record to the script's trigger 11).
+fn target_attack(ctx: &mut Ctx<'_>, m: &mut Memory<'_>, args: &mut Args) -> Result<(), Fault> {
+    let record = args[0].value;
+    let word = ctx.read_u32(m, record + 8).unwrap_or(0);
+    args[0] = Slot::address(word);
+    Ok(())
 }
 
 /// 1:191 FUN_14042b9c0: the record at +4 of the object's lock-on block

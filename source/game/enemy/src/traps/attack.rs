@@ -391,7 +391,12 @@ fn set_rc(ctx: &mut Ctx<'_>, m: &mut Memory<'_>, args: &mut Args) -> Result<(), 
 
 /// 2:52 FUN_140432800.
 fn rc_receiver(ctx: &mut Ctx<'_>, _: &mut Memory<'_>, args: &mut Args) -> Result<(), Fault> {
-    let r = attack(ctx, args[0].value).map_or(0, |a| a.receiver);
+    // [I] An attack gone since the press: the executable's pointer still
+    // reads its pool entry; here a block the script's write can land in.
+    let r = match attack(ctx, args[0].value) {
+        Some(a) => a.receiver,
+        None => ctx.world.alloc(0x100),
+    };
     args[0] = Slot::address(r);
     Ok(())
 }

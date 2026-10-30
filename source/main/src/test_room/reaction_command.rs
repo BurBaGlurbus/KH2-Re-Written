@@ -828,7 +828,9 @@ fn carry_out(game: &mut Game, actors: &mut [GalleryActor], c: rc::Candidate, tic
                 .and_then(|a| a.battle.as_mut())
             {
                 // FUN_1403b5fa0: trigger 11 on the target's script.
-                battle.brain.command(c.command, c.target.group);
+                battle
+                    .brain
+                    .command(c.command, c.target.group, c.target.attack);
                 let action = format!("{:?}", game.sora.player.action);
                 let frame = game.sora.player.frame;
                 game.event(serde_json::json!({"event":"reaction_executed","tick":tick,
