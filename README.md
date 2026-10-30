@@ -212,23 +212,32 @@ level 99 the Keyblade's stats count for a lot: with the defaults a Thundaga does
 the Keyblade with the most Magic, and neither takes a full bar in one cast. The other Sora's HP stays on the target gauge (top right) for
 the whole duel. The lobby's Keyblade, abilities and item slots go on top of it.
 
-**KH3 ruleset (multiplayer only):** the lobby's Match page has *Ruleset*: *KH2* (the game's own moves, the
-default) or *KH3*, set by the host (`--duel-ruleset kh2|kh3` from a command line). In *KH3* both Soras move and
-fight with Kingdom Hearts III's rules, played on KH2's own motions, effects and sounds: KH3's jump arc and
-gravity (a held jump goes higher; holding Jump after the top glides), *Doubleflight* (Jump again near the top),
-*Dodge Roll* and *Air Slide* (Guard with the stick), *Glide*, *Superslide*, and flowmotion: run or fall into a
-wall with the stick on it to run up or along it (Jump leaves with a flow jump, Guard kicks off into a
-Superslide, Attack is a flow attack), and poles where the arena has narrow pillars. Swings home in on the other
-Sora and air combos hover; Jump during a ground chain that has landed a hit launches into an air combo; a chain
-only goes on once one of its hits landed. Attack right after a successful guard or a dodge that met a hit is a
-counter. **Shotlock:** hold R2 (E on the keyboard) to aim. Locks build up while focus drains (the bar above your
-HP); Attack fires: a homing volley of up to 23 bolts, or *Ragnarok* at 24 locks. Guard while aiming airsteps
-to the other Sora, and Attack on arrival is a flow attack. Focus refills slowly and with hits given and taken.
-Enough style (hits and spells) offers a *Grand* spell: Triangle casts it without MP. *Test KH3 mode* on the
-launcher's Multiplayer screen (or `--kh3-test`) starts a local duel in the KH3 ruleset against a scripted Sora
-that goes through all of it. Left out: Attractions, Keyblade transformations and Formchanges, Links, team
-attacks, rail slides, Risk Dodge's enemy-offered moves and Final Blow; the numbers and what stands in for KH3's
-motions are listed in `docs/tasks/T279-kh3-duel-ruleset.md`.
+**KH3 ruleset (multiplayer only; needs your own KINGDOM HEARTS III):** set the game's folder on the launcher's
+quick start, test list or Multiplayer screen (the *KINGDOM HEARTS III* row finds a Steam or Epic install, or lets
+you browse to it). Then the lobby's Match page offers *Ruleset*: *KH2* (the game's own moves, the default) or *KH3*,
+set by the host (`--duel-ruleset kh2|kh3`, `--kh3-folder <folder>` from a command line). A LAN match in KH3 needs
+the same KH3 install on both PCs, checked by a hash of its files; only ids cross the network. Nothing from KH3 is
+in this project or copied anywhere: its files are read from your install each time (the pak key is found in your own
+executable and kept in memory). The room waits a few seconds while they load.
+
+In *KH3* both Soras are KH3's Sora with the Kingdom Key, with KH3's animations and their blends, and fight with
+KH3's data: its combos (with the abilities that change them), hit windows and shapes, attack rows and damage
+formula, magic from Fire to Aero with its tiers, magic combos and Grand magic, KH3's effects and sounds. Moves:
+KH3's jump arc and gravity (a held jump goes higher; holding Jump after the top glides), *Doubleflight* (Jump again
+near the top), *Dodge Roll* and *Air Slide* (Guard with the stick), *Glide*, *Superslide*, and flowmotion: run or
+fall into a wall with the stick on it to run up or along it (Jump leaves with a flow jump, Guard kicks off into a
+Superslide, Attack is a wall attack), and poles where the arena has narrow pillars (Attack is Buzz Saw). Swings home
+in on the other Sora and air combos hover; Jump during a chain that has landed a hit launches (Rising Spiral) or
+strikes down (Groundbreaker); a chain only goes on once one of its hits landed. Attack right after a successful
+guard is a counter (Counter Slash, Impact or Kick), one that blows the other away offers Final Blow, and Jump after
+guarding a heavy hit is Risk Dodge with its counter. **Shotlock:** hold R2 (E on the keyboard) to aim. Locks build up
+while focus drains (the bar above your HP); Attack fires King of Hearts, or *Ragnarok* at full locks. Guard while
+aiming airsteps to the other Sora, and Attack on arrival is a flow attack. Enough `m_FormPoint`s from hits offer the
+*Grand* spell of the element used most: Triangle casts it without MP. KH3's abilities and their AP are on the lobby's
+pages, and on START in *Test KH3 mode* on the launcher's Multiplayer screen (or `--kh3-test`), a local room with a
+training dummy to hit. Left out: Attractions, Keyblade transformations and Formchanges, Links, team attacks, rail
+slides, status effects (freeze, discharge), and the survival, MP and system abilities. What is read from KH3 and what
+is approximated: `docs/tasks/T282-kh3-combat-mod.md`.
 
 **Known limitations:**
 
