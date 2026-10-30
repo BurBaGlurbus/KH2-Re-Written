@@ -71,6 +71,12 @@ Twilight Town, now off the main thread.
 | `drive_fx::tick` | | 1.3 ms |
 | Update / FixedUpdate schedules | 1.5 / 1.1 ms | 1.5 / 2.2 ms |
 
+### 3. No copies of an effect's mesh data
+
+The two effect presenters copied each batch's vertex lists into the new mesh, then dropped them; they now move them. Two alternating
+pairs, high priority: heap allocated per frame 3.59 to 3.73 MiB in the room and 6.75 to 6.82 MiB in Twilight Town, p99 24.6 to 22.2 ms
+and 28.4 to 27.8 ms. All of that is within this PC's noise: no measurable gain, a simpler loop.
+
 ## Not done, with why
 
 - **GPU skinning:** the characters' uploads are down to about 12 to 23 meshes a frame; what they still cost is most of the mesh

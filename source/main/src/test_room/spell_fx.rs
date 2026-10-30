@@ -834,11 +834,11 @@ pub fn present(
         commands.entity(e).despawn();
     }
     let batches = std::mem::take(&mut fx.batches);
-    for (key, batch) in &batches {
+    for (key, batch) in batches {
         if batch.positions.is_empty() || fx.spawned.len() >= super::cleanup::MAX_EFFECT_ENTITIES {
             continue;
         }
-        let material = match fx.materials.get(key) {
+        let material = match fx.materials.get(&key) {
             Some(m) => m.clone(),
             None => {
                 let texture = key
@@ -850,15 +850,11 @@ pub fn present(
                     key.layer as f32 * 500.,
                     true,
                 ));
-                fx.materials.insert(*key, m.clone());
+                fx.materials.insert(key, m.clone());
                 m
             }
         };
-        let mesh = visual::room::mesh(
-            batch.positions.clone(),
-            batch.uvs.clone(),
-            batch.colors.clone(),
-        );
+        let mesh = visual::room::mesh(batch.positions, batch.uvs, batch.colors);
         let mut e = commands.spawn((
             Mesh3d(meshes.add(mesh)),
             MeshMaterial3d(material),
