@@ -980,6 +980,62 @@ pub fn arena(half_size: f32, wall_height: f32, tile: f32) -> (LoadedRoom, ArenaM
     )
 }
 
+/// The chunks' draw order in the alpha pass (FUN_1401b91e0, FUN_1401b8e50,
+/// FUN_1401cf5e0): sorted by layer, then the batch key; equal keys in a run form
+/// a batch; the batches draw in order of their lowest chunk index, each one's
+/// chunks ascending. Returns each chunk's place in that order. `descriptor`
+/// gives a chunk's (texture, f6, f8, fa, fc); `group` its DOCT group byte.
+pub fn draw_order(
+    descriptors: &[(u16, u16, u16, i16, u16)],
+    group: &[u8],
+    isolated: &[u16],
+) -> Vec<u32> {
+    let key = |c: usize| {
+        let (texture, f6, _, fa, fc) = descriptors[c];
+        let class = if fc & 0x40 != 0 { 2 } else { u32::from(fc >> 7 & 1) };
+        u32::from(texture)
+            | if fa != 0 { 0x20000 } else { 0 }
+            | (u32::from(fc & 0x3f) << 2 | u32::from(f6 & 1)) << 16
+            | class << 24
+            | u32::from(group.get(c).copied().unwrap_or(0xff) & 0x3f) << 26
+    };
+    let layer = |c: usize| {
+        let (_, _, f8, fa, _) = descriptors[c];
+        u32::from(fa as u16) << 16 | u32::from(f8)
+    };
+    let mut sorted: Vec<usize> = (0..descriptors.len()).collect();
+    sorted.sort_by_key(|&c| (layer(c), key(c), c));
+    let mut batches: Vec<Vec<usize>> = Vec::new();
+    let mut run = 0;
+    for c in sorted {
+        let k = key(c);
+        if batches.is_empty() || k != run || isolated.contains(&((run & 0xffff) as u16)) {
+            run = k;
+            batches.push(vec![c]);
+        } else if let Some(last) = batches.last_mut() {
+            last.push(c);
+        }
+    }
+    batches.sort_by_key(|b| b[0]);
+    let mut order = vec![0; descriptors.len()];
+    for (place, c) in batches.iter().flatten().enumerate() {
+        order[*c] = place as u32;
+    }
+    order
+}
+
+/// FUN_1401b91e0's texture sets: batches that hold one chunk, recognised by the
+/// model's header (the TT map with one: tt07).
+pub fn isolated_textures(chunks: usize, words: [u32; 8]) -> &'static [u16] {
+    let (a, b) = (words[5] as u16, (words[5] >> 16) as u16);
+    if (chunks, a, b, words[6], words[7]) == (0x76e, 0x99, 0x351, 0x7700, 0x99c4) {
+        &[4, 0x22]
+    } else {
+        &[]
+    }
+}
+
+
 #[cfg(test)]
 mod texa_tests {
     use super::*;
@@ -1106,5 +1162,21 @@ mod texa_tests {
         assert_eq!(px(3, 3), 2);
         assert_eq!(px(2, 4), 9, "last sprite row stays");
         assert_eq!(px(1, 2), 9, "outside the rectangle");
+    }
+
+    #[test]
+    fn alpha_chunks_draw_batch_by_batch_in_leader_order() {
+        // Same layer: chunks 0 and 2 share a texture and are one batch, drawn
+        // at chunk 0's slot, before chunk 1; chunk 3's layer sorts it apart
+        // but its leader's index still places it last.
+        let d = [
+            (5, 0, 16, 1, 0x4000),
+            (6, 0, 16, 1, 0x4000),
+            (5, 0, 16, 1, 0x4000),
+            (5, 0, 18, 1, 0x4000),
+        ];
+        assert_eq!(draw_order(&d, &[0; 4], &[]), [0, 2, 1, 3]);
+        // An isolated texture is never merged.
+        assert_eq!(draw_order(&d, &[0; 4], &[5]), [0, 1, 2, 3]);
     }
 }

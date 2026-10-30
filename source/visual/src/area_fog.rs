@@ -5,9 +5,15 @@
 //! so the cap (tt08 keeps at most 25.5% fog) needs this shader.
 use bevy::{
     asset::{AssetPath, embedded_asset, embedded_path},
-    pbr::{ExtendedMaterial, MaterialExtension, MaterialPlugin},
+    mesh::MeshVertexBufferLayoutRef,
+    pbr::{
+        ExtendedMaterial, MaterialExtension, MaterialExtensionKey, MaterialExtensionPipeline,
+        MaterialPlugin,
+    },
     prelude::*,
-    render::render_resource::AsBindGroup,
+    render::render_resource::{
+        AsBindGroup, RenderPipelineDescriptor, SpecializedMeshPipelineError,
+    },
     shader::ShaderRef,
 };
 use std::sync::Mutex;
@@ -76,6 +82,20 @@ impl MaterialExtension for FogExt {
 
     fn enable_shadows() -> bool {
         false
+    }
+
+    /// On a glow camera only map and sky opaque chunks (their `UV_1` class)
+    /// write the alpha channel, the exe's stencil.
+    fn specialize(
+        _pipeline: &MaterialExtensionPipeline,
+        descriptor: &mut RenderPipelineDescriptor,
+        layout: &MeshVertexBufferLayoutRef,
+        key: MaterialExtensionKey<Self>,
+    ) -> Result<(), SpecializedMeshPipelineError> {
+        if crate::glow::keeps_alpha(key.mesh_key) && !layout.0.contains(Mesh::ATTRIBUTE_UV_1) {
+            crate::glow::keep_alpha(descriptor);
+        }
+        Ok(())
     }
 }
 

@@ -150,6 +150,32 @@ struct BgGroups {
     shown: Option<u64>,
 }
 
+/// SeqGlow (0x43, FUN_1402da8d0): a record's byte +2 is 0 for on, else off;
+/// event start turns it on (FUN_1401e7d30).
+fn glow_switch(event: Res<Event>, mut cameras: Query<&mut visual::glow::Glow>) {
+    let mut on = true;
+    let mut last = i32::MIN;
+    for command in &event.timeline.other {
+        if let data::event_script::Command::Other {
+            opcode: 0x43,
+            payload,
+        } = command
+            && let [a, b, switch, ..] = payload[..]
+        {
+            let at = i32::from(i16::from_le_bytes([a, b]));
+            if at as f32 <= event.frame && at >= last {
+                last = at;
+                on = switch == 0;
+            }
+        }
+    }
+    for mut glow in &mut cameras {
+        if glow.on != on {
+            glow.on = on;
+        }
+    }
+}
+
 /// Shows and hides the map's chunks as the event's background groups change,
 /// and runs the map's texture and UV animation on the event clock.
 #[allow(clippy::too_many_arguments)]
@@ -376,7 +402,6 @@ fn setup(
     ));
     overlay.white_sheet = Some(frame.add_sheet(&mut images, vec![255; 4], [1, 1], 1.));
     commands.spawn((
-        Camera3d::default(),
         Camera {
             order: -2,
             clear_color: ClearColorConfig::Custom(clear),
@@ -395,6 +420,7 @@ fn setup(
         DebandDither::Disabled,
         NoIndirectDrawing,
         visual::effect_draw::scene_compositing(),
+        visual::glow::camera(true, Some(clear)),
         EventCamera,
     ));
 }
@@ -1169,6 +1195,7 @@ fn run(args: Vec<PathBuf>) -> Result<AppExit, Box<dyn std::error::Error>> {
     )
     .add_plugins(FogPlugin)
     .add_plugins(visual::effect_draw::EffectPlugin)
+    .add_plugins(visual::glow::GlowPlugin)
     .add_plugins(Ui2dPlugin {
         order: 0,
         overlay: false,
@@ -1182,6 +1209,7 @@ fn run(args: Vec<PathBuf>) -> Result<AppExit, Box<dyn std::error::Error>> {
             fx::present,
             texa::animate,
             blur::drive,
+            glow_switch,
             room_animation,
             compose,
             finish,

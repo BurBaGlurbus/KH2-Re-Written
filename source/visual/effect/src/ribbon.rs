@@ -1,4 +1,4 @@
-﻿//! pppEiDrawShipoly (241): a ribbon that follows the part. Translated from
+//! pppEiDrawShipoly (241): a ribbon that follows the part. Translated from
 //! update FUN_1404b9c00, create FUN_1404ba790, restart FUN_1404ba8c0,
 //! destroy FUN_1404baa40, draw FUN_1404b9260 with the spline FUN_1404b8f90 /
 //! FUN_1404baa90 and the strip builder FUN_1404b8380.
@@ -18,9 +18,17 @@
 //! builder fades alpha across the width when +0x16 is set and swaps U and V
 //! for +0xa0 >= 2. The exe's vertex alphas are averaged per quad here.
 //!
-//! Not translated (flagged unsupported where met): pair mode (+9 == 0),
-//! object spaces 2/3 (+0x11). The restart hook's +0xb8 term feeds nothing
-//! the update or draw reads and is not kept.
+//! Pair mode (+9 == 0) stores two samples each tick, the part's matrix on
+//! (0, ±width / 2, 0), and fits one spline through each rail in view space;
+//! the rails are the strip's two edges. +9 >= 2 averages the path's direction
+//! over neighbouring steps. +0x10 draws the edges in to the middle at the
+//! newest row. Object spaces: 0 the instance, 1 the world, 3 the view's
+//! inverse (the draw multiplies the view in twice); 2 the object list that
+//! only B_EX170_LAST's script fills, flagged unsupported where met.
+//!
+//! +8 != 0 draws the strip through FUN_1404b7530, a frame-buffer read like
+//! the refraction programs (#148): flagged unsupported where met. The restart
+//! hook's +0xb8 term feeds nothing the update or draw reads and is not kept.
 use crate::math::{self, Mat, Vec4};
 use crate::programs::{active, byte, float, use_val, word};
 use crate::{Ctx, Part, Quad};
@@ -32,6 +40,8 @@ pub(crate) const KIND: u32 = 241;
 pub(crate) struct Ribbon {
     /// Ring of sample points (work +0xa8 buffer) and its size (+0xa4).
     ring: Vec<Vec4>,
+    /// Pair mode's ring: the two rails of each tick.
+    rails: Vec<[Vec4; 2]>,
     cursor: usize,
     count: usize,
     /// Texture scroll (work +0x24 / +0x28 of the u3 block).
@@ -191,6 +201,15 @@ pub(crate) fn destroy(p: &Program, part: &mut Part, ctx: &mut Ctx) {
     part.ribbons.remove(&u3);
 }
 
+/// A sample in its object space (+0x11).
+fn placed(point: Vec4, space: u8, ctx: &Ctx) -> Vec4 {
+    match space {
+        1 => math::apply(&ctx.world, point),
+        3 => math::apply(&math::inverse(&ctx.view), math::apply(&ctx.world, point)),
+        _ => point,
+    }
+}
+
 pub(crate) fn update(p: &Program, cursor: usize, part: &mut Part, ctx: &mut Ctx) {
     if !active(part) {
         return;
@@ -198,10 +217,10 @@ pub(crate) fn update(p: &Program, cursor: usize, part: &mut Part, ctx: &mut Ctx)
     let single = byte(ctx, cursor + 9) != 0;
     let frozen = byte(ctx, cursor + 0xa) != 0;
     let space = byte(ctx, cursor + 0x11);
-    if !single {
+    if byte(ctx, cursor + 8) != 0 {
         flag(ctx, 0x4000_0241);
     }
-    if space > 1 {
+    if space == 2 {
         flag(ctx, 0x4000_0243);
     }
     let u3 = use_val(ctx, p, 3);
@@ -212,15 +231,29 @@ pub(crate) fn update(p: &Program, cursor: usize, part: &mut Part, ctx: &mut Ctx)
     if r.first_key.is_none() {
         r.first_key = Some(cursor);
     }
+    let size = (byte(ctx, cursor + 0xb) as usize).clamp(4, 0x80);
     if r.ring.is_empty() {
-        let size = (byte(ctx, cursor + 0xb) as usize).clamp(4, 0x80);
         r.ring = vec![[0.; 4]; size];
     }
-    if !frozen && single {
-        let mut sample = part.cur[3];
-        if space == 1 {
-            sample = math::apply(&ctx.world, sample);
+    if !frozen && !single {
+        if r.rails.is_empty() {
+            r.rails = vec![[[0.; 4]; 2]; size];
         }
+        let half = float(ctx, cursor + 0xc) * 0.5;
+        let rail = |side: f32| {
+            placed(
+                math::apply(&part.cur, [0., half * side, 0., 1.]),
+                space,
+                ctx,
+            )
+        };
+        let rails = [rail(1.), rail(-1.)];
+        let size = r.rails.len();
+        r.rails[r.cursor % size] = rails;
+        r.count = (r.count + 1).min(size);
+    }
+    if !frozen && single {
+        let mut sample = placed(part.cur[3], space, ctx);
         if byte(ctx, cursor + 0x1c) != 0 {
             sample[3] = r.weight[0];
         }
@@ -298,66 +331,132 @@ pub(crate) fn draw(p: &Program, cursor: usize, part: &mut Part, ctx: &mut Ctx) {
     };
     let (count, size) = (r.count, r.ring.len());
     let steps = byte(ctx, cursor + 0x12) as usize;
-    if count < 3 || steps == 0 || byte(ctx, cursor + 9) != 1 {
+    let mode = byte(ctx, cursor + 9);
+    if count < 3 || steps == 0 {
         return;
     }
     let space = byte(ctx, cursor + 0x11);
-    let view_matrix = if space == 0 { ctx.ed60 } else { ctx.view };
-    // Control points, newest first.
-    let points: Vec<[f32; 3]> = (0..count)
-        .map(|k| {
-            let mut i = r.cursor as isize - 1 - k as isize;
-            if i < 0 {
-                i += size as isize;
-            }
-            let s = r.ring[i as usize];
-            [s[0], s[1], s[2]]
-        })
-        .collect();
-    let coeff: Vec<[f32; 3]> = {
+    let view_matrix = match space {
+        0 => ctx.ed60,
+        3 => math::mul(&ctx.view, &ctx.view),
+        _ => ctx.view,
+    };
+    let uv_length = float(ctx, cursor + 0x90);
+    // The ticks' ring slots, newest first.
+    let slot = |k: usize| {
+        let mut i = r.cursor as isize - 1 - k as isize;
+        if i < 0 {
+            i += size as isize;
+        }
+        i as usize
+    };
+    let curve = |points: &[[f32; 3]]| -> Vec<[f32; 3]> {
         let per: Vec<Vec<f32>> = (0..3)
             .map(|k| natural_spline(&points.iter().map(|q| q[k]).collect::<Vec<_>>()))
             .collect();
-        (0..count)
+        let coeff: Vec<[f32; 3]> = (0..count)
             .map(|i| [per[0][i], per[1][i], per[2][i]])
+            .collect();
+        (0..=steps)
+            .map(|i| {
+                let t = (i as f32 / steps as f32) * (count - 1) as f32;
+                spline_at(points, &coeff, t)
+            })
             .collect()
     };
-    // Path samples in view space; w = length of the segment to the next.
-    let mut q: Vec<Vec4> = (0..=steps)
-        .map(|i| {
-            let t = (i as f32 / steps as f32) * (count - 1) as f32;
-            let s = spline_at(&points, &coeff, t);
-            math::apply(&view_matrix, [s[0], s[1], s[2], 1.])
-        })
-        .collect();
-    let uv_length = float(ctx, cursor + 0x90);
-    if uv_length > 0. {
-        for i in 0..steps {
-            let d: [f32; 3] = std::array::from_fn(|k| q[i][k] - q[i + 1][k]);
-            q[i][3] = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt();
+    let (q, mut edges): (Vec<Vec4>, Vec<(Vec4, Vec4)>) = if mode == 0 {
+        // The rails, each fitted in view space.
+        let rail = |side: usize| {
+            let points: Vec<[f32; 3]> = (0..count)
+                .map(|k| {
+                    let s = r.rails.get(slot(k)).map_or([0., 0., 0., 1.], |p| p[side]);
+                    let v = math::apply(&view_matrix, [s[0], s[1], s[2], 1.]);
+                    [v[0], v[1], v[2]]
+                })
+                .collect();
+            curve(&points)
+        };
+        let (one, two) = (rail(0), rail(1));
+        let vec = |p: [f32; 3]| [p[0], p[1], p[2], 1.];
+        (
+            one.iter().map(|p| vec(*p)).collect(),
+            one.iter()
+                .zip(&two)
+                .map(|(a, b)| (vec(*a), vec(*b)))
+                .collect(),
+        )
+    } else {
+        // Control points, newest first.
+        let points: Vec<[f32; 3]> = (0..count)
+            .map(|k| {
+                let s = r.ring[slot(k)];
+                [s[0], s[1], s[2]]
+            })
+            .collect();
+        // Path samples in view space; w = length of the segment to the next.
+        let mut q: Vec<Vec4> = curve(&points)
+            .into_iter()
+            .map(|s| math::apply(&view_matrix, [s[0], s[1], s[2], 1.]))
+            .collect();
+        if uv_length > 0. {
+            for i in 0..steps {
+                let d: [f32; 3] = std::array::from_fn(|k| q[i][k] - q[i + 1][k]);
+                q[i][3] = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt();
+            }
+            q[steps][3] = 0.;
         }
-        q[steps][3] = 0.;
+        // Edge points: the path ± the width, perpendicular in the view plane.
+        let half = float(ctx, cursor + 0xc) * part.f32(u1) * ctx.scales[0];
+        let unit = |x: f32, y: f32| {
+            let d = math::normalize([x, y, 0., 0.]);
+            [d[0] * half, d[1] * half]
+        };
+        let mut previous = [0.; 2];
+        let edges = (0..=steps)
+            .map(|i| {
+                let d = if mode == 1 {
+                    let (a, b) = if i != steps {
+                        (q[i], q[i + 1])
+                    } else {
+                        (q[i - 1], q[i])
+                    };
+                    let d = math::normalize([a[0] - b[0], a[1] - b[1], a[2] - b[2], 0.]);
+                    [d[0] * half, d[1] * half]
+                } else {
+                    // The sum of this step's and the last step's directions;
+                    // the last row's own has no x.
+                    let here = if i != steps {
+                        unit(q[i][0] - q[i + 1][0], q[i][1] - q[i + 1][1])
+                    } else {
+                        unit(0., previous[1])
+                    };
+                    let sum = [previous[0] + here[0], previous[1] + here[1]];
+                    previous = here;
+                    sum
+                };
+                // (x, y) -> (-y, x)
+                let perp = [-d[1], d[0]];
+                let c = q[i];
+                (
+                    [c[0] + perp[0], c[1] + perp[1], c[2], c[3]],
+                    [c[0] - perp[0], c[1] - perp[1], c[2], c[3]],
+                )
+            })
+            .collect();
+        (q, edges)
+    };
+    // +0x10: the edges drawn in to their middle, all the way at the newest
+    // row and not at all at the oldest.
+    if byte(ctx, cursor + 0x10) != 0 {
+        let mut t = 1f32;
+        for edge in &mut edges {
+            let middle: Vec4 = std::array::from_fn(|k| (edge.0[k] + edge.1[k]) * 0.5);
+            let inward =
+                |e: Vec4| -> Vec4 { std::array::from_fn(|k| e[k] + (middle[k] - e[k]) * t) };
+            *edge = (inward(edge.0), inward(edge.1));
+            t = (t - 1. / steps as f32).max(0.);
+        }
     }
-    // Edge points: the path Ã‚Â± the width, perpendicular in the view plane.
-    let half = float(ctx, cursor + 0xc) * part.f32(u1) * ctx.scales[0];
-    let edges: Vec<(Vec4, Vec4)> = (0..=steps)
-        .map(|i| {
-            let (a, b) = if i != steps {
-                (q[i], q[i + 1])
-            } else {
-                (q[i - 1], q[i])
-            };
-            let d = math::normalize([a[0] - b[0], a[1] - b[1], a[2] - b[2], 0.]);
-            let d = [d[0] * half, d[1] * half];
-            // (x, y) -> (-y, x)
-            let perp = [-d[1], d[0]];
-            let c = q[i];
-            (
-                [c[0] + perp[0], c[1] + perp[1], c[2], c[3]],
-                [c[0] - perp[0], c[1] - perp[1], c[2], c[3]],
-            )
-        })
-        .collect();
     // The ribbon's texture: the first mesh of model +4.
     let model = word(ctx, cursor + 4);
     let Some(tex0) = ctx
@@ -549,6 +648,23 @@ pub(crate) fn draw(p: &Program, cursor: usize, part: &mut Part, ctx: &mut Ctx) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_inverse_undoes_a_view() {
+        let view: Mat = [
+            [0., 0., 1., 0.],
+            [0., 1., 0., 0.],
+            [-1., 0., 0., 0.],
+            [10., -20., 30., 1.],
+        ];
+        let back = math::mul(&math::inverse(&view), &view);
+        for (r, row) in back.iter().enumerate() {
+            for (c, v) in row.iter().enumerate() {
+                let want = if r == c { 1. } else { 0. };
+                assert!((v - want).abs() < 1e-5, "{r},{c}: {v}");
+            }
+        }
+    }
 
     #[test]
     fn natural_spline_interpolates_and_is_linear_on_lines() {

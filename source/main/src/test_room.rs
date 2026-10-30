@@ -4968,6 +4968,20 @@ pub(crate) fn spawn_model(
 
 // Bevy systems take each resource as a parameter.
 #[allow(clippy::too_many_arguments)]
+/// The room's glow, read at each map load in the exe (FUN_140157bb0 →
+/// FUN_140169180 → FUN_1403a5a80).
+fn area_glow(area: Option<Res<AreaRes>>, mut cameras: Query<&mut visual::glow::Glow>) {
+    let Some(area) = area else {
+        return;
+    };
+    let on = area.source.glow(area.current.world, area.current.area);
+    for mut glow in &mut cameras {
+        if glow.on != on {
+            glow.on = on;
+        }
+    }
+}
+
 /// Advances the area-change presentation one tick (FUN_14015f690 /
 /// FUN_14015f5f0 with the fade task FUN_140156f10).
 fn area_tick(area: Option<ResMut<AreaRes>>, hud: Option<ResMut<Hud>>) {
@@ -5849,6 +5863,32 @@ pub(crate) fn spawn_room(
         // Chunks drawn with the same texture and blend share one material,
         // so the renderer can batch them; UV-scrolled chunks keep their own.
         let mut shared: HashMap<(Option<usize>, u8), Handle<FogMaterial>> = HashMap::new();
+        // The alpha pass in the exe's batch order (draw-01 §3.3): all the map's
+        // chunks sit at one origin, so a fraction of a unit orders them in the
+        // transparent sort and is too small to bias the depth.
+        let order = {
+            let descriptors: Vec<_> = part
+                .model
+                .chunks
+                .iter()
+                .map(|c| {
+                    let [_, w1, w2, w3] = c.header_words;
+                    (
+                        w1 as u16,
+                        (w1 >> 16) as u16,
+                        w2 as u16,
+                        (w2 >> 16) as i16,
+                        w3 as u16,
+                    )
+                })
+                .collect();
+            visual::room::draw_order(
+                &descriptors,
+                &part.chunk_bits,
+                visual::room::isolated_textures(descriptors.len(), part.model.header_words),
+            )
+        };
+        let order_step = 1. / (order.len() + 1) as f32;
         for (chunk_index, chunk) in part.model.chunks.iter().enumerate() {
             if chunk.indices.is_empty() {
                 continue;
@@ -5879,11 +5919,12 @@ pub(crate) fn spawn_room(
                     [uv[0] * scale[0] + offset[0], uv[1] * scale[1] + offset[1]]
                 })
                 .collect();
-            let colors = chunk
+            let colors: Vec<[f32; 4]> = chunk
                 .indices
                 .iter()
                 .map(|i| vertex(i).color_bits.map(f32::from_bits))
                 .collect();
+            let alphas: Vec<f32> = colors.iter().map(|c| c[3]).collect();
             let texture = texture_slot.map(|i| handles[i].clone());
             // UVSC: fc bits 1..5 hold the record index + 1; repeat modes only.
             let scroll_id = (chunk.header_words[3] >> 1) & 0x1f;
@@ -5917,6 +5958,11 @@ pub(crate) fn spawn_room(
                     1 => AlphaMode::Add,
                     _ => AlphaMode::Blend,
                 },
+                depth_bias: if blend == 0 {
+                    0.
+                } else {
+                    order[chunk_index] as f32 * order_step
+                },
                 ..default()
             };
             let mut add = |base| {
@@ -5926,7 +5972,7 @@ pub(crate) fn spawn_room(
                     materials.add_fogged(base)
                 }
             };
-            let material = if scroll.is_some() {
+            let material = if scroll.is_some() || blend != 0 {
                 add(base)
             } else {
                 shared
@@ -5943,7 +5989,18 @@ pub(crate) fn spawn_room(
                 } else {
                     Visibility::Hidden
                 },
-                Mesh3d(meshes.add(mesh(positions, uvs, colors))),
+                Mesh3d(meshes.add({
+                    let m = mesh(positions, uvs, colors);
+                    // The opaque pass's glow stencil (FUN_1401ba2c0).
+                    if blend == 0 {
+                        m.with_inserted_attribute(
+                            Mesh::ATTRIBUTE_UV_1,
+                            visual::glow::triangle_classes(&alphas),
+                        )
+                    } else {
+                        m
+                    }
+                })),
                 MeshMaterial3d(material.clone()),
                 Transform::default(),
             ));
@@ -6587,7 +6644,6 @@ fn setup(
     ));
     compose.scene_sheet = frame.add_image(compose.scene.clone(), size, true);
     commands.spawn((
-        Camera3d::default(),
         visual::smoothing::Smoothed,
         Camera {
             order: -2,
@@ -6607,6 +6663,7 @@ fn setup(
         NoIndirectDrawing,
         // Blends in the PC's gamma space (the effects, T229).
         visual::effect_draw::scene_compositing(),
+        visual::glow::camera(false, None),
     ));
     // The Drive change's afterimage (drivefx-02 §3): a feedback pass over
     // the scene, idle until a change turns it on.
@@ -15473,6 +15530,7 @@ fn run(mut args: Vec<PathBuf>) -> Result<AppExit, Box<dyn std::error::Error>> {
         .add_plugins(visual::texel_upload::TexelUploadPlugin)
         .add_plugins(visual::smoothing::SmoothingPlugin)
         .add_plugins(visual::effect_draw::EffectPlugin)
+        .add_plugins(visual::glow::GlowPlugin)
         .add_plugins(Ui2dPlugin {
             order: 0,
             overlay: false,
@@ -15560,6 +15618,7 @@ fn run(mut args: Vec<PathBuf>) -> Result<AppExit, Box<dyn std::error::Error>> {
                 debug_menu::tick,
                 (enemy_gallery::service, enemy_assets::service).chain(),
                 area_transition,
+                area_glow,
                 transition_time,
                 bg_visibility,
                 boss::map_tint,

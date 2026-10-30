@@ -516,6 +516,11 @@ impl AreaSource {
         command_variant(&self.arif, world, area)
     }
 
+    /// FUN_1403a5a80: the room's glow, arif row flag bit 4.
+    pub fn glow(&self, world: u8, area: u8) -> bool {
+        glow_flag(&self.arif, world, area)
+    }
+
     /// FUN_140153ee0's file for a room: `<world><n>command.2dd`, or the
     /// world-independent `zz0command.2dd` when the Config's command menu
     /// is the default one (FUN_1402e5380: save config bit 6).
@@ -1118,24 +1123,34 @@ pub fn exit_target(area: &Area, avoid: Option<u8>, from: [f32; 2]) -> Option<[f3
     best.map(|(_, d)| d)
 }
 
-/// FUN_1403a5920 over 03system `arif`: world count at +4, per world a u16
-/// area count and a u16 offset at 8 + 4 * world, 0x40-byte area rows.
-pub fn command_variant(arif: &[u8], world: u8, area: u8) -> u8 {
+/// A room's 0x40-byte row in 03system `arif`: world count at +4, per world a
+/// u16 area count and a u16 offset at 8 + 4 * world.
+fn arif_row(arif: &[u8], world: u8, area: u8) -> Option<&[u8]> {
     let word = |o: usize| arif.get(o..o + 2).map(|b| u16::from_le_bytes([b[0], b[1]]));
     let worlds = arif
         .get(4..8)
         .map_or(0, |w| u32::from_le_bytes(w.try_into().unwrap()));
     let w = world as usize;
     if world as u32 >= worlds {
-        return 0;
+        return None;
     }
     match (word(8 + w * 4), word(10 + w * 4)) {
-        (Some(count), Some(off)) if (area as u16) < count => arif
-            .get(off as usize + area as usize * 0x40 + 0x34)
-            .copied()
-            .unwrap_or(0),
-        _ => 0,
+        (Some(count), Some(off)) if (area as u16) < count => {
+            let at = off as usize + area as usize * 0x40;
+            arif.get(at..at + 0x40)
+        }
+        _ => None,
     }
+}
+
+/// FUN_1403a5920: the row's byte +0x34 (0 outside the table).
+pub fn command_variant(arif: &[u8], world: u8, area: u8) -> u8 {
+    arif_row(arif, world, area).map_or(0, |row| row[0x34])
+}
+
+/// FUN_1403a5a80: the row's flag word (+0), bit 4.
+pub fn glow_flag(arif: &[u8], world: u8, area: u8) -> bool {
+    arif_row(arif, world, area).is_some_and(|row| row[0] >> 4 & 1 != 0)
 }
 
 /// `field2d/<language>/<world><n>command.2dd`, or `zz0command.2dd` for the
@@ -1165,6 +1180,11 @@ mod command_layout_tests {
         // Outside the table: 0.
         assert_eq!(command_variant(&arif, 1, 2), 0);
         assert_eq!(command_variant(&arif, 7, 0), 0);
+        // The flag word's bit 4 turns the room's glow on.
+        arif[80 + 0x40] = 0x10;
+        assert!(glow_flag(&arif, 1, 1));
+        assert!(!glow_flag(&arif, 1, 0));
+        assert!(!glow_flag(&arif, 7, 0));
         assert_eq!(
             command_layout("tt", 5, "us", false),
             "field2d/us/tt5command.2dd"

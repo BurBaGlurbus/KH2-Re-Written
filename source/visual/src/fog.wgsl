@@ -38,5 +38,9 @@ fn fragment(vertex_output: VertexOutput, @builtin(front_facing) is_front: bool) 
         out.color = vec4<f32>(to_linear(c), out.color.a);
     }
     out.color = main_pass_post_lighting_processing(pbr_input, out.color);
+#ifdef VERTEX_UVS_B
+    // A map or sky opaque triangle's glow class, the exe's stencil (glow.rs).
+    out.color.a = vertex_output.uv_b.x;
+#endif
     return out;
 }

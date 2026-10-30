@@ -314,6 +314,9 @@ impl Material for EffectMaterial {
     ) -> Result<(), SpecializedMeshPipelineError> {
         descriptor.primitive.cull_mode = None;
         let mesh_key = key.mesh_key;
+        if crate::glow::keeps_alpha(mesh_key) {
+            crate::glow::keep_alpha(descriptor);
+        }
         let multiply =
             mesh_key & MeshPipelineKey::BLEND_RESERVED_BITS == MeshPipelineKey::BLEND_MULTIPLY;
         if multiply && let Some(fragment) = descriptor.fragment.as_mut() {

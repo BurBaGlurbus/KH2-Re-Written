@@ -396,6 +396,8 @@ struct UiRes {
 struct Startup {
     room: visual::room::LoadedRoom,
     area: LoadedArea,
+    /// FUN_1403a5a80 for the map.
+    glow: bool,
 }
 
 #[derive(Resource)]
@@ -653,7 +655,7 @@ fn setup(
     mut materials: ResMut<Assets<FogMaterial>>,
     mut images: ResMut<Assets<Image>>,
 ) {
-    let Startup { room, area } = startup.0.take().expect("startup data");
+    let Startup { room, area, glow } = startup.0.take().expect("startup data");
     let root = commands
         .spawn((Transform::default(), Visibility::default(), MapRoot))
         .id();
@@ -731,7 +733,6 @@ fn setup(
     }
     commands.insert_resource(BobState(area.bobs));
     commands.spawn((
-        Camera3d::default(),
         Projection::Perspective(PerspectiveProjection {
             fov: horizontal_to_vertical(world_map::camera::FOV_DEGREES.to_radians()),
             near: MAP_NEAR,
@@ -744,6 +745,7 @@ fn setup(
         DebandDither::Disabled,
         NoIndirectDrawing,
         visual::effect_draw::scene_compositing(),
+        visual::glow::camera(glow, None),
         MapCamera,
         RoomPart,
     ));
@@ -2898,6 +2900,7 @@ fn run(args: Vec<PathBuf>) -> Result<AppExit> {
     let (room, mut loaded) = src
         .load(target.world, target.area, target.entrance, [-1; 3])
         .map_err(|e| format!("world map area: {e}"))?;
+    let glow = src.glow(target.world, target.area);
     // FUN_14038cf20 → FUN_14038de90(0) → FUN_14038dc60: the queued world
     // events' scripts run on arrival; their world map events (#89) are
     // listed, not played.
@@ -3464,7 +3467,11 @@ fn run(args: Vec<PathBuf>) -> Result<AppExit> {
             command: None,
             fiel: None,
         })
-        .insert_resource(StartupRes(Some(Startup { room, area: loaded })))
+        .insert_resource(StartupRes(Some(Startup {
+            room,
+            area: loaded,
+            glow,
+        })))
         .insert_resource(effects::Effects::new(texcommon))
         .insert_resource(Time::<Fixed>::from_hz(TICK_HZ))
         .insert_resource(ClearColor(Color::BLACK))

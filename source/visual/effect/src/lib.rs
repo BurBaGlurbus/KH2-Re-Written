@@ -8,7 +8,7 @@
 //! draw pass that advances part frames and instance time by 0x1000 every
 //! second game frame (one VM tick = 2.0 frame units, 30 Hz at 60 fps).
 mod extra;
-mod lens;
+pub mod lens;
 pub mod math;
 mod mega_birth;
 mod mega_model;
