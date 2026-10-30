@@ -1574,7 +1574,7 @@ struct Hud {
     /// target), bound to his aim point.
     limit_reticle: Option<visual::lock_on::LockOn>,
     stats: GaugeStats,
-    canvas: Canvas,
+    canvas: visual::gauge::CanvasWorker,
     image: Handle<Image>,
     updated: bool,
     /// The form level-up panels (sprite priority 9000, after the gauge).
@@ -6309,7 +6309,7 @@ fn setup(
                 }
             }),
             stats,
-            canvas,
+            canvas: visual::gauge::CanvasWorker::new(canvas),
             image,
             updated: true,
         });
@@ -8376,7 +8376,9 @@ fn simulate(
                 let pad = kh3_pad;
                 let book = game.kh3_book.clone();
                 let geometry = duel_kh3::geometry(&mut game);
-                let foe_body = geometry.as_ref().and_then(|_| duel_kh3::room_foe_body(&game));
+                let foe_body = geometry
+                    .as_ref()
+                    .and_then(|_| duel_kh3::room_foe_body(&game));
                 let view = duel_kh3::aim_view(
                     game.sora.player.position,
                     foe.map(|f: player::kh3::Foe| f.position),
@@ -10118,9 +10120,24 @@ fn hud_present(
     mut writes: ResMut<visual::texel_upload::TexelWrites>,
 ) {
     let Some(mut hud) = hud else { return };
-    if !std::mem::take(&mut hud.updated) {
+    // The canvas draws on its own thread; what it finished goes to the GPU
+    // (the image asset keeps its first pixels).
+    if let Some(tiles) = hud.canvas.take_tiles() {
+        let id = hud.image.id();
+        writes.0.extend(
+            tiles
+                .into_iter()
+                .map(|(rect, rgba)| visual::texel_upload::TexelWrite {
+                    image: id,
+                    rect,
+                    rgba,
+                }),
+        );
+    }
+    if !hud.updated || hud.canvas.busy() {
         return;
     }
+    hud.updated = false;
     let Hud {
         sheets,
         gauge,
@@ -10129,7 +10146,6 @@ fn hud_present(
         field,
         reticle_draw,
         canvas,
-        image,
         menu,
         panels,
         limit_hud,
@@ -10314,20 +10330,9 @@ fn hud_present(
         });
         draws.extend(debug_menu::draws(&debug.view, white, *sheet, widths));
     }
-    // An unchanged HUD keeps its texture; the tiles that changed are
-    // written into it on the GPU (the image asset keeps its first pixels).
-    if canvas.render(&draws, &textures) {
-        let id = image.id();
-        writes
-            .0
-            .extend(canvas.redrawn().into_iter().map(|(rect, rgba)| {
-                visual::texel_upload::TexelWrite {
-                    image: id,
-                    rect,
-                    rgba,
-                }
-            }));
-    }
+    // An unchanged HUD keeps its texture; only the tiles that changed come
+    // back.
+    canvas.draw(draws, &textures);
 }
 
 /// One tick of the Keyblade's attack windows against the enemy, then the

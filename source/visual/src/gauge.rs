@@ -10,6 +10,7 @@
 //! greater than the mask's. `Canvas` reproduces that in software.
 use data::sprite_sequence::{Modifiers, Player, Quad, Sequence};
 use player::follow_camera::wrap;
+use std::sync::Arc;
 
 /// X origin added to every gauge sprite and mask (literal 0x55). Outside
 /// 4:3 the HUD anchors right-half elements 85 units further right and
@@ -919,6 +920,120 @@ impl Texture<'_> {
             let bottom = c[i] + (d[i] - c[i]) * fx;
             top + (bottom - top) * fy
         })
+    }
+}
+
+/// What a finished canvas job left: the rectangles it redrew, with their
+/// pixels (`Canvas::redrawn`).
+pub type CanvasTiles = Vec<([u32; 4], Vec<u8>)>;
+
+struct CanvasJob {
+    draws: Vec<Draw>,
+    textures: Vec<(Arc<[u8]>, [usize; 2], f32)>,
+    forget: bool,
+}
+
+/// The canvas on a thread of its own: the software rasterizer is the frame's
+/// largest cost on the main thread, and its tiles can reach the GPU a frame
+/// later. One job runs at a time, and the HUD's next draw waits for it.
+pub struct CanvasWorker {
+    jobs: std::sync::mpsc::SyncSender<CanvasJob>,
+    // (A resource must be shareable; only `&mut self` reads it.)
+    done: std::sync::Mutex<std::sync::mpsc::Receiver<CanvasTiles>>,
+    busy: bool,
+    forget: bool,
+    /// The worker's own reference to each sheet, by fingerprint.
+    sheets: std::collections::HashMap<u64, Arc<[u8]>>,
+}
+
+impl CanvasWorker {
+    pub fn new(mut canvas: Canvas) -> Self {
+        let (jobs, inbox) = std::sync::mpsc::sync_channel::<CanvasJob>(1);
+        let (results, done) = std::sync::mpsc::channel();
+        std::thread::Builder::new()
+            .name("hud canvas".into())
+            .spawn(move || {
+                while let Ok(job) = inbox.recv() {
+                    if job.forget {
+                        canvas.forget();
+                    }
+                    let textures: Vec<Texture> = job
+                        .textures
+                        .iter()
+                        .map(|(rgba, size, texel_scale)| Texture {
+                            rgba,
+                            size: *size,
+                            texel_scale: *texel_scale,
+                        })
+                        .collect();
+                    let tiles = if canvas.render(&job.draws, &textures) {
+                        canvas.redrawn()
+                    } else {
+                        Vec::new()
+                    };
+                    if results.send(tiles).is_err() {
+                        return;
+                    }
+                }
+            })
+            .expect("HUD canvas thread");
+        CanvasWorker {
+            jobs,
+            done: std::sync::Mutex::new(done),
+            busy: false,
+            forget: false,
+            sheets: std::collections::HashMap::new(),
+        }
+    }
+
+    /// The next draw redraws every tile.
+    pub fn forget(&mut self) {
+        self.forget = true;
+    }
+
+    /// The last job's tiles, once it has finished.
+    pub fn take_tiles(&mut self) -> Option<CanvasTiles> {
+        let tiles = self.done.get_mut().ok()?.try_recv().ok()?;
+        self.busy = false;
+        Some(tiles)
+    }
+
+    /// A job is still drawing: the next one waits.
+    pub fn busy(&self) -> bool {
+        self.busy
+    }
+
+    /// Starts a job, when none is running. Sheets are copied the first time
+    /// they are seen and kept while the HUD uses them.
+    pub fn draw(&mut self, draws: Vec<Draw>, textures: &[Texture]) {
+        if self.busy {
+            return;
+        }
+        let prints: Vec<u64> = textures.iter().map(Texture::fingerprint).collect();
+        if self.sheets.len() > prints.len() + 16 {
+            self.sheets.retain(|k, _| prints.contains(k));
+        }
+        let textures = textures
+            .iter()
+            .zip(&prints)
+            .map(|(t, print)| {
+                let rgba = self
+                    .sheets
+                    .entry(*print)
+                    .or_insert_with(|| Arc::from(t.rgba))
+                    .clone();
+                (rgba, t.size, t.texel_scale)
+            })
+            .collect();
+        let forget = std::mem::take(&mut self.forget);
+        self.busy = self
+            .jobs
+            .try_send(CanvasJob {
+                draws,
+                textures,
+                forget,
+            })
+            .is_ok();
     }
 }
 
