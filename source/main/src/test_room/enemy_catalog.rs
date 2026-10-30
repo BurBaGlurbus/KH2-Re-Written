@@ -564,6 +564,45 @@ impl Kind {
     }
     /// Decode just the selected source slot. The presentation evaluates one
     /// pose at a time instead of retaining every motion's vertex frames.
+    /// The motion set's hook tables (`obj_motion_hook`, FUN_1403c7c10): a
+    /// slot of the set (any entry type, FUN_14040d7a0) of type 20 that is a
+    /// whole motion table of its own, with each table's motions by slot. The
+    /// smaller type 20 entries (`AA00`, `AB40`) are not hook tables any script
+    /// names. A motion that does not decode is left out.
+    pub fn hook_tables(&self) -> Vec<(i32, Vec<(usize, Arc<SelectedMotion>)>)> {
+        const WHOLE_TABLE: usize = 100;
+        let Ok(table) = bar::read_bar(&self.bytes) else {
+            return Vec::new();
+        };
+        let mut out = Vec::new();
+        for (slot, entry) in table.entries.iter().enumerate() {
+            if entry.entry_type != 20 || entry.size == 0 {
+                continue;
+            }
+            let Ok(bytes) = payload(&self.bytes, entry) else {
+                continue;
+            };
+            let Ok(inner) = bar::read_bar(bytes) else {
+                continue;
+            };
+            if inner.entries.len() < WHOLE_TABLE {
+                continue;
+            }
+            let motions = inner
+                .entries
+                .iter()
+                .enumerate()
+                .filter(|(_, e)| e.entry_type == 17 && e.offset >= 0 && e.size != 0)
+                .filter_map(|(k, e)| {
+                    let motion = motion::read_anb(payload(bytes, e).ok()?, k).ok()?;
+                    Some((k, Arc::new(motion)))
+                })
+                .collect();
+            out.push((slot as i32, motions));
+        }
+        out
+    }
+
     pub fn load_motion(&self, choice_index: usize) -> Result<Arc<SelectedMotion>> {
         let choice = self
             .motions

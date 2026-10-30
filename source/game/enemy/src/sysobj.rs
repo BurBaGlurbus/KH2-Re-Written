@@ -36,6 +36,10 @@ pub struct Pool {
 pub struct Motion {
     /// +0x28/+0x180: the playing motion slot.
     pub slot: usize,
+    /// The hook table it was started from. FUN_1403c8a40 keeps the clip's and
+    /// its trigger table's pointers (+0x18, +0x20), so a later hook or unhook
+    /// changes only the next motion.
+    pub table: Option<i32>,
     /// Clock in ticks.
     pub tick: u32,
     /// Increments on every motion start (attack-instance identity).
@@ -264,6 +268,18 @@ pub struct Fly {
     pub fall_started: bool,
 }
 
+/// The low bits of an object's model word: its entry, or 0 for the object's
+/// own motions. The bits above name a hook table, plus one.
+pub const MODEL_ENTRY_BITS: u32 = 20;
+
+/// The entry a model word names.
+pub fn model_entry(model: u32) -> u32 {
+    model & ((1 << MODEL_ENTRY_BITS) - 1)
+}
+
+fn table_model(model: u32, hook: Option<i32>) -> u32 {
+    model_entry(model) | hook.map_or(0, |h| (h as u32 + 1) << MODEL_ENTRY_BITS)
+}
 /// An alpha fade (sysobj+0xa08: value, rate per tick; FUN_1403b7810/77c0).
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Fade {
@@ -584,6 +600,8 @@ pub struct Sysobj {
     /// +0xd48: the magic thread `obj_hook` started.
     pub hook: Option<u32>,
     /// The hook table of the motion set in use (+0x160; `obj_motion_hook`).
+    /// [`Self::set_motion_hook`] also marks it in `model`, so that the
+    /// environment's `clips` hands out that table.
     pub motion_hook: Option<i32>,
     /// +0x4e0, +0x540, +0x5a0: the reaction-command enables (see
     /// [`crate::reaction`]); the script's group bits (+0x5a8) are
@@ -925,8 +943,10 @@ impl Sysobj {
         if clips.length(slot) == 0 {
             return false;
         }
+        let table = self.motion_hook;
         let m = &mut self.motion;
         m.slot = slot;
+        m.table = table;
         m.tick = 0;
         m.serial = m.serial.wrapping_add(1);
         m.blend_duration = if blend <= 2. { 0. } else { blend };
@@ -959,6 +979,19 @@ impl Sysobj {
         m.blend = 0.;
         m.root_step = [0.; 3];
         m.flags.word |= motion::flag::ENDED;
+    }
+
+    /// FUN_1403c7c10 / FUN_1403c8f10: a hook table's motions take over from
+    /// the set's for the motions started from now on (FUN_1403c8cd0 looks in
+    /// the table first).
+    pub fn set_motion_hook(&mut self, hook: Option<i32>) {
+        self.motion_hook = hook;
+        self.model = table_model(self.model, hook);
+    }
+
+    /// The model word that names the table the playing motion came from.
+    pub fn playing_model(&self) -> u32 {
+        table_model(self.model, self.motion.table)
     }
 
     /// FUN_1403c6dc0: like start, but nothing happens if `slot` already plays.
@@ -1166,7 +1199,7 @@ impl Sysobj {
         if self.gone {
             return;
         }
-        let clips = env.clips(self.model);
+        let clips = env.clips(self.playing_model());
         let m = &mut self.motion;
         m.flags.pulses = 0;
         m.root_step = [0.; 3];
@@ -1300,7 +1333,7 @@ impl Sysobj {
         if self.gone {
             return;
         }
-        let clips = env.clips(self.model);
+        let clips = env.clips(self.playing_model());
         let no_control = self.motion.flags.word & motion::flag::NO_CONTROL != 0;
         let reacting = self.reaction != Reaction::None && self.hp > 0;
         if reacting {

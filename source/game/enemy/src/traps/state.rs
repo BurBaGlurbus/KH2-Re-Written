@@ -273,7 +273,7 @@ fn motion_hook(ctx: &mut Ctx<'_>, m: &mut Memory<'_>, args: &mut Args) -> Result
     let id = ctx.sys_of_ai(m, args[0].value)?;
     let hook = args[1].as_int();
     if ctx.env.motion_hook(id, hook) {
-        ctx.object(id)?.sys.motion_hook = Some(hook);
+        ctx.object(id)?.sys.set_motion_hook(Some(hook));
     }
     Ok(())
 }
@@ -281,7 +281,7 @@ fn motion_hook(ctx: &mut Ctx<'_>, m: &mut Memory<'_>, args: &mut Args) -> Result
 /// 1:76 FUN_14042f490 -> FUN_1403c8f10: back to the plain motion set.
 fn motion_unhook(ctx: &mut Ctx<'_>, m: &mut Memory<'_>, args: &mut Args) -> Result<(), Fault> {
     let id = ctx.sys_of_ai(m, args[0].value)?;
-    ctx.object(id)?.sys.motion_hook = None;
+    ctx.object(id)?.sys.set_motion_hook(None);
     Ok(())
 }
 

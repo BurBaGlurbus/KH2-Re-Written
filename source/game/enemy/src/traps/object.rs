@@ -394,11 +394,13 @@ fn fly(ctx: &mut Ctx<'_>, m: &mut Memory<'_>, args: &mut Args) -> Result<(), Fau
     Ok(())
 }
 
-/// 1:60 FUN_14042efc0.
+/// 1:60 FUN_14042efc0: FUN_1403ba9a0, the mode's flag bit 1 or `+0x18c` bit 6.
 fn is_air(ctx: &mut Ctx<'_>, m: &mut Memory<'_>, args: &mut Args) -> Result<(), Fault> {
     let id = ctx.sys_of_ai(m, args[0].value)?;
     let sys = &ctx.object(id)?.sys;
-    let air = sys.air_blocked() || sys.airborne;
+    let air = sys.air_blocked()
+        || sys.mode_flags() & 2 != 0
+        || sys.motion.flags.word & crate::motion::flag::HOLD != 0;
     int(args, air as i32);
     Ok(())
 }
@@ -812,7 +814,7 @@ fn motion_is_in_loop(ctx: &mut Ctx<'_>, m: &mut Memory<'_>, args: &mut Args) -> 
     let sys = &ctx.object(id)?.sys;
     let looping = sys.motion.blend <= 0.0
         && env
-            .clips(sys.model)
+            .clips(sys.playing_model())
             .in_loop(sys.motion.slot, sys.motion.tick);
     int(args, looping as i32);
     Ok(())

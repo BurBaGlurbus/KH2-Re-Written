@@ -641,3 +641,24 @@ fn mode_7_rises_straight_turns_to_156_and_lands_on_157() {
     assert_ne!(s.flags & 0x800_0000, 0);
     assert!(s.position[0] > 0., "it moved out once past the apex");
 }
+
+#[test]
+fn a_hook_changes_only_the_motion_started_after_it() {
+    let mut s = Sysobj::bare();
+    s.model = 7;
+    assert!(s.motion_start(3, 0., &Thirty));
+    assert_eq!(s.playing_model(), 7);
+    s.set_motion_hook(Some(161));
+    assert_eq!(s.motion.table, None, "the playing motion keeps its table");
+    assert_eq!(model_entry(s.model), 7);
+    assert_eq!(s.model >> MODEL_ENTRY_BITS, 162);
+    assert_eq!(s.playing_model(), 7);
+    assert!(s.motion_start(4, 0., &Thirty));
+    assert_eq!(s.motion.table, Some(161));
+    assert_eq!(s.playing_model(), s.model);
+    // An unhook leaves the playing motion in the table too.
+    s.set_motion_hook(None);
+    assert_eq!(s.model, 7);
+    assert_eq!(s.motion.table, Some(161));
+    assert_eq!(s.playing_model() >> MODEL_ENTRY_BITS, 162);
+}

@@ -249,15 +249,29 @@ impl Env for BrainEnv<'_> {
         })
     }
     // Objects the script made (`sysobj_appear`) carry their entry as the
-    // model; only made enemies have motions of their own here.
+    // model; only made enemies have motions of their own here. The word's
+    // top bits name a hook table (`Sysobj::set_motion_hook`).
     fn clips(&self, model: u32) -> &dyn EnemyClips {
-        if model == 0 {
-            return &self.clips;
+        let entry = enemy::sysobj::model_entry(model);
+        let hook = (model >> enemy::sysobj::MODEL_ENTRY_BITS) as i32 - 1;
+        if entry == 0 {
+            return match self.clips.base.hook(hook) {
+                Some(table) => table,
+                None => &self.clips,
+            };
         }
-        match super::enemy_battle::made_kind(model) {
-            Some(made) => &*made.clips,
+        match super::enemy_battle::made_kind(entry) {
+            Some(made) => match made.clips.hook(hook) {
+                Some(table) => table,
+                None => &*made.clips,
+            },
             None => &NoClips,
         }
+    }
+    /// FUN_1403c7c10: the set's slot `hook` becomes the hook table (+0x160).
+    /// [I] The object's own set, whichever object is named.
+    fn motion_hook(&self, _object: u32, hook: i32) -> bool {
+        self.clips.base.hook(hook).is_some()
     }
     fn player_position(&self) -> Vec3 {
         self.player
@@ -783,7 +797,7 @@ impl ScriptBrain {
     ) {
         self.fresh_world();
         let sys = &mut object.sys;
-        sys.model = 0;
+        sys.model &= !enemy::sysobj::model_entry(sys.model);
         sys.sstm = sstm;
         // Its script's `btlobj_set_sheet` set these if it ran.
         if sys.sheet == 0 {
@@ -874,7 +888,7 @@ impl ScriptBrain {
             return;
         };
         let mut own = std::mem::replace(&mut self.object, stub);
-        own.sys.model = own.sys.entry_id;
+        own.sys.model |= own.sys.entry_id;
         put(&mut to.world.objects, own);
         for slot in &mut self.world.objects {
             if let Some(o) = slot.take() {
@@ -889,7 +903,7 @@ impl ScriptBrain {
         let id = self.object.id as usize;
         if let Some(mut own) = from.world.objects.get_mut(id).and_then(Option::take) {
             own.lent = false;
-            own.sys.model = 0;
+            own.sys.model &= !enemy::sysobj::model_entry(own.sys.model);
             self.stub = Some(std::mem::replace(&mut self.object, own));
         }
         for id in self.lent_made.drain(..) {
@@ -916,6 +930,10 @@ impl ScriptBrain {
     /// Shouts of the other fighters: its next shout job tells its objects.
     pub fn hear_shouts(&mut self, shouts: &[enemy::world::Shout]) {
         self.world.heard.extend_from_slice(shouts);
+    }
+
+    pub fn motion_table(&self) -> Option<i32> {
+        self.object.sys.motion.table
     }
 
     /// The attack objects the script has placed, for the host's hit tests.
@@ -1448,10 +1466,13 @@ impl ScriptBrain {
             .objects
             .iter()
             .flatten()
-            .filter(|o| !o.sys.gone && super::enemy_battle::made_kind(o.sys.model).is_some())
+            .filter(|o| {
+                let entry = enemy::sysobj::model_entry(o.sys.model);
+                !o.sys.gone && super::enemy_battle::made_kind(entry).is_some()
+            })
             .map(|o| MadeFighter {
                 id: o.id,
-                entry: o.sys.model,
+                entry: enemy::sysobj::model_entry(o.sys.model),
                 position: o.sys.position,
                 yaw: o.sys.yaw,
                 slot: o.sys.motion.slot,
@@ -1649,7 +1670,11 @@ impl ScriptBrain {
     /// The playing motion has a clip (a script can name a slot the motion
     /// set leaves empty).
     pub fn has_clip(&self) -> bool {
-        enemy::env::Clips::length(&*self.clips, self.motion()) > 0
+        let clips = self
+            .motion_table()
+            .and_then(|h| self.clips.hook(h))
+            .unwrap_or(&self.clips);
+        enemy::env::Clips::length(clips, self.motion()) > 0
     }
     pub fn serial(&self) -> u64 {
         self.object.sys.motion.serial

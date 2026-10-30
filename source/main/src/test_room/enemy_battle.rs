@@ -147,6 +147,13 @@ impl Brain {
             _ => false,
         }
     }
+    /// The hook table the playing motion came from (`obj_motion_hook`).
+    pub fn motion_table(&self) -> Option<i32> {
+        match self {
+            Self::Script(a) => a.motion_table(),
+            _ => None,
+        }
+    }
     /// FUN_1403b5fa0: Sora executed reaction command `command` on this
     /// actor (its script's trigger 11).
     pub fn command(&mut self, command: u16, group: u8, attack: Option<u32>) {
@@ -358,6 +365,7 @@ impl Brain {
     }
 }
 
+#[derive(Clone)]
 pub(super) struct Clip {
     choice: usize,
     motion: Arc<SelectedMotion>,
@@ -410,8 +418,13 @@ impl Clip {
         self.roots[self.clock(t) as usize]
     }
 }
-pub(super) struct Clips(HashMap<usize, Clip>);
+/// A motion set's clips, and for each hook table the set as that table leaves
+/// it: FUN_1403c8cd0 looks in the table first, then in the set.
+pub(super) struct Clips(HashMap<usize, Clip>, HashMap<i32, Clips>);
 impl Clips {
+    pub fn hook(&self, hook: i32) -> Option<&Clips> {
+        self.1.get(&hook)
+    }
     /// The clip a brain's motion slot plays: its choice, motion and the
     /// source key at `elapsed` (the first key while blending), as
     /// [`BattleActor::tick`] poses it.
@@ -860,6 +873,34 @@ pub(super) fn build_clips(
         .filter(|(_, m)| m.status.is_none())
     {
         let motion = kind.load_motion(choice).map_err(|e| e.to_string())?;
+        clips.insert(
+            m.slot,
+            build_clip(kind, choice, m.slot, motion, &mut windows)?,
+        );
+    }
+    let mut hooks = HashMap::new();
+    for (hook, motions) in kind.hook_tables() {
+        let mut table = clips.clone();
+        for (slot, motion) in motions {
+            let choice = clips.get(&slot).map_or(0, |c: &Clip| c.choice);
+            // A table's motion outside the admitted profile stays the set's.
+            if let Ok(clip) = build_clip(kind, choice, slot, motion, &mut windows) {
+                table.insert(slot, clip);
+            }
+        }
+        hooks.insert(hook, Clips(table, HashMap::new()));
+    }
+    Ok(Clips(clips, hooks))
+}
+
+fn build_clip(
+    kind: &Kind,
+    choice: usize,
+    slot: usize,
+    motion: Arc<SelectedMotion>,
+    windows: &mut impl FnMut(&SelectedMotion) -> Result<Vec<AttackWindow>, String>,
+) -> Result<Clip, String> {
+    {
         // An absent type-16 entry means no events, including the ordinary
         // Shadow/Soldier idle clips. It is not a malformed event table.
         if motion.triggers.len() > 1
@@ -896,9 +937,8 @@ pub(super) fn build_clips(
             || fps <= 0.
         {
             return Err(format!(
-                "slot {} native clock outside admitted profile (start {start}, fps {fps}, \
-                 return {repeat}, length {duration})",
-                m.slot
+                "slot {slot} native clock outside admitted profile (start {start}, fps {fps}, \
+                 return {repeat}, length {duration})"
             ));
         }
         let mut roots = Vec::new();
@@ -943,22 +983,18 @@ pub(super) fn build_clips(
                 })
                 .collect(),
         };
-        clips.insert(
-            m.slot,
-            Clip {
-                choice,
-                motion,
-                duration,
-                loop_top: loop_top.round() as u32,
-                start,
-                fps,
-                roots,
-                windows,
-                events,
-            },
-        );
+        Ok(Clip {
+            choice,
+            motion,
+            duration,
+            loop_top: loop_top.round() as u32,
+            start,
+            fps,
+            roots,
+            windows,
+            events,
+        })
     }
-    Ok(Clips(clips))
 }
 
 impl BattleActor {
@@ -1142,7 +1178,12 @@ impl BattleActor {
         if let Some(f) = self.brain.fault() {
             return Err(f);
         }
-        let c = self.clips.0.get(&self.brain.motion()).ok_or_else(|| {
+        let clips = self
+            .brain
+            .motion_table()
+            .and_then(|h| self.clips.hook(h))
+            .unwrap_or(&self.clips);
+        let c = clips.0.get(&self.brain.motion()).ok_or_else(|| {
             format!(
                 "AI requested unsupported source motion {}",
                 self.brain.motion()
