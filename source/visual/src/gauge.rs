@@ -967,6 +967,7 @@ impl Canvas {
     /// split.
     pub fn render(&mut self, draws: &[Draw], textures: &[Texture]) -> bool {
         use std::hash::{Hash, Hasher};
+        let hashing = bevy::log::info_span!("hud_hash").entered();
         let k = self.scale;
         let prints: Vec<u64> = textures.iter().map(Texture::fingerprint).collect();
         let mut tris = Vec::new();
@@ -1052,9 +1053,11 @@ impl Canvas {
             }
         }
         std::mem::swap(&mut self.hash, &mut self.last_hash);
+        drop(hashing);
         if !any {
             return false;
         }
+        let _raster = bevy::log::info_span!("hud_raster").entered();
         // Only triangles over a redrawn tile draw; rows go to the threads
         // in turn, so drawing that sits in a few rows still spreads.
         let (tiles_x, redraw) = (self.tiles_x, &self.redraw);

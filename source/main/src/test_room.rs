@@ -3472,13 +3472,15 @@ fn load(
     if actors.len() != 1 {
         return Err("test room requires exactly one character model".into());
     }
-    let actor = actors.remove(0);
+    let mut actor = actors.remove(0);
+    actor.merge_parts_by_texture();
     let mut weapons =
         model_inspection::read_selected_models(source, &base.join(&config.weapon_selection))?;
     if weapons.len() != 1 {
         return Err("test room requires exactly one weapon model".into());
     }
-    let weapon = weapons.remove(0);
+    let mut weapon = weapons.remove(0);
+    weapon.merge_parts_by_texture();
     timer.mark("models");
     let objects = objentry::read(&read_archive(source, &config.objentry)?)?;
     // Sora's weight (FUN_1403b5e00: his own objentry's +0x50, P_EX100's
@@ -4608,7 +4610,8 @@ fn load_enemy(
     if models.len() != 1 {
         return Err("enemy selection requires exactly one model".into());
     }
-    let model = models.remove(0);
+    let mut model = models.remove(0);
+    model.merge_parts_by_texture();
     let collision_archive = read_archive(source, &config.model)?;
     let collision_bytes = bar_entry_typed(&collision_archive, 23)?;
     let collision = object_collision::read(collision_bytes)?;
@@ -9263,7 +9266,8 @@ fn load_npc(
     if models.len() != 1 {
         return Err("NPC selection requires exactly one model".into());
     }
-    let model = models.remove(0);
+    let mut model = models.remove(0);
+    model.merge_parts_by_texture();
     let collision = object_collision::read(bar_entry_typed(
         &read_archive(source, &npc.target_model)?,
         23,

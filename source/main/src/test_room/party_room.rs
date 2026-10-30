@@ -705,7 +705,8 @@ pub fn load(
     if models.is_empty() {
         return Err("party model has no mesh".into());
     }
-    let model = models.remove(0);
+    let mut model = models.remove(0);
+    model.merge_parts_by_texture();
     let selection = |n: &str| -> Result<motion::MotionSetSelection, Box<dyn std::error::Error>> {
         let set = library
             .find(&format!("obj/{n}.mset"))
@@ -791,7 +792,9 @@ pub fn load(
             let mut models =
                 model_inspection::read_model_at(source, w.index, w.ordinal, w.name_hash)?;
             if !models.is_empty() {
-                weapon = Some(models.remove(0));
+                let mut model = models.remove(0);
+                model.merge_parts_by_texture();
+                weapon = Some(model);
             }
         }
         if let Ok(entry) = bar_entry_typed(&archive, 23)

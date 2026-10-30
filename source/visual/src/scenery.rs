@@ -157,6 +157,7 @@ pub fn load(
         if let Some((bank, ..)) = bank_arg {
             fit_hd_regions(&mut model, bank);
         }
+        model.merge_parts_by_texture();
         let mut anims = Vec::new();
         if let Some(bytes) = motions
             && let Ok(inner) = bar::read_bar(bytes)

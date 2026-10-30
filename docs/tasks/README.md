@@ -269,3 +269,4 @@ Records through T128 retain historical commands and paths. See [the folder guide
 | [T298](T298-session-cleanup-and-map-merge.md) | A long session's cleanup: form effects end on both Soras, rounds and doors clear effects, forms, loops and caches, ceilings on queues; map chunks merged, one material per scroll record; a joiner's wait starts with its first Hello | PARTIAL. PASS for scripted duels and room walks; two PCs and real long play not run. |
 | [T299](T299-fighters-share-one-object-list.md) | Fighters share one object list: shouts, teamwork blocks and searches reach each other; `target_attack` | PARTIAL |
 | [T301](T301-made-fighter-is-its-own-fighter.md) | A script-made fighter becomes a fighter of its own (the Sorcerer, M_EX960) | PARTIAL |
+| [T302](T302-general-lag.md) | General lag, the biggest frame costs first: a model's parts merged by texture | PARTIAL. Each fix has its table; real play not measured. |

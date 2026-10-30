@@ -62,7 +62,58 @@ pub struct InspectionModel {
     pub textures: Option<Arc<InspectionTextures>>,
     pub texture_routes: Vec<UvRoutes>,
 }
+/// Part `i`'s texture in every UV profile.
+fn part_key(routes: &[UvRoutes], i: usize) -> Vec<usize> {
+    routes
+        .iter()
+        .map(|r| r.parts[i].environment_ordinal)
+        .collect()
+}
+
+/// Parts with the same texture in every profile become one, in the order of
+/// their first part; each keeps its corners and their UVs.
+fn merge_by_texture(parts: &mut Vec<InspectionPart>, routes: &mut [UvRoutes]) {
+    let mut first: Vec<(Vec<usize>, usize)> = Vec::new();
+    let mut kept = 0;
+    for i in 0..parts.len() {
+        let key = part_key(routes, i);
+        match first.iter().find(|(k, _)| *k == key).map(|f| f.1) {
+            Some(into) => {
+                let indices = std::mem::take(&mut parts[i].indices);
+                parts[into].indices.extend(indices);
+                parts[into].cross_part_corners += parts[i].cross_part_corners;
+                for r in routes.iter_mut() {
+                    let uvs = std::mem::take(&mut r.parts[i].expanded_uv_bits);
+                    r.parts[into].expanded_uv_bits.extend(uvs);
+                    r.parts[into].cross_part_uv_corners += r.parts[i].cross_part_uv_corners;
+                }
+            }
+            None => {
+                first.push((key, kept));
+                parts.swap(kept, i);
+                for r in routes.iter_mut() {
+                    r.parts.swap(kept, i);
+                    r.parts[kept].part_ordinal = kept;
+                }
+                kept += 1;
+            }
+        }
+    }
+    parts.truncate(kept);
+    for r in routes.iter_mut() {
+        r.parts.truncate(kept);
+    }
+}
+
 impl InspectionModel {
+    /// One part per texture, for a model drawn whole: each part is a mesh to
+    /// upload and a draw, and a character's many small ones cost far more
+    /// than their vertices. Not for code that selects parts (`mesh_group`,
+    /// `attributes`).
+    pub fn merge_parts_by_texture(&mut self) {
+        merge_by_texture(&mut self.parts, &mut self.texture_routes);
+    }
+
     pub fn texture_modes(&self) -> &[TextureMode] {
         self.textures
             .as_ref()
@@ -637,5 +688,61 @@ mod tests {
         geometry.parts[1].vertex_base = 2;
         geometry.parts[1].triangles[0][0].vertex_index = 4;
         assert!(parts(&geometry, &poses).is_err());
+    }
+}
+
+#[cfg(test)]
+mod merge_tests {
+    use super::*;
+    use crate::model_texture_routing::PartTextureRoute;
+
+    fn part(indices: Vec<u32>) -> InspectionPart {
+        InspectionPart {
+            group_ordinal: 0,
+            packet_ordinal: 0,
+            texture_index: 0,
+            source_is_opaque: true,
+            attributes: 0,
+            indices,
+            cross_part_corners: 1,
+            mesh_group: 0,
+        }
+    }
+
+    fn route(environment_ordinal: usize, uv: u32) -> PartTextureRoute {
+        PartTextureRoute {
+            part_ordinal: 9,
+            raw_texture_index: 0,
+            environment_ordinal,
+            expanded_uv_bits: vec![[uv, uv]],
+            cross_part_uv_corners: 0,
+        }
+    }
+
+    #[test]
+    fn parts_with_one_texture_become_one_with_their_uvs() {
+        let mut parts = vec![part(vec![0]), part(vec![1]), part(vec![2]), part(vec![3])];
+        let mut routes = vec![UvRoutes {
+            profile: UvProfile::Kkdf2IntegerTruncated,
+            parts: vec![route(5, 10), route(7, 20), route(5, 30), route(7, 40)],
+        }];
+        merge_by_texture(&mut parts, &mut routes);
+        assert_eq!(parts.len(), 2);
+        assert_eq!(parts[0].indices, [0, 2]);
+        assert_eq!(parts[1].indices, [1, 3]);
+        let uvs = |k: usize| routes[0].parts[k].expanded_uv_bits.clone();
+        assert_eq!(uvs(0), [[10, 10], [30, 30]]);
+        assert_eq!(uvs(1), [[20, 20], [40, 40]]);
+        assert_eq!(routes[0].parts[1].environment_ordinal, 7);
+        assert_eq!(routes[0].parts[1].part_ordinal, 1);
+        assert_eq!(parts[0].cross_part_corners, 2);
+    }
+
+    #[test]
+    fn a_model_without_textures_is_one_part() {
+        let mut parts = vec![part(vec![0]), part(vec![1])];
+        merge_by_texture(&mut parts, &mut []);
+        assert_eq!(parts.len(), 1);
+        assert_eq!(parts[0].indices, [0, 1]);
     }
 }

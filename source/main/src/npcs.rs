@@ -209,7 +209,8 @@ impl NpcKind {
         if models.is_empty() {
             return Err("NPC model has no mesh".into());
         }
-        let model = models.remove(0);
+        let mut model = models.remove(0);
+        model.merge_parts_by_texture();
         let set = library
             .find(&format!(
                 "obj/{}",

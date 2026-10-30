@@ -262,7 +262,8 @@ impl FormSources {
         if actors.len() != 1 {
             return Err("form model selection is not one model".into());
         }
-        let actor = actors.remove(0);
+        let mut actor = actors.remove(0);
+        actor.merge_parts_by_texture();
         let set_name = String::from_utf8_lossy(&object.animation_name).into_owned();
         let set = find(&format!("obj/{set_name}"))?;
         let motion_set = motion::MotionSetSelection {
@@ -296,7 +297,9 @@ impl FormSources {
             if models.is_empty() {
                 return Err(format!("{weapon_name} has no model").into());
             }
-            Ok((models.remove(0), blade, reach))
+            let mut model = models.remove(0);
+            model.merge_parts_by_texture();
+            Ok((model, blade, reach))
         };
         let (weapon, blade0, reach0) = load_weapon(weapons.main)?;
         // The Keyblade's own effects (swing trail, hit sparks).
