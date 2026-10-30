@@ -124,6 +124,10 @@ pub(crate) struct LobbyRoom {
     /// Host: whether the joiner's install can show the Mirage Arena (None:
     /// not told yet).
     peer_mirage: Option<bool>,
+    /// Host: the joiner's KH3 install, once it said (`Some(None)`: none).
+    peer_kh3: Option<Option<[u8; 32]>>,
+    /// Joiner: its KH3 install was reported.
+    kh3_sent: bool,
     /// Joiner: this install's answer was sent.
     mirage_sent: bool,
     /// The other player's round trip as shown (ms, to 5), and when it was
@@ -328,6 +332,47 @@ fn mirage_check(room: &mut LobbyRoom, net: &mut DuelNet, game: &mut Game) {
     }
 }
 
+/// Host: why the KH3 ruleset cannot be picked now, if it cannot. It reads
+/// KH3's files, so both players need the same copy of the game.
+fn kh3_refused(room: &LobbyRoom, net: &DuelNet, game: &Game) -> Option<String> {
+    let them = net.peer.as_deref().unwrap_or("The other player");
+    let Some(own) = &game.kh3_install else {
+        return Some("KH3 needs your copy of KINGDOM HEARTS III: set it in the launcher.".into());
+    };
+    match room.peer_kh3 {
+        None => Some(format!("Waiting for {them}'s KH3 check.")),
+        Some(None) => Some(format!("{them} has no KINGDOM HEARTS III set: KH2 it is.")),
+        Some(Some(theirs)) if theirs != own.identity => Some(format!(
+            "{them}'s KINGDOM HEARTS III files differ from yours: KH2 it is."
+        )),
+        _ => None,
+    }
+}
+
+/// Both players must have the same KH3 install for the KH3 ruleset: the
+/// joiner reports its own; the host keeps the KH2 ruleset otherwise.
+fn kh3_check(room: &mut LobbyRoom, net: &mut DuelNet, game: &mut Game) {
+    if net.role == Role::Join {
+        if !room.kh3_sent {
+            room.kh3_sent = true;
+            let identity = game.kh3_install.as_ref().map(|i| i.identity);
+            intend(room, net, game, Intent::Kh3(identity));
+        }
+        return;
+    }
+    if game.duel_rules.kh3()
+        && net.session.is_connected()
+        && room.peer_kh3.is_some()
+        && let Some(why) = kh3_refused(room, net, game)
+    {
+        game.duel_rules.ruleset = duel_rules::Ruleset::Kh2;
+        room.lobby.rules_changed();
+        let tick = game.tick;
+        game.event(serde_json::json!({"event":"duel_kh3_fallback","tick":tick,"why":why}));
+        room.note = Some((why, tick));
+    }
+}
+
 /// What a Keyblade adds (Strength, Magic, ...) on this Sora.
 fn keyblade_gear(game: &Game, k: u16) -> player::equipment_stats::Totals {
     let mut e = game.equipment.clone();
@@ -502,6 +547,10 @@ pub(crate) fn tick(
                     room.peer_mirage = Some(ok);
                     continue;
                 }
+                if let Intent::Kh3(identity) = intent {
+                    room.peer_kh3 = Some(identity);
+                    continue;
+                }
                 let limits = room.limits.clone();
                 if let Err(why) = room.lobby.apply(1, intent, &limits) {
                     let mut w = net::wire::Writer::default();
@@ -527,6 +576,7 @@ pub(crate) fn tick(
         }
     }
     mirage_check(room, net, game);
+    kh3_check(room, net, game);
     // The other player's ping, a few times a second at most.
     if net.session.is_connected() && game.tick.saturating_sub(room.ping_at) >= 120 {
         room.ping_at = game.tick;
@@ -842,7 +892,16 @@ fn step(
             }
         }
         RowKind::Time => game.duel_rules.cycle_time(s),
-        RowKind::Ruleset => game.duel_rules.cycle_ruleset(s),
+        RowKind::Ruleset => {
+            game.duel_rules.cycle_ruleset(s);
+            if game.duel_rules.kh3()
+                && let Some(why) = kh3_refused(room, net, game)
+            {
+                game.duel_rules.ruleset = duel_rules::Ruleset::Kh2;
+                room.note = Some((why, game.tick));
+                game.sound_queue.push((SE_ERROR, "lobby"));
+            }
+        }
         RowKind::Ban(i) => {
             let n = room.limits.ban_pool().len() + 1;
             room.picks[i] = (room.picks[i] as i32 + s).rem_euclid(n as i32) as usize;
@@ -1056,7 +1115,7 @@ fn pages(room: &LobbyRoom, net: &DuelNet, game: &Game, ap: i32) -> Pages {
             duel_rules::RULESETS.iter().map(|x| text(x.1)).collect(),
             usize::from(rules.ruleset_code()),
             help(&format!(
-                "KH2: the game's own moves. KH3: flowmotion, dodge roll, air slide, glide, focus and shotlock (hold R2).{by_host}"
+                "KH2: the game's own moves. KH3: KH3's combat from your copy of KINGDOM HEARTS III; both players need it.{by_host}"
             )),
             !host,
         ),

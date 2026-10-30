@@ -63,6 +63,9 @@ pub(crate) enum Intent {
     /// Whether the player's install can show the Mirage Arena (the host
     /// keeps the duel in the test room's arena when either cannot).
     Arena(bool),
+    /// The identity of the player's KH3 install, if they set one (the host
+    /// keeps the duel in the KH2 ruleset unless both have the same).
+    Kh3(Option<[u8; 32]>),
 }
 
 /// What the duel allows, from the installed tables.
@@ -238,7 +241,7 @@ impl Lobby {
                 s.section = section;
             }
             // The lobby room keeps it (it outlives a match's lobby).
-            Intent::Arena(_) => {}
+            Intent::Arena(_) | Intent::Kh3(_) => {}
         }
         self.advance();
         Ok(())
@@ -381,6 +384,13 @@ pub(crate) fn encode_intent(kind: u8, intent: &Intent) -> Vec<u8> {
             w.u8(4);
             w.u8(u8::from(*ok));
         }
+        Intent::Kh3(identity) => {
+            w.u8(5);
+            w.u8(u8::from(identity.is_some()));
+            for b in identity.iter().flatten() {
+                w.u8(*b);
+            }
+        }
     }
     w.finish()
 }
@@ -396,6 +406,15 @@ pub(crate) fn decode_intent(kind: u8, bytes: &[u8]) -> Option<Intent> {
         2 => Intent::Ready(r.u8()? != 0),
         3 => Intent::Section(r.u8()?),
         4 => Intent::Arena(r.u8()? != 0),
+        5 => Intent::Kh3(if r.u8()? != 0 {
+            let mut identity = [0; 32];
+            for b in &mut identity {
+                *b = r.u8()?;
+            }
+            Some(identity)
+        } else {
+            None
+        }),
         _ => return None,
     };
     r.is_empty().then_some(intent)
@@ -404,6 +423,14 @@ pub(crate) fn decode_intent(kind: u8, bytes: &[u8]) -> Option<Intent> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn kh3_identity_round_trips() {
+        for intent in [Intent::Kh3(None), Intent::Kh3(Some([7; 32]))] {
+            let bytes = encode_intent(9, &intent);
+            assert_eq!(decode_intent(9, &bytes), Some(intent));
+        }
+    }
 
     const KK: u16 = 41;
     const OATH: u16 = 42;

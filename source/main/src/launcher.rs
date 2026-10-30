@@ -74,6 +74,10 @@ enum Action {
     BrowseIso(Option<PathBuf>),
     /// Remember this Skate 3 ISO or `default.xex`.
     UseIso(PathBuf),
+    /// Browse for KINGDOM HEARTS III (None: the drive list).
+    BrowseKh3(Option<PathBuf>),
+    /// Check this folder and remember it as KINGDOM HEARTS III.
+    UseKh3(PathBuf),
     Run(usize),
     /// A developer viewer (index into `Launcher::viewers`).
     View(usize),
@@ -168,6 +172,9 @@ enum Screen {
     Browse(Option<PathBuf>),
     /// Browsing for the Skate 3 disc; the tests screen to return to.
     BrowseIso(Option<PathBuf>, Bound),
+    /// Browsing for KINGDOM HEARTS III; the tests screen to return to (none
+    /// when it was opened from the guide).
+    BrowseKh3(Option<PathBuf>, Option<Bound>),
     Check(Job),
     Tests(Bound),
     /// The LAN duel: host, join, the player's name.
@@ -207,6 +214,8 @@ struct Launcher {
     found: Vec<net::Found>,
     /// This executable's identity (hosts with another are not joinable).
     build: Option<[u8; 32]>,
+    /// The checked KH3 install, when one is set; what was wrong otherwise.
+    kh3: Result<data::kh3::Install, String>,
 }
 
 impl Launcher {
@@ -293,6 +302,7 @@ impl Launcher {
                     Item::new("Skate 3 ISO", Action::BrowseIso(None))
                         .detail(iso.map_or("Not set: needed for the J skateboard".into(), plain)),
                 );
+                items.push(self.kh3_row());
                 items.push(Item::new("Change game folder", Action::Pick));
                 items.push(Item::new("Quick start guide", Action::Guide));
                 items.push(Item::new("Quit", Action::Quit));
@@ -313,9 +323,15 @@ impl Launcher {
                 let mut items = vec![
                     Item::new("Host a duel", Action::HostDuel)
                         .detail("Wait for a player on this network"),
-                    Item::new("Test KH3 mode", Action::TestKh3).detail(
-                        "The KH3 ruleset against a training dummy; START picks KH3 abilities",
-                    ),
+                    match &self.kh3 {
+                        Ok(_) => Item::new("Test KH3 mode", Action::TestKh3).detail(
+                            "The KH3 ruleset against a training dummy; START picks KH3 abilities",
+                        ),
+                        Err(why) => Item::new("Test KH3 mode", Action::TestKh3)
+                            .detail(format!("Needs your KH3 copy: {why}"))
+                            .disabled(),
+                    },
+                    self.kh3_row(),
                 ];
                 for (i, host) in self.found.iter().enumerate() {
                     let item =
@@ -351,7 +367,8 @@ impl Launcher {
                 ]);
                 items
             }
-            Screen::Guide(_) => vec![Item::new("Continue", Action::CloseGuide)],
+            Screen::Guide(_) => vec![self.kh3_row(), Item::new("Continue", Action::CloseGuide)],
+            Screen::BrowseKh3(path, back) => browse_kh3_items(path.as_deref(), back.as_ref()),
             Screen::Problem { retry, .. } => {
                 let mut items = Vec::new();
                 if let Some(b) = retry {
@@ -365,6 +382,17 @@ impl Launcher {
                 items
             }
             Screen::Boot | Screen::Check(_) | Screen::Loading(..) => Vec::new(),
+        }
+    }
+}
+
+impl Launcher {
+    /// The row that sets KINGDOM HEARTS III: the duel's KH3 option needs it.
+    fn kh3_row(&self) -> Item {
+        let item = Item::new("KINGDOM HEARTS III", Action::BrowseKh3(None));
+        match &self.kh3 {
+            Ok(install) => item.detail(plain(&install.root)).tag("KH3"),
+            Err(why) => item.detail(why.clone()),
         }
     }
 }
@@ -417,6 +445,51 @@ fn browse_iso_items(path: Option<&Path>, tests: &Bound) -> Vec<Item> {
         } else {
             Item::new(name, Action::UseIso(p)).tag("DISC")
         });
+    }
+    items
+}
+
+/// Drives and folders, with the folder holding KINGDOM HEARTS III marked.
+fn browse_kh3_items(path: Option<&Path>, back: Option<&Bound>) -> Vec<Item> {
+    let leave = || match back {
+        Some(b) => Action::UseFolder(b.folder.clone()),
+        None => Action::Guide,
+    };
+    let Some(path) = path else {
+        let mut items: Vec<Item> = ('A'..='Z')
+            .map(|d| PathBuf::from(format!("{d}:\\")))
+            .filter(|p| p.is_dir())
+            .map(|p| Item::new(plain(&p), Action::BrowseKh3(Some(p))))
+            .collect();
+        items.push(Item::new("Back", leave()));
+        return items;
+    };
+    let mut items = Vec::new();
+    let here = Item::new("Use this folder", Action::UseKh3(path.to_path_buf()));
+    items.push(if data::kh3::locate(path).is_some() {
+        here.detail("KINGDOM HEARTS III is here").tag("KH3")
+    } else {
+        here.detail("KINGDOM HEARTS III is not in this folder")
+            .disabled()
+    });
+    items.push(Item::new(
+        "Up one level",
+        Action::BrowseKh3(path.parent().map(Path::to_path_buf)),
+    ));
+    let mut dirs: Vec<PathBuf> = std::fs::read_dir(path)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter(|e| e.file_type().is_ok_and(|t| t.is_dir()))
+        .map(|e| e.path())
+        .collect();
+    dirs.sort_by_key(|p| p.file_name().map(|n| n.to_string_lossy().to_lowercase()));
+    for d in dirs {
+        let name = d
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        items.push(Item::new(name, Action::BrowseKh3(Some(d))));
     }
     items
 }
@@ -685,7 +758,7 @@ fn read_input(
 fn row_metrics(l: &Launcher) -> (f32, f32, f32) {
     match l.screen {
         Screen::Multiplayer(_) => (44., 4., 24.),
-        Screen::Browse(_) | Screen::BrowseIso(..) => (40., 4., 20.),
+        Screen::Browse(_) | Screen::BrowseIso(..) | Screen::BrowseKh3(..) => (40., 4., 20.),
         _ if l.items.iter().any(|i| i.detail.is_some()) => (66., 6., 24.),
         _ => (48., 6., 24.),
     }
@@ -808,6 +881,40 @@ fn act(l: &mut Launcher, action: Action, exit: &mut MessageWriter<AppExit>) {
                 }),
             }
         }
+        Action::BrowseKh3(path) => {
+            let back = match &l.screen {
+                Screen::Tests(b) | Screen::Multiplayer(b) => Some(b.clone()),
+                Screen::Guide(b) => b.clone(),
+                Screen::BrowseKh3(_, back) => back.clone(),
+                _ => None,
+            };
+            l.go(Screen::BrowseKh3(path, back));
+        }
+        Action::UseKh3(path) => {
+            let back = match &l.screen {
+                Screen::BrowseKh3(_, back) => back.clone(),
+                _ => None,
+            };
+            match data::kh3::admit(&path) {
+                Ok(install) => {
+                    l.settings.kh3_folder = Some(install.root.clone());
+                    l.settings.kh3_key_offset = None;
+                    if let Err(e) = install::save_settings(&l.dir, &l.settings) {
+                        eprintln!("Launcher settings not saved: {e}");
+                    }
+                    l.kh3 = Ok(install);
+                    match back {
+                        Some(b) => l.go(Screen::Tests(b)),
+                        None => l.go(Screen::Guide(None)),
+                    }
+                }
+                Err(e) => l.go(Screen::Problem {
+                    title: "That KINGDOM HEARTS III folder can't be used".into(),
+                    lines: vec![e.to_string()],
+                    retry: back,
+                }),
+            }
+        }
         Action::UseFolder(folder) => {
             // A library or `common` folder picked by mistake: use the game
             // folder inside it.
@@ -838,7 +945,11 @@ fn act(l: &mut Launcher, action: Action, exit: &mut MessageWriter<AppExit>) {
             let name = l.player_name();
             duel(l, vec!["--host".into(), "--name".into(), name]);
         }
-        Action::TestKh3 => duel(l, vec!["--kh3-test".into()]),
+        Action::TestKh3 => {
+            if l.kh3.is_ok() {
+                duel(l, vec!["--kh3-test".into()]);
+            }
+        }
         Action::JoinFound(i) => {
             if let Some(host) = l.found.get(i) {
                 let address = host.addr.to_string();
@@ -1036,6 +1147,9 @@ fn back(l: &mut Launcher, exit: &mut MessageWriter<AppExit>) {
         Screen::Browse(None) => Some(Action::Pick),
         Screen::BrowseIso(Some(p), _) => Some(Action::BrowseIso(p.parent().map(Path::to_path_buf))),
         Screen::BrowseIso(None, b) => Some(Action::UseFolder(b.folder.clone())),
+        Screen::BrowseKh3(Some(p), _) => Some(Action::BrowseKh3(p.parent().map(Path::to_path_buf))),
+        Screen::BrowseKh3(None, Some(b)) => Some(Action::UseFolder(b.folder.clone())),
+        Screen::BrowseKh3(None, None) => Some(Action::Guide),
         Screen::Pick => l.settings.game_folder.clone().map(Action::UseFolder),
         Screen::Problem { retry: Some(b), .. } => Some(Action::UseFolder(b.folder.clone())),
         Screen::Tests(_) => Some(Action::Quit),
@@ -1090,6 +1204,23 @@ fn checked(l: &mut Launcher, result: Result<Bound, String>, folder: &Path) {
     l.go(Screen::Tests(b));
 }
 
+/// The KH3 install set, or the one found in Steam's libraries or Epic's
+/// folder (remembered then); why there is none otherwise.
+fn find_kh3(settings: &mut Settings, dir: &Path) -> Result<data::kh3::Install, String> {
+    if let Some(folder) = settings.kh3_folder.clone() {
+        return data::kh3::admit(&folder).map_err(|e| e.to_string());
+    }
+    let found = data::kh3::detect(&install::steam_libraries());
+    let Some(install) = found.iter().find_map(|f| data::kh3::admit(f).ok()) else {
+        return Err("Not set: needed for the KH3 mode".into());
+    };
+    settings.kh3_folder = Some(install.root.clone());
+    if let Err(e) = install::save_settings(dir, settings) {
+        eprintln!("Launcher settings not saved: {e}");
+    }
+    Ok(install)
+}
+
 /// Developer check: with `KH2RW_LAUNCHER_SHOT` naming a PNG, F12 saves a
 /// picture of the launcher there (a window capture of the GPU surface comes
 /// out black).
@@ -1129,6 +1260,7 @@ fn update(
         l.supported = install::supported_identity(&l.dir);
         l.detected = install::detect_installs();
         l.viewers = install::viewers(&l.dir);
+        l.kh3 = find_kh3(&mut l.settings, &l.dir);
         if !l.settings.guide_seen {
             l.settings.guide_seen = true;
             if let Err(e) = install::save_settings(&l.dir, &l.settings) {
@@ -1399,6 +1531,9 @@ fn draw(
         Screen::BrowseIso(path, _) => path
             .as_deref()
             .map_or_else(|| "Find your Skate 3 ISO".into(), plain),
+        Screen::BrowseKh3(path, _) => path
+            .as_deref()
+            .map_or_else(|| "Find KINGDOM HEARTS III".into(), plain),
         Screen::Check(_) => "Checking the game folder".into(),
         Screen::Tests(_) => "Choose a test".into(),
         Screen::Multiplayer(_) => "Multiplayer".into(),
@@ -1828,10 +1963,11 @@ fn footer(l: &Launcher, p: &mut Paint, f: &mut Ui2dFrame) {
 }
 
 /// The quick start steps [launcher text, not the original's].
-const GUIDE_STEPS: [&str; 4] = [
+const GUIDE_STEPS: [&str; 5] = [
     "You need your own Steam copy of KINGDOM HEARTS -HD 1.5+2.5 ReMIX-, installed. Only Kingdom Hearts II Final Mix is used.",
     "Choose the game folder. A Steam install is found for you. If it is not, browse to it or drop the folder on this window.",
     "Optional: on the test list, set your Skate 3 disc (an Xbox 360 ISO) to ride a skateboard with J.",
+    "Optional: below, set your own KINGDOM HEARTS III copy for the duel's KH3 mode. It reads that game's files; both players need it.",
     "Choose Title screen and pick New Game, or Test room to start playing straight away.",
 ];
 
@@ -1961,6 +2097,25 @@ pub fn skate3_iso() -> Option<std::path::PathBuf> {
     install::load_settings(&install::data_dir()).skate3_iso
 }
 
+/// The KH3 folder the launcher remembers, and the pak key's place in its
+/// executable, for the duel's KH3 mode.
+pub fn kh3_folder() -> (Option<std::path::PathBuf>, Option<u64>) {
+    let settings = install::load_settings(&install::data_dir());
+    (settings.kh3_folder, settings.kh3_key_offset)
+}
+
+/// Remembers where the pak key was found (it saves a scan of the executable).
+pub fn remember_kh3_key_offset(offset: u64) {
+    let dir = install::data_dir();
+    let mut settings = install::load_settings(&dir);
+    if settings.kh3_key_offset != Some(offset) {
+        settings.kh3_key_offset = Some(offset);
+        if let Err(e) = install::save_settings(&dir, &settings) {
+            eprintln!("Launcher settings not saved: {e}");
+        }
+    }
+}
+
 /// Where the riding data prepared from the Skate 3 disc is kept.
 #[cfg(feature = "skate3")]
 pub fn skate3_cache() -> std::path::PathBuf {
@@ -1993,6 +2148,7 @@ pub fn main() -> std::process::ExitCode {
             browser: None,
             found: Vec::new(),
             build: None,
+            kh3: Err(String::new()),
         })
         .insert_resource(ClearColor(Color::BLACK))
         .insert_resource(WinitSettings::game())

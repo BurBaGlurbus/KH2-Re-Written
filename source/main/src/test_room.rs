@@ -1205,6 +1205,9 @@ struct Game {
     kh3_poles: Option<duel_kh3::PoleCache>,
     /// [Test] `--kh3-preview`: the looks or elements shown one by one.
     kh3_preview: Option<duel_kh3::Preview>,
+    /// The player's KH3 install, checked this session; the KH3 ruleset reads
+    /// it and is not offered without it.
+    kh3_install: Option<data::kh3::Install>,
     /// The launcher's Test KH3 mode (`--kh3-test` without
     /// `--rival-script`): the KH3 ruleset against the training dummy (the
     /// room's Shadow, standing), with the KH3 ability menu on START.
@@ -13801,6 +13804,7 @@ fn run(mut args: Vec<PathBuf>) -> Result<AppExit, Box<dyn std::error::Error>> {
     let mut basic_fk = false;
     let mut rival_script = false;
     let mut kh3_test = false;
+    let mut kh3_folder: Option<PathBuf> = None;
     let mut duel_bench = false;
     let mut duel_magic = false;
     let mut duel_shots = false;
@@ -13882,6 +13886,12 @@ fn run(mut args: Vec<PathBuf>) -> Result<AppExit, Box<dyn std::error::Error>> {
             // The launcher's Test KH3 mode: the KH3 ruleset against the
             // training dummy; with `--rival-script`, against the scripted
             // rival instead (the unattended tests' way; duel_kh3.rs).
+            // [Test] The KH3 folder, instead of the launcher's.
+            Some("--kh3-folder") => {
+                kh3_folder = Some(PathBuf::from(
+                    options.next().ok_or("KH3 folder absent")?,
+                ));
+            }
             Some("--kh3-test") => {
                 kh3_test = true;
                 duel_rules.ruleset = duel_rules::Ruleset::Kh3;
@@ -14672,6 +14682,13 @@ fn run(mut args: Vec<PathBuf>) -> Result<AppExit, Box<dyn std::error::Error>> {
         duel_shot_keys: std::collections::HashSet::new(),
         kh3_poles: None,
         kh3_preview,
+        kh3_install: kh3_folder
+            .or_else(|| crate::launcher::kh3_folder().0)
+            .and_then(|folder| {
+                data::kh3::admit(&folder)
+                    .inspect_err(|e| eprintln!("KH3 install refused: {e}"))
+                    .ok()
+            }),
         kh3_dummy: kh3_test && !rival_script,
         kh3_dummy_seen: 0,
         kh3_menu: None,

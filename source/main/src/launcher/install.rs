@@ -70,6 +70,13 @@ pub struct Settings {
     /// The duel's devices (`--input`): auto, kbm, pad or both.
     #[serde(default)]
     pub duel_input: Option<String>,
+    /// The player's KINGDOM HEARTS III folder (the duel's KH3 option reads
+    /// it), and where its pak key sits in the executable. The key itself is
+    /// never kept.
+    #[serde(default)]
+    pub kh3_folder: Option<PathBuf>,
+    #[serde(default)]
+    pub kh3_key_offset: Option<u64>,
 }
 
 pub fn load_settings(dir: &Path) -> Settings {
@@ -131,7 +138,7 @@ fn vdf_values(text: &str, key: &str) -> Vec<String> {
 
 /// Steam library folders: the default install locations and every library
 /// they list in `steamapps/libraryfolders.vdf`.
-fn steam_libraries() -> Vec<PathBuf> {
+pub(super) fn steam_libraries() -> Vec<PathBuf> {
     let mut roots = Vec::new();
     for var in ["ProgramFiles(x86)", "ProgramFiles"] {
         if let Some(p) = std::env::var_os(var) {
@@ -1114,6 +1121,8 @@ mod tests {
             player_name: Some("Riku".into()),
             last_host: Some("192.168.1.20".into()),
             duel_input: Some("pad".into()),
+            kh3_folder: Some(f.0.join("kh3")),
+            kh3_key_offset: Some(1234),
         };
         save_settings(&f.0, &s).unwrap();
         assert_eq!(load_settings(&f.0), s);

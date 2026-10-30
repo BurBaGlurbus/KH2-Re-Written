@@ -21,6 +21,7 @@ pub mod image_structure;
 pub mod inspection;
 pub mod item_table;
 pub mod journal_table;
+pub mod kh3;
 pub mod limit_file;
 pub mod menu_layout;
 pub mod message;
