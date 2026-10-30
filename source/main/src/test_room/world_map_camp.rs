@@ -105,6 +105,7 @@ pub(crate) fn load(
             seen_story: Vec::new(),
             seen_synthesis: Vec::new(),
             seen_reports: Vec::new(),
+            puzzles: journal::PuzzleSave::default(),
             seen_chests: Vec::new(),
             seen_maps: Vec::new(),
             picture_sheets: HashMap::new(),
@@ -297,6 +298,7 @@ impl WorldMapCamp {
                 c.seen_synthesis = open.seen_synthesis();
                 c.seen_reports = open.seen_reports();
                 (c.seen_chests, c.seen_maps) = open.seen_treasures();
+                take_journal_puzzles(open, &mut c.stock, &mut c.puzzles);
                 c.journal = None;
                 self.log
                     .push(serde_json::json!({"event":"journal_close","tick":tick}));
@@ -381,6 +383,8 @@ impl WorldMapCamp {
                         s.faces.get(&k).and_then(|v| v.get(i as usize).copied())
                     }
                     journal::Sheet::Photo(r) => s.photos.get(&r).copied(),
+                    journal::Sheet::Puzzle(r) => s.puzzles.get(&r).copied(),
+                    journal::Sheet::Picture(i) => c.picture_sheets.get(&i).copied().flatten(),
                 };
                 if let Some(slot) = slot {
                     frame.draws.push((slot, quads));

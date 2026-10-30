@@ -2344,6 +2344,9 @@ struct JournalSource {
     quests: Vec<data::journal_table::Quest>,
     minigames: Vec<data::journal_table::Minigame>,
     moogle_names: Vec<Vec<u8>>,
+    puzzles: Vec<data::journal_table::Puzzle>,
+    pieces: Vec<data::journal_table::Piece>,
+    ipic: Option<data::sprite_sequence::Sequence>,
     treasures: Vec<data::journal_table::Treasure>,
     item_names: HashMap<u16, journal::TreasureItem>,
     opened_bits: Vec<u16>,
@@ -2380,8 +2383,17 @@ fn load_journal(
     let limits = journal_table::read_limits(bar_entry(&tables, b"limi")?)?;
     let quests = journal_table::read_quests(bar_entry(&tables, b"ques")?)?;
     let minigames = journal_table::read_minigames(bar_entry(&tables, b"mini")?)?;
+    let puzzles = journal_table::read_puzzles(bar_entry(&tables, b"puzz")?)?;
+    // The piece table lies by name in the first archive (FUN_1403e7310).
+    let pieces = journal_table::read_pieces(&menu_screen::load_file(
+        source,
+        "Image/dt/kh2_first.hed",
+        "15jigsaw.bin",
+    )?)?;
     let mut ids: Vec<u32> = journal::MESSAGES.iter().map(|&i| i as u32).collect();
     ids.extend(journal::PAGE_MESSAGES.map(u32::from));
+    ids.extend(journal::PUZZLE_MESSAGES.map(u32::from));
+    ids.extend(puzzles.iter().map(|p| p.name as u32));
     for c in &chars {
         ids.extend([c.name, c.description, c.origin].map(u32::from));
     }
@@ -2421,6 +2433,7 @@ fn load_journal(
     let items = data::item_table::read(bar_entry(system, b"item")?)?;
     let wanted: Vec<u16> = {
         let mut v: Vec<u16> = treasures.iter().map(|t| t.item).collect();
+        v.extend(puzzles.iter().map(|p| p.reward));
         v.sort_unstable();
         v.dedup();
         v
@@ -2432,16 +2445,26 @@ fn load_journal(
     let name_ids: Vec<u32> = rows.iter().map(|r| r.name as u32).collect();
     let names =
         hud::load_messages_optional(source, &sys.index, sys.ordinal, sys.name_hash, &name_ids)?;
+    let description_ids: Vec<u32> = rows.iter().map(|r| r.description as u32).collect();
+    let descriptions = hud::load_messages_optional(
+        source,
+        &sys.index,
+        sys.ordinal,
+        sys.name_hash,
+        &description_ids,
+    )?;
     let item_names: HashMap<u16, journal::TreasureItem> = rows
         .iter()
-        .zip(names)
-        .map(|(r, n)| {
+        .zip(names.into_iter().zip(descriptions))
+        .map(|(r, (n, d))| {
             (
                 r.id,
                 journal::TreasureItem {
                     name: n.unwrap_or_default(),
                     icon: r.icon,
                     map: r.kind == 22,
+                    description: d.unwrap_or_default(),
+                    picture: r.picture,
                 },
             )
         })
@@ -2451,6 +2474,19 @@ fn load_journal(
         .zip(found)
         .filter_map(|(&id, m)| m.map(|m| (id as u16, m)))
         .collect();
+    // The pieces' names are system messages under their biased ids.
+    let piece_names: Vec<u32> = pieces.iter().map(|p| p.name as u32).collect();
+    for (p, m) in pieces.iter().zip(hud::load_messages_optional(
+        source,
+        &sys.index,
+        sys.ordinal,
+        sys.name_hash,
+        &piece_names,
+    )?) {
+        if let Some(m) = m {
+            texts.insert(p.name, m);
+        }
+    }
     // 0x8adc is the system message 0xadc.
     let fake = hud::load_messages(
         source,
@@ -2487,6 +2523,11 @@ fn load_journal(
         quests,
         minigames,
         moogle_names,
+        puzzles,
+        pieces,
+        ipic: bar_entry(system, b"ipic")
+            .ok()
+            .and_then(|b| data::sprite_sequence::read(b).ok()),
         treasures,
         item_names,
         opened_bits: j.opened_bits.clone(),
@@ -12176,6 +12217,9 @@ struct CampRes {
     seen_story: Vec<u16>,
     seen_synthesis: Vec<u8>,
     seen_reports: Vec<u16>,
+    /// The save's puzzle fields [test-room values: no piece lies in the
+    /// rooms yet].
+    puzzles: journal::PuzzleSave,
     seen_chests: Vec<u16>,
     seen_maps: Vec<u16>,
     picture_sheets: HashMap<u16, Option<usize>>,
@@ -12221,6 +12265,8 @@ struct JournalSheets {
     /// (loaded when the journal asks).
     faces: HashMap<u8, Vec<usize>>,
     photos: HashMap<u16, usize>,
+    /// Puzzle pictures by `puzz` row.
+    puzzles: HashMap<u8, usize>,
 }
 
 impl CampRes {
@@ -12927,6 +12973,7 @@ fn camp_tick(
             c.seen_synthesis = open.seen_synthesis();
             c.seen_reports = open.seen_reports();
             (c.seen_chests, c.seen_maps) = open.seen_treasures();
+            take_journal_puzzles(open, &mut c.stock, &mut c.puzzles);
             c.journal = None;
             game.event(serde_json::json!({"event":"journal_close","tick":tick}));
             // FUN_140304ea0: the camp is rebuilt (its open sound) and the
@@ -13375,6 +13422,21 @@ fn camp_data(
 /// The journal's data when it opens: its tables and the camp's seen marks;
 /// `world` is the game world it opens for (DAT_140717008) and `tour` the
 /// journal tour's extras.
+/// The puzzle fields after the journal; a solved puzzle's item goes to the
+/// stock (FUN_1403c3f00).
+fn take_journal_puzzles(
+    open: &Journal,
+    stock: &mut std::collections::BTreeMap<u16, u8>,
+    puzzles: &mut journal::PuzzleSave,
+) {
+    let mut save = open.take_puzzles();
+    for item in save.rewards.drain(..) {
+        let count = stock.entry(item).or_default();
+        *count = count.saturating_add(1);
+    }
+    *puzzles = save;
+}
+
 fn journal_data(
     c: &CampRes,
     j: &JournalSource,
@@ -13382,6 +13444,12 @@ fn journal_data(
     world: i32,
     tour: bool,
 ) -> journal::JournalData {
+    // The tour's pieces are its own until its first journal has closed.
+    let puzzles = if tour && c.puzzles == journal::PuzzleSave::default() {
+        journal_tour::puzzles()
+    } else {
+        c.puzzles.clone()
+    };
     journal::JournalData {
         kind,
         world,
@@ -13401,8 +13469,13 @@ fn journal_data(
         // or synthesis either [test-room values].
         unlocks: journal::Unlocks {
             limits: tour,
+            pieces: !puzzles.owned.is_empty(),
             ..Default::default()
         },
+        puzzles: j.puzzles.clone(),
+        pieces: j.pieces.clone(),
+        puzzle: puzzles,
+        ipic: j.ipic.clone(),
         texts: j.texts.clone(),
         tops: j.tops.iter().map(|(code, _)| code.clone()).collect(),
         world_icons: !j.world_icons.is_empty(),
@@ -13658,6 +13731,41 @@ fn load_wanted_journal(c: &mut CampRes, frame: &mut Ui2dFrame, images: &mut Asse
         }
         open.cache.faces.insert(key);
     }
+    if let Some(row) = open.cache.wanted_puzzle.take()
+        && let Some(p) = j.puzzles.get(row as usize)
+    {
+        if let std::collections::hash_map::Entry::Vacant(sheet) =
+            c.journal_sheets.puzzles.entry(row)
+        {
+            let path = format!("menu/jm_puzzle/{}.bin", p.file);
+            match menu_screen::load_imgd(source, PICTURE_INDEX, &path) {
+                Ok(Some(t)) => {
+                    sheet.insert(frame.add_sheet(images, t.rgba, t.size, t.texel_scale));
+                }
+                Ok(None) => eprintln!("Journal puzzle {path} missing"),
+                Err(e) => eprintln!("Journal puzzle {path} rejected: {e}"),
+            }
+        }
+        if c.journal_sheets.puzzles.contains_key(&row) {
+            open.cache.puzzles.insert(row);
+        }
+    }
+    if let Some(id) = open.cache.pictures.wanted.take() {
+        if let std::collections::hash_map::Entry::Vacant(slot) = c.picture_sheets.entry(id) {
+            let path = format!("itempic/item-{id:03}.imd");
+            slot.insert(match menu_screen::load_imgd(source, PICTURE_INDEX, &path) {
+                Ok(Some(t)) => Some(frame.add_sheet(images, t.rgba, t.size, t.texel_scale)),
+                Ok(None) => None,
+                Err(e) => {
+                    eprintln!("Item picture {path} rejected: {e}");
+                    None
+                }
+            });
+        }
+        if c.picture_sheets.get(&id).is_some_and(Option::is_some) {
+            open.cache.pictures.loaded.insert(id);
+        }
+    }
     if let Some(row) = open.cache.wanted_photo
         && c.journal_sheets.photos.contains_key(&row)
     {
@@ -13816,6 +13924,8 @@ fn camp_present(
                     s.faces.get(&k).and_then(|v| v.get(i as usize).copied())
                 }
                 journal::Sheet::Photo(r) => s.photos.get(&r).copied(),
+                journal::Sheet::Puzzle(r) => s.puzzles.get(&r).copied(),
+                journal::Sheet::Picture(i) => c.picture_sheets.get(&i).copied().flatten(),
             };
             if let Some(slot) = slot {
                 frame.draws.push((slot, quads));
@@ -15634,6 +15744,7 @@ fn run(mut args: Vec<PathBuf>) -> Result<AppExit, Box<dyn std::error::Error>> {
             seen_story: Vec::new(),
             seen_synthesis: Vec::new(),
             seen_reports: Vec::new(),
+            puzzles: journal::PuzzleSave::default(),
             seen_chests: Vec::new(),
             seen_maps: Vec::new(),
             picture_sheets: HashMap::new(),

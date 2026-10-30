@@ -270,4 +270,5 @@ Records through T128 retain historical commands and paths. See [the folder guide
 | [T299](T299-fighters-share-one-object-list.md) | Fighters share one object list: shouts, teamwork blocks and searches reach each other; `target_attack` | PARTIAL |
 | [T301](T301-made-fighter-is-its-own-fighter.md) | A script-made fighter becomes a fighter of its own (the Sorcerer, M_EX960) | PARTIAL |
 | [T302](T302-general-lag.md) | General lag, the biggest frame costs first: a model's parts merged by texture | PARTIAL. Each fix has its table; real play not measured. |
+| [T303](T303-journal-puzzles.md) | The Journal's Puzzles: menu, board, tutorial, solved banner, List of Pieces (issue #68) | PASS in the test room; piece pickups not built; not compared with the installed game. |
 | [T304](T304-motion-hook-tables.md) | Motion hook tables: the second forms of the Devastator, Trick Ghost, Creeper Plant and Gambler; `obj_is_air` | PARTIAL |

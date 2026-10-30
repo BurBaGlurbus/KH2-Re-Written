@@ -1,4 +1,5 @@
-//! Treasures (states 7 / 0x1a) and Maps (9 / 0x22): one grid page of 9
+//! Treasures (states 7 / 0x1a), Maps (9 / 0x22) and the List of Pieces
+//! (8 / 0x21, FUN_140336960): one grid page of 9
 //! rows x 8 cells per the journal worlds (FUN_1403363e0 builds,
 //! FUN_140334690 runs, FUN_140336170 moves, FUN_1403377c0 refreshes).
 //! There is no decide action: the cursor peeks, cancel goes back.
@@ -13,8 +14,10 @@ const TOTAL_PILL: usize = 60;
 const COUNTER: usize = 149;
 const CAPTION: usize = 148;
 const CURSOR: [usize; 2] = [65, 66];
-/// (open, closed) cell groups: chests, maps.
-const CELLS: [(usize, usize); 2] = [(74, 73), (62, 61)];
+/// (open, closed) cell groups: chests, maps, pieces.
+const CELLS: [(usize, usize); 3] = [(74, 73), (62, 61), (68, 67)];
+/// The pieces' rows are smaller (US: language id not in {0, 7}).
+const PIECE_SIZE: f32 = 15.;
 const PRIO_PANEL: u32 = 0x755c;
 const PRIO_MARK: u32 = 0x755e;
 const PRIO_CURSOR_FRAME: u32 = 0x755e;
@@ -33,6 +36,7 @@ struct Entry {
     opened: bool,
     /// The `trsr` row (the NEW bit).
     index: u16,
+    /// The item inside, or a piece's name.
     item: u16,
 }
 
@@ -49,6 +53,7 @@ struct Block {
 #[derive(Default)]
 pub(super) struct Page {
     maps: bool,
+    pieces: bool,
     entries: Vec<Entry>,
     blocks: Vec<Block>,
     total_rows: usize,
@@ -100,6 +105,9 @@ impl Journal {
     /// FUN_140347c80 / FUN_140347360 (a row was new at the opening) and
     /// FUN_140347bb0 / FUN_140347290 (all of those are seen now).
     fn treasure_mark(&self, maps: bool, w: u8) -> Option<bool> {
+        if self.treasure.pieces {
+            return self.list_mark(Some(w));
+        }
         let (at_open, seen) = if maps {
             (&self.treasure.seen_maps_at_open, &self.treasure.seen_maps)
         } else {
@@ -148,10 +156,15 @@ impl Journal {
     /// FUN_1403363e0.
     pub(super) fn build_treasure(&mut self, layout_: &Layout) {
         let seq = &layout_.sequences[SEQUENCE];
-        let maps = matches!(self.state, 9 | 0x22);
+        let pieces = matches!(
+            self.state,
+            puzzles::PIECES_NOTES | puzzles::PIECES_COLLECTION
+        );
+        let maps = matches!(self.state, 9 | 0x22) || pieces;
         self.reset_list();
         self.treasure = Page {
             maps,
+            pieces,
             seen_chests: std::mem::take(&mut self.treasure.seen_chests),
             seen_maps: std::mem::take(&mut self.treasure.seen_maps),
             seen_chests_at_open: std::mem::take(&mut self.treasure.seen_chests_at_open),
@@ -162,7 +175,25 @@ impl Journal {
         let all = self.show_all();
         // FUN_1403363e0's entry tables (4.3).
         let mut entries = Vec::new();
-        for (k, t) in self.data.treasures.iter().enumerate() {
+        if pieces {
+            // FUN_140336960: each piece once, in table order.
+            let mut added = std::collections::BTreeSet::new();
+            for (k, r) in self.data.pieces.iter().enumerate() {
+                let world = data::journal_table::journal_world(r.world);
+                if world >= 0
+                    && (r.flag == 0 || self.flag(r.flag) || all)
+                    && added.insert((r.puzzle, r.piece))
+                {
+                    entries.push(Entry {
+                        world: world as u8,
+                        opened: self.data.puzzle.owned.contains(&(r.puzzle, r.piece)),
+                        index: k as u16,
+                        item: r.name,
+                    });
+                }
+            }
+        }
+        for (k, t) in self.data.treasures.iter().enumerate().filter(|_| !pieces) {
             let item = self.data.item_names.get(&t.item);
             let is_map = item.is_some_and(|i| i.map);
             let world = data::journal_table::journal_world(t.game_world);
@@ -217,7 +248,7 @@ impl Journal {
         self.treasure.blocks = blocks;
         self.treasure.total_rows = row;
         // FUN_140334570: from Notes the list opens on the current world.
-        let from_collection = matches!(self.state, 0x1a | 0x22);
+        let from_collection = matches!(self.state, 0x1a | 0x21 | 0x22);
         let total = self.treasure.total_rows;
         let vis = total.min(ROWS);
         if !from_collection && self.world >= 0 {
@@ -236,6 +267,10 @@ impl Journal {
             }
         }
         self.category_frame(seq);
+        if self.state == puzzles::PIECES_COLLECTION {
+            let tab = self.msg(puzzles::TAB_PIECES);
+            self.tab1_in(seq, tab);
+        }
         let c = self.container;
         let p0 = self.page_sprite(seq, PRIO_PANEL, FRAME_GROUP, c, None);
         self.treasure.p0 = Some(p0);
@@ -251,7 +286,8 @@ impl Journal {
         self.sprites.get_mut(cap).offset = at;
         self.treasure.caption = Some(cap);
         for i in 0..ROWS {
-            let mut t = Self::text(Vec::new(), SIZE);
+            let size = if pieces { PIECE_SIZE } else { SIZE };
+            let mut t = Self::text(Vec::new(), size);
             t.group_position = false;
             t.keep_rgb = false;
             let l = self.page_sprite(seq, BASE, NOTHING, p0, Some(t));
@@ -294,7 +330,12 @@ impl Journal {
         self.list = MenuList::new(Vec::new(), 0);
         self.no_cursor = false;
         self.no_light = false;
-        self.show_help(seq, HELP[maps as usize]);
+        let help = if pieces {
+            puzzles::HELP_PIECES
+        } else {
+            HELP[maps as usize]
+        };
+        self.show_help(seq, help);
         self.treasure_refresh(seq);
     }
 
@@ -336,14 +377,18 @@ impl Journal {
         if let Some((b, _)) = self.treasure_block(s + r)
             && b.n > 0
         {
-            // FUN_1403467a0 / FUN_1403464a0.
-            let rows = self.treasure_rows(self.treasure.maps, b.world);
-            let seen = if self.treasure.maps {
-                &mut self.treasure.seen_maps
+            // FUN_1403467a0 / FUN_1403464a0 / FUN_140346550.
+            if self.treasure.pieces {
+                self.pieces_seen(b.world);
             } else {
-                &mut self.treasure.seen_chests
-            };
-            seen.extend(rows);
+                let rows = self.treasure_rows(self.treasure.maps, b.world);
+                let seen = if self.treasure.maps {
+                    &mut self.treasure.seen_maps
+                } else {
+                    &mut self.treasure.seen_chests
+                };
+                seen.extend(rows);
+            }
         }
         let all = self.show_all();
         let maps = self.treasure.maps;
@@ -371,7 +416,8 @@ impl Journal {
             }
         }
         // Cells.
-        let (open, closed) = CELLS[maps as usize];
+        let pieces = self.treasure.pieces;
+        let (open, closed) = CELLS[if pieces { 2 } else { maps as usize }];
         for (k, &id) in self.treasure.cells.clone().iter().enumerate() {
             self.sprites.set(seq, id, NOTHING, None);
             let (row, col) = (k / COLS, k % COLS);
@@ -392,7 +438,13 @@ impl Journal {
             && r_in * COLS + c < b.n
         {
             let entry = self.treasure.entries[b.first_entry + r_in * COLS + c];
-            if let Some(info) = self.data.item_names.get(&entry.item) {
+            if pieces {
+                text = if entry.opened {
+                    self.msg(entry.item)
+                } else {
+                    vec![0x49; 5]
+                };
+            } else if let Some(info) = self.data.item_names.get(&entry.item) {
                 text = if entry.opened {
                     let mut t = Vec::new();
                     if !maps && info.icon != 0 {
@@ -540,13 +592,17 @@ impl Journal {
         }
         if pad.trig & bits::CANCEL != 0 {
             sounds.push(SOUND_CLOSE);
-            self.pill_out(seq);
+            if self.state == puzzles::PIECES_COLLECTION {
+                self.tab1_out(seq);
+            } else {
+                self.pill_out(seq);
+            }
             self.hide_help(seq);
             self.slide(seq, 1, 1);
-            self.pending = Some(if matches!(self.state, 0x1a | 0x22) {
-                COLLECTION_PAGE
-            } else {
-                NOTES_PAGE
+            self.pending = Some(match self.state {
+                puzzles::PIECES_COLLECTION => puzzles::MENU,
+                0x1a | 0x22 => COLLECTION_PAGE,
+                _ => NOTES_PAGE,
             });
             self.substate = 2;
         } else if pad.trig & bits::START != 0 {

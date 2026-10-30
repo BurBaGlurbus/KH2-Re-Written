@@ -138,6 +138,26 @@ pub fn load_images_named(
 /// a bare IMGD (`itempic/item-000.imd`) or a BAR whose first IMGD is the
 /// picture (`menu/us/at_020_r.bar`, `menu/us/jm_photo/tt11.bin`). None
 /// when the index has no such path.
+/// A file's original bytes by its path.
+pub fn load_file(
+    source: &ProbeSource,
+    index: &str,
+    path: &str,
+) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+    let hash = data::name_hash::of_path(path);
+    let mut checked = source.open_index(index)?;
+    let entry = checked
+        .inventory
+        .entries
+        .iter()
+        .find(|e| e.name_hash == hash)
+        .ok_or_else(|| format!("{path} not in {index}"))?
+        .clone();
+    let file = original_payload::read_original(&mut checked.reader, &entry)?.bytes;
+    checked.verify_unchanged()?;
+    Ok(file)
+}
+
 pub fn load_imgd(
     source: &ProbeSource,
     index: &str,

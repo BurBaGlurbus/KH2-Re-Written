@@ -43,6 +43,8 @@ pub struct Picture {
     ready: bool,
     /// DAT_140743e94: the picture id to show.
     pending: Option<u16>,
+    /// The show and close groups a caller gave (else the default table).
+    groups: Option<[usize; 2]>,
 }
 
 /// The images the caller has loaded (FUN_1403018e0's cache) and the one
@@ -59,6 +61,15 @@ impl Picture {
         self.prio = prio;
         self.frame_groups = frame_groups;
         self.frame = None;
+    }
+
+    /// FUN_1403022b0's table argument.
+    pub fn set_groups(&mut self, groups: [usize; 2]) {
+        self.groups = Some(groups);
+    }
+
+    fn close_group(&self) -> usize {
+        self.groups.map_or(CLOSE, |g| g[1])
     }
 
     /// FUN_1403022a0: the picture goes on a screen's holder.
@@ -87,10 +98,11 @@ impl Picture {
             sp.close(seq, f, g[1]);
             closed = true;
         }
+        let close = self.close_group();
         if let Some(s) = self.sprite.as_mut().filter(|s| !s.dead)
-            && s.player.group != CLOSE
+            && s.player.group != close
         {
-            s.player = Player::new(ipic, CLOSE);
+            s.player = Player::new(ipic, close);
             s.die_when_done = true;
             closed = true;
         }
@@ -176,7 +188,7 @@ impl Picture {
         let text_x = if text_x < 1 { 100 } else { text_x };
         self.sprite = Some(PictureSprite {
             image: id,
-            player: Player::new(ipic, SHOW),
+            player: Player::new(ipic, self.groups.map_or(SHOW, |g| g[0])),
             parent,
             scale: text_x as f32 / 100.,
             prio: self.prio,

@@ -316,6 +316,76 @@ pub fn read_treasures(bytes: &[u8]) -> io::Result<Vec<Treasure>> {
         .collect())
 }
 
+/// A `puzz` record (16 B): one picture to solve.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Puzzle {
+    /// +0: the row and the save's board.
+    pub id: u8,
+    /// +1 low nibble: 6 x 8 tiles of 42 (else 3 x 4 of 84).
+    pub big: bool,
+    /// +1 high nibble: pieces can be turned.
+    pub rotates: bool,
+    /// +2: the name (jm.bar).
+    pub name: u16,
+    /// +4: the item it gives.
+    pub reward: u16,
+    /// +6: `menu/jm_puzzle/<file>.bin`.
+    pub file: String,
+}
+
+pub fn read_puzzles(bytes: &[u8]) -> io::Result<Vec<Puzzle>> {
+    Ok(records(bytes, 16)?
+        .map(|r| {
+            let file = r[6..16].split(|&b| b == 0).next().unwrap_or_default();
+            Puzzle {
+                id: r[0],
+                big: r[1] & 0xf != 0,
+                rotates: r[1] & 0xf0 != 0,
+                name: u16_at(r, 2),
+                reward: u16_at(r, 4),
+                file: String::from_utf8_lossy(file).into_owned(),
+            }
+        })
+        .collect())
+}
+
+/// A `15jigsaw.bin` record (10 B after version and count): where a piece
+/// lies; one piece can have two records.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Piece {
+    pub puzzle: u8,
+    /// +1: the tile of the finished picture, `row * cols + col`.
+    pub piece: u8,
+    /// +2: the name, 0x8000-biased (sys.bar).
+    pub name: u16,
+    /// +4, +5, +6: the game world, the room and the object's first parameter.
+    pub world: u8,
+    pub room: u8,
+    pub set: u8,
+    /// +8: the story flag the list shows it by (0 none).
+    pub flag: u16,
+}
+
+pub fn read_pieces(bytes: &[u8]) -> io::Result<Vec<Piece>> {
+    let invalid = || io::Error::new(io::ErrorKind::InvalidData, "15jigsaw.bin truncated");
+    let count = u32::from_le_bytes(bytes.get(4..8).ok_or_else(invalid)?.try_into().unwrap());
+    let body = bytes.get(8..8 + count as usize * 10).ok_or_else(invalid)?;
+    Ok(body
+        .as_chunks::<10>()
+        .0
+        .iter()
+        .map(|r| Piece {
+            puzzle: r[0],
+            piece: r[1],
+            name: u16_at(r, 2),
+            world: r[4],
+            room: r[5],
+            set: r[6],
+            flag: u16_at(r, 8),
+        })
+        .collect())
+}
+
 /// FUN_1402f23d0: the journal world of a game world, -1 for none.
 pub fn journal_world(game_world: u8) -> i8 {
     match game_world {

@@ -363,6 +363,7 @@ enum Action {
     Restore,
     KnockOut,
     LevelUp,
+    PuzzlePieces,
     BonusLevel,
     ToggleInvincible,
     ToggleScan,
@@ -452,6 +453,7 @@ impl Action {
             Self::Restore => "Fill HP, MP and the Drive gauge. A form's timer keeps running.",
             Self::KnockOut => "Drop Sora's HP to 0: the KO motion and the game over.",
             Self::LevelUp => "Give Sora the EXP for the next level.",
+            Self::PuzzlePieces => "Own every puzzle piece; the Journal places them when it opens.",
             Self::BonusLevel => "Apply the next bonus level Sora has not taken.",
             Self::ToggleInvincible => "Sora takes no damage.",
             Self::ToggleScan => "Show enemy HP gauges. Needs Scan in an ability slot.",
@@ -1208,6 +1210,11 @@ fn rows(
                     ..row("Drive form", Action::Page(Page::Forms), drive.is_some())
                 },
                 row("Growth abilities", Action::Page(Page::Growth), true),
+                row(
+                    "Give all puzzle pieces",
+                    Action::PuzzlePieces,
+                    camp.is_some(),
+                ),
             ]
         }
         Page::Home(HomeTab::Enemies) => {
@@ -1745,6 +1752,14 @@ fn act(
             sora.player.die(clips);
             menu.open = false;
             None
+        }
+        Action::PuzzlePieces => {
+            // The rooms have no piece objects yet (FUN_14041ac80).
+            let camp = camp.as_deref_mut()?;
+            let pieces = &camp.journal_source.as_ref()?.pieces;
+            let all: Vec<(u8, u8)> = pieces.iter().map(|p| (p.puzzle, p.piece)).collect();
+            camp.puzzles.owned.extend(all);
+            Some(format!("{} pieces owned", camp.puzzles.owned.len()))
         }
         Action::LevelUp => {
             let tick = game.tick;

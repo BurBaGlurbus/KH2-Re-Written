@@ -14,6 +14,8 @@ const DOWN: u64 = 0x20;
 const R1: u64 = 0x4000;
 const L1: u64 = 0x8000;
 const R2: u64 = 0x1_0000;
+const RIGHT: u64 = 0x80;
+const ROTATE: u64 = 0x4_0000;
 
 /// Use counters given to the first limits (record order).
 pub const LIMIT_COUNTS: [u16; 4] = [12, 3, 7, 21];
@@ -29,10 +31,30 @@ pub const SYNTHESIS: super::journal::Synthesis = super::journal::Synthesis {
     recipes: 9,
 };
 /// The first capture is the camp's top level (the Journal row's NEW!).
-pub const CAPTURES: [u64; 12] = [
-    130, 560, 880, 1000, 1240, 1620, 1740, 2020, 2300, 2820, 2960, 3440,
+/// From 3780: the puzzle menu and list, the tutorial, the board and its
+/// grab, the banner, the solved board, a rotating board, a 6 x 8 board and
+/// the List of Pieces.
+pub const CAPTURES: [u64; 23] = [
+    130, 560, 880, 1000, 1240, 1620, 1740, 2020, 2300, 2820, 2960, 3440, 3780, 3900, 4040, 4300,
+    4440, 4700, 5000, 5300, 5600, 5980, 6340,
 ];
-pub const END: u64 = 3500;
+pub const END: u64 = 6400;
+
+/// The tour's pieces: Awakening whole with its first two tiles swapped, half
+/// of Heart (they rotate) and some of Sunset (6 x 8).
+pub fn puzzles() -> super::journal::PuzzleSave {
+    let mut save = super::journal::PuzzleSave::default();
+    for k in 0..12 {
+        save.owned.insert((0, k));
+        save.slots[0][k as usize] = super::journal::PuzzleSlot {
+            piece: if k < 2 { 1 - k as i8 } else { k as i8 },
+            rot: 0,
+        };
+    }
+    save.owned.extend((0..6).map(|k| (1, k)));
+    save.owned.extend((0..20).map(|k| (5, k)));
+    save
+}
 
 /// The minigame records (state, value) by record index: Mail Delivery
 /// (0xe) a time of 0'52"30, Grandstander (0xf) a score, record 0 a round
@@ -94,6 +116,39 @@ pub fn tour(inventory: &Inventory) -> Tour {
         inputs.push((3220 + 20 * k, DOWN));
     }
     inputs.push((3320, DECIDE));
+    // Back to Collection and its Puzzle Pieces row, five above Synthesis.
+    inputs.push((3460, CANCEL));
+    for k in 0..5 {
+        inputs.push((3560 + 10 * k, UP));
+    }
+    inputs.push((3640, DECIDE));
+    // The puzzle list, the first board by way of the tutorial.
+    inputs.push((3800, DECIDE));
+    inputs.push((3920, DECIDE));
+    for k in 0..4 {
+        inputs.push((4060 + 10 * k, DOWN));
+    }
+    inputs.push((4120, DECIDE));
+    // Grab the first tile, carry it right, then place it: solved.
+    inputs.push((4400, DECIDE));
+    inputs.push((4420, RIGHT));
+    inputs.push((4460, DECIDE));
+    inputs.push((4720, DECIDE));
+    // R2 to the next board; turn its first piece.
+    inputs.push((5020, R2));
+    inputs.push((5280, ROTATE));
+    inputs.push((5320, R2));
+    // Back to the list, down to Sunset (6 x 8); then the menu and its
+    // List of Pieces.
+    inputs.push((5620, CANCEL));
+    for k in 0..3 {
+        inputs.push((5720 + 10 * k, DOWN));
+    }
+    inputs.push((5760, DECIDE));
+    inputs.push((6000, CANCEL));
+    inputs.push((6100, CANCEL));
+    inputs.push((6180, DOWN));
+    inputs.push((6200, DECIDE));
     Tour {
         inputs,
         captures: CAPTURES.to_vec(),

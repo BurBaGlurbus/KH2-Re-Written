@@ -8,8 +8,7 @@
 //! and Collection (0xd, FUN_14032bb90 / FUN_14032b210). The book draws
 //! from `menu/<lang>/jmemo.2ld` sequence 5; the pictures use sequences 2-4
 //! on the images of `menu/jm_world.2ld` and `menu/jm_top_<code>.2ld`. The
-//! category pages are built except Puzzles and Pieces: deciding one of those
-//! plays the decide sound only. The pause_menu hands over under the
+//! category pages are built. The pause_menu hands over under the
 //! pause.2ld curtain (`Curtain`, FUN_14031adc0 / FUN_14031a690).
 use super::bits;
 use super::{MenuList, Pad, SOUND_CLOSE, SOUND_CURSOR, SOUND_DECIDE, SOUND_INVALID, SOUND_OPEN};
@@ -26,10 +25,12 @@ mod characters;
 mod files;
 mod limits;
 mod lists;
+mod puzzles;
 mod story;
 mod synthesis;
 mod treasure;
 
+pub use puzzles::{MESSAGES as PUZZLE_MESSAGES, PuzzleSave, Slot as PuzzleSlot, place_pieces};
 pub use synthesis::Synthesis;
 
 /// The journal sprites' SEQD (DAT_1407434e8) and image (DAT_1407434e4).
@@ -254,6 +255,9 @@ pub struct TreasureItem {
     pub icon: u8,
     /// Item type 22.
     pub map: bool,
+    /// The description and the picture (`itempic/item-%03d.imd`).
+    pub description: Vec<u8>,
+    pub picture: u16,
 }
 
 /// Everything the journal shows besides its art.
@@ -316,6 +320,12 @@ pub struct JournalData {
     pub synthesis: Synthesis,
     pub moogle_names: Vec<Vec<u8>>,
     pub seen_synthesis: Vec<u8>,
+    /// jiminy.bar `puzz`, 15jigsaw.bin and the save's puzzle fields.
+    pub puzzles: Vec<data::journal_table::Puzzle>,
+    pub pieces: Vec<data::journal_table::Piece>,
+    pub puzzle: PuzzleSave,
+    /// 03system `ipic`: the item picture's sequence.
+    pub ipic: Option<Sequence>,
 }
 
 /// FUN_140346b30 reads album and story bits of journal worlds 0..0xe and
@@ -370,7 +380,7 @@ impl JournalData {
 
     /// FUN_140346b30 over the bits FUN_140345420 fills: some entry is
     /// available but not yet seen (the camp's Journal badge, camp-01
-    /// §3.3). The puzzle piece bits wait for the Puzzle Pieces page (#68).
+    /// §3.3).
     pub fn any_new(&self) -> bool {
         let chars = (0..self.chars.len() as u16)
             .any(|c| self.char_available(c) && !self.seen_chars.contains(&c));
@@ -435,6 +445,13 @@ impl JournalData {
                 && self.flag(s.flag)
                 && !self.seen_story.contains(&(k as u16))
         });
+        // The piece bits: owned and not seen on a board, or the record's
+        // flag set and not seen in the list.
+        let pieces = self.pieces.iter().any(|r| {
+            let key = (r.puzzle, r.piece);
+            (self.puzzle.owned.contains(&key) && !self.puzzle.seen_board.contains(&key))
+                || (r.flag != 0 && self.flag(r.flag) && !self.puzzle.seen_list.contains(&key))
+        });
         chars
             || reports
             || limits
@@ -445,6 +462,7 @@ impl JournalData {
             || maps
             || albums
             || story
+            || pieces
     }
 }
 
@@ -458,6 +476,11 @@ pub struct JournalCache {
     pub photos: HashSet<u16>,
     pub wanted_face: Option<u8>,
     pub wanted_photo: Option<u16>,
+    /// `menu/jm_puzzle/<file>.bin` by `puzz` row.
+    pub puzzles: HashSet<u8>,
+    pub wanted_puzzle: Option<u8>,
+    /// The item pictures the banner shows.
+    pub pictures: crate::pause_menu::picture::PictureCache,
 }
 
 /// What a draw item samples.
@@ -466,6 +489,10 @@ pub enum Sheet {
     Art,
     Font,
     Icon,
+    /// A puzzle's picture by `puzz` row.
+    Puzzle(u8),
+    /// An item picture by its id.
+    Picture(u16),
     /// jm_world.2ld image i.
     World(usize),
     /// Image i of the page's jm_top file (`Journal::top`).
@@ -728,6 +755,7 @@ pub struct Journal {
     scroll: usize,
     chars: characters::Page,
     album: album::Page,
+    puzzle: puzzles::Page,
     /// Files loaded for the pages and the ones to load next.
     pub cache: JournalCache,
     /// This frame's held bits and left stick (x, y, magnitude).
@@ -785,7 +813,13 @@ impl Journal {
             Some(HELP_ANCHOR[1]),
             None,
         );
+        // FUN_140341280 and the NEW bits (FUN_140345420).
+        let mut data = data;
+        let (puzzles, pieces) = (data.puzzles.clone(), data.pieces.clone());
+        place_pieces(&mut data.puzzle, &puzzles, &pieces);
+        let puzzle = puzzles::Page::at_open(&data.puzzle);
         let mut j = Journal {
+            puzzle,
             bar: Bar::default(),
             layout: task,
             sprites,
@@ -1162,7 +1196,11 @@ impl Journal {
             | lists::MINIGAMES_COLLECTION => self.build_list(layout),
             story::STATE => self.build_story(layout),
             synthesis::STATE => self.build_synthesis(layout),
-            7 | 9 | 0x1a | 0x22 => self.build_treasure(layout),
+            7 | 8 | 9 | 0x1a | 0x21 | 0x22 => self.build_treasure(layout),
+            puzzles::MENU => self.build_puzzle_menu(layout),
+            puzzles::LIST => self.build_puzzle_list(layout),
+            puzzles::BOARD => self.build_puzzle_board(layout),
+            puzzles::HELP_FIRST | puzzles::HELP_READ => self.build_puzzle_help(layout),
             0xf | 0x12 | 0x15 => self.build_files_list(layout),
             0x10 | 0x13 | 0x16 => self.build_files_detail(layout),
             // Pages not built yet go back to the Notes of the world.
@@ -1570,7 +1608,14 @@ impl Journal {
                     | lists::MINIGAMES_COLLECTION => self.list_page(layout, &pad, &mut sounds),
                     story::STATE => self.story_page(layout, &pad, &mut sounds),
                     synthesis::STATE => self.synthesis_page(layout, &pad, &mut sounds),
-                    7 | 9 | 0x1a | 0x22 => self.treasure_page(layout, &pad, &mut sounds),
+                    7 | 8 | 9 | 0x1a | 0x21 | 0x22 => self.treasure_page(layout, &pad, &mut sounds),
+                    puzzles::MENU => self.puzzle_menu(layout, &pad, &mut sounds),
+                    puzzles::LIST => self.puzzle_list(layout, &pad, &mut sounds),
+                    puzzles::BOARD => self.puzzle_board(layout, &pad, &mut sounds),
+                    puzzles::HELP_FIRST | puzzles::HELP_READ => {
+                        self.puzzle_help(layout, &pad, &mut sounds)
+                    }
+                    puzzles::SOLVED => self.puzzle_solved(layout, &pad, &mut sounds),
                     0xf | 0x12 | 0x15 => self.files_list(layout, &pad, &mut sounds),
                     0x10 | 0x13 | 0x16 => self.files_detail(layout, &pad, &mut sounds),
                     _ => self.option_page(layout, &pad, &mut sounds),
@@ -1720,7 +1765,6 @@ impl Journal {
             }
             In::R1 | In::L1 => self.switch_top(seq, input),
             In::Row(k) => {
-                // The pages built so far; the rest play the decide sound.
                 let table: &[(u16, u16, u8)] = if self.state == NOTES_PAGE {
                     &NOTES_OPTIONS
                 } else {
@@ -1738,8 +1782,10 @@ impl Journal {
                             | 0x12
                             | 0x15
                             | 7
+                            | 8
                             | 9
                             | 0x1a
+                            | 0x1b
                             | 0x22
                             | 0x18
                             | 0x25
@@ -1995,7 +2041,13 @@ impl Journal {
                 sprite_player::Sheet::Icon => (Sheet::Icon, quads),
             })
         };
-        let mut prios: Vec<u32> = self.pictures.iter().map(|p| p.prio).collect();
+        let extra = self.puzzle_draws();
+        let mut prios: Vec<u32> = self
+            .pictures
+            .iter()
+            .map(|p| p.prio)
+            .chain(extra.iter().map(|e| e.0))
+            .collect();
         prios.sort_unstable();
         prios.dedup();
         let mut low = 0;
@@ -2019,6 +2071,9 @@ impl Journal {
                     p.sheet,
                     layout.sequences[p.sequence].quads(&p.player, origin, &m),
                 ));
+            }
+            for (_, sheet, quads) in extra.iter().filter(|e| e.0 == prio) {
+                out.push((*sheet, quads.clone()));
             }
             low = prio + 1;
         }
@@ -2116,9 +2171,8 @@ mod tests {
         d.item_names.insert(
             8,
             TreasureItem {
-                name: Vec::new(),
-                icon: 0,
                 map: true,
+                ..TreasureItem::default()
             },
         );
         // The map row isn't owned; the world isn't open, so no chest counts.
