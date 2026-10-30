@@ -7,7 +7,7 @@ Steam KH2FM build, validated each run; the install was only read.
 
 Private evidence (outside the checkout): `research\playable-room-20261008\tt-world-01\draw-03\draw3-spec.md` §1 and
 `draw-01\draw-spec.md` §4.7; `research\issues-20261030\g\` (FUN_1401a0c00, FUN_1401ae760: the FRAME mask that skips the
-stencil in the alpha pass); runs in `C:\Users\ANIMA\kh2-issues-out\i30\`.
+stencil in the alpha pass); runs in `research\issues-20261030\runs\`.
 
 ## What the executable does
 

@@ -8,7 +8,7 @@ Prerequisites: T150 (effect VM), T216 (lens programs 188/189/191), T291 (the glo
 Private evidence (outside the checkout): `research\playable-room-20261008\tt-world-01\pax-01\pax-spec.md`,
 `research\issues-20261030\g\lens\` (FUN_1404d6e10, FUN_1404d6ef0, FUN_1404d6f90, FUN_1404d6290, FUN_1404d65a0, FUN_1404d6660,
 FUN_1404d6970, FUN_1404d6a30, FUN_1404e2010, FUN_1404e2370, FUN_1404d7120); the program table rows at 0x140779a00 + kind·0x50;
-census and runs in `C:\Users\ANIMA\kh2-issues-out\i30\`.
+census and runs in `research\issues-20261030\runs\`.
 
 ## What the executable does
 
