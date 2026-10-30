@@ -65,11 +65,57 @@ pub(super) struct Page {
     frame: Option<Id>,
     counter: Option<Id>,
     frame_made: bool,
-    /// Worlds whose rows the cursor has rested on.
-    viewed: HashSet<u8>,
+    /// The seen rows (save+0x4d24 chests, +0x4d64 maps), now and when the
+    /// journal opened.
+    pub(super) seen_chests: HashSet<u16>,
+    pub(super) seen_maps: HashSet<u16>,
+    pub(super) seen_chests_at_open: HashSet<u16>,
+    pub(super) seen_maps_at_open: HashSet<u16>,
 }
 
 impl Journal {
+    /// The rows behind this page's NEW mark in world `w`: available, and for
+    /// the first number of each pair not seen when the journal opened.
+    fn treasure_rows(&self, maps: bool, w: u8) -> Vec<u16> {
+        let world = |t: &data::journal_table::Treasure| {
+            data::journal_table::journal_world(t.game_world) == w as i8
+        };
+        if maps {
+            self.data
+                .map_rows()
+                .filter(|(_, t)| world(t) && self.data.owned_items.contains(&t.item))
+                .map(|(i, _)| i)
+                .collect()
+        } else {
+            self.data
+                .treasures
+                .iter()
+                .enumerate()
+                .filter(|(_, t)| world(t) && self.data.chest_available(t))
+                .map(|(k, _)| k as u16)
+                .collect()
+        }
+    }
+
+    /// FUN_140347c80 / FUN_140347360 (a row was new at the opening) and
+    /// FUN_140347bb0 / FUN_140347290 (all of those are seen now).
+    fn treasure_mark(&self, maps: bool, w: u8) -> Option<bool> {
+        let (at_open, seen) = if maps {
+            (&self.treasure.seen_maps_at_open, &self.treasure.seen_maps)
+        } else {
+            (
+                &self.treasure.seen_chests_at_open,
+                &self.treasure.seen_chests,
+            )
+        };
+        let fresh: Vec<u16> = self
+            .treasure_rows(maps, w)
+            .into_iter()
+            .filter(|r| !at_open.contains(r))
+            .collect();
+        (!fresh.is_empty()).then(|| fresh.iter().all(|r| seen.contains(r)))
+    }
+
     fn treasure_world_unlocked(&self, w: u8) -> bool {
         self.data
             .worlds
@@ -106,6 +152,10 @@ impl Journal {
         self.reset_list();
         self.treasure = Page {
             maps,
+            seen_chests: std::mem::take(&mut self.treasure.seen_chests),
+            seen_maps: std::mem::take(&mut self.treasure.seen_maps),
+            seen_chests_at_open: std::mem::take(&mut self.treasure.seen_chests_at_open),
+            seen_maps_at_open: std::mem::take(&mut self.treasure.seen_maps_at_open),
             ..Page::default()
         };
         self.cat.detail = false;
@@ -189,7 +239,8 @@ impl Journal {
         let c = self.container;
         let p0 = self.page_sprite(seq, PRIO_PANEL, FRAME_GROUP, c, None);
         self.treasure.p0 = Some(p0);
-        self.page_sprite(seq, PRIO_PANEL, TRACK, c, None);
+        let track = self.page_sprite(seq, PRIO_PANEL, TRACK, c, None);
+        self.bar_in(seq, track, self.treasure.total_rows, ROWS);
         let g = &seq.groups[FRAME_GROUP];
         let at = [g.light_position_x as f32, g.text_position_y as f32];
         let mut t = Self::text(Vec::new(), Self::size(seq, CAPTION));
@@ -280,11 +331,19 @@ impl Journal {
     fn treasure_refresh(&mut self, seq: &Sequence) {
         let (s, cell) = (self.treasure.top, self.treasure.cell);
         let (r, c) = (cell / COLS, cell % COLS);
+        self.bar_to(seq, s);
         // The world under the cursor counts as viewed.
         if let Some((b, _)) = self.treasure_block(s + r)
             && b.n > 0
         {
-            self.treasure.viewed.insert(b.world);
+            // FUN_1403467a0 / FUN_1403464a0.
+            let rows = self.treasure_rows(self.treasure.maps, b.world);
+            let seen = if self.treasure.maps {
+                &mut self.treasure.seen_maps
+            } else {
+                &mut self.treasure.seen_chests
+            };
+            seen.extend(rows);
         }
         let all = self.show_all();
         let maps = self.treasure.maps;
@@ -305,8 +364,7 @@ impl Journal {
                 if b.n == 0 {
                     let m = self.msg(NOTHING_TEXT[maps as usize]);
                     self.set_text(Some(self.treasure.subs[i]), m);
-                } else if unlocked {
-                    let viewed = self.treasure.viewed.contains(&b.world);
+                } else if unlocked && let Some(viewed) = self.treasure_mark(maps, b.world) {
                     self.sprites
                         .set(seq, self.treasure.marks[i], MARK[viewed as usize], None);
                 }

@@ -34,6 +34,19 @@ pub use synthesis::Synthesis;
 
 /// The journal sprites' SEQD (DAT_1407434e8) and image (DAT_1407434e4).
 pub const SEQUENCE: usize = 5;
+/// The scroll bar's top cap, thumb and bottom cap (table 0x1405baad0).
+const BAR: [usize; 3] = [139, 138, 140];
+const PRIO_BAR: u32 = 0x755d;
+
+/// The page's scroll bar (DAT_140bee5d8).
+#[derive(Default)]
+struct Bar {
+    sprites: Vec<Id>,
+    track: Option<Id>,
+    total: usize,
+    visible: usize,
+    scale: f32,
+}
 const ART: usize = 0;
 /// Sequences of the pictures taken from other 2LDs: the world icon, the
 /// page picture and the title strip.
@@ -272,6 +285,10 @@ pub struct JournalData {
     pub item_names: HashMap<u16, TreasureItem>,
     pub opened_bits: Vec<u16>,
     pub owned_items: Vec<u16>,
+    /// The `trsr` rows and the map rows (counting only maps) already seen
+    /// (save+0x4d24 / +0x4d64).
+    pub seen_chests: Vec<u16>,
+    pub seen_maps: Vec<u16>,
     /// jiminy.bar `anse` and the rows already seen (save+0x4d74).
     pub reports: Vec<data::journal_table::Report>,
     pub seen_reports: Vec<u16>,
@@ -325,10 +342,35 @@ impl JournalData {
         })
     }
 
+    /// FUN_1403272a0.
+    fn world_open(&self, world: i8) -> bool {
+        self.worlds
+            .iter()
+            .find(|r| r.world == world)
+            .is_some_and(|r| self.flag(r.unlock))
+    }
+
+    /// FUN_140345420's chest bit before the seen test: a chest (not an event
+    /// gift) with a real flag that is set, in an unlocked world.
+    fn chest_available(&self, t: &data::journal_table::Treasure) -> bool {
+        t.kind == 0
+            && t.flag & 0xf7ff != 0
+            && self.flag(t.flag)
+            && self.world_open(data::journal_table::journal_world(t.game_world))
+    }
+
+    /// The map rows of `trsr`, each with its place among them (the seen bit).
+    fn map_rows(&self) -> impl Iterator<Item = (u16, &data::journal_table::Treasure)> {
+        self.treasures
+            .iter()
+            .filter(|t| self.item_names.get(&t.item).is_some_and(|i| i.map))
+            .enumerate()
+            .map(|(i, t)| (i as u16, t))
+    }
+
     /// FUN_140346b30 over the bits FUN_140345420 fills: some entry is
     /// available but not yet seen (the camp's Journal badge, camp-01
-    /// §3.3). The treasure, map and puzzle piece bits are not built
-    /// (their seen fields are not kept) [U].
+    /// §3.3). The puzzle piece bits wait for the Puzzle Pieces page (#68).
     pub fn any_new(&self) -> bool {
         let chars = (0..self.chars.len() as u16)
             .any(|c| self.char_available(c) && !self.seen_chars.contains(&c));
@@ -375,6 +417,14 @@ impl JournalData {
         .iter()
         .enumerate()
         .any(|(line, &reached)| reached && !self.seen_synthesis.contains(&(line as u8)));
+        let chests = self
+            .treasures
+            .iter()
+            .enumerate()
+            .any(|(k, t)| self.chest_available(t) && !self.seen_chests.contains(&(k as u16)));
+        let maps = self
+            .map_rows()
+            .any(|(i, t)| self.owned_items.contains(&t.item) && !self.seen_maps.contains(&i));
         let albums = self.albums.iter().enumerate().any(|(r, a)| {
             NEW_WORLDS.contains(&a.world)
                 && self.flag(a.flag)
@@ -385,7 +435,16 @@ impl JournalData {
                 && self.flag(s.flag)
                 && !self.seen_story.contains(&(k as u16))
         });
-        chars || reports || limits || missions || minigames || synthesis || albums || story
+        chars
+            || reports
+            || limits
+            || missions
+            || minigames
+            || synthesis
+            || chests
+            || maps
+            || albums
+            || story
     }
 }
 
@@ -618,6 +677,7 @@ fn tab_targets(state: u8, world: i32) -> (u8, u8) {
 }
 
 pub struct Journal {
+    bar: Bar,
     pub layout: LayoutTask,
     pub sprites: Sprites,
     pictures: Vec<Picture>,
@@ -726,6 +786,7 @@ impl Journal {
             None,
         );
         let mut j = Journal {
+            bar: Bar::default(),
             layout: task,
             sprites,
             pictures: Vec::new(),
@@ -776,6 +837,10 @@ impl Journal {
         j.seen_albums = j.data.seen_albums.iter().copied().collect();
         j.seen_chars_at_open = j.seen_chars.clone();
         j.seen_albums_at_open = j.seen_albums.clone();
+        j.treasure.seen_chests = j.data.seen_chests.iter().copied().collect();
+        j.treasure.seen_chests_at_open = j.treasure.seen_chests.clone();
+        j.treasure.seen_maps = j.data.seen_maps.iter().copied().collect();
+        j.treasure.seen_maps_at_open = j.treasure.seen_maps.clone();
         j.files.seen_reports = j.data.seen_reports.iter().copied().collect();
         j.files.seen_reports_at_open = j.files.seen_reports.clone();
         j.limits.seen = j.data.seen_limits.iter().copied().collect();
@@ -993,9 +1058,54 @@ impl Journal {
         id
     }
 
+    /// FUN_1402fa930 with the page's table 0x1405baad0: the bar's top cap,
+    /// thumb and bottom cap on `track`, its art at the track group's
+    /// (LightPositionX, TextPositionY) and its length that group's TextScale.
+    fn bar_in(&mut self, seq: &Sequence, track: Id, total: usize, visible: usize) {
+        let total = total.max(visible).max(1);
+        let group = self.sprites.get(track).player.group;
+        let length = seq.groups[group].text_scale as f32;
+        let art = seq.groups[BAR[1]].text_scale as f32;
+        let scale = (visible as f32 / total as f32).min(1.) * length / art;
+        self.bar = Bar {
+            sprites: Vec::new(),
+            track: Some(track),
+            total,
+            visible,
+            scale,
+        };
+        for (k, group) in BAR.into_iter().enumerate() {
+            let id = self.page_sprite(seq, PRIO_BAR, group, track, None);
+            if k == 1 {
+                self.sprites.get_mut(id).scale = [1., scale];
+            }
+            self.bar.sprites.push(id);
+        }
+        self.bar_to(seq, 0);
+    }
+
+    /// FUN_1402facd0: the thumb at the first visible row.
+    fn bar_to(&mut self, seq: &Sequence, row: usize) {
+        let Some(track) = self.bar.track else {
+            return;
+        };
+        let g = &seq.groups[self.sprites.get(track).player.group];
+        let origin = [g.light_position_x as f32, g.text_position_y as f32];
+        let length = g.text_scale as f32;
+        let art = seq.groups[BAR[1]].text_scale as f32;
+        let row = row.min(self.bar.total - self.bar.visible);
+        let y = ((length / self.bar.total as f32) * row as f32) as i32 as f32;
+        let thumb = (art * self.bar.scale) as i32 as f32;
+        for (k, &id) in self.bar.sprites.clone().iter().enumerate() {
+            let dy = if k == 2 { y + thumb } else { y };
+            self.sprites.get_mut(id).offset = [origin[0], origin[1] + dy];
+        }
+    }
+
     /// The page kill hooks (FUN_140326a70 / FUN_140327bd0 / FUN_14032bac0):
     /// every page sprite and picture goes; the list empties.
     fn kill_page(&mut self) {
+        self.bar = Bar::default();
         for id in self.page.drain(..) {
             self.sprites.kill(id);
         }
@@ -1837,6 +1947,19 @@ impl Journal {
     }
 
     /// The seen `anse` rows to carry to the next opening (save+0x4d74).
+    /// The chest and map rows seen, for the next opening.
+    pub fn seen_treasures(&self) -> (Vec<u16>, Vec<u16>) {
+        let sorted = |set: &std::collections::HashSet<u16>| {
+            let mut v: Vec<u16> = set.iter().copied().collect();
+            v.sort_unstable();
+            v
+        };
+        (
+            sorted(&self.treasure.seen_chests),
+            sorted(&self.treasure.seen_maps),
+        )
+    }
+
     pub fn seen_reports(&self) -> Vec<u16> {
         let mut r: Vec<u16> = self.files.seen_reports.iter().copied().collect();
         r.sort_unstable();
@@ -1972,6 +2095,52 @@ impl Curtain {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_chest_or_a_map_counts_for_the_badge_until_its_world_is_seen() {
+        let world = data::journal_table::journal_world(2);
+        let chest = data::journal_table::Treasure {
+            item: 7,
+            kind: 0,
+            game_world: 2,
+            flag: 0x10,
+            opened: 0,
+        };
+        let map = data::journal_table::Treasure { item: 8, ..chest };
+        let gift = data::journal_table::Treasure { kind: 1, ..chest };
+        let mut d = JournalData {
+            flags: vec![0x10],
+            treasures: vec![gift, chest, map],
+            ..Default::default()
+        };
+        d.item_names.insert(
+            8,
+            TreasureItem {
+                name: Vec::new(),
+                icon: 0,
+                map: true,
+            },
+        );
+        // The map row isn't owned; the world isn't open, so no chest counts.
+        assert!(!d.any_new());
+        d.worlds = vec![data::journal_table::World {
+            world,
+            code: String::new(),
+            names: [0; 2],
+            alt_names: [0; 2],
+            unlock: 0x10,
+            alt_flag: 0,
+        }];
+        // Rows 1 and 2 are chests by type; 0 is an event gift.
+        assert!(d.any_new());
+        d.seen_chests = vec![1, 2];
+        assert!(!d.any_new());
+        // Owning the map item raises the map's own bit (the first map row).
+        d.owned_items = vec![8];
+        assert!(d.any_new());
+        d.seen_maps = vec![0];
+        assert!(!d.any_new());
+    }
 
     #[test]
     fn the_camp_badge_asks_for_an_available_unseen_entry() {

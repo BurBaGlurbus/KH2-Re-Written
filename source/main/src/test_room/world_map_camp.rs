@@ -105,6 +105,8 @@ pub(crate) fn load(
             seen_story: Vec::new(),
             seen_synthesis: Vec::new(),
             seen_reports: Vec::new(),
+            seen_chests: Vec::new(),
+            seen_maps: Vec::new(),
             picture_sheets: HashMap::new(),
             notice_sheets: HashMap::new(),
             lang,
@@ -294,6 +296,7 @@ impl WorldMapCamp {
                 c.seen_story = open.seen_story();
                 c.seen_synthesis = open.seen_synthesis();
                 c.seen_reports = open.seen_reports();
+                (c.seen_chests, c.seen_maps) = open.seen_treasures();
                 c.journal = None;
                 self.log
                     .push(serde_json::json!({"event":"journal_close","tick":tick}));

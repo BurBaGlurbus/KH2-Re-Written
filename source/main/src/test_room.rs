@@ -5583,6 +5583,7 @@ fn field_npc_tick(
                         d.kind,
                         &d.spawn,
                         d.spawn.point,
+                        source.kinds[d.kind].program,
                         &mut random,
                     );
                     n.pop_in();
@@ -5596,6 +5597,7 @@ fn field_npc_tick(
                         d.kind,
                         &d.spawn,
                         d.spawn.point,
+                        source.kinds[d.kind].program,
                         &mut random,
                     );
                     current.npcs[i].pop_in();
@@ -5633,7 +5635,7 @@ fn field_npc_tick(
             continue;
         }
         let is_target = talking && *talk_npc == Some(i);
-        if is_target {
+        if is_target && !n.keeps_facing {
             n.yaw = talk.yaw;
         }
         let kind = &source.kinds[n.kind];
@@ -12056,6 +12058,8 @@ struct CampRes {
     seen_story: Vec<u16>,
     seen_synthesis: Vec<u8>,
     seen_reports: Vec<u16>,
+    seen_chests: Vec<u16>,
+    seen_maps: Vec<u16>,
     picture_sheets: HashMap<u16, Option<usize>>,
     notice_sheets: HashMap<String, usize>,
     /// The menus' language code (`menu/<lang>/` notice and photo files).
@@ -12804,6 +12808,7 @@ fn camp_tick(
             c.seen_story = open.seen_story();
             c.seen_synthesis = open.seen_synthesis();
             c.seen_reports = open.seen_reports();
+            (c.seen_chests, c.seen_maps) = open.seen_treasures();
             c.journal = None;
             game.event(serde_json::json!({"event":"journal_close","tick":tick}));
             // FUN_140304ea0: the camp is rebuilt (its open sound) and the
@@ -13288,6 +13293,8 @@ fn journal_data(
         albums: j.albums.clone(),
         reports: j.reports.clone(),
         seen_reports: c.seen_reports.clone(),
+        seen_chests: c.seen_chests.clone(),
+        seen_maps: c.seen_maps.clone(),
         treasures: j.treasures.clone(),
         item_names: j.item_names.clone(),
         opened_bits: j.opened_bits.clone(),
@@ -15434,6 +15441,8 @@ fn run(mut args: Vec<PathBuf>) -> Result<AppExit, Box<dyn std::error::Error>> {
             seen_story: Vec::new(),
             seen_synthesis: Vec::new(),
             seen_reports: Vec::new(),
+            seen_chests: Vec::new(),
+            seen_maps: Vec::new(),
             picture_sheets: HashMap::new(),
             notice_sheets: HashMap::new(),
             lang: settings.loaded_or("us"),

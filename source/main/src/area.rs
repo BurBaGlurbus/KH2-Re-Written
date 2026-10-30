@@ -730,7 +730,14 @@ impl AreaSource {
             let Some(kind) = kind_of(self, s) else {
                 continue;
             };
-            npcs.push(build_npc(state, kind, s, i, &mut random));
+            npcs.push(build_npc(
+                state,
+                kind,
+                s,
+                i,
+                self.kinds[kind].program,
+                &mut random,
+            ));
         }
         let mut deferred = Vec::new();
         for s in zone {
@@ -807,6 +814,7 @@ pub fn build_npc(
     kind: usize,
     spawn: &Spawn,
     entity_index: usize,
+    program: crate::npcs::Program,
     random: &mut Lcg,
 ) -> FieldNpc {
     let object = &state.objects[spawn.point];
@@ -815,6 +823,7 @@ pub fn build_npc(
         &spawn.entity,
         entity_index,
         object.point.walk_paths.first(),
+        program,
         random,
     );
     let zones = object

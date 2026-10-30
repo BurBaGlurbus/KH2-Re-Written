@@ -65,6 +65,7 @@ impl Journal {
     /// FUN_140328d60 and FUN_140329790: the text window and the marks.
     fn story_view(&mut self, seq: &Sequence) {
         let scroll = self.list.cursor;
+        self.bar_to(seq, scroll);
         let (shown, starts) = self.story_window();
         self.set_text(self.story.text, shown);
         let marks = self.story.marks.clone();
@@ -100,7 +101,7 @@ impl Journal {
         self.category_frame(seq);
         let c = self.container;
         let panel = self.page_sprite(seq, PRIO_PANEL, PANEL, c, None);
-        self.page_sprite(seq, PRIO_PANEL, TRACK, c, None);
+        let track = self.page_sprite(seq, PRIO_PANEL, TRACK, c, None);
         let mut t = Self::text(Vec::new(), Self::size(seq, PANEL));
         t.group_position = false;
         t.keep_rgb = false;
@@ -138,6 +139,8 @@ impl Journal {
         } else {
             before + if last > LINES { last - LINES + 1 } else { 1 }
         };
+        // FUN_1402fa930: total L0 + max(10, the newest entry's lines).
+        self.bar_in(seq, track, before + last.max(LINES), LINES);
         // The page opens on the first line of the newest entry.
         self.list = MenuList::new(vec![panel], before.min(total - 1));
         self.list.total = total;

@@ -74,6 +74,7 @@ impl Journal {
 
     /// FUN_1403392b0: the visible rows' names, values and marks.
     fn limit_rows(&mut self, seq: &Sequence) {
+        self.bar_to(seq, self.limits.scroll);
         for j in 0..ROWS {
             let k = self.limits.scroll + j;
             let (Some(&row), Some(&value), Some(&mark)) = (
@@ -142,12 +143,13 @@ impl Journal {
         self.category_frame(seq);
         let c = self.container;
         let panel = self.page_sprite(seq, PRIO_PANEL, LIST_PANEL, c, None);
-        self.page_sprite(seq, PRIO_PANEL, LIST_TRACK, c, None);
+        let track = self.page_sprite(seq, PRIO_PANEL, LIST_TRACK, c, None);
         let all = self.show_all();
         self.limits.entries = (0..self.data.limits.len())
             .filter(|&r| self.limit_owned(r) || all)
             .collect();
         let n = self.limits.entries.len();
+        self.bar_in(seq, track, n.max(ROWS), ROWS);
         self.limits.rows.clear();
         self.limits.values.clear();
         self.limits.marks.clear();
@@ -251,7 +253,7 @@ impl Journal {
         self.category_frame(seq);
         let c = self.container;
         let p0 = self.page_sprite(seq, PRIO_PANEL, DETAIL_PANEL, c, None);
-        self.page_sprite(seq, PRIO_PANEL, DETAIL_TRACK, c, None);
+        let track = self.page_sprite(seq, PRIO_PANEL, DETAIL_TRACK, c, None);
         let row = self
             .limits
             .entries
@@ -285,6 +287,7 @@ impl Journal {
         t.extra = Some(LINE_EXTRA);
         let d = self.page_sprite(seq, BASE, ROW, p0, Some(t));
         self.limits.desc = Some(d);
+        self.bar_in(seq, track, self.limits.lines.len(), LINES);
         self.limit_description();
         let owned = (0..self.data.limits.len())
             .filter(|&r| self.limit_owned(r))
@@ -331,6 +334,7 @@ impl Journal {
             self.limits.top = (self.limits.top + LINES).min(max);
         }
         if self.limits.top != before {
+            self.bar_to(seq, self.limits.top);
             self.limit_description();
             sounds.push(SOUND_CURSOR);
         }

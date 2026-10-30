@@ -246,6 +246,7 @@ impl Journal {
     fn list_rows(&mut self, seq: &Sequence, missions: bool) {
         self.list_seen(missions);
         let first = self.list.cursor;
+        self.bar_to(seq, first);
         for j in 0..ROWS {
             let (Some(&row), Some(&value), Some(&mark)) = (
                 self.lists.rows.get(j),
@@ -348,7 +349,7 @@ impl Journal {
         self.category_frame(seq);
         let c = self.container;
         let panel = self.page_sprite(seq, PRIO_PANEL, PANEL, c, None);
-        self.page_sprite(seq, PRIO_PANEL, TRACK, c, None);
+        let track = self.page_sprite(seq, PRIO_PANEL, TRACK, c, None);
         let size = Self::size(seq, MINIGAME_ROW);
         let value_x = seq.groups[if missions {
             MISSION_ROW[0]
@@ -389,6 +390,7 @@ impl Journal {
         self.lists.entries = self.list_entries(missions);
         let n = self.lists.entries.len();
         let total = if n > ROWS { n - ROWS + 1 } else { 1 };
+        self.bar_in(seq, track, n.max(ROWS), ROWS);
         // The Notes pages start on the current world's header.
         let start = if matches!(self.state, MISSIONS_NOTES | MINIGAMES_NOTES) {
             self.lists

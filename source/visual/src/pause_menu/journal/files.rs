@@ -7,6 +7,7 @@ use super::*;
 
 const MENU_STATE: u8 = 0xe;
 const LIST_PANEL: usize = 90;
+const LIST_TRACK: usize = 95;
 const ROW: usize = 2;
 const MARK: [usize; 2] = [92, 93];
 const DETAIL_PANEL: usize = 75;
@@ -51,6 +52,8 @@ pub(super) struct Page {
     /// First entry shown (FUN_1402f8f30).
     scroll: usize,
     panel: Option<Id>,
+    /// The scroll track's art (G95), the bar's parent.
+    track: Option<Id>,
     /// The entry on the detail page.
     cur: usize,
     /// The Characters page the detail was opened from (6 / 0xc / 0x28).
@@ -130,6 +133,7 @@ impl Journal {
 
     fn files_rows(&mut self, seq: &Sequence, menu: bool) {
         let scroll = self.files.scroll;
+        self.bar_to(seq, scroll);
         for j in 0..ROWS {
             let k = scroll + j;
             let (Some(&row), Some(&mark)) = (self.files.rows.get(j), self.files.marks.get(j))
@@ -220,10 +224,18 @@ impl Journal {
         self.scroll = s;
     }
 
+    /// The list pages' bar: total max(n, 10), visible 10.
+    fn files_bar(&mut self, seq: &Sequence, n: usize) {
+        if let Some(track) = self.files.track {
+            self.bar_in(seq, track, n.max(ROWS), ROWS);
+        }
+    }
+
     fn files_panel(&mut self, seq: &Sequence) {
         let c = self.container;
         let panel = self.page_sprite(seq, PRIO_PANEL, LIST_PANEL, c, None);
         self.files.panel = Some(panel);
+        self.files.track = Some(self.page_sprite(seq, PRIO_PANEL, LIST_TRACK, c, None));
         self.files.rows.clear();
         self.files.marks.clear();
         for i in 0..ROWS {
@@ -268,6 +280,7 @@ impl Journal {
         self.list.total = n;
         self.list.mask = 0x73;
         self.scroll = self.files.scroll;
+        self.files_bar(seq, n);
         self.files_rows(seq, true);
         self.show_help(seq, HELP_MENU);
     }
@@ -307,6 +320,7 @@ impl Journal {
             self.list.mask &= !0x10;
         }
         self.scroll = self.files.scroll;
+        self.files_bar(seq, n);
         self.files_rows(seq, false);
         let h = match self.state {
             0x12 => HELP_LIST[1],
@@ -555,6 +569,7 @@ impl Journal {
         let total = self.files.lines.len();
         let top = self.files.top;
         let visible = self.files.visible;
+        self.bar_to(seq, top);
         let bytes = self.files.lines[top.min(total.saturating_sub(1))..(top + visible).min(total)]
             .join(&0x02u8);
         self.set_text(self.files.desc, bytes);
@@ -712,6 +727,7 @@ impl Journal {
             self.list.mask &= !0x10;
         }
         self.scroll = self.files.scroll;
+        self.files_bar(seq, n);
         self.files_rows(seq, false);
         self.show_help(seq, HELP_REPORTS[0]);
         self.files_view(seq);
@@ -778,7 +794,7 @@ impl Journal {
         self.category_frame(seq);
         let c = self.container;
         let p0 = self.page_sprite(seq, PRIO_PANEL, REPORT_PANEL, c, None);
-        self.page_sprite(seq, PRIO_PANEL, REPORT_TRACK, c, None);
+        let track = self.page_sprite(seq, PRIO_PANEL, REPORT_TRACK, c, None);
         let a = self
             .files
             .entries
@@ -798,6 +814,7 @@ impl Journal {
         self.files.top = 0;
         self.files.visible = REPORT_LINES;
         self.files.arrows = false;
+        self.bar_in(seq, track, self.files.lines.len(), REPORT_LINES);
         let mut t = Self::text(Vec::new(), Self::size(seq, REPORT_PANEL));
         t.group_position = false;
         t.keep_rgb = false;

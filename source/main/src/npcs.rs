@@ -9,8 +9,11 @@
 //! heading turns at 10° per tick toward the curve point ~5 units ahead, and
 //! the speed is the walk motion's root travel per tick.
 //!
-//! Not ported yet: the interrupt system (zone actions, NPC meets, the
-//! encounter reaction), look-at, NPC push and the other AI programs.
+//! The other programs are variants of it (rtn-02): rtn_sit, rtn_lm and
+//! n_ex740_skate_r ([`Program::plain`]) have no turn-in-place motion, always
+//! walk on a route and turn to look only past 30°; n_ex690_skate_r and
+//! n_ex690_tt_tuto run its acts unchanged. Their extra triggers aren't ported:
+//! the skaters' trick table and the tutor's signals 39/40.
 //! Positions here are scene coordinates (Y up); engine yaw Y maps to scene
 //! yaw π − Y.
 use area::zone::Zone;
@@ -77,9 +80,37 @@ pub struct Anims {
     pub look_limit: f32,
 }
 
+/// The AI program's family and the flags its OBJ_INIT sets (rtn-02 §2).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Program {
+    /// The rtn_sit code (rtn-02 §3).
+    pub plain: bool,
+    /// `flag_set` bits, OR-ed with the entity's arg2 (FUN_1404168c0).
+    pub flags: u8,
+}
+
+impl Program {
+    /// The name at the start of the model's BAR type-3 program.
+    pub fn of(name: &[u8]) -> Self {
+        let end = name.iter().position(|&b| b == 0).unwrap_or(name.len());
+        match &name[..end] {
+            b"rtn_sit" => Self {
+                plain: true,
+                flags: 1 << 4,
+            },
+            b"rtn_lm" | b"n_ex740_skate_r" => Self {
+                plain: true,
+                flags: 1 << 3 | 1 << 5,
+            },
+            _ => Self::default(),
+        }
+    }
+}
+
 /// A model with its motions.
 pub struct NpcKind {
     pub name: String,
+    pub program: Program,
     pub model: InspectionModel,
     pub anims: Anims,
     pub target: Option<TargetShape>,
@@ -207,6 +238,12 @@ impl NpcKind {
         // from the model archive's object collision (BAR type 23).
         let archive = library.read_found(&found)?;
         let table = data::bar::read_bar(&archive)?;
+        let program = table
+            .entries
+            .iter()
+            .find(|e| e.entry_type == 3 && e.size > 0)
+            .and_then(|e| archive.get(e.offset as usize..(e.offset as usize + 0x20)))
+            .map_or_else(Program::default, Program::of);
         let collision = table
             .entries
             .iter()
@@ -273,6 +310,7 @@ impl NpcKind {
         Ok(Self {
             reaction,
             name: model_name,
+            program,
             anims: Anims {
                 idle: build_anim(&model, &idle, bone)?,
                 walk: slot(SLOT_WALK).and_then(|m| build_anim(&model, &m, bone).ok()),
@@ -720,6 +758,10 @@ pub struct FieldNpc {
     look_pitch: f32,
     /// Vertex positions with the head turned (None: the cached frame).
     pub look_positions: Option<Vec<Vec3>>,
+    /// [`Program::plain`].
+    plain: bool,
+    /// Flag 4: the talk doesn't turn it to face Sora (FUN_140416eb0).
+    pub keeps_facing: bool,
     cooldown: f32,
     current_zone: Option<usize>,
     act: Act,
@@ -776,6 +818,8 @@ pub fn push(
 pub const PATH_TURN: f32 = 0.174_532_93;
 /// Turn rate of look / encounter (0.05236 × 2.0 = 6°).
 const LOOK_TURN: f32 = 0.104_72;
+/// rtn_sit's look turns only past this (0.523599).
+const PLAIN_LOOK_LIMIT: f32 = std::f32::consts::FRAC_PI_6;
 /// Walk → turn above this heading error; turn → walk below the small one.
 const TURN_ABOVE: f32 = std::f32::consts::FRAC_PI_2;
 const WALK_BELOW: f32 = 0.062_832;
@@ -828,12 +872,13 @@ impl FieldNpc {
         entity: &ArdEntity,
         entity_index: usize,
         path: Option<&WalkPath>,
+        program: Program,
         random: &mut Lcg,
     ) -> Self {
         let position = Vec3::new(entity.position[0], -entity.position[1], -entity.position[2]);
         let engine_yaw = wrap(std::f32::consts::PI - entity.rotation[1]);
         let yaw = std::f32::consts::PI - engine_yaw;
-        let flags = entity.arg2 & 0x7f;
+        let flags = entity.arg2 as u8 & 0x7f | program.flags;
         let fixed = flags & 1 != 0;
         let route = if fixed {
             None
@@ -877,6 +922,8 @@ impl FieldNpc {
             look_yaw: 0.,
             look_pitch: 0.,
             look_positions: None,
+            plain: program.plain,
+            keeps_facing: flags & 1 << 4 != 0,
             cooldown: 0.,
             current_zone: None,
             act: if fixed { Act::Fixed(0) } else { Act::Static },
@@ -887,7 +934,11 @@ impl FieldNpc {
             if flags & 2 == 0 {
                 npc.position = r.start_point();
             }
-            npc.pose = Pose::Turn;
+            npc.pose = if program.plain {
+                Pose::Walk
+            } else {
+                Pose::Turn
+            };
             npc.act = Act::Path;
         }
         npc
@@ -1147,6 +1198,12 @@ impl FieldNpc {
                 if self.position.distance(sora) >= LOOK_END {
                     self.pose = Pose::Idle;
                     self.act = Act::Static;
+                } else if self.plain {
+                    // rtn_sit's look: idle, turning only past 30°.
+                    self.pose = Pose::Idle;
+                    if !self.can_reach(sora, PLAIN_LOOK_LIMIT) {
+                        turn_toward(&mut self.yaw, to, LOOK_TURN);
+                    }
                 } else if !self.can_reach(sora, anims.look_limit) {
                     turn_toward(&mut self.yaw, to, LOOK_TURN);
                     self.pose = Pose::Turn;
@@ -1220,6 +1277,11 @@ impl FieldNpc {
                 if self.over(sora) {
                     self.pose = Pose::Idle;
                     self.act = Act::Encounter(Phase::Finish(10));
+                } else if self.plain {
+                    self.pose = Pose::Idle;
+                    if !self.can_reach(sora, anims.look_limit) {
+                        turn_toward(&mut self.yaw, to, LOOK_TURN);
+                    }
                 } else if !self.can_reach(sora, anims.look_limit) {
                     turn_toward(&mut self.yaw, to, LOOK_TURN);
                     self.pose = Pose::Turn;
@@ -1257,6 +1319,8 @@ impl FieldNpc {
         // vector_angle_y(facing, target): wrap(atan2(t) − atan2(f)).
         let error = wrap(toward.x.atan2(toward.z) - facing.x.atan2(facing.z));
         match self.pose {
+            // rtn_sit's path_move: the walk motion always.
+            _ if self.plain && anims.walk.is_some() => self.pose = Pose::Walk,
             Pose::Walk => {
                 if (error > TURN_ABOVE || error < -TURN_ABOVE) && anims.turn.is_some() {
                     self.pose = Pose::Turn;
@@ -1566,6 +1630,24 @@ pub fn update_meets(
 #[cfg(test)]
 mod tests {
     #[test]
+    fn the_program_name_picks_the_family() {
+        assert_eq!(
+            super::Program::of(b"rtn_default\0\0"),
+            super::Program::default()
+        );
+        assert_eq!(
+            super::Program::of(b"n_ex690_skate_r\0"),
+            super::Program::default()
+        );
+        let sit = super::Program::of(b"rtn_sit\0\0");
+        assert!(sit.plain && sit.flags == 1 << 4);
+        for name in [&b"rtn_lm\0"[..], b"n_ex740_skate_r\0"] {
+            let lm = super::Program::of(name);
+            assert!(lm.plain && lm.flags == 1 << 3 | 1 << 5);
+        }
+    }
+
+    #[test]
     fn a_movable_townsperson_takes_a_sixth_and_sora_five_sixths() {
         // Sora's ellipsoid (r 35, h 55, centre 85) against a townsperson
         // (r 34, h 60, centre 80) 40 units in front of him.
@@ -1693,6 +1775,8 @@ mod tests {
             look_yaw: 0.,
             look_pitch: 0.,
             look_positions: None,
+            plain: false,
+            keeps_facing: false,
             cooldown: 0.,
             current_zone: None,
             act: Act::Path,
@@ -1738,7 +1822,7 @@ mod walk_tests {
             raw: [0; 0x40],
         };
         entity.arg2 = 2;
-        let mut npc = FieldNpc::spawn(0, &entity, 0, Some(&path), &mut rng);
+        let mut npc = FieldNpc::spawn(0, &entity, 0, Some(&path), Program::default(), &mut rng);
         let anim = |frames: usize, travel: f32| Anim {
             frames: vec![vec![Vec3::ZERO]; frames],
             loop_start: 0,
@@ -1815,7 +1899,7 @@ mod meet_tests {
             required_count: 0,
             raw: [0; 0x40],
         };
-        let mut n = FieldNpc::spawn(0, &entity, 0, None, &mut Lcg(1));
+        let mut n = FieldNpc::spawn(0, &entity, 0, None, Program::default(), &mut Lcg(1));
         n.act = Act::Static;
         n.set_behaviour(
             Vec::new(),
