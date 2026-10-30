@@ -378,6 +378,18 @@ fn main() -> Result<()> {
                 sheets.exe_digest
             );
         }
+        // `materials <out file>`: Sora's and the Keyblade's translated materials.
+        ("materials", [out]) => {
+            let data = kh3::sora::SoraData::load(&paks)?;
+            let m = &data.materials;
+            for s in m.body.iter().chain(&m.blade) {
+                match s.owner {
+                    Some(o) => println!("{} {} {} rows? textures {:?}", s.name, o, m.owners[o].blend, s.textures),
+                    None => println!("{} NOT TRANSLATED: {}", s.name, s.why),
+                }
+            }
+            std::fs::write(out, kh3::charmat::wgsl(&m.owners))?;
+        }
         ("texture", [path]) => {
             let p = package(path)?;
             let i = p.export_of_class("Texture2D").ok_or("no Texture2D")?;

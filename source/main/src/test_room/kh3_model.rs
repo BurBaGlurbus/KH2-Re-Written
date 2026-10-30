@@ -48,6 +48,8 @@ struct Shared {
 struct Part {
     mesh: Handle<Mesh>,
     material: Handle<FogMaterial>,
+    /// The game's own shading, when its shader was translated.
+    shaded: Option<kh3_material::Kh3Material>,
 }
 
 struct Rig {
@@ -58,6 +60,8 @@ struct Rig {
     animator: Animator,
     component: Vec<BonePose>,
     secondary: Option<kh3_cloth::Secondary>,
+    /// This Sora's materials, which follow his actor.
+    shaded: Vec<Handle<kh3_material::Kh3Material>>,
 }
 
 #[derive(Component)]
@@ -100,8 +104,8 @@ fn image_of(t: &Texture, srgb: bool) -> Option<Image> {
         ("PF_BC7", false) => TextureFormat::Bc7RgbaUnorm,
         ("PF_BC5", _) => TextureFormat::Bc5RgUnorm,
         ("PF_BC4", _) => TextureFormat::Bc4RUnorm,
-        ("PF_B8G8R8A8", true) => TextureFormat::Bgra8UnormSrgb,
-        ("PF_B8G8R8A8", false) => TextureFormat::Bgra8Unorm,
+        ("PF_B8G8R8A8", true) => TextureFormat::Rgba8UnormSrgb,
+        ("PF_B8G8R8A8", false) => TextureFormat::Rgba8Unorm,
         _ => return None,
     };
     let first = t.mips.first()?;
@@ -121,15 +125,24 @@ fn image_of(t: &Texture, srgb: bool) -> Option<Image> {
     image.texture_descriptor.dimension = TextureDimension::D2;
     image.texture_descriptor.format = format;
     image.texture_descriptor.mip_level_count = usable.len().max(1) as u32;
-    image.data = Some(
-        usable
-            .iter()
-            .flat_map(|m| m.bytes.iter().copied())
-            .collect(),
-    );
+    let mut bytes: Vec<u8> = usable
+        .iter()
+        .flat_map(|m| m.bytes.iter().copied())
+        .collect();
+    if t.format == "PF_B8G8R8A8" {
+        for texel in bytes.chunks_exact_mut(4) {
+            texel.swap(0, 2);
+        }
+    }
+    image.data = Some(bytes);
+    let address = |name: &str| match t.props.str(name) {
+        Some(mode) if mode.ends_with("TA_Clamp") => ImageAddressMode::ClampToEdge,
+        Some(mode) if mode.ends_with("TA_Mirror") => ImageAddressMode::MirrorRepeat,
+        _ => ImageAddressMode::Repeat,
+    };
     image.sampler = ImageSampler::Descriptor(ImageSamplerDescriptor {
-        address_mode_u: ImageAddressMode::Repeat,
-        address_mode_v: ImageAddressMode::Repeat,
+        address_mode_u: address("AddressX"),
+        address_mode_v: address("AddressY"),
         mag_filter: ImageFilterMode::Linear,
         min_filter: ImageFilterMode::Linear,
         mipmap_filter: ImageFilterMode::Linear,
@@ -172,6 +185,17 @@ fn lod_meshes(lod: &Lod, joint_of: &[u16], k: f32) -> Vec<(u16, Mesh)> {
         mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, positions);
         mesh.insert_attribute(Mesh::ATTRIBUTE_NORMAL, normals);
         mesh.insert_attribute(Mesh::ATTRIBUTE_UV_0, lod.uv0[from..to].to_vec());
+        if lod.uv1.len() >= to {
+            mesh.insert_attribute(Mesh::ATTRIBUTE_UV_1, lod.uv1[from..to].to_vec());
+        }
+        if lod.tangents.len() >= to {
+            let tangents: Vec<[f32; 4]> = lod.tangents[from..to]
+                .iter()
+                .zip(&lod.normals[from..to])
+                .map(|(t, n)| [t[0], t[2], t[1], n[3]])
+                .collect();
+            mesh.insert_attribute(Mesh::ATTRIBUTE_TANGENT, tangents);
+        }
         mesh.insert_attribute(
             Mesh::ATTRIBUTE_JOINT_INDEX,
             bevy::mesh::VertexAttributeValues::Uint16x4(joints),
@@ -274,25 +298,84 @@ fn shared(
 ) -> Shared {
     let k = scale();
     let mut cache = HashMap::new();
+    let mut shaded_images: HashMap<String, Handle<Image>> = HashMap::new();
     let (body_joints, body_place) = used_joints(&data.mesh);
     let (blade_joints, blade_place) = used_joints(&data.keyblade);
-    let mut parts = |mesh: &SkeletalMesh, looks: &[SlotLook], place: &[u16]| -> Vec<Part> {
+    let sampler = |address: ImageAddressMode, images: &mut Assets<Image>| {
+        let mut image = Image::new_fill(
+            Extent3d {
+                width: 1,
+                height: 1,
+                depth_or_array_layers: 1,
+            },
+            TextureDimension::D2,
+            &[255; 4],
+            TextureFormat::Rgba8Unorm,
+            bevy::asset::RenderAssetUsages::RENDER_WORLD,
+        );
+        image.sampler = ImageSampler::Descriptor(ImageSamplerDescriptor {
+            address_mode_u: address,
+            address_mode_v: address,
+            mag_filter: ImageFilterMode::Linear,
+            min_filter: ImageFilterMode::Linear,
+            mipmap_filter: ImageFilterMode::Linear,
+            anisotropy_clamp: 4,
+            ..default()
+        });
+        images.add(image)
+    };
+    let samplers = (
+        sampler(ImageAddressMode::Repeat, images),
+        sampler(ImageAddressMode::ClampToEdge, images),
+    );
+    let mut parts = |mesh: &SkeletalMesh,
+                     looks: &[SlotLook],
+                     slots: &[data::kh3::charmat::Slot],
+                     place: &[u16]|
+     -> Vec<Part> {
         let mats: Vec<Option<Handle<FogMaterial>>> = looks
             .iter()
             .map(|l| (!l.skip).then(|| material_of(l, data, images, &mut cache, materials)))
             .collect();
+        let shaded: Vec<Option<kh3_material::Kh3Material>> = slots
+            .iter()
+            .map(|s| {
+                let mut image = |path: &str| -> Option<Handle<Image>> {
+                    if let Some(h) = shaded_images.get(path) {
+                        return Some(h.clone());
+                    }
+                    let t = data.textures.get(path)?;
+                    let handle = images.add(image_of(t, t.props.bool("SRGB").unwrap_or(true))?);
+                    shaded_images.insert(path.to_owned(), handle.clone());
+                    Some(handle)
+                };
+                kh3_material::material_of(&data.materials, s, &mut image, &samplers)
+            })
+            .collect();
         lod_meshes(&mesh.lod, place, k)
             .into_iter()
             .filter_map(|(slot, m)| {
+                let slot = usize::from(slot);
+                let material = mats.get(slot).cloned().flatten();
+                let shaded = shaded.get(slot).cloned().flatten();
+                if material.is_none() && shaded.is_none() {
+                    return None;
+                }
                 Some(Part {
-                    material: mats.get(usize::from(slot))?.clone()?,
+                    material: material.unwrap_or_default(),
+                    shaded,
                     mesh: meshes.add(m),
                 })
             })
             .collect()
     };
-    let body = parts(&data.mesh, &data.looks, &body_place);
-    let blade = parts(&data.keyblade, &data.keyblade_looks, &blade_place);
+    let body = parts(&data.mesh, &data.looks, &data.materials.body, &body_place);
+    let blade = parts(
+        &data.keyblade,
+        &data.keyblade_looks,
+        &data.materials.blade,
+        &blade_place,
+    );
     let body_binds = bind_assets.add(SkinnedMeshInverseBindposes::from(binds(
         &data.mesh,
         &body_joints,
@@ -313,7 +396,13 @@ fn shared(
     }
 }
 
-fn spawn_rig(commands: &mut Commands, s: &Shared, world: Option<Entity>) -> Rig {
+fn spawn_rig(
+    commands: &mut Commands,
+    s: &Shared,
+    world: Option<Entity>,
+    shaded_assets: &mut Assets<kh3_material::Kh3Material>,
+) -> Rig {
+    let mut shaded_handles = Vec::new();
     let root = commands
         .spawn((Kh3Root, Transform::default(), Visibility::Hidden))
         .id();
@@ -336,15 +425,22 @@ fn spawn_rig(commands: &mut Commands, s: &Shared, world: Option<Entity>) -> Rig 
         .spawn((Transform::default(), Visibility::Inherited, ChildOf(root)))
         .id();
     let blade_joints = joint_entities(commands, blade, &s.blade_joints);
-    let parts = |commands: &mut Commands,
-                 parent: Entity,
-                 list: &[Part],
-                 binds: &Handle<SkinnedMeshInverseBindposes>,
-                 j: &[(usize, Entity)]| {
+    let mut parts = |commands: &mut Commands,
+                     parent: Entity,
+                     list: &[Part],
+                     binds: &Handle<SkinnedMeshInverseBindposes>,
+                     j: &[(usize, Entity)]| {
         for part in list {
-            commands.spawn((
+            let mut e = commands.spawn_empty();
+            if let Some(m) = &part.shaded {
+                let handle = shaded_assets.add(m.clone());
+                shaded_handles.push(handle.clone());
+                e.insert(MeshMaterial3d(handle));
+            } else {
+                e.insert(MeshMaterial3d(part.material.clone()));
+            }
+            e.insert((
                 Mesh3d(part.mesh.clone()),
-                MeshMaterial3d(part.material.clone()),
                 SkinnedMesh {
                     inverse_bindposes: binds.clone(),
                     joints: j.iter().map(|x| x.1).collect(),
@@ -366,6 +462,7 @@ fn spawn_rig(commands: &mut Commands, s: &Shared, world: Option<Entity>) -> Rig 
         animator: Animator::default(),
         component: Vec::new(),
         secondary: None,
+        shaded: shaded_handles,
     }
 }
 
@@ -429,6 +526,10 @@ pub(crate) fn update(
         ResMut<Assets<FogMaterial>>,
         ResMut<Assets<SkinnedMeshInverseBindposes>>,
     ),
+    shading: (
+        ResMut<Assets<kh3_material::Kh3Material>>,
+        ResMut<Assets<bevy::shader::Shader>>,
+    ),
     mut ambient: ResMut<GlobalAmbientLight>,
     mut fx: ResMut<kh3_fx::Kh3Fx>,
     mut effect_materials: ResMut<Assets<visual::effect_draw::EffectMaterial>>,
@@ -439,6 +540,7 @@ pub(crate) fn update(
     >,
 ) {
     let (mut meshes, mut images, mut materials, mut bind_assets) = assets;
+    let (mut shaded_assets, mut shaders) = shading;
     let model = &mut *model;
     start_load(model, &game);
     // Reading KH3 takes some seconds: the duel waits for it.
@@ -484,6 +586,14 @@ pub(crate) fn update(
     };
     let data = &loaded.sora;
     if model.shared.is_none() {
+        // KH3's material shaders, translated at load.
+        let _ = shaders.insert(
+            &kh3_material::SHADER,
+            bevy::shader::Shader::from_wgsl(
+                kh3_material::shader_text(&data.materials),
+                "kh3_material.wgsl",
+            ),
+        );
         model.shared = Some(shared(
             data,
             &mut meshes,
@@ -495,12 +605,12 @@ pub(crate) fn update(
         commands.spawn((
             Kh3Light,
             DirectionalLight {
-                illuminance: 9000.,
+                illuminance: 3000.,
                 ..default()
             },
             Transform::from_xyz(0.4, 1., 0.5).looking_at(Vec3::ZERO, Vec3::Y),
         ));
-        ambient.brightness = 900.;
+        ambient.brightness = 300.;
     }
     // KH2's rigs stay under the floor of what is drawn.
     for e in &hidden {
@@ -524,8 +634,8 @@ pub(crate) fn update(
         let Some(fighter) = fighter_of(game, seat) else {
             continue;
         };
-        let rig =
-            model.rigs[usize::from(seat)].get_or_insert_with(|| spawn_rig(&mut commands, s, world));
+        let rig = model.rigs[usize::from(seat)]
+            .get_or_insert_with(|| spawn_rig(&mut commands, s, world, &mut shaded_assets));
         if let Ok(mut v) = visibilities.get_mut(rig.root) {
             *v = Visibility::Inherited;
         }
@@ -581,6 +691,12 @@ pub(crate) fn update(
             dt,
         );
         sora::to_component(&data.mesh.bones, &rig.animator.saved, &mut rig.component);
+        let actor = kh3_cloth_at(p.position);
+        for h in &rig.shaded {
+            if let Some(mut m) = shaded_assets.get_mut(h) {
+                m.place(actor, p.yaw, 1. / scale(), time.elapsed_secs());
+            }
+        }
         rig.secondary
             .get_or_insert_with(|| kh3_cloth::Secondary::new(data))
             .step(

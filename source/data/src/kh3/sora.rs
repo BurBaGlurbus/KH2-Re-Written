@@ -392,6 +392,11 @@ pub struct SoraData {
     pub anims: AnimSet,
     pub reference: Vec<BonePose>,
     pub rig: super::rig::RigData,
+    /// (slot name, material asset) of each mesh's slots.
+    pub material_paths: Vec<(String, Option<String>)>,
+    pub keyblade_material_paths: Vec<(String, Option<String>)>,
+    /// The slots' materials as the game shades them.
+    pub materials: super::charmat::CharMaterials,
 }
 
 fn read_sockets(p: &Package) -> Vec<Socket> {
@@ -765,6 +770,15 @@ impl SoraData {
         if let Some(p) = paks.game_package(&blade_skeleton)? {
             keyblade_sockets.extend(read_sockets(&p));
         }
+        let slots = |p: &Package, m: &SkeletalMesh| -> Vec<(String, Option<String>)> {
+            m.materials
+                .iter()
+                .map(|s| (s.slot.clone(), slot_material(p, s.object)))
+                .collect()
+        };
+        let material_paths = slots(&mesh_package, &mesh);
+        let keyblade_material_paths = slots(&blade_package, &keyblade);
+        let materials = super::charmat::read(paks, &material_paths, &keyblade_material_paths);
         let anims = read_anim_set(paks, ANIM_SET)?;
         let mut wanted: Vec<String> = looks
             .iter()
@@ -772,6 +786,13 @@ impl SoraData {
             .filter(|l| !l.skip)
             .flat_map(|l| l.color.iter().chain(&l.normal).cloned())
             .collect();
+        wanted.extend(
+            materials
+                .body
+                .iter()
+                .chain(&materials.blade)
+                .flat_map(|s| s.textures.iter().flatten().cloned()),
+        );
         wanted.sort_unstable();
         wanted.dedup();
         let textures = parallel(&wanted, |path| {
@@ -792,6 +813,9 @@ impl SoraData {
             anims,
             reference,
             rig,
+            material_paths,
+            keyblade_material_paths,
+            materials,
         })
     }
 
