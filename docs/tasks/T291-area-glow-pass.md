@@ -24,8 +24,8 @@ stencil in the alpha pass); runs in `research\issues-20261030\runs\`.
 - `visual::glow`: the pass as the exe's quads, one vertex buffer per size, quarter-size targets, `Rgba8Unorm` so it runs on
   the stored (gamma) values like the scene. Unit tests hold the quads to the spec's per-iteration table.
 - The room has no stencil, so the scene's alpha channel holds it. `spawn_room` gives map and sky opaque chunks a `UV_1`
-  class per triangle, `fog.wgsl` writes it to alpha, and on a glow camera every other pipeline (characters, BOBs, the alpha
-  pass, effects) masks alpha off. The camera clears alpha to 0 and the pass puts it back to 1 before the frame goes on. A glow
+  class per triangle, `fog.wgsl` writes it to alpha (0 for a model without one), and on a glow camera blended pipelines (the alpha
+  pass, effects) mask alpha off. The camera clears alpha to 0 and the pass puts it back to 1 before the frame goes on. A glow
   camera is marked by an unused pipeline key bit (its shadow filter), so the camp's character cameras keep their alpha.
 - The flag: `AreaSource::glow` over the arif row (shared `arif_row`), followed per area by `area_glow` in the room, read at
   load by the world map, and `glow_switch` over SeqGlow in events.
@@ -46,8 +46,8 @@ stencil in the alpha pass); runs in `research\issues-20261030\runs\`.
 - Bilinear filtering of the targets is [I] (draw3-spec §5.1); the half-pixel shifts only blur with it.
 - The texture bank's mode byte (+0xa8, `DAT_140ad7750`: 2 = 0xff for everything, 3 = two passes) is treated as 0. Its writer
   is not traced.
-- BOB and character draws go through other commands; `FUN_1401bb350` also reads `DAT_140723bb0`, so a second stencil path may
-  exist for some models. Not read.
+- BOB and character draws: `FUN_1401bb350` / `FUN_1401bc480` write the same stencil (corrected after T297: at first these models
+  left it alone and blew out over bright map pixels). Here they are all class 0, since their meshes keep no vertex alpha.
 - The title's and main task's glow objects (FUN_140169130) have no scene here.
 
 ## Verdict

@@ -8,7 +8,7 @@ use bevy::{
     mesh::MeshVertexBufferLayoutRef,
     pbr::{
         ExtendedMaterial, MaterialExtension, MaterialExtensionKey, MaterialExtensionPipeline,
-        MaterialPlugin,
+        MaterialPlugin, MeshPipelineKey,
     },
     prelude::*,
     render::render_resource::{
@@ -84,16 +84,24 @@ impl MaterialExtension for FogExt {
         false
     }
 
-    /// On a glow camera only map and sky opaque chunks (their `UV_1` class)
-    /// write the alpha channel, the exe's stencil.
+    /// On a glow camera opaque draws write the exe's stencil to the alpha
+    /// channel: their `UV_1` class, or 0 for a model without one. Blended
+    /// draws leave it alone (the alpha pass masks the frame's alpha).
     fn specialize(
         _pipeline: &MaterialExtensionPipeline,
         descriptor: &mut RenderPipelineDescriptor,
-        layout: &MeshVertexBufferLayoutRef,
+        _layout: &MeshVertexBufferLayoutRef,
         key: MaterialExtensionKey<Self>,
     ) -> Result<(), SpecializedMeshPipelineError> {
-        if crate::glow::keeps_alpha(key.mesh_key) && !layout.0.contains(Mesh::ATTRIBUTE_UV_1) {
-            crate::glow::keep_alpha(descriptor);
+        if crate::glow::keeps_alpha(key.mesh_key) {
+            let blend = key.mesh_key & MeshPipelineKey::BLEND_RESERVED_BITS;
+            if blend == MeshPipelineKey::BLEND_OPAQUE {
+                if let Some(fragment) = descriptor.fragment.as_mut() {
+                    fragment.shader_defs.push("GLOW_STENCIL".into());
+                }
+            } else {
+                crate::glow::keep_alpha(descriptor);
+            }
         }
         Ok(())
     }

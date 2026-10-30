@@ -7,10 +7,12 @@
 //! strength: the only input is an on/off flag (arif flag bit 4 at map load,
 //! FUN_1403a5a80; SeqGlow in events).
 //!
-//! The room has no stencil, so the scene's alpha channel holds it: map and sky
-//! opaque chunks (a `UV_1` class per triangle, read by `fog.wgsl`) write their
-//! class to alpha, and everything else on a [`Glow`] camera leaves alpha alone
-//! ([`keeps_alpha`]). The pass puts alpha back to 1 when it is done.
+//! The room has no stencil, so the scene's alpha channel holds it: opaque draws
+//! write their class to alpha (`fog.wgsl`; map and sky chunks carry a `UV_1`
+//! class per triangle, models are class 0: FUN_1401bb350 writes the same stencil
+//! for them and their vertices carry no alpha over 0x80 here), and blended draws
+//! on a [`Glow`] camera leave alpha alone ([`keeps_alpha`]). The pass puts alpha
+//! back to 1 when it is done.
 use bevy::{
     asset::{AssetPath, embedded_asset, embedded_path},
     color::LinearRgba,

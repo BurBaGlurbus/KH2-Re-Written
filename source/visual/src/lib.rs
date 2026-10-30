@@ -8,6 +8,7 @@ pub mod enemy_gauge;
 pub mod fade;
 pub mod field_command_menu;
 pub mod file_menu;
+pub mod focus;
 pub mod footsteps;
 pub mod frame_limit;
 pub mod gauge;

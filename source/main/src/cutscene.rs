@@ -150,6 +150,35 @@ struct BgGroups {
     shown: Option<u64>,
 }
 
+/// SeqFocus (0x18, FUN_1402da870): a record's byte +2 is 0 for on, else off;
+/// +4 the GS depth. Byte +3 picks the pass's other mode (FUN_14018a2d0), which
+/// no record reaches in the events played here.
+fn focus_switch(event: Res<Event>, mut cameras: Query<&mut visual::focus::Focus>) {
+    let mut depth = None;
+    let mut last = i32::MIN;
+    for command in &event.timeline.other {
+        if let data::event_script::Command::Other {
+            opcode: 0x18,
+            payload,
+        } = command
+            && let [a, b, switch, _, z0, z1, z2, z3, ..] = payload[..]
+        {
+            let at = i32::from(i16::from_le_bytes([a, b]));
+            if at as f32 <= event.frame && at >= last {
+                last = at;
+                depth = (switch == 0).then(|| {
+                    i32::from_le_bytes([z0, z1, z2, z3]).max(visual::focus::NEAREST_DEPTH) as f32
+                });
+            }
+        }
+    }
+    for mut focus in &mut cameras {
+        if focus.depth != depth {
+            focus.depth = depth;
+        }
+    }
+}
+
 /// SeqGlow (0x43, FUN_1402da8d0): a record's byte +2 is 0 for on, else off;
 /// event start turns it on (FUN_1401e7d30).
 fn glow_switch(event: Res<Event>, mut cameras: Query<&mut visual::glow::Glow>) {
@@ -421,6 +450,7 @@ fn setup(
         NoIndirectDrawing,
         visual::effect_draw::scene_compositing(),
         visual::glow::camera(true, Some(clear)),
+        visual::focus::Focus::default(),
         EventCamera,
     ));
 }
@@ -1196,6 +1226,7 @@ fn run(args: Vec<PathBuf>) -> Result<AppExit, Box<dyn std::error::Error>> {
     .add_plugins(FogPlugin)
     .add_plugins(visual::effect_draw::EffectPlugin)
     .add_plugins(visual::glow::GlowPlugin)
+    .add_plugins(visual::focus::FocusPlugin)
     .add_plugins(Ui2dPlugin {
         order: 0,
         overlay: false,
@@ -1210,6 +1241,7 @@ fn run(args: Vec<PathBuf>) -> Result<AppExit, Box<dyn std::error::Error>> {
             texa::animate,
             blur::drive,
             glow_switch,
+            focus_switch,
             room_animation,
             compose,
             finish,
