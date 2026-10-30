@@ -391,6 +391,7 @@ pub struct SoraData {
     pub textures: HashMap<String, Texture>,
     pub anims: AnimSet,
     pub reference: Vec<BonePose>,
+    pub rig: super::rig::RigData,
 }
 
 fn read_sockets(p: &Package) -> Vec<Socket> {
@@ -779,6 +780,7 @@ impl SoraData {
             Texture::read(&p, i).ok().map(|t| (path.clone(), t))
         });
         let reference = reference_of(&mesh.bones);
+        let rig = super::rig::read(paks, &mesh.bones, &keyblade.bones)?;
         Ok(Self {
             mesh,
             looks,
@@ -789,6 +791,7 @@ impl SoraData {
             textures: textures.into_iter().flatten().collect(),
             anims,
             reference,
+            rig,
         })
     }
 

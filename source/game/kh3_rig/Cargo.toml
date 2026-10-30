@@ -1,0 +1,9 @@
+[package]
+name = "kh3_rig"
+version.workspace = true
+edition = "2021"
+license = "MIT"
+rust-version.workspace = true
+
+[dependencies]
+glam = "=0.32.1"

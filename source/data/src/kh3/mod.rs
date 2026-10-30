@@ -14,6 +14,7 @@ pub mod material;
 pub mod package;
 pub mod pak;
 pub mod props;
+pub mod rig;
 pub mod sead;
 pub mod sheets;
 pub mod skeletal;

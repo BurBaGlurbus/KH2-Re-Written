@@ -57,12 +57,18 @@ struct Rig {
     blade_joints: Vec<(usize, Entity)>,
     animator: Animator,
     component: Vec<BonePose>,
+    secondary: Option<kh3_cloth::Secondary>,
 }
 
 #[derive(Component)]
 pub(crate) struct Kh3Root;
 #[derive(Component)]
 pub(crate) struct Kh3Light;
+
+/// The actor's place in KH3's world for the cloth.
+fn kh3_cloth_at(position: [f32; 3]) -> kh3_rig::glam::Vec3 {
+    kh3_rig::glam::Vec3::from_array(kh3_fx::to_kh3(Vec3::from_array(position)).to_array())
+}
 
 /// KH3's centimetres to the rewrite's units (Sora's size against the room).
 fn scale() -> f32 {
@@ -359,6 +365,7 @@ fn spawn_rig(commands: &mut Commands, s: &Shared, world: Option<Entity>) -> Rig 
         blade_joints,
         animator: Animator::default(),
         component: Vec::new(),
+        secondary: None,
     }
 }
 
@@ -574,6 +581,18 @@ pub(crate) fn update(
             dt,
         );
         sora::to_component(&data.mesh.bones, &rig.animator.saved, &mut rig.component);
+        rig.secondary
+            .get_or_insert_with(|| kh3_cloth::Secondary::new(data))
+            .step(
+                data.anims.main_clip(row, v.at[0]),
+                time_in,
+                dt,
+                &rig.animator.saved,
+                &mut rig.component,
+                kh3_cloth_at(p.position),
+                p.yaw,
+                !p.in_air(),
+            );
         fx.surface = kh3_autose::surface_of_arena(game.duel_arena);
         kh3_fx::body_step(
             &mut fx,
@@ -594,6 +613,7 @@ pub(crate) fn update(
             }
         }
         // The Kingdom Key: its root on the hand's socket (SnapToTarget).
+        let mut blade_at = None;
         if let Some(sock) = data.sockets.iter().find(|x| x.name == "R_wep_skt")
             && let Some(hand) = data.bone(&sock.bone).and_then(|b| rig.component.get(b))
         {
@@ -603,6 +623,7 @@ pub(crate) fn update(
                 scale: sock.scale,
             };
             let at = sora::compose(hand, &local);
+            blade_at = Some(at);
             if let Ok(mut t) = transforms.get_mut(rig.blade) {
                 *t = converted(&at, k);
             }
@@ -627,6 +648,11 @@ pub(crate) fn update(
             })
             .collect();
         sora::to_component(&data.keyblade.bones, &blade_local, &mut blade_component);
+        if let Some(at) = blade_at
+            && let Some(secondary) = &mut rig.secondary
+        {
+            secondary.keychain(dt, &at, p.armed, &mut blade_component);
+        }
         for &(bone, e) in &rig.blade_joints {
             if let (Ok(mut t), Some(c)) = (transforms.get_mut(e), blade_component.get(bone)) {
                 *t = converted(c, k);

@@ -1134,7 +1134,7 @@ impl Kh3Fx {
 }
 
 /// `(x, y, z)` in the room to KH3's space (cm, Z up, left-handed).
-fn to_kh3(p: Vec3) -> glam::Vec3 {
+pub(crate) fn to_kh3(p: Vec3) -> glam::Vec3 {
     let k = 1. / player::kh3::tuning::length_of(1.);
     glam::Vec3::new(p.x * k, p.z * k, p.y * k)
 }

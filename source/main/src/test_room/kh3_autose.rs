@@ -216,7 +216,8 @@ impl AutoSe {
             ..Analysis::default()
         };
         let base = frame.base * M;
-        let speed = |now: Vec3, before: Option<Vec3>| before.map_or(0., |b| (now - b).length() / dt);
+        let speed =
+            |now: Vec3, before: Option<Vec3>| before.map_or(0., |b| (now - b).length() / dt);
         now.waist_speed = speed(now.waist, prev.map(|p| p.waist));
         now.running = now.waist_speed >= RUN_SPEED;
         let spine = (base - now.waist).normalize_or_zero();
@@ -341,7 +342,8 @@ impl AutoSe {
                     && now.arm_rel[k] >= threshold
                     && self.cooldown_arm[k] <= 0.
                 {
-                    let volume = clamp01((now.arm_rel[k].abs() - threshold) / (ARM_MAX - threshold));
+                    let volume =
+                        clamp01((now.arm_rel[k].abs() - threshold) / (ARM_MAX - threshold));
                     events.push(Event {
                         motion,
                         part: Part::Arm(k),
@@ -431,7 +433,10 @@ mod tests {
         let mut d = AutoSe::default();
         let s = Settings::default();
         for _ in 0..6 {
-            assert!(d.step(1. / 60., &frame(30., true), 25., true, &s).is_empty());
+            assert!(
+                d.step(1. / 60., &frame(30., true), 25., true, &s)
+                    .is_empty()
+            );
         }
     }
 }
