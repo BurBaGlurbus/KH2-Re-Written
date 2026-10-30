@@ -139,8 +139,9 @@ pub(crate) enum Scope {
 struct Policy {
     /// The Soras' elements end over this many event frames (0: at once).
     fade: f32,
-    /// Forms and running spells end on the instance that simulates them.
-    fighters: bool,
+    /// Forms end on the instance that simulates them; off, a form's own
+    /// effects stay on Sora with it.
+    forms: bool,
     /// Effects queued but not started are dropped.
     queues: bool,
     /// The battle actors' per-actor maps are forgotten.
@@ -153,28 +154,30 @@ const fn policy(scope: Scope) -> Policy {
     match scope {
         Scope::RoundEnd => Policy {
             fade: FIGHTER_FADE,
-            fighters: true,
+            forms: true,
             queues: false,
             actors: false,
             caches: false,
         },
         Scope::RoundStart => Policy {
             fade: 0.,
-            fighters: true,
+            forms: true,
             queues: true,
             actors: false,
             caches: true,
         },
         Scope::MatchEnd => Policy {
             fade: FIGHTER_FADE,
-            fighters: true,
+            forms: true,
             queues: false,
             actors: false,
             caches: true,
         },
+        // A form stays through a door (the owner's rule, 2026-10-30); what it
+        // left in the old room does not.
         Scope::RoomChange => Policy {
             fade: 0.,
-            fighters: true,
+            forms: false,
             queues: true,
             actors: true,
             caches: true,
@@ -300,17 +303,27 @@ pub(crate) fn run(
         let started = std::time::Instant::now();
         let plan = policy(scope);
         let mut forms = 0;
-        if plan.fighters && !game.net_client {
+        if !game.net_client {
             each_sora(game, |g| {
-                forms += usize::from(g.drive.as_ref().is_some_and(|d| d.shown != 0 || d.active));
-                drive_room::end_form(g);
+                if plan.forms {
+                    forms +=
+                        usize::from(g.drive.as_ref().is_some_and(|d| d.shown != 0 || d.active));
+                    drive_room::end_form(g);
+                } else if let Some(d) = g.drive.as_mut() {
+                    d.end_shots();
+                }
                 if let Some(m) = g.magic.as_mut() {
                     m.end_spells();
                 }
             });
         }
+        // The kit whose elements stay bound to Sora through a door.
+        let kept = (!plan.forms)
+            .then(|| game.drive.as_ref().map(|d| d.shown))
+            .flatten()
+            .filter(|&shown| shown != 0);
         let mut stops = std::mem::take(&mut game.sound_stops);
-        let drive_fx = drive.end_fighters(plan.fade, &mut stops);
+        let drive_fx = drive.end_fighters(plan.fade, &mut stops, kept);
         game.sound_stops = stops;
         let spell_fx = spell.end_all(plan.fade);
         let legacy_fx = legacy.running.len();
@@ -418,15 +431,12 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn every_scope_ends_the_fighters_and_a_round_s_end_keeps_the_caches() {
-        for scope in [
-            Scope::RoundEnd,
-            Scope::RoundStart,
-            Scope::MatchEnd,
-            Scope::RoomChange,
-        ] {
-            assert!(policy(scope).fighters, "{scope:?}");
+    fn a_round_and_a_match_end_forms_a_door_does_not() {
+        for scope in [Scope::RoundEnd, Scope::RoundStart, Scope::MatchEnd] {
+            assert!(policy(scope).forms, "{scope:?}");
         }
+        // A form goes through a door with Sora.
+        assert!(!policy(Scope::RoomChange).forms);
         assert!(!policy(Scope::RoundEnd).caches);
         assert!(policy(Scope::RoomChange).actors);
         assert_eq!(policy(Scope::RoundStart).fade, 0.);

@@ -197,6 +197,8 @@ struct Running {
     group: Option<u8>,
     /// The element's sound, stopped with the element (map beds loop).
     sound_id: Option<u32>,
+    /// Its sound whatever the element, for a cleanup to know it is held.
+    own_sound: Option<u32>,
     /// The serial it holds in the hit-effect ring (0 = none).
     spark: u64,
     /// The Wisdom bullet it follows, with the element's scale.
@@ -297,13 +299,20 @@ impl DriveFx {
 
     /// Ends the Soras' own elements (the map's and a save point's stay):
     /// over `frames` event frames, or at once for 0. Returns how many.
-    pub(crate) fn end_fighters(&mut self, frames: f32, sound_stops: &mut Vec<u32>) -> usize {
+    /// `kept_form`: the elements of that kit bound to the room Sora stay too
+    /// (a form going through a door).
+    pub(crate) fn end_fighters(
+        &mut self,
+        frames: f32,
+        sound_stops: &mut Vec<u32>,
+        kept_form: Option<u8>,
+    ) -> usize {
         let mut ended = 0;
-        for r in self
-            .running
-            .iter_mut()
-            .filter(|r| r.group.is_none() && r.owner != super::reaction_command::SAVE_PULSE)
-        {
+        for r in self.running.iter_mut().filter(|r| {
+            r.group.is_none()
+                && r.owner != super::reaction_command::SAVE_PULSE
+                && !(Some(r.owner) == kept_form && r.rival.is_none() && r.bind.is_some())
+        }) {
             r.instance.release();
             r.instance.fade_out(frames);
             r.life = None;
@@ -317,9 +326,14 @@ impl DriveFx {
         ended
     }
 
-    /// The looping sounds the map's and the save point's elements hold.
+    /// The sounds of the elements still going: the map's and the save
+    /// point's loops, and a form's that went through a door.
     pub(crate) fn held_sounds(&self) -> Vec<u32> {
-        self.running.iter().filter_map(|r| r.sound_id).collect()
+        self.running
+            .iter()
+            .filter(|r| !r.instance.is_released())
+            .filter_map(|r| r.sound_id.or(r.own_sound))
+            .collect()
     }
 
     /// Past the ceiling the oldest elements go, the map's last.
@@ -853,6 +867,7 @@ pub fn tick(
                     matches!(anchor, Anchor::Map { .. })
                         || req.owner == super::reaction_command::SAVE_PULSE
                 }),
+                own_sound: sound,
                 sound: sound.filter(|_| wait > 0.),
                 sound_wait: wait,
                 tint: style.tint,
@@ -1328,6 +1343,7 @@ mod tests {
             trail: None,
             group,
             sound_id: None,
+            own_sound: None,
             spark: 0,
             bullet: None,
             sound: None,
@@ -1377,10 +1393,37 @@ mod tests {
         fx.running.push(running(0xff, Some(1), None));
         fx.running.push(running(0xfd, None, Some(3)));
         let mut stops = Vec::new();
-        assert_eq!(fx.end_fighters(8., &mut stops), 3);
+        assert_eq!(fx.end_fighters(8., &mut stops, None), 3);
         step(&mut fx, 20);
         let left: Vec<_> = fx.running.iter().map(|r| r.group).collect();
         assert_eq!(left, [Some(3)]);
+    }
+
+    #[test]
+    fn a_door_keeps_the_form_s_bound_effects_and_ends_the_rest() {
+        let bound = |owner, rival| {
+            let mut r = running(owner, rival, None);
+            r.bind = Some(bind(0, [0.; 3]));
+            r
+        };
+        let mut fx = DriveFx::default();
+        fx.running.push(bound(forms_final(), None));
+        fx.running[0].own_sound = Some(77);
+        // Left in the old room, another kit's, and the other Sora's.
+        fx.running.push(running(forms_final(), None, None));
+        fx.running.push(bound(0xff, None));
+        fx.running.push(bound(forms_final(), Some(1)));
+        let mut stops = Vec::new();
+        assert_eq!(fx.end_fighters(0., &mut stops, Some(forms_final())), 3);
+        step(&mut fx, 1);
+        assert_eq!(fx.running.len(), 1);
+        assert_eq!(fx.running[0].owner, forms_final());
+        assert_eq!(fx.held_sounds(), [77]);
+        // A round's end does not keep it.
+        assert_eq!(fx.end_fighters(8., &mut stops, None), 1);
+        assert!(fx.held_sounds().is_empty());
+        step(&mut fx, 20);
+        assert!(fx.running.is_empty());
     }
 
     #[test]

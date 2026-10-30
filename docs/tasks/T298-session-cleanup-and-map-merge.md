@@ -45,8 +45,9 @@ run: `b-*` before, `a-*` and `a2-*` after).
   decoded sounds (least recently asked for). The soaks peak near 30 elements, 15 meshes and 40 MiB in ordinary play; going over
   logs `effect_ceiling` or counts in the next `cleanup` line.
 - `drive_room::end_form`: the form ends now with no motion or effect of its own: no change, afterimage, overlay or bullets, the base
-  kit, Drive mode, the form's abilities gone. A duel round's end, a match's end and a room change call it on both Soras
-  [rewrite rule, at the owner's request; not compared with the installed game, where a form may well stay through a door].
+  kit, Drive mode, the form's abilities gone. A duel round's end and a match's end call it on both Soras [rewrite rule, at the
+  owner's request]. A door keeps the form, its effects bound to Sora and their sounds (the owner's decision, 2026-10-30; a first
+  version ended it there).
 - `drive_fx`: every Sora's `fx_owner_left` is read and only that Sora's elements fade; `show_form` sets it, so the joiner fades too;
   elements of a Sora who left go with him. `duel_match_room::round_change` asks for the cleanups from the match's phase, so host and
   joiner both do.
@@ -140,7 +141,7 @@ about 190 meshes a frame (T236's deferred list).
 - Frame times come from a PC with other builds running. The per-room table's large gains are safe; a few milliseconds are not.
 - A real LAN duel on two PCs, real keys and pad, and hours of real play were not run. The 12-element count comes from the log of
   the scripted Wisdom script, with Antiform by the roll; other forms were run only in the single-player soak.
-- Ending a form at a door is the owner's rule for this rewrite. Whether the installed game keeps a form through a door was not checked.
+- Whether the installed game keeps a form through a door was not checked; the room keeps it because the owner decided so.
 - Enemy archives read on demand (T278) are not evicted: standing enemies are off unless `KH2RW_AREA_ENEMIES` is set, so they did not
   grow in these runs. With that on, a long session keeps each type's bank and effects.
 - NPC kinds stay loaded across doors (`AreaSource::kinds`): 0 in these runs, so not exercised.

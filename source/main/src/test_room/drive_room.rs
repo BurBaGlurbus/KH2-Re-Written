@@ -627,6 +627,12 @@ impl DriveRt {
         }
     }
 
+    /// Wisdom's bullets in flight end, their effects with them (a door).
+    pub(crate) fn end_shots(&mut self) {
+        let bullets = std::mem::take(&mut self.bullets);
+        self.bullet_ends.extend(bullets.iter().map(|b| (b.key, false)));
+    }
+
     /// A second Sora's drive state (the duel's rival): the same tables and
     /// form records, kits of its own (loaded as it needs them).
     /// A duel rival's bullet keys: his slot in the serial's high bits, so
@@ -1184,8 +1190,8 @@ fn members_return(game: &mut Game) {
 }
 
 /// Ends the swapped-in Sora's form now, with no motion or effect of its own
-/// (a duel round's end, a room change [rewrite rule, the owner's request]):
-/// no change running, no afterimage or grey overlay, no bullets, the base
+/// (a duel round's end [rewrite rule, the owner's request]; a door keeps the
+/// form): no change running, no afterimage or grey overlay, no bullets, the base
 /// kit shown, the gauge in Drive mode and the form's abilities gone. The
 /// form's effects fade through `fx_owner_left`.
 pub fn end_form(game: &mut Game) {
@@ -1198,8 +1204,7 @@ pub fn end_form(game: &mut Game) {
     d.overlay = 0.;
     d.overlay_step = 0.;
     d.fx_requests.clear();
-    let bullets = std::mem::take(&mut d.bullets);
-    d.bullet_ends.extend(bullets.iter().map(|b| (b.key, false)));
+    d.end_shots();
     let in_form = d.shown != 0 || d.active;
     if !in_form && !changing {
         return;

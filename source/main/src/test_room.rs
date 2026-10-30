@@ -5295,6 +5295,7 @@ fn area_transition(
     fresh.fmab = std::mem::take(&mut old.fmab);
     fresh.mp = old.mp;
     fresh.drive = old.drive;
+    fresh.shoot = old.shoot;
     game.sora.player = fresh;
     rig.collision = CameraCollision::new(&room);
     rig.camera = FollowCamera::new(
