@@ -800,6 +800,8 @@ pub struct EmitterDef {
     /// GPU simulation spawns no more, and `MaxDrawCount` does not apply to it [U]); others: the
     /// evaluator's own guard.
     pub max_particles: usize,
+    /// The share of its particles that is simulated (below 1 for a GPU emitter over the budget).
+    pub keep: f32,
     pub rate: Dist,
     pub rate_scale: Dist,
     pub bursts: Vec<Burst>,
@@ -1464,6 +1466,7 @@ fn parse_emitter(e: &Value, names: &[&str]) -> EmitterDef {
         tail_wave: None,
         char_params: Vec::new(),                     // (VFXR)
         sort_mode: SortMode::of(rp.str("SortMode")), // (VFXR sort)
+        keep: 1.0,
         unknown: Vec::new(),
     };
     if def.kind_name == "gpu_sprite" {
@@ -1473,16 +1476,11 @@ fn parse_emitter(e: &Value, names: &[&str]) -> EmitterDef {
             .and_then(Value::as_f64)
             .unwrap_or(0.0) as usize;
         if capacity > 0 {
-            // Diagnosis: KH_VFX_GPU_CAP=n holds every GPU sprite emitter to n particles (the hand-over
-            // build held them to 1000 simulated, MaxDrawCount drawn).
-            static CAP: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
-            let cap = *CAP.get_or_init(|| {
-                std::env::var("KH_VFX_GPU_CAP")
-                    .ok()
-                    .and_then(|v| v.parse().ok())
-                    .unwrap_or(8000)
-            });
-            def.max_particles = capacity.min(cap);
+            // The game runs these on the GPU, this evaluator on the CPU: a shot's twenty bolts held
+            // 3000 each and cost the frame. An even share of the spawns stays within the budget.
+            const GPU_BUDGET: usize = 250;
+            def.max_particles = capacity.min(GPU_BUDGET);
+            def.keep = (GPU_BUDGET as f32 / capacity as f32).min(1.0);
             def.max_draw = def.max_draw.max(def.max_particles);
         }
     }

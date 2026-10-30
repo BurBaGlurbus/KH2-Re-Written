@@ -35,6 +35,9 @@ const FOOT_RUN: &str = "/Game/Sound/SE/footstep/10000_sora/10010/se10010_002";
 const TOES: [&str; 2] = ["L_ashi2", "R_ashi2"];
 /// A foot this close to the sole of the pose may be coming down (cm).
 const STEP_HEIGHT: f32 = 25.;
+/// The triangles of mesh particles built on the CPU each frame; past it every
+/// few are left out (a shot's bolts ask for a million).
+const MESH_BUDGET: usize = 150_000;
 /// The least time between two of a Sora's steps (a foot that settles twice).
 const STEP_GAP: f32 = 0.18;
 const TRAIL: &str = "/Game/Effects/wep/w_so010/par/VW_SO010_LOC0";
@@ -1765,7 +1768,14 @@ fn draw_list(
             last = Some((a, b));
         }
     }
-    for m in &list.meshes {
+    let triangles: usize = list
+        .meshes
+        .iter()
+        .filter_map(|m| fx.meshes.get(&m.mesh))
+        .map(|m| m.indices.len() / 3)
+        .sum();
+    let stride = triangles / MESH_BUDGET + 1;
+    for m in list.meshes.iter().step_by(stride) {
         let id = if fx.materials.contains_key(&m.material) {
             m.material
         } else {

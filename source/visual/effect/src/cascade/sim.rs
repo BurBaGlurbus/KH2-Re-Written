@@ -1941,6 +1941,9 @@ fn tick_emitter(e: &mut Emitter, cx: &Tick, rng: &mut Rng, born: &mut Vec<Emitte
                 .min(MAX_SPAWN_PER_STEP.max(d.max_particles / 4))
                 .min(d.max_particles - e.particles.len());
             for k in 0..total {
+                if d.keep < 1.0 && rng.f32() >= d.keep {
+                    continue;
+                }
                 // Rate particles are spread over the step; burst particles are born at its start.
                 let fraction = if k < rate_count * per && rate_count > 0 {
                     (k / per) as f32 / rate_count as f32
@@ -1968,6 +1971,9 @@ fn tick_emitter(e: &mut Emitter, cx: &Tick, rng: &mut Rng, born: &mut Vec<Emitte
                 .min(MAX_SPAWN_PER_STEP)
                 .min(d.max_particles.saturating_sub(e.particles.len()));
             for k in 0..unit_total {
+                if d.keep < 1.0 && rng.f32() >= d.keep {
+                    continue;
+                }
                 let mut p = new_particle(d, &space, t, 0.0, rng, &mut e.ring);
                 let f = (k as f32 + 0.5) / unit_total as f32;
                 let at = space.origin.lerp(from, 1.0 - f);
