@@ -126,9 +126,9 @@ uncommitted edits broke the shared checkout at times. KH3: Steam, 140 paks, iden
 | Loopback LAN, release, two instances, scripted: lobby picks KH3, match, hits, KO, rematch; joiner shows KH3 Sora and effects (`runs\d02`) | PASS |
 | Loopback LAN, joiner without KH3: host told, falls back to KH2 (`runs\d03`) | PASS |
 | FPS, single instance, release, machine under load from other builds: 60 at rest, about 40-50 during a shot (was 6-8 before the budget); 1% lows 14-23 (`runs\r13`) | PASS with load noted |
-| `tools\\Build-Launcher.ps1 -Skate3`, release: builds; only the launcher kept as the result to run | PASS |
-| That launcher, Test KH3 mode and loopback LAN, scripted: same results, no panics (`runs\\r14`, `runs\\d04`); 35-46 FPS with the CPU at 100% from other builds, 1% low 17-20 | PASS with load noted |
-| Launcher's Multiplayer screen, keys posted: KINGDOM HEARTS III row found and tagged, Test KH3 mode available (`runs\\launcher-b.png`) | PASS |
+| `tools\Build-Launcher.ps1 -Skate3`, release: builds `KH2RW Launcher.exe` from the shared checkout, so with other threads' uncommitted edits in it | PASS |
+| That launcher, Test KH3 mode and loopback LAN, scripted: same results, no panics (`runs\r14`, `runs\d04`); 35-46 FPS with the CPU at 100% from other builds, 1% low 17-20 | PASS with load noted |
+| Launcher's Multiplayer screen, keys posted: KINGDOM HEARTS III row found and tagged, Test KH3 mode available (`runs\launcher-b.png`) | PASS |
 | The first-run quick start guide's KH3 row and the folder browser, on screen (this PC goes straight to the title; the row is in the code path) | NOT RUN |
 | Two PCs | NOT RUN |
 | Real pad or keyboard (scripted input only) | NOT RUN |
