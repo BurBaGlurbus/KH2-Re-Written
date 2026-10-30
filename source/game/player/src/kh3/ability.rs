@@ -62,6 +62,22 @@ pub enum Ability {
     WaterBoost,
     AeroBoost,
     MagicComboBoost,
+    SecondChance,
+    WithstandCombo,
+    MpHaste,
+    LeafBracer,
+    BlockReplenisher,
+    MagicComboThrift,
+    MpSafety,
+    GrandMagicExtender,
+    FormchangeExtender,
+    AutoFinish,
+    DamageControl,
+    AerialDodge,
+    Somersault,
+    PoleSwing,
+    Scan,
+    MagicLockOn,
 }
 
 /// An ability's list entry: name, AP a copy, copies allowed, the help line,
@@ -95,9 +111,9 @@ const fn info(
 }
 
 /// The list in menu order: movement, then reprisals and actions, then the
-/// combo finishers and supports. Block's check was not found in the
+/// combo finishers and supports, then the survival, MP and system abilities. Block's check was not found in the
 /// executable (REFLECT_GUARD is the likeliest entry).
-pub const ALL: [Info; 46] = [
+pub const ALL: [Info; 62] = [
     info(
         Ability::DodgeRoll,
         "Dodge Roll",
@@ -466,6 +482,134 @@ pub const ALL: [Info; 46] = [
         "MAGIC_COMBO_UP",
         "Spells in a combo hit harder as it goes on.",
     ),
+    info(
+        Ability::SecondChance,
+        "Second Chance",
+        4,
+        1,
+        "LAST_LEAVE",
+        "A lethal hit leaves 1 HP, if he had more.",
+    ),
+    info(
+        Ability::WithstandCombo,
+        "Withstand Combo",
+        4,
+        1,
+        "COMBO_LEAVE",
+        "A combo cannot finish him until it ends.",
+    ),
+    info(
+        Ability::MpHaste,
+        "MP Haste",
+        3,
+        1,
+        "MP_HASTE",
+        "MP charges faster.",
+    ),
+    info(
+        Ability::LeafBracer,
+        "Leaf Bracer",
+        1,
+        1,
+        "LEAF_VEIL",
+        "A Cure is not interrupted.",
+    ),
+    info(
+        Ability::BlockReplenisher,
+        "Block Replenisher",
+        3,
+        1,
+        "GUARD_REGENE",
+        "A block restores some MP.",
+    ),
+    info(
+        Ability::MagicComboThrift,
+        "Magic Combo Thrift",
+        3,
+        1,
+        "MAGIC_COMBO_SAVE",
+        "A magic combo costs less MP as it goes on.",
+    ),
+    info(
+        Ability::MpSafety,
+        "MP Safety",
+        0,
+        1,
+        "MP_SAFETY",
+        "A spell that costs more MP than is left is refused.",
+    ),
+    info(
+        Ability::GrandMagicExtender,
+        "Grand Magic Extender",
+        3,
+        3,
+        "MAGIC_TIME",
+        "Grand magic stays on offer longer.",
+    ),
+    info(
+        Ability::FormchangeExtender,
+        "Formchange Extender",
+        3,
+        1,
+        "FORM_TIME",
+        "A formchange lasts longer.",
+    ),
+    info(
+        Ability::AutoFinish,
+        "Auto-Finish",
+        3,
+        1,
+        "AUTO_FINISH",
+        "The finisher runs by itself when a form ends.",
+    ),
+    info(
+        Ability::DamageControl,
+        "Damage Control",
+        4,
+        2,
+        "CRITICAL_HALF",
+        "Damage is cut at low HP.",
+    ),
+    info(
+        Ability::AerialDodge,
+        "Aerial Dodge",
+        3,
+        1,
+        "AIRDODGE",
+        "Guard with the stick in the air evades when Air Slide cannot.",
+    ),
+    info(
+        Ability::Somersault,
+        "Somersault",
+        2,
+        1,
+        "SUMMERSALT",
+        "Attack out of a bar swing.",
+    ),
+    info(
+        Ability::PoleSwing,
+        "Pole Swing",
+        1,
+        1,
+        "POLE_SWING",
+        "Swing round horizontal bars.",
+    ),
+    info(
+        Ability::Scan,
+        "Scan",
+        1,
+        1,
+        "LIBRA",
+        "Shows the target's HP.",
+    ),
+    info(
+        Ability::MagicLockOn,
+        "Magic Lock-On",
+        1,
+        1,
+        "AUTO_LOCK_MAGIC",
+        "A spell locks on to its target.",
+    ),
 ];
 
 /// The AP a KH3 build may use: level 99's `m_AbilityPoint` in KH3's level-up
@@ -497,6 +641,14 @@ fn index(a: Ability) -> usize {
 
 impl Set {
     pub const NONE: Set = Set(0);
+
+    /// The equipped abilities by their `ETresAbilityKind` names ("SUPERSLIDE x3").
+    pub fn kinds(&self) -> Vec<String> {
+        ALL.iter()
+            .filter(|i| self.count(i.ability) > 0)
+            .map(|i| format!("{} x{}", i.kind, self.count(i.ability)))
+            .collect()
+    }
 
     /// Copies of `a` equipped.
     pub fn count(&self, a: Ability) -> u8 {

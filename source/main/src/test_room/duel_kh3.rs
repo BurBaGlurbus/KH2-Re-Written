@@ -30,6 +30,11 @@ const GRAND_GUARD: f32 = 40.;
 /// collision's triangle counts (None for an area's map collision).
 pub(crate) type PoleCache = (Option<(usize, usize)>, Arc<Vec<Pole>>, Option<[f32; 4]>);
 
+/// KH3's Sora's world, with the poles' key.
+pub(crate) type GeometryCache = (Option<(usize, usize)>, Arc<kh3::core::Geometry>);
+/// A hit a Sora landed this tick: his seat, the hit, where he stood and how he faced in KH3's space.
+pub(crate) type CoreHit = (u8, kh3_sora::host::HitRecord, kh3_sora::Vec3, f32);
+
 /// The KH3 ruleset is on (a duel whose rules say so).
 pub(crate) fn on(game: &Game) -> bool {
     game.duel && game.duel_rules.kh3()
@@ -77,6 +82,68 @@ pub(crate) fn poles(game: &mut Game) -> Arc<Vec<Pole>> {
     poles
 }
 
+/// KH3's own Sora's world (`player::kh3::core`), once KH3's data is read: the room's triangles and poles.
+pub(crate) fn geometry(game: &mut Game) -> Option<Arc<kh3::core::Geometry>> {
+    if game.kh3_book.is_none() || !kh3_sora::sheets::installed() {
+        return None;
+    }
+    let poles = poles(game);
+    let key = game.kh3_poles.as_ref().and_then(|p| p.0);
+    if let Some((k, g)) = &game.kh3_geometry
+        && *k == key
+    {
+        return Some(Arc::clone(g));
+    }
+    let triangles: Vec<[[f32; 3]; 3]> = match &game.world {
+        RoomWorld::Triangles(t) => t.triangles().copied().collect(),
+        RoomWorld::Map(m) => m
+            .triangles()
+            .iter()
+            .map(|t| t.map(|v| v.to_array()))
+            .collect(),
+    };
+    // [duel choice] The walls' extent, as the layer's `contain` held him: a circle in the round Mirage Arena.
+    let bounds: Vec<[f32; 2]> = match game.kh3_poles.as_ref().and_then(|p| p.2) {
+        Some(e) if game.duel_arena == duel_arena::MIRAGE => {
+            let (c, r) = (
+                [(e[0] + e[2]) * 0.5, (e[1] + e[3]) * 0.5],
+                (e[2] - e[0]).min(e[3] - e[1]) * 0.5,
+            );
+            (0..48)
+                .map(|i| {
+                    let a = i as f32 / 48. * std::f32::consts::TAU;
+                    [c[0] + a.cos() * r, c[1] + a.sin() * r]
+                })
+                .collect()
+        }
+        Some(e) => vec![[e[0], e[1]], [e[2], e[1]], [e[2], e[3]], [e[0], e[3]]],
+        None => Vec::new(),
+    };
+    let g = Arc::new(kh3::core::Geometry::build(
+        triangles.into_iter(),
+        &poles,
+        &bounds,
+    ));
+    game.kh3_geometry = Some((key, Arc::clone(&g)));
+    Some(g)
+}
+
+/// The view a shotlock's reticle tests against: from behind this Sora, on the other.
+pub(crate) fn aim_view(at: [f32; 3], foe: Option<[f32; 3]>) -> Option<kh3_sora::magic::View> {
+    let (eye, target) = (kh3::core::to_core(at), kh3::core::to_core(foe?));
+    let from = eye + kh3_sora::Vec3::Z * 100.;
+    let along = (target - from).normalize_or_zero();
+    if along == kh3_sora::Vec3::ZERO {
+        return None;
+    }
+    let position = from - along * 350.;
+    let yaw = along.y.atan2(along.x).to_degrees();
+    let pitch = along.z.asin().to_degrees();
+    Some(kh3_sora::magic::View::from_camera(
+        position, yaw, pitch, 80., 1920, 1080,
+    ))
+}
+
 /// The other Sora as the layer sees him.
 pub(crate) fn foe(position: [f32; 3], centre: [f32; 3]) -> Foe {
     Foe { position, centre }
@@ -98,6 +165,19 @@ pub(crate) fn room_foe(game: &Game) -> Option<Foe> {
         .first()
         .map_or([at[0], at[1] + DUMMY_MIDDLE, at[2]], |t| t.centre);
     Some(foe(at, centre))
+}
+
+/// What the room Sora's target is to KH3's Sora: the first rival's own Sora, else the test dummy, as KH3's rules
+/// read a body. The dummy has a level 99 Sora's numbers, so its damage reads as a duel's.
+pub(crate) fn room_foe_body(game: &Game) -> Option<kh3::core::FoeBody> {
+    if let Some(r) = game.rivals.first() {
+        return r.fighter.kh3.core_foe_body(&r.fighter.player);
+    }
+    let rt = game
+        .enemy
+        .as_ref()
+        .filter(|rt| game.kh3_dummy && rt.enabled && rt.enemy.targetable())?;
+    Some(kh3::core::dummy_body(rt.enemy.position, rt.enemy.yaw))
 }
 
 /// [Test] Test KH3 mode: the dummy stands this far in front of Sora, and
@@ -162,6 +242,7 @@ pub(crate) fn room_pad(game: &mut Game) -> Pad {
     Pad {
         shotlock: game.autoplay.is_none() && game.pad.held & 1 << 32 != 0,
         situation: std::mem::take(&mut game.flow_queued),
+        ..Pad::default()
     }
 }
 
@@ -211,6 +292,35 @@ pub(crate) fn contain(at: [f32; 3], extent: [f32; 4], round: bool, radius: f32) 
 pub(crate) fn after(game: &mut Game, out: &kh3::Outcome, slot: u8) {
     if slot == game.local_slot {
         dummy_hits(game);
+    }
+    if game.sora.kh3.core_on() {
+        // The core's movement component stops at the walls itself. Its hits wait for both Soras' steps.
+        let tick = game.tick;
+        for (from, to) in &out.core.states {
+            let c = &out.core;
+            game.event(
+                serde_json::json!({"event":"kh3_state","tick":tick,"slot":slot,"from":from,"to":to,
+                "at":c.position,"v":c.velocity,"floor":c.on_floor,"row":c.row}),
+            );
+        }
+        if tick.is_multiple_of(30) {
+            let c = &out.core;
+            game.event(serde_json::json!({"event":"kh3_core","tick":tick,"slot":slot,"at":c.position,
+                "v":c.velocity,"floor":c.on_floor,"row":c.row,"focus":game.sora.kh3.focus,"hp":game.sora.kh3.core_hp}));
+        }
+        let s = &game.sora;
+        let (at, yaw) = (
+            kh3::core::to_core(s.player.position),
+            kh3::core::yaw_to_core(s.player.yaw),
+        );
+        for &hit in &out.core.hits {
+            game.kh3_core_hits.push((slot, hit, at, yaw));
+        }
+        if let Some(book) = game.kh3_book.clone() {
+            let list = core_requests(&book, &out.core.spawned);
+            game.sora.kh3.fx.extend(list);
+        }
+        return;
     }
     if let Some((_, _, Some(extent))) = &game.kh3_poles {
         let round = game.duel_arena == duel_arena::MIRAGE;
@@ -280,6 +390,59 @@ pub(crate) fn kh3_cast(game: &mut Game, magic_type: u8) -> bool {
 /// The sound cause of the KH3 cues (duel_fx sends it to the joiner with
 /// the Soras' own sounds).
 pub(crate) const CUE_SOUND: &str = "kh3";
+
+/// What the core asked for, as the presenters' requests: asset names as they are; a name of a spell actor's class
+/// by what the seam's id says of that class (its body effect runs with the actor: `kh3_fx::actors_step`).
+fn core_requests(
+    book: &kh3::attack::Book,
+    spawned: &[kh3::core::Spawned],
+) -> Vec<kh3::spell::FxRequest> {
+    use kh3::core::{FIRE_EFFECTS, MAP_HIT, PAWN_HIT};
+    let mut out: Vec<kh3::spell::FxRequest> = Vec::new();
+    for s in spawned {
+        let stage = book.stages.get(s.name.trim_end_matches("_C"));
+        let request = |effect: Option<String>, sound: Option<String>| kh3::spell::FxRequest {
+            effect,
+            sound,
+            at: s.at,
+            yaw: s.yaw,
+        };
+        match (stage, s.id) {
+            (Some(stage), FIRE_EFFECTS) => {
+                for (e, c) in &stage.fire_effects {
+                    out.push(request(e.clone(), c.clone()));
+                }
+            }
+            (Some(stage), PAWN_HIT) => {
+                // The class's own hit effect in place of the attribute's the core named just before it.
+                if stage.hit_effect.is_some()
+                    && let Some(last) = out.last_mut()
+                    && last.effect.is_some()
+                    && last.at == s.at
+                {
+                    last.effect.clone_from(&stage.hit_effect);
+                }
+                out.push(request(None, stage.hit_sound.clone()));
+            }
+            (Some(stage), MAP_HIT) => {
+                out.push(request(
+                    stage.map_hit_effect.clone(),
+                    stage.map_hit_sound.clone(),
+                ));
+            }
+            (Some(_), _) => {}
+            (None, _) => {
+                if let Some(path) = book.by_name.get(&s.name.to_ascii_lowercase()) {
+                    out.push(request(
+                        (!s.sound).then(|| path.clone()),
+                        s.sound.then(|| path.clone()),
+                    ));
+                }
+            }
+        }
+    }
+    out
+}
 
 /// The KH2 stand-ins of a KH3 moment (`player::kh3::cue`) for the Sora
 /// swapped in (`game.sora`, seat `slot`, his own effect containers):
@@ -804,6 +967,7 @@ pub(crate) fn scripted_room_pad(game: &Game, tick: u64) -> Option<(rival::RivalP
         let kh3 = Pad {
             shotlock: pad.shotlock_held,
             situation: pad.flow,
+            ..Pad::default()
         };
         return Some((pad, kh3));
     }
@@ -821,6 +985,7 @@ pub(crate) fn scripted_room_pad(game: &Game, tick: u64) -> Option<(rival::RivalP
     let kh3 = Pad {
         shotlock: pad.shotlock_held,
         situation: pad.flow,
+        ..Pad::default()
     };
     Some((pad, kh3))
 }
@@ -927,13 +1092,8 @@ pub(crate) fn present(
         texts.push((format!("{name}   TRIANGLE"), OFFER, true));
     }
     if let Some((cmd, _)) = k.grand_offer {
-        let name = match cmd.saturating_sub(110) / 3 {
-            0 => "Grand Fire",
-            1 => "Grand Blizzard",
-            2 => "Grand Thunder",
-            3 => "Grand Water",
-            _ => "Grand Aero",
-        };
+        let name = kh3_sora::enums::ETresCommandKind::from_value(i32::from(cmd))
+            .map_or("", |c| c.game_name().trim_start_matches("TRES_CMD_KIND_"));
         texts.push((format!("{name}   TRIANGLE"), OFFER, true));
     }
     // [Test] Test KH3 mode: the dummy's damage (the last hit, the run of

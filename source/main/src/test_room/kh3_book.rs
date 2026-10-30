@@ -55,11 +55,21 @@ fn actor(p: [f32; 3]) -> [f32; 3] {
 
 /// Blade hit points through the pose: hand, its socket, the blade's bone, its
 /// socket.
-struct Blade {
+pub(crate) struct Blade {
     hand: usize,
     grip: BonePose,
     bone: BonePose,
     atk: [BonePose; 2],
+}
+
+impl Blade {
+    /// The two sockets in the actor's axes, from the component pose.
+    pub(crate) fn points(&self, comp: &[BonePose]) -> Option<[[f32; 3]; 2]> {
+        let hand = comp.get(self.hand)?;
+        let root = sora::compose(&sora::compose(hand, &self.grip), &self.bone);
+        let point = |s: &BonePose| actor(sora::compose(&root, s).translation);
+        Some([point(&self.atk[0]), point(&self.atk[1])])
+    }
 }
 
 fn socket_pose(s: &sora::Socket) -> BonePose {
@@ -70,7 +80,7 @@ fn socket_pose(s: &sora::Socket) -> BonePose {
     }
 }
 
-fn blade(data: &SoraData) -> Option<Blade> {
+pub(crate) fn blade(data: &SoraData) -> Option<Blade> {
     let grip = data.sockets.iter().find(|s| s.name == "R_wep_skt")?;
     let hand = data.bone(&grip.bone)?;
     let sock = |name: &str| data.keyblade_sockets.iter().find(|s| s.name == name);
@@ -719,5 +729,19 @@ pub(crate) fn read(paks: &Paks, data: &SoraData) -> Result<Book> {
         book.row_ids.insert(row.name.clone(), i as u16);
     }
     book.names = fx_names(&book);
+    let mut stages = HashMap::new();
+    fn walk(s: &Arc<Stage>, out: &mut HashMap<String, Arc<Stage>>) {
+        out.entry(s.name.clone()).or_insert_with(|| Arc::clone(s));
+        if let Some(n) = &s.next {
+            walk(n, out);
+        }
+    }
+    for s in book.spells.values() {
+        walk(&s.stage, &mut stages);
+    }
+    for s in book.shots.iter().flatten() {
+        walk(s, &mut stages);
+    }
+    book.stages = stages;
     Ok(book)
 }

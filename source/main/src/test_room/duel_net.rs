@@ -15,6 +15,10 @@ use std::time::Duration;
 
 /// How long a silent peer is waited for.
 const TIMEOUT: Duration = Duration::from_secs(5);
+/// A PC that is just starting or loading (a dev build's first frame, KH3's files) can stay silent longer than a lost
+/// peer would: this long, for the first moments of the process and of a connection.
+const START_TIMEOUT: Duration = Duration::from_secs(45);
+const START_WINDOW: Duration = Duration::from_secs(60);
 /// Overlay text: size, line height, the top-right corner (below the duel's
 /// HP gauge) and colours.
 const SIZE: f32 = 10.;
@@ -69,6 +73,8 @@ pub(crate) struct Setup {
 
 #[derive(Resource)]
 pub(crate) struct DuelNet {
+    /// Until when silence is judged by `START_TIMEOUT`.
+    slow_until: std::time::Instant,
     pub session: Session,
     pub role: Role,
     pub name: String,
@@ -283,6 +289,7 @@ impl DuelNet {
         let mut session = session;
         session.set_conditions(setup.conditions);
         Ok(DuelNet {
+            slow_until: std::time::Instant::now() + START_WINDOW,
             session,
             role: setup.role,
             name: setup.name.clone(),
@@ -386,6 +393,12 @@ pub(crate) fn begin(
 ) {
     let Some(mut net) = net else { return };
     notice_tick(&mut net, &gallery, &mut game);
+    let wait = if std::time::Instant::now() < net.slow_until {
+        START_TIMEOUT
+    } else {
+        TIMEOUT
+    };
+    net.session.set_timeout(wait);
     net.session.update();
     net.inbox.clear();
     while let Some(m) = net.session.receive(net::RELIABLE) {
@@ -395,6 +408,7 @@ pub(crate) fn begin(
         let tick = game.tick;
         match event {
             NetEvent::Connected(peer) => {
+                net.slow_until = std::time::Instant::now() + START_WINDOW;
                 if assign_devices(&mut controls, net.role, peer.addr) {
                     let devices = controls.devices.label();
                     game.event(serde_json::json!({"event":"input_devices","tick":tick,

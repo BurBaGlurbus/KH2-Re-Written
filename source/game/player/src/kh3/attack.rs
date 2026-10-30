@@ -149,6 +149,10 @@ pub struct Book {
     /// Every effect and sound the duel may start, sorted (an index is the
     /// wire's id; the same on both PCs of a match, whose installs are checked).
     pub names: Vec<String>,
+    /// Every spell actor and shot's stage, by its blueprint's name.
+    pub stages: HashMap<String, std::sync::Arc<super::spell::Stage>>,
+    /// Effects and sounds the core names, by their asset's lower-case name.
+    pub by_name: HashMap<String, String>,
 }
 
 impl Book {

@@ -826,9 +826,17 @@ pub(crate) fn tick(mut game: ResMut<Game>) {
         let kh3_pad = player::kh3::Pad {
             shotlock: pad.shotlock_held,
             situation: pad.flow,
+            ..Default::default()
         };
         let foe = sora_shape.map(|s| super::duel_kh3::foe(sora_at, s.centre));
         let mut kh3_out = None;
+        let geometry = if kh3 {
+            super::duel_kh3::geometry(game)
+        } else {
+            None
+        };
+        let foe_body = rival.fighter.kh3.core_foe_body(&rival.fighter.player);
+        let view = super::duel_kh3::aim_view(game.sora.player.position, Some(sora_at));
         let step = {
             let Game {
                 sora,
@@ -842,6 +850,9 @@ pub(crate) fn tick(mut game: ResMut<Game>) {
                 foe,
                 poles: &poles,
                 book: book.as_deref(),
+                geometry: geometry.as_deref(),
+                foe_body,
+                view,
             };
             let mut run = |sora: &mut Fighter| {
                 if kh3 {

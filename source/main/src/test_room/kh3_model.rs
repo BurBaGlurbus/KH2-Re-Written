@@ -376,10 +376,12 @@ fn start_load(model: &mut Kh3Model, game: &Game) {
             .name("kh3 load".into())
             .spawn(move || {
                 let paks =
-                    data::kh3::Paks::open(&install, hint, false).map_err(|e| e.to_string())?;
+                    data::kh3::Paks::open(&install, hint, true).map_err(|e| e.to_string())?;
                 crate::launcher::remember_kh3_key_offset(paks.key_offset);
                 let sora = SoraData::load(&paks).map_err(|e| e.to_string())?;
-                let book = kh3_book::read(&paks, &sora).map_err(|e| e.to_string())?;
+                let mut book = kh3_book::read(&paks, &sora).map_err(|e| e.to_string())?;
+                kh3_core::install(&paks, &sora).map_err(|e| e.to_string())?;
+                kh3_core::name_assets(&paks, &mut book);
                 let fx = kh3_fx::load(&paks, &sora, &book, &install)?;
                 Ok(Loaded {
                     sora,

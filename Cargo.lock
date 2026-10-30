@@ -2662,6 +2662,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "kh3_sora"
+version = "0.1.2"
+dependencies = [
+ "glam 0.32.1",
+]
+
+[[package]]
 name = "lazy_static"
 version = "1.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3495,6 +3502,9 @@ checksum = "b4596b6d070b27117e987119b4dac604f3c58cfb0b191112e24771b2faeac1a6"
 [[package]]
 name = "player"
 version = "0.1.2"
+dependencies = [
+ "kh3_sora",
+]
 
 [[package]]
 name = "png"

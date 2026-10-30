@@ -33,6 +33,8 @@ pub struct Socket {
 /// One notify of a clip. `class` is the export's class; `props` its data.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Notify {
+    /// `NotifyName`.
+    pub name: String,
     pub class: String,
     pub state: bool,
     pub start: f32,
@@ -69,10 +71,26 @@ pub enum RowData {
     },
 }
 
+/// What a blend space's asset says besides its samples.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Space {
+    /// (min, max, grid cells) of each axis.
+    pub x: (f32, f32, usize),
+    pub y: (f32, f32, usize),
+    /// `InterpolationParam`'s times.
+    pub smoothing: f32,
+    pub y_smoothing: f32,
+    /// `NotifyTriggerMode` SQEX_AllAnimation.
+    pub all_animation: bool,
+    /// Each grid point's (index into `SampleData`, weight).
+    pub grid: Vec<Vec<(usize, f32)>>,
+}
+
 #[derive(Clone, Debug)]
 pub struct Row {
     pub name: String,
     pub data: RowData,
+    pub space: Option<Space>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -441,6 +459,7 @@ fn read_notifies(p: &Package, props: &Props) -> Vec<Notify> {
         let mut imports = HashMap::new();
         collect_imports(p, &data, &mut imports);
         out.push(Notify {
+            name: item.str("NotifyName").unwrap_or("").to_owned(),
             class: p.class_of(export).to_owned(),
             state,
             start,
@@ -500,8 +519,58 @@ pub fn read_clip(paks: &Paks, path: &str) -> Result<Clip> {
 
 enum PendingRow {
     Clip(String),
-    Space1(Vec<(f32, String)>, f32),
-    Space2(Vec<([f32; 2], String)>, f32),
+    Space1(Vec<(f32, String)>, f32, Space),
+    Space2(Vec<([f32; 2], String)>, f32, Space),
+}
+
+/// A blend space's axes, input filter and grid.
+fn space_of(props: &Props) -> Space {
+    let axis = |index: i32| {
+        let b = props
+            .all("BlendParameters")
+            .find(|q| q.index == index)
+            .and_then(|q| q.value.as_props());
+        (
+            b.and_then(|b| b.f32("Min")).unwrap_or(0.),
+            b.and_then(|b| b.f32("Max")).unwrap_or(100.),
+            b.and_then(|b| b.int("GridNum")).unwrap_or(4) as usize,
+        )
+    };
+    let time = |index: i32| {
+        props
+            .all("InterpolationParam")
+            .find(|q| q.index == index)
+            .and_then(|q| q.value.as_props())
+            .and_then(|b| b.f32("InterpolationTime"))
+            .unwrap_or(0.)
+    };
+    let mut grid = Vec::new();
+    for g in props.array("GridSamples").unwrap_or(&[]) {
+        let mut cell = Vec::new();
+        if let Some(g) = g.as_props() {
+            for k in 0..3 {
+                let index = g.all("Indices").find(|q| q.index == k);
+                let weight = g.all("Weights").find(|q| q.index == k);
+                if let Some(i) = index.and_then(|q| q.value.as_int())
+                    && i >= 0
+                {
+                    let w = weight.and_then(|q| q.value.as_f32()).unwrap_or(0.);
+                    cell.push((i as usize, w));
+                }
+            }
+        }
+        grid.push(cell);
+    }
+    Space {
+        x: axis(0),
+        y: axis(1),
+        smoothing: time(0),
+        y_smoothing: time(1),
+        all_animation: props
+            .str("NotifyTriggerMode")
+            .is_some_and(|m| m.contains("SQEX_AllAnimation")),
+        grid,
+    }
 }
 
 fn read_space(paks: &Paks, path: &str, two: bool) -> Result<PendingRow> {
@@ -533,10 +602,11 @@ fn read_space(paks: &Paks, path: &str, two: bool) -> Result<PendingRow> {
         one.push((x, clip.clone()));
         both.push(([x, y], clip));
     }
+    let space = space_of(&props);
     Ok(if two {
-        PendingRow::Space2(both, blend)
+        PendingRow::Space2(both, blend, space)
     } else {
-        PendingRow::Space1(one, blend)
+        PendingRow::Space1(one, blend, space)
     })
 }
 
@@ -600,8 +670,8 @@ pub fn read_anim_set(paks: &Paks, path: &str) -> Result<AnimSet> {
     for (_, row) in pending.iter().flatten() {
         match row {
             PendingRow::Clip(c) => paths.push(c.clone()),
-            PendingRow::Space1(s, _) => paths.extend(s.iter().map(|x| x.1.clone())),
-            PendingRow::Space2(s, _) => paths.extend(s.iter().map(|x| x.1.clone())),
+            PendingRow::Space1(s, _, _) => paths.extend(s.iter().map(|x| x.1.clone())),
+            PendingRow::Space2(s, _, _) => paths.extend(s.iter().map(|x| x.1.clone())),
         }
     }
     paths.sort_unstable();
@@ -621,16 +691,19 @@ pub fn read_anim_set(paks: &Paks, path: &str) -> Result<AnimSet> {
         ..AnimSet::default()
     };
     for (name, row) in pending.into_iter().flatten() {
+        let mut space = None;
         let data = match row {
             PendingRow::Clip(c) => index.get(&c).map(|i| RowData::Clip(*i)),
-            PendingRow::Space1(s, blend) => {
+            PendingRow::Space1(s, blend, info) => {
+                space = Some(info);
                 let samples: Vec<_> = s
                     .iter()
                     .filter_map(|(x, c)| index.get(c).map(|i| (*x, *i)))
                     .collect();
                 (!samples.is_empty()).then_some(RowData::Blend1D { samples, blend })
             }
-            PendingRow::Space2(s, blend) => {
+            PendingRow::Space2(s, blend, info) => {
+                space = Some(info);
                 let samples: Vec<_> = s
                     .iter()
                     .filter_map(|(x, c)| index.get(c).map(|i| (*x, *i)))
@@ -640,7 +713,7 @@ pub fn read_anim_set(paks: &Paks, path: &str) -> Result<AnimSet> {
         };
         if let Some(data) = data {
             set.by_name.insert(name.clone(), set.rows.len() as u16);
-            set.rows.push(Row { name, data });
+            set.rows.push(Row { name, data, space });
         }
     }
     Ok(set)
@@ -953,6 +1026,7 @@ mod tests {
         set.rows.push(Row {
             name: "A".into(),
             data: RowData::Clip(0),
+            space: None,
         });
         set.by_name.insert("A".into(), 0);
         set

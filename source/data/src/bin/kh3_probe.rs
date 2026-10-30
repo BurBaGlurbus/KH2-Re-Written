@@ -7,6 +7,7 @@
 //! `kh3_probe table <install> <package path>`: a DataTable's rows.
 //! `kh3_probe mesh <install> <package path>`: a skeletal mesh's summary.
 //! `kh3_probe anim <install> <package path>`: an animation's summary.
+//! `kh3_probe dump <install> <out dir> <list file>`: each listed package's exports as JSON, for private research.
 
 use data::kh3::{self, props, skeletal, texture};
 use std::path::PathBuf;
@@ -23,7 +24,7 @@ fn main() -> Result<()> {
     let keep = command == "list";
     let paks = kh3::Paks::open(&install, None, keep)?;
     eprintln!(
-        "{} paks, {} files, identity {}…, opened in {:.1} s",
+        "{} paks, {} files, identity {}â€¦, opened in {:.1} s",
         install.pak_count,
         paks.mounted.len(),
         &install.identity_hex()[..12],
@@ -283,6 +284,96 @@ fn main() -> Result<()> {
                 }
             }
         }
+        ("dump", [out, list]) => {
+            std::fs::create_dir_all(out)?;
+            for path in std::fs::read_to_string(list)?.lines() {
+                let path = path.trim();
+                if path.is_empty() {
+                    continue;
+                }
+                let Some(p) = paks.package(&path.to_ascii_lowercase())? else {
+                    eprintln!("no package {path}");
+                    continue;
+                };
+                let mut exports = Vec::new();
+                for i in 0..p.exports.len() {
+                    let e = &p.exports[i];
+                    let (data, rows) = match props::export_props(&p, i) {
+                        Ok((list, _)) => (dump_props(&p, &list), serde_json::Value::Null),
+                        Err(_) => (serde_json::Value::Null, serde_json::Value::Null),
+                    };
+                    let rows = if p.class_of(i) == "DataTable" {
+                        props::data_table_rows(&p, i)
+                            .map(|rows| {
+                                serde_json::Value::Array(
+                                    rows.iter()
+                                        .map(|(n, r)| serde_json::json!([n, dump_props(&p, r)]))
+                                        .collect(),
+                                )
+                            })
+                            .unwrap_or(rows)
+                    } else {
+                        rows
+                    };
+                    exports.push(serde_json::json!({"name": e.name, "class": p.class_of(i),
+                        "sup": e.sup, "outer": e.outer, "template": e.template,
+                        "super_path": (e.sup < 0).then(|| p.import_package(e.sup).map(str::to_owned)),
+                        "props": data, "rows": rows}));
+                }
+                let name = path.replace('/', "@");
+                std::fs::write(
+                    format!("{out}/{name}.json"),
+                    serde_json::to_string(&serde_json::json!({"path": path, "exports": exports}))?,
+                )?;
+            }
+        }
+        // `sheets <out file>`: every recipe's value as JSON, for a private comparison.
+        ("sheets", [out]) => {
+            let sheets = kh3::sheets::read(&paks);
+            for (sheet, id, why) in &sheets.missing {
+                eprintln!("missing {sheet} {id}: {why}");
+            }
+            let val = |v: &kh3::sheets::Val| -> serde_json::Value {
+                use kh3::sheets::Val as V;
+                match v {
+                    V::N(n) => serde_json::json!(n),
+                    V::B(b) => serde_json::json!(b),
+                    V::S(s) => serde_json::json!(s),
+                    V::A(a) => serde_json::json!(a),
+                    V::L(l) => serde_json::json!(l),
+                    V::Nil => serde_json::Value::Null,
+                }
+            };
+            let params: serde_json::Map<_, _> = sheets
+                .params
+                .iter()
+                .map(|(s, rows)| {
+                    let rows: serde_json::Map<_, _> =
+                        rows.iter().map(|(i, v)| (i.clone(), val(v))).collect();
+                    ((*s).to_owned(), serde_json::Value::Object(rows))
+                })
+                .collect();
+            let tables: serde_json::Map<_, _> = sheets
+                .tables
+                .iter()
+                .map(|(s, rows)| {
+                    let rows: Vec<serde_json::Value> = rows
+                        .iter()
+                        .map(|cells| {
+                            let cells: serde_json::Map<_, _> =
+                                cells.iter().map(|(c, v)| (c.clone(), val(v))).collect();
+                            serde_json::Value::Object(cells)
+                        })
+                        .collect();
+                    ((*s).to_owned(), serde_json::Value::Array(rows))
+                })
+                .collect();
+            std::fs::write(
+                out,
+                serde_json::to_string(&serde_json::json!({"params": params, "tables": tables}))?,
+            )?;
+            println!("{} missing", sheets.missing.len());
+        }
         ("texture", [path]) => {
             let p = package(path)?;
             let i = p.export_of_class("Texture2D").ok_or("no Texture2D")?;
@@ -298,4 +389,37 @@ fn main() -> Result<()> {
         _ => return Err("unknown command or arguments".into()),
     }
     Ok(())
+}
+
+fn dump_props(p: &data::kh3::package::Package, list: &props::Props) -> serde_json::Value {
+    serde_json::Value::Array(
+        list.0
+            .iter()
+            .map(|q| serde_json::json!([q.name, q.index, q.struct_name, dump_value(p, &q.value)]))
+            .collect(),
+    )
+}
+
+fn dump_value(p: &data::kh3::package::Package, v: &props::Value) -> serde_json::Value {
+    use props::Value as V;
+    match v {
+        V::Bool(b) => serde_json::json!(b),
+        V::Int(i) => serde_json::json!(i),
+        V::Float(f) => serde_json::json!(f),
+        V::Str(s) | V::Name(s) => serde_json::json!(s),
+        V::Object(o) => {
+            serde_json::json!({"obj": o, "path": data::kh3::material::import_path(p, *o)})
+        }
+        V::Byte(b) => serde_json::json!(b),
+        V::Floats(f) => serde_json::json!(f),
+        V::Ints(i) => serde_json::json!(i),
+        V::Struct(n, q) => serde_json::json!({"struct": n, "props": dump_props(p, q)}),
+        V::Array(a) => serde_json::Value::Array(a.iter().map(|x| dump_value(p, x)).collect()),
+        V::Map(m) => serde_json::Value::Array(
+            m.iter()
+                .map(|(k, x)| serde_json::json!({"k": dump_value(p, k), "v": dump_value(p, x)}))
+                .collect(),
+        ),
+        V::Raw(r) => serde_json::json!({"raw": r.len()}),
+    }
 }

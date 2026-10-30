@@ -18,6 +18,7 @@ pub mod ability;
 pub mod attack;
 pub mod blend;
 pub mod combo;
+pub mod core;
 pub mod cue;
 pub mod hurt;
 pub mod look;
@@ -60,6 +61,8 @@ pub struct Pad {
     pub shotlock: bool,
     /// The situation command (Triangle) was pressed: grand magic.
     pub situation: bool,
+    /// The next situation command (L2).
+    pub situation_next: bool,
 }
 
 /// The other Sora: his feet and his target point.
@@ -76,6 +79,11 @@ pub struct Scene<'a> {
     pub poles: &'a [Pole],
     /// KH3's data, from the player's paks (attack.rs).
     pub book: Option<&'a attack::Book>,
+    /// The core's world and its target (core.rs), when KH3's files are read.
+    pub geometry: Option<&'a core::Geometry>,
+    pub foe_body: Option<core::FoeBody>,
+    /// The view the shotlock's reticle tests against.
+    pub view: Option<kh3_sora::magic::View>,
 }
 
 /// What a tick asks of the room besides the move.
@@ -92,6 +100,8 @@ pub struct Outcome {
     /// Other moments with a sound or an effect (`cue::EVENTS`): a lock,
     /// a bolt's launch, a step of a wall run.
     pub cues: Vec<&'static str>,
+    /// What the core did this tick (core.rs).
+    pub core: core::CoreOut,
 }
 
 /// How a jump left.
@@ -419,6 +429,12 @@ pub struct Kh3 {
     pub heal: i32,
     /// A joiner's animation, from the host (the presenter prefers it).
     pub remote_visual: Option<RemoteVisual>,
+    /// KH3's own Sora (core.rs), when KH3's files are read; the buttons of its last step; his HP and maximum.
+    pub core: core::CoreSlot,
+    core_held: kh3_sora::input::PadButtons,
+    pub core_hp: (i32, i32),
+    /// Where the last step left him.
+    core_at: Vec3,
 }
 
 impl Default for Kh3 {
@@ -479,6 +495,10 @@ impl Default for Kh3 {
             grand_offer: None,
             heal: 0,
             remote_visual: None,
+            core: core::CoreSlot::default(),
+            core_held: kh3_sora::input::PadButtons::NONE,
+            core_hp: (0, 0),
+            core_at: [0.; 3],
         }
     }
 }
@@ -867,6 +887,22 @@ impl Kh3 {
         scene: &Scene,
     ) -> Outcome {
         let mut out = Outcome::default();
+        if let Some(g) = scene.geometry {
+            if self.core.is_none() {
+                self.core = core::CoreSlot(Some(core::new_sora(
+                    player.position,
+                    player.yaw,
+                    &self.abilities,
+                )));
+                self.core_at = player.position;
+            }
+            self.foe = scene.foe.map(|f| f.centre);
+            out.core = self.core_tick(player, input, pad, scene, g);
+            if let Some(book) = scene.book {
+                self.core_present(book);
+            }
+            return out;
+        }
         out.began.append(&mut self.pending);
         // KH3's abilities stand for KH2's gates (Guard, the combo limits).
         self.abilities.apply_kh2(&mut player.abilities);

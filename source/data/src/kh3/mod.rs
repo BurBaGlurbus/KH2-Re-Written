@@ -15,6 +15,7 @@ pub mod package;
 pub mod pak;
 pub mod props;
 pub mod sead;
+pub mod sheets;
 pub mod skeletal;
 pub mod sora;
 pub mod static_mesh;
@@ -29,6 +30,11 @@ pub type Result<T> = std::result::Result<T, Box<dyn Error + Send + Sync>>;
 
 pub(crate) fn bad(why: impl Into<String>) -> Box<dyn Error + Send + Sync> {
     why.into().into()
+}
+
+/// An error of this module's kind, for its callers.
+pub fn bad_text(why: impl Into<String>) -> Box<dyn Error + Send + Sync> {
+    bad(why)
 }
 
 const GAME_DIR: &str = "KINGDOM HEARTS III";

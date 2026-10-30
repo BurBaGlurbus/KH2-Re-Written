@@ -106,6 +106,7 @@ mod enemy_target;
 mod enemy_tour;
 mod fighter;
 mod kh3_book;
+mod kh3_core;
 mod kh3_camera;
 mod kh3_fx;
 mod kh3_hits;
@@ -1217,6 +1218,10 @@ struct Game {
     /// [KH3 ruleset] The room collision's poles, kept by its triangle
     /// counts (duel_kh3.rs).
     kh3_poles: Option<duel_kh3::PoleCache>,
+    /// KH3's Sora's world, with the poles' key; the hits the Soras landed this tick: (seat, hit, where and
+    /// how he faced, in KH3's space).
+    kh3_geometry: Option<duel_kh3::GeometryCache>,
+    kh3_core_hits: Vec<duel_kh3::CoreHit>,
     /// [Test] `--kh3-preview`: the looks or elements shown one by one.
     kh3_preview: Option<duel_kh3::Preview>,
     /// The player's KH3 install, checked this session; the KH3 ruleset reads
@@ -8034,6 +8039,7 @@ fn simulate(
     let kh3_pad = player::kh3::Pad {
         shotlock: kh3_pad.shotlock && !frozen,
         situation: kh3_pad.situation && !frozen,
+        ..player::kh3::Pad::default()
     };
     let input = Input {
         direction: if frozen {
@@ -8364,6 +8370,12 @@ fn simulate(
                 let foe = duel_kh3::room_foe(&game);
                 let pad = kh3_pad;
                 let book = game.kh3_book.clone();
+                let geometry = duel_kh3::geometry(&mut game);
+                let foe_body = geometry.as_ref().and_then(|_| duel_kh3::room_foe_body(&game));
+                let view = duel_kh3::aim_view(
+                    game.sora.player.position,
+                    foe.map(|f: player::kh3::Foe| f.position),
+                );
                 let out = {
                     let Game {
                         sora,
@@ -8376,6 +8388,9 @@ fn simulate(
                         foe,
                         poles: &poles,
                         book: book.as_deref(),
+                        geometry: geometry.as_deref(),
+                        foe_body,
+                        view,
                     };
                     duel_kh3::step(sora, &input, &pad, params, clips, &*world, &scene)
                 };
@@ -14931,6 +14946,8 @@ fn run(mut args: Vec<PathBuf>) -> Result<AppExit, Box<dyn std::error::Error>> {
         duel_wisdom,
         duel_shot_keys: std::collections::HashSet::new(),
         kh3_poles: None,
+        kh3_geometry: None,
+        kh3_core_hits: Vec::new(),
         kh3_preview,
         kh3_install: kh3_folder
             .or_else(|| crate::launcher::kh3_folder().0)

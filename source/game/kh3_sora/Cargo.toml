@@ -1,0 +1,14 @@
+[package]
+name = "kh3_sora"
+description = "KH3's Sora, engine-free, in KH3's conventions: a port of StrawHatPro's kh-core (MIT), driven by values read from the player's own KH3 files. The duel's KH3 ruleset runs on it."
+version.workspace = true
+# The reference's own edition: its code uses `gen` as a name.
+edition = "2021"
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+glam = "=0.32.1"
+
+[lints]
+workspace = true

@@ -100,6 +100,7 @@ impl Rig {
             foe,
             poles: &[],
             book: None,
+            ..Scene::default()
         };
         self.kh3.tick(
             &mut self.player,
@@ -631,6 +632,7 @@ fn a_pole_in_the_slides_way_is_spun_round_then_left_by_a_superslide() {
             foe: None,
             poles: &poles,
             book: None,
+            ..Scene::default()
         };
         r.kh3.tick(
             &mut r.player,

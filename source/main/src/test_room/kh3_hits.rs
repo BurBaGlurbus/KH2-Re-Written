@@ -603,6 +603,78 @@ fn actors_tick(game: &mut Game, book: &Book, count: usize, tick: u64) {
     }
 }
 
+/// KH3's Sora's hits, after both have stepped: each goes to the other's own victim side (KH3's guard, dodge,
+/// damage and reaction), or to the test dummy; each Sora's gauges go to the duel's.
+fn core_hits(game: &mut Game, book: &Book, tick: u64) {
+    for (slot, hit, at, yaw) in std::mem::take(&mut game.kh3_core_hits) {
+        let local = game.local_slot;
+        let from_room = slot == local;
+        let airborne = if from_room {
+            game.sora.player.in_air()
+        } else {
+            game.rivals
+                .first()
+                .is_some_and(|r| r.fighter.player.in_air())
+        };
+        if game.rivals.is_empty() {
+            let Some(rt) = game.enemy.as_mut() else {
+                continue;
+            };
+            if hit.takes_hp() {
+                let at = player::kh3::core::from_core(at);
+                let target = rt.enemy.position;
+                let dir = [target[0] - at[0], 0., target[2] - at[2]];
+                let attack = player::combat::AttackParams {
+                    reaction: if hit.info.power_scale >= 1. { 4 } else { 1 },
+                    ..Default::default()
+                };
+                rt.enemy
+                    .take_damage(hit.damage.round() as i32, dir, true, &attack, true);
+            }
+            game.sora.kh3.attack_landed();
+            let (kind, amount) = (hit.damage_kind.name(), hit.damage);
+            game.event(
+                serde_json::json!({"event":"kh3_hit","tick":tick,"victim":"dummy",
+                "kind":kind,"raw":amount,"row":hit.attack_name}),
+            );
+            continue;
+        }
+        let victim = if from_room {
+            game.rivals.first_mut().map(|r| &mut r.fighter)
+        } else {
+            Some(&mut game.sora)
+        };
+        let Some(victim) = victim else {
+            continue;
+        };
+        victim.kh3.core_take_hit(&hit, yaw, at, airborne);
+        let (kind, amount, before) = (hit.damage_kind.name(), hit.damage, victim.vitals.hp);
+        game.event(
+            serde_json::json!({"event":"kh3_hit","tick":tick,"from":slot,
+            "kind":kind,"raw":amount,"row":hit.attack_name,"before":before}),
+        );
+    }
+    let _ = book;
+    let clips = game.clips.clone();
+    let mirror = |f: &mut Fighter, clips: &Clips| {
+        let (hp, max) = f.kh3.core_hp;
+        if max <= 0 {
+            return;
+        }
+        f.vitals.target.max_hp = max;
+        f.vitals.hp = hp.max(0);
+        if hp <= 0 && !f.player.dead() {
+            f.player.die(clips);
+        }
+    };
+    mirror(&mut game.sora, &clips);
+    for r in &mut game.rivals {
+        let own = r.own.clips.clone();
+        mirror(&mut r.fighter, &own);
+    }
+    send_fx(game, book);
+}
+
 /// Runs on the fixed tick after the Soras moved.
 pub(crate) fn tick(mut game: ResMut<Game>) {
     let game = &mut *game;
@@ -613,6 +685,10 @@ pub(crate) fn tick(mut game: ResMut<Game>) {
         return;
     };
     let tick = game.tick;
+    if game.sora.kh3.core_on() {
+        core_hits(game, &book, tick);
+        return;
+    }
     // Every fighter by index: 0 the room Sora, then the rivals.
     let count = 1 + game.rivals.len();
     actors_tick(game, &book, count, tick);

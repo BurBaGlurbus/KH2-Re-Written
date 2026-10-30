@@ -413,6 +413,13 @@ pub(crate) fn load(
         stage_assets(stage, &mut effects, &mut sounds);
     }
     effects.extend(book.hit_effect.clone());
+    // What the core names (combat, status, the shotlock's own).
+    effects.extend(
+        book.by_name
+            .values()
+            .filter(|p| p.to_ascii_lowercase().starts_with("/game/effects/"))
+            .cloned(),
+    );
     effects.sort_unstable();
     effects.dedup();
     // Effects, with what they spawn.

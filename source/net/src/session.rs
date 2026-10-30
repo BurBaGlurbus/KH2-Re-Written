@@ -226,6 +226,11 @@ impl Session {
         self.link.conditions
     }
 
+    /// How long silence means the other player is gone, from now on.
+    pub fn set_timeout(&mut self, timeout: Duration) {
+        self.config.timeout = timeout;
+    }
+
     pub fn set_conditions(&mut self, conditions: Conditions) {
         self.link.conditions = conditions;
     }
