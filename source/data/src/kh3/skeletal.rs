@@ -228,7 +228,7 @@ fn read_lod(r: &mut Rd) -> Result<Lod> {
             let w = &raw[v * per..v * per + per];
             let mut pairs: Vec<(u8, u8)> =
                 (0..influences).map(|k| (w[k + influences], w[k])).collect();
-            pairs.sort_by(|a, b| b.0.cmp(&a.0));
+            pairs.sort_by_key(|p| std::cmp::Reverse(p.0));
             let total: f32 = pairs.iter().take(4).map(|p| f32::from(p.0)).sum();
             for (k, &(weight, local)) in pairs.iter().take(4).enumerate() {
                 lod.joints[v][k] = s.bone_map.get(usize::from(local)).copied().unwrap_or(0);

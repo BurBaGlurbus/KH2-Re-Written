@@ -254,6 +254,30 @@ pub(crate) fn after(game: &mut Game, out: &kh3::Outcome, slot: u8) {
     }
 }
 
+/// [KH3 mode] A spell from the KH2 command menu as KH3's command: the tier by
+/// the spell's level, Magnet's slot Aero and Reflect's slot Water, the two
+/// KH3 families KH2's menu lacks. Returns false without the book.
+pub(crate) fn kh3_cast(game: &mut Game, magic_type: u8) -> bool {
+    if game.kh3_book.is_none() {
+        return false;
+    }
+    let level = game
+        .magic
+        .as_ref()
+        .map_or(1, |m| m.levels.get(usize::from(magic_type)).copied().unwrap_or(1));
+    let tier = u16::from(level.saturating_sub(1).min(2));
+    let family = match magic_type {
+        player::magic::FIRE => 29,
+        player::magic::BLIZZARD => 33,
+        player::magic::THUNDER => 37,
+        player::magic::CURE => 49,
+        player::magic::MAGNET => 45,
+        _ => 41,
+    };
+    game.sora.kh3.request_cast(family + tier);
+    true
+}
+
 /// The sound cause of the KH3 cues (duel_fx sends it to the joiner with
 /// the Soras' own sounds).
 pub(crate) const CUE_SOUND: &str = "kh3";
@@ -264,6 +288,10 @@ pub(crate) const CUE_SOUND: &str = "kh3";
 /// shotlock lock's look sits on the target.
 pub(crate) fn cues(game: &mut Game, event: &'static str, slot: u8, anchor: drive_fx::Anchor) {
     use kh3::cue::Cue;
+    // With KH3's own files its clips carry the effects and sounds.
+    if game.kh3_book.is_some() {
+        return;
+    }
     let tick = game.tick;
     for &c in kh3::cue::of(event) {
         let played = match c {
@@ -304,6 +332,9 @@ pub(crate) fn show(
     at: Option<([f32; 3], f32)>,
     size: f32,
 ) -> bool {
+    if game.kh3_book.is_some() {
+        return false;
+    }
     let anchor = anchor_of(game, slot, at);
     let size = look_size(size);
     let Some(d) = game.drive.as_mut() else {
@@ -593,6 +624,10 @@ pub(crate) fn grand(fighter: &Fighter) -> bool {
 /// bolt is, moving its last step this tick; a bullet whose bolt is gone
 /// fades.
 pub(crate) fn bolts(game: &mut Game, slot: u8) {
+    // With KH3's own files the shots are KH3's (kh3_hits.rs, kh3_fx.rs).
+    if game.kh3_book.is_some() {
+        return;
+    }
     let Game {
         drive,
         sora,

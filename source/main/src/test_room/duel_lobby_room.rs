@@ -932,6 +932,12 @@ fn step(
             }
         }
         RowKind::Ready => {
+            // The KH3 ruleset waits for this PC's KH3 files.
+            if game.duel_rules.kh3() && game.kh3_book.is_none() {
+                room.note = Some(("KINGDOM HEARTS III's files are still loading.".into(), game.tick));
+                game.sound_queue.push((SE_ERROR, "lobby"));
+                return;
+            }
             let ready = !room.lobby.seats[room.seat].ready;
             intend(room, net, game, Intent::Ready(ready));
         }

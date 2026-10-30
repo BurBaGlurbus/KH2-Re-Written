@@ -324,6 +324,21 @@ pub(crate) fn encode_snapshot(s: &Snapshot) -> Vec<u8> {
                 ]);
                 w.u16(angle_bits(k.lean[0]));
                 w.u16(angle_bits(k.lean[1]));
+                w.u16(k.row);
+                w.u8(k.serial);
+                w.u16(k.time);
+                w.u16(k.axis as u16);
+                w.u8(k.blend as u8);
+                w.u8(u8::from(k.looped));
+                w.u8(k.actors.len().min(64) as u8);
+                for a in k.actors.iter().take(64) {
+                    w.u16(a.serial);
+                    w.u16(a.cmd);
+                    w.u8(a.depth);
+                    for v in a.pos.iter().chain(&a.dir) {
+                        w.f32(*v);
+                    }
+                }
             }
         }
     }
@@ -390,6 +405,34 @@ pub(crate) fn decode_snapshot(bytes: &[u8]) -> Option<Snapshot> {
                     risk: b[4] & 16 != 0,
                     offer: b[5],
                     lean: [angle_of(r.u16()?), angle_of(r.u16()?)],
+                    row: r.u16()?,
+                    serial: r.u8()?,
+                    time: r.u16()?,
+                    axis: r.u16()? as i16,
+                    blend: r.u8()? as i8,
+                    looped: r.u8()? != 0,
+                    actors: {
+                        let n = r.u8()? as usize;
+                        if n > 64 {
+                            return None;
+                        }
+                        let mut list = Vec::with_capacity(n);
+                        for _ in 0..n {
+                            let (serial, cmd, depth) = (r.u16()?, r.u16()?, r.u8()?);
+                            let mut v = [0f32; 6];
+                            for x in &mut v {
+                                *x = r.f32()?;
+                            }
+                            list.push(player::kh3::ShownActor {
+                                serial,
+                                cmd,
+                                depth,
+                                pos: [v[0], v[1], v[2]],
+                                dir: [v[3], v[4], v[5]],
+                            });
+                        }
+                        list
+                    },
                 })
             }
             _ => return None,
@@ -496,6 +539,14 @@ pub(crate) enum DuelEvent {
         slot: u8,
         size: u8,
         at: Option<([f32; 3], f32)>,
+    },
+    /// [KH3 mode] An effect and a sound of KH3's by the book's names (the
+    /// index; 0xffff none), at a place.
+    Kh3Fx {
+        effect: u16,
+        sound: u16,
+        at: [f32; 3],
+        yaw: f32,
     },
 }
 
@@ -684,6 +735,18 @@ pub(crate) fn encode_events(tick: u64, events: &[DuelEvent]) -> Vec<u8> {
                     }
                 }
             }
+            DuelEvent::Kh3Fx {
+                effect,
+                sound,
+                at,
+                yaw,
+            } => {
+                w.u8(8);
+                w.u16(*effect);
+                w.u16(*sound);
+                put_vec(&mut w, *at);
+                w.f32(*yaw);
+            }
         }
     }
     w.finish()
@@ -775,6 +838,16 @@ pub(crate) fn decode_events(bytes: &[u8]) -> Option<(u64, Vec<DuelEvent>)> {
                     slot,
                     size,
                     at,
+                }
+            }
+            8 => {
+                let (effect, sound) = (r.u16()?, r.u16()?);
+                let at = [r.f32()?, r.f32()?, r.f32()?];
+                DuelEvent::Kh3Fx {
+                    effect,
+                    sound,
+                    at,
+                    yaw: r.f32()?,
                 }
             }
             _ => return None,

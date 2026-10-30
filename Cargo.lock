@@ -1977,6 +1977,8 @@ name = "effect"
 version = "0.1.2"
 dependencies = [
  "data",
+ "glam 0.32.1",
+ "serde_json",
 ]
 
 [[package]]
@@ -2765,6 +2767,7 @@ dependencies = [
  "enemy",
  "event",
  "fontdue",
+ "glam 0.32.1",
  "image",
  "net",
  "player",

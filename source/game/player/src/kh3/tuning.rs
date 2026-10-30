@@ -35,6 +35,8 @@ pub const fn length_of(cm: f32) -> f32 {
 
 // Gravity: -980 x 1.5, times the phase's multiplier.
 pub const GRAVITY: f32 = accel(1470.);
+/// `MyMpChargeTime`: 50 s, in the charge's ticks.
+pub const MP_CHARGE: f32 = 3000.;
 /// Rising with the jump button held (x2.8), and after it is released (the
 /// short hop: the scale 3.0 x 2.8).
 pub const GRAVITY_RISE: f32 = accel(4116.);

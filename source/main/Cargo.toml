@@ -10,6 +10,7 @@ rust-version.workspace = true
 visual = { path = "../visual" }
 audio = { path = "../audio" }
 effect = { path = "../visual/effect" }
+glam = "=0.32.1"
 area = { path = "../game/area" }
 collision = { path = "../game/collision" }
 event = { path = "../game/event" }

@@ -116,6 +116,7 @@ fn state_of(
     started: u64,
     drive: Option<&drive_room::DriveRt>,
     items: Option<&item_room::ItemRt>,
+    book: Option<&player::kh3::attack::Book>,
 ) -> FighterState {
     let (player, vitals) = (&fighter.player, &fighter.vitals);
     FighterState {
@@ -142,7 +143,10 @@ fn state_of(
         bullets: drive
             .map(|d| d.bullets.iter().map(|b| (b.key, b.pos, b.dir)).collect())
             .unwrap_or_default(),
-        kh3: kh3.then(|| fighter.kh3.shown()),
+        kh3: kh3.then(|| match book {
+            Some(book) => fighter.kh3.shown_in(book),
+            None => fighter.kh3.shown(),
+        }),
     }
 }
 
@@ -161,6 +165,8 @@ pub(crate) fn host_send(net: Option<ResMut<DuelNet>>, mut game: ResMut<Game>) {
             .send(RELIABLE, duel_wire::encode_rules(&game.duel_rules));
     }
     let kh3 = game.duel_rules.kh3();
+    let book = game.kh3_book.clone();
+    let book = book.as_deref();
     let mut fighters = vec![state_of(
         fighter_slots::HOST,
         &game.sora,
@@ -168,6 +174,7 @@ pub(crate) fn host_send(net: Option<ResMut<DuelNet>>, mut game: ResMut<Game>) {
         game.action_started,
         game.drive.as_ref(),
         game.items.as_ref(),
+        book,
     )];
     fighters.extend(game.rivals.iter().map(|r| {
         state_of(
@@ -177,6 +184,7 @@ pub(crate) fn host_send(net: Option<ResMut<DuelNet>>, mut game: ResMut<Game>) {
             r.started,
             r.own.drive.as_ref(),
             r.own.items.as_ref(),
+            book,
         )
     }));
     let snapshot = Snapshot {
@@ -193,9 +201,16 @@ pub(crate) fn host_send(net: Option<ResMut<DuelNet>>, mut game: ResMut<Game>) {
 
 /// Puts a snapshot's numbers on a Sora. Returns whether a new action began
 /// (the presenter restarts its blend).
-fn apply_state(s: &FighterState, fighter: &mut Fighter) -> bool {
+fn apply_state(
+    s: &FighterState,
+    fighter: &mut Fighter,
+    book: Option<&player::kh3::attack::Book>,
+) -> bool {
     if let Some(k) = &s.kh3 {
         fighter.kh3.apply_shown(k);
+        if let Some(book) = book {
+            fighter.kh3.apply_actors(k, book);
+        }
     }
     let (player, vitals) = (&mut fighter.player, &mut fighter.vitals);
     let new_action = player.action != s.action || player.frame > s.frame;
@@ -256,6 +271,25 @@ fn play_event(game: &mut Game, event: &DuelEvent) {
             size,
             at,
         } => duel_kh3::play_look(game, look, slot, size, at),
+        DuelEvent::Kh3Fx {
+            effect,
+            sound,
+            at,
+            yaw,
+        } => {
+            let name = |id: u16| {
+                game.kh3_book
+                    .as_ref()
+                    .and_then(|b| b.names.get(usize::from(id)).cloned())
+            };
+            let request = player::kh3::spell::FxRequest {
+                effect: name(effect),
+                sound: name(sound),
+                at,
+                yaw,
+            };
+            game.kh3_fx_remote.push(request);
+        }
     }
 }
 
@@ -356,7 +390,8 @@ pub(crate) fn join_apply(net: Option<ResMut<DuelNet>>, mut game: ResMut<Game>) {
             if let Some(d) = game.drive.as_mut() {
                 d.show_bullets(&s.bullets, &mut game.fx_styled);
             }
-            if apply_state(s, &mut game.sora) {
+            let book = game.kh3_book.clone();
+            if apply_state(s, &mut game.sora, book.as_deref()) {
                 game.action_started = now;
             }
         } else if let Some(i) = game.rivals.iter().position(|r| r.slot == s.slot) {
@@ -367,7 +402,8 @@ pub(crate) fn join_apply(net: Option<ResMut<DuelNet>>, mut game: ResMut<Game>) {
             if let Some(d) = r.own.drive.as_mut() {
                 d.show_bullets(&s.bullets, &mut game.fx_styled);
             }
-            if apply_state(s, &mut r.fighter) {
+            let book = game.kh3_book.clone();
+            if apply_state(s, &mut r.fighter, book.as_deref()) {
                 r.started = now;
             }
             game.rivals.insert(i, r);

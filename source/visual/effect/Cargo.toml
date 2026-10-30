@@ -7,6 +7,9 @@ rust-version.workspace = true
 
 [dependencies]
 data = { path = "../../data" }
+# KH3's Cascade evaluator (cascade/, ported from kh-vfx).
+glam = "=0.32.1"
+serde_json.workspace = true
 
 [lints]
 workspace = true

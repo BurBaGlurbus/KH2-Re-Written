@@ -96,7 +96,11 @@ impl Rig {
     }
 
     fn step(&mut self, input: &Input, pad: &Pad, foe: Option<Foe>) -> Outcome {
-        let scene = Scene { foe, poles: &[] };
+        let scene = Scene {
+            foe,
+            poles: &[],
+            book: None,
+        };
         self.kh3.tick(
             &mut self.player,
             input,
@@ -626,6 +630,7 @@ fn a_pole_in_the_slides_way_is_spun_round_then_left_by_a_superslide() {
         let scene = Scene {
             foe: None,
             poles: &poles,
+            book: None,
         };
         r.kh3.tick(
             &mut r.player,
@@ -720,7 +725,7 @@ fn snapshots_carry_what_the_joiner_shows() {
     assert_eq!(j.focus, 63.);
     assert_eq!(j.aim.map(|a| a.locks), Some(9));
     assert_eq!(j.lean, [-1.5, 0.25]);
-    assert_eq!(MODE_NAMES.len(), 33);
+    assert_eq!(MODE_NAMES.len(), 35);
     for n in MODE_NAMES {
         assert!(mode_named(n).is_some());
     }
@@ -1244,10 +1249,10 @@ fn every_move_and_moment_has_its_kh2_stand_in_and_nothing_stacks() {
     for e in EVENTS {
         assert_eq!(of(e).is_empty(), motion_only.contains(&e), "{e}");
     }
-    // Every move the layer names (bar locomotion and the KH2 side) is an
-    // event.
+    // Every move the layer names (bar locomotion, the KH2 side and the moves
+    // KH3's own notifies present) is an event.
     for m in MODE_NAMES {
-        if !matches!(m, "kh2" | "ground" | "air" | "land" | "takeoff") {
+        if !matches!(m, "kh2" | "ground" | "air" | "land" | "takeoff" | "attack" | "cast") {
             assert!(EVENTS.contains(&m), "{m}");
         }
     }

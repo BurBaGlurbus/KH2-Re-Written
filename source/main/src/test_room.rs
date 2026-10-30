@@ -89,6 +89,10 @@ mod duel_music;
 mod duel_net;
 mod duel_prefs;
 mod duel_rules;
+mod kh3_book;
+mod kh3_fx;
+mod kh3_hits;
+mod kh3_model;
 mod duel_sync;
 mod duel_vote;
 mod duel_wire;
@@ -1208,6 +1212,12 @@ struct Game {
     /// The player's KH3 install, checked this session; the KH3 ruleset reads
     /// it and is not offered without it.
     kh3_install: Option<data::kh3::Install>,
+    /// KH3's data for the simulation, once it is read (kh3_book.rs).
+    kh3_book: Option<Arc<player::kh3::attack::Book>>,
+    /// [KH3 mode] Effects and sounds from the host, by name (a joiner's).
+    kh3_fx_remote: Vec<player::kh3::spell::FxRequest>,
+    /// [KH3 mode] The player's KH3 files are being read: the duel waits.
+    kh3_loading: bool,
     /// The launcher's Test KH3 mode (`--kh3-test` without
     /// `--rival-script`): the KH3 ruleset against the training dummy (the
     /// room's Shadow, standing), with the KH3 ability menu on START.
@@ -7898,7 +7908,7 @@ fn simulate(
     }
     // [Duel] Between matches (the lobby, the countdown) neither Sora moves.
     // [Test] `--duel-idle`: nor does this player's.
-    let frozen = game.duel_frozen || game.duel_idle;
+    let frozen = game.duel_frozen || game.duel_idle || game.kh3_loading;
     // [Test] `--duel-bench` on the host: its Sora closes in and swings as
     // the bench pad says.
     let bench =
@@ -8156,7 +8166,11 @@ fn simulate(
             && !talking
         {
             let mp = game.sora.player.mp.cur;
-            let ok = magic_room::request(&mut game, t, tick);
+            let ok = if duel_kh3::on(&game) && game.kh3_book.is_some() {
+                duel_kh3::kh3_cast(&mut game, t)
+            } else {
+                magic_room::request(&mut game, t, tick)
+            };
             if ok && duel_kh3::on(&game) {
                 game.sora.kh3.spell_released(t);
             }
@@ -8262,6 +8276,7 @@ fn simulate(
                 let poles = duel_kh3::poles(&mut game);
                 let foe = duel_kh3::room_foe(&game);
                 let pad = kh3_pad;
+                let book = game.kh3_book.clone();
                 let out = {
                     let Game {
                         sora,
@@ -8270,7 +8285,11 @@ fn simulate(
                         world,
                         ..
                     } = &mut *game;
-                    let scene = player::kh3::Scene { foe, poles: &poles };
+                    let scene = player::kh3::Scene {
+                        foe,
+                        poles: &poles,
+                        book: book.as_deref(),
+                    };
                     duel_kh3::step(sora, &input, &pad, params, clips, &*world, &scene)
                 };
                 let slot = game.local_slot;
@@ -13945,9 +13964,7 @@ fn run(mut args: Vec<PathBuf>) -> Result<AppExit, Box<dyn std::error::Error>> {
             // rival instead (the unattended tests' way; duel_kh3.rs).
             // [Test] The KH3 folder, instead of the launcher's.
             Some("--kh3-folder") => {
-                kh3_folder = Some(PathBuf::from(
-                    options.next().ok_or("KH3 folder absent")?,
-                ));
+                kh3_folder = Some(PathBuf::from(options.next().ok_or("KH3 folder absent")?));
             }
             Some("--kh3-test") => {
                 kh3_test = true;
@@ -14746,6 +14763,9 @@ fn run(mut args: Vec<PathBuf>) -> Result<AppExit, Box<dyn std::error::Error>> {
                     .inspect_err(|e| eprintln!("KH3 install refused: {e}"))
                     .ok()
             }),
+        kh3_book: None,
+        kh3_fx_remote: Vec::new(),
+        kh3_loading: false,
         kh3_dummy: kh3_test && !rival_script,
         kh3_dummy_seen: 0,
         kh3_menu: None,
@@ -15542,6 +15562,8 @@ fn run(mut args: Vec<PathBuf>) -> Result<AppExit, Box<dyn std::error::Error>> {
         .init_resource::<area_enemies::AreaEnemies>()
         .init_resource::<sephiroth::Fight>()
         .init_resource::<duel_kh3::Kh3Hud>()
+        .init_resource::<kh3_model::Kh3Model>()
+        .init_resource::<kh3_fx::Kh3Fx>()
         .add_plugins(SkatePlugins)
         .add_systems(
             Startup,
@@ -15555,6 +15577,12 @@ fn run(mut args: Vec<PathBuf>) -> Result<AppExit, Box<dyn std::error::Error>> {
             ),
         )
         .add_systems(Update, crate::skate::toggle)
+        .add_systems(
+            PostUpdate,
+            kh3_model::update
+                .before(bevy::transform::TransformSystems::Propagate)
+                .before(bevy::camera::visibility::VisibilitySystems::VisibilityPropagate),
+        )
         .add_systems(Update, settings_room::apply_settings)
         .add_systems(Update, rumble_output)
         .add_systems(Last, duel_net::close_on_exit)
@@ -15586,6 +15614,7 @@ fn run(mut args: Vec<PathBuf>) -> Result<AppExit, Box<dyn std::error::Error>> {
                         duel_sync::host_take_inputs,
                         rival::tick,
                         duel_hits::tick,
+                        kh3_hits::tick,
                     )
                         .chain(),
                     summon::tick,

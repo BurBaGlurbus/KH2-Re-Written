@@ -161,6 +161,10 @@ by kingdom-hearts-x-elden-ring by StrawHatPro
 (https://github.com/StrawHatPro/kingdom-hearts-x-elden-ring, MIT, Copyright (c)
 2026 StrawHatPro; the licence text is in CREDITS.md). Its movement, flowmotion,
 combo homing, focus and shotlock behaviour and tuning numbers were reimplemented
-in this project's code on KH2's own motions and effects. No code, data,
-executable addresses or research notes from that project were copied, and no
-KH3 data is in this repository.
+in this project's code. For the KH3 mode (T282): its readers' formats were
+reimplemented in source/data/src/kh3 (pak, package, tagged properties, skeletal and
+static meshes, animations, textures, SEAD, HCA), its attack and magic states in
+source/game/player/src/kh3, and its crates/kh-vfx was ported, with its notice kept,
+as source/visual/effect/src/cascade. Its generated tables and anything embedding
+KH3 data were not copied, and no KH3 data is in this repository: the KH3 mode
+reads the player's own install at run time.

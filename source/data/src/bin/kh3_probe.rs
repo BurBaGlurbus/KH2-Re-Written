@@ -122,6 +122,167 @@ fn main() -> Result<()> {
             );
             println!("{:#?}", a.props);
         }
+        ("material", paths) => {
+            for path in paths {
+                let m = kh3::material::read(&paks, path)?;
+                println!(
+                    "== {path} root {} blend {:?} two-sided {}",
+                    m.root, m.blend, m.two_sided
+                );
+                println!("textures {:#?}", m.textures);
+                println!("vectors {:?}", m.vectors);
+            }
+        }
+        ("sora", []) => {
+            let t = std::time::Instant::now();
+            let d = kh3::sora::SoraData::load(&paks)?;
+            println!(
+                "loaded in {:.2} s: {} rows, {} clips, {} textures, {} sockets, blade {} verts, {} blade sockets",
+                t.elapsed().as_secs_f32(),
+                d.anims.rows.len(),
+                d.anims.clips.len(),
+                d.textures.len(),
+                d.sockets.len(),
+                d.keyblade.lod.positions.len(),
+                d.keyblade_sockets.len()
+            );
+            for l in d.looks.iter().chain(&d.keyblade_looks) {
+                println!("{l:?}");
+            }
+            for (path, tex) in &d.textures {
+                println!(
+                    "{path} {} {}x{} mips {}",
+                    tex.format,
+                    tex.width,
+                    tex.height,
+                    tex.mips.len()
+                );
+            }
+            let mut classes = std::collections::BTreeMap::<String, usize>::new();
+            for c in &d.anims.clips {
+                for n in &c.notifies {
+                    *classes.entry(n.class.clone()).or_default() += 1;
+                }
+            }
+            println!("{classes:#?}");
+            for name in ["IdleN", "RunLoopN", "DodgeRoll", "1301", "M_1473"] {
+                let Some(r) = d.anims.row(name) else {
+                    println!("{name}: no row");
+                    continue;
+                };
+                let c = d.anims.main_clip(r, 0.).unwrap();
+                println!(
+                    "{name}: clip {} {} s root {} blend {} notifies {}",
+                    c.name,
+                    c.seq.length,
+                    c.root_motion,
+                    c.blend,
+                    c.notifies.len()
+                );
+                if name == "1301" {
+                    for n in &c.notifies {
+                        println!("  {} {:.3}-{:.3}", n.class, n.start, n.end);
+                    }
+                    println!(
+                        "  root delta {:?}",
+                        kh3::sora::root_delta(c, 0., c.seq.length)
+                    );
+                }
+            }
+        }
+        ("rows", []) => {
+            let set = kh3::sora::read_anim_set(&paks, kh3::sora::ANIM_SET)?;
+            for r in &set.rows {
+                match &r.data {
+                    kh3::sora::RowData::Clip(i) => print!("{}={} ", r.name, set.clips[*i].name),
+                    kh3::sora::RowData::Blend1D { samples, .. } => {
+                        print!("{}=1D{} ", r.name, samples.len())
+                    }
+                    kh3::sora::RowData::Blend2D { samples, .. } => {
+                        print!("{}=2D{} ", r.name, samples.len())
+                    }
+                }
+            }
+            println!();
+        }
+        // `sound <out dir> <asset>...`: decodes each asset's first notes to WAV files.
+        ("sound", [out, assets @ ..]) => {
+            let image = std::fs::read(install.exe())?;
+            let tables = kh3::hca::Tables::find(&image)?;
+            let banks = kh3::sead::Banks::default();
+            let mut key = None;
+            for asset in assets {
+                let Some(r) = banks.resolve(&paks, asset) else {
+                    println!("{asset}: not resolved");
+                    continue;
+                };
+                if key.is_none() {
+                    key = kh3::sead::find_key(&image, &tables, &r.bank).ok();
+                }
+                let keys = kh3::sead::Keys {
+                    tables: tables.clone(),
+                    sead_key: key.unwrap_or([0; 256]),
+                };
+                let Some(Some(sound)) = r.bank.sounds.get(r.slot) else {
+                    println!("{asset}: empty slot {}", r.slot);
+                    continue;
+                };
+                println!(
+                    "{asset}: bank {} slot {} kind {:?} cat {} vol {} asset vol {} spatial {} seqs {}",
+                    r.bank.number,
+                    r.slot,
+                    sound.kind,
+                    sound.category,
+                    sound.volume,
+                    r.volume,
+                    r.spatial,
+                    sound.sequences.len()
+                );
+                for seq in sound.sequences.iter().take(1) {
+                    for n in &seq.notes {
+                        let m = &r.bank.materials[usize::from(n.material)];
+                        let d = kh3::sead::decode_material(m, &keys)?;
+                        let max = d
+                            .samples
+                            .iter()
+                            .map(|x| x.unsigned_abs())
+                            .max()
+                            .unwrap_or(0);
+                        println!(
+                            "  note +{} ms material {} {} ch {} Hz {} samples peak {} bad frames {}",
+                            n.delay_ms,
+                            n.material,
+                            d.channels,
+                            d.rate,
+                            d.samples.len(),
+                            max,
+                            d.bad_frames
+                        );
+                        let name = asset.rsplit('/').next().unwrap_or("sound");
+                        let path =
+                            std::path::Path::new(out).join(format!("{name}-{}.wav", n.material));
+                        let mut w = Vec::new();
+                        let bytes = d.samples.len() * 2;
+                        w.extend_from_slice(b"RIFF");
+                        w.extend_from_slice(&((36 + bytes) as u32).to_le_bytes());
+                        w.extend_from_slice(b"WAVEfmt ");
+                        w.extend_from_slice(&16u32.to_le_bytes());
+                        w.extend_from_slice(&1u16.to_le_bytes());
+                        w.extend_from_slice(&u16::from(d.channels).to_le_bytes());
+                        w.extend_from_slice(&d.rate.to_le_bytes());
+                        w.extend_from_slice(&(d.rate * u32::from(d.channels) * 2).to_le_bytes());
+                        w.extend_from_slice(&(u16::from(d.channels) * 2).to_le_bytes());
+                        w.extend_from_slice(&16u16.to_le_bytes());
+                        w.extend_from_slice(b"data");
+                        w.extend_from_slice(&(bytes as u32).to_le_bytes());
+                        for x in &d.samples {
+                            w.extend_from_slice(&x.to_le_bytes());
+                        }
+                        std::fs::write(path, w)?;
+                    }
+                }
+            }
+        }
         ("texture", [path]) => {
             let p = package(path)?;
             let i = p.export_of_class("Texture2D").ok_or("no Texture2D")?;

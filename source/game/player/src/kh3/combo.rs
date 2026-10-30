@@ -130,6 +130,11 @@ impl Chain {
         !self.done
     }
 
+    /// A spell ended the chain (a Finish End).
+    pub fn close(&mut self) {
+        self.done = true;
+    }
+
     /// The launch (Jump during a ground chain, Rising Spiral): once a
     /// chain; the count starts over after it (0x14134aca0's launch path).
     pub fn launch(&mut self) -> Option<Pick> {

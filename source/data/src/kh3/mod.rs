@@ -5,11 +5,19 @@
 //!
 //! The formats follow StrawHatPro's `kingdom-hearts-x-elden-ring` documents
 //! (MIT, see CREDITS.md).
+#![allow(clippy::chunks_exact_to_as_chunks)]
+
 pub mod anim;
+pub mod effect_json;
+pub mod hca;
+pub mod material;
 pub mod package;
 pub mod pak;
 pub mod props;
+pub mod sead;
 pub mod skeletal;
+pub mod sora;
+pub mod static_mesh;
 pub mod texture;
 
 use package::Package;

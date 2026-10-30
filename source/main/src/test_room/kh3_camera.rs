@@ -81,7 +81,7 @@ const PASSES: usize = 4;
 const AIM_PITCH: f32 = 40.;
 /// [duel choice] The OTS camera's Blueprint values: 220 cm back, the
 /// pivot 55 cm to Sora's right and 25 cm up.
-const AIM_DISTANCE: f32 = 220.;
+const AIM_DISTANCE: f32 = 200.;
 const AIM_SHOULDER: [f32; 2] = [55., 25.];
 
 /// The exe's approach: `cur` moves `rate / 60` of the gap a 1/60 s step.

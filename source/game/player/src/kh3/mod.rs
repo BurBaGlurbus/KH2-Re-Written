@@ -15,13 +15,16 @@
 //! The numbers are in `tuning`; walls and poles in `surface`.
 
 pub mod ability;
+pub mod attack;
 pub mod blend;
 pub mod combo;
 pub mod cue;
 pub mod hurt;
 pub mod look;
+pub mod spell;
 pub mod surface;
 pub mod tuning;
+pub mod visual;
 
 pub use hurt::{Knock, Source, Strike};
 
@@ -71,6 +74,8 @@ pub struct Foe {
 pub struct Scene<'a> {
     pub foe: Option<Foe>,
     pub poles: &'a [Pole],
+    /// KH3's data, from the player's paks (attack.rs).
+    pub book: Option<&'a attack::Book>,
 }
 
 /// What a tick asks of the room besides the move.
@@ -217,6 +222,10 @@ pub enum Mode {
         tick: u32,
         locks: u8,
     },
+    /// KH3's attack state (attack.rs; `Kh3::attack` holds it).
+    Attack,
+    /// KH3's cast state (spell.rs; `Kh3::cast` holds it).
+    Cast,
 }
 
 impl Mode {
@@ -272,6 +281,8 @@ impl Mode {
             Mode::Risk { warp: true, .. } => "risk_warp",
             Mode::Risk { .. } => "risk_dodge",
             Mode::Syphon { .. } => "focus_syphon",
+            Mode::Attack => "attack",
+            Mode::Cast => "cast",
         }
     }
 }
@@ -381,6 +392,28 @@ pub struct Kh3 {
     /// for its combo window.
     pub chain: combo::Chain,
     queued: bool,
+    /// KH3's animation for the presenter (visual.rs).
+    pub visual: visual::Visual,
+    /// How far he turned this tick (degrees): the run and glide spaces' axis.
+    pub turning: f32,
+    /// The KH3 attack running (attack.rs).
+    pub attack: Option<attack::Attack>,
+    /// A hit landed in this chain (the next attack needs it, or Combo Master).
+    pub chain_hit: bool,
+    /// KH3's cast and the spell actors out (spell.rs), the room's request,
+    /// and the effects and sounds for the presenters this tick.
+    pub cast: Option<spell::Cast>,
+    pub actors: Vec<spell::Actor>,
+    actor_serial: u32,
+    want_cast: Option<u16>,
+    pub fx: Vec<spell::FxRequest>,
+    /// Grand magic: the commands offered by their points, and the offer.
+    grand_points: Vec<(u16, f32)>,
+    pub grand_offer: Option<(u16, u32)>,
+    /// HP a Cure gives the room to apply (it knows the duel's scale).
+    pub heal: i32,
+    /// A joiner's animation, from the host (the presenter prefers it).
+    pub remote_visual: Option<RemoteVisual>,
 }
 
 impl Default for Kh3 {
@@ -425,6 +458,19 @@ impl Default for Kh3 {
             abilities: ability::Set::default(),
             chain: combo::Chain::default(),
             queued: false,
+            visual: visual::Visual::default(),
+            turning: 0.,
+            attack: None,
+            chain_hit: false,
+            cast: None,
+            actors: Vec::new(),
+            actor_serial: 0,
+            want_cast: None,
+            fx: Vec::new(),
+            grand_points: Vec::new(),
+            grand_offer: None,
+            heal: 0,
+            remote_visual: None,
         }
     }
 }
@@ -558,6 +604,7 @@ impl Kh3 {
     pub fn landed(&mut self, swing: bool) {
         self.focus = (self.focus + t::FOCUS_HIT_DEALT).min(t::FOCUS_MAX);
         if swing {
+            self.chain_hit = true;
             self.add_style(t::STYLE_SWING, None);
         }
     }
@@ -679,7 +726,112 @@ impl Kh3 {
             risk: self.risk_open(),
             offer: self.offer.map_or(0, |o| o.0),
             lean: self.lean,
+            row: u16::MAX,
+            serial: 0,
+            time: 0,
+            axis: 0,
+            blend: -1,
+            looped: false,
+            actors: Vec::new(),
         }
+    }
+
+    /// `shown`, with KH3's animation and actors by the book's ids.
+    pub fn shown_in(&self, book: &attack::Book) -> Shown {
+        let v = &self.visual;
+        let mut actors = Vec::with_capacity(self.actors.len() + self.bolts.len());
+        for a in self.actors.iter().take(32) {
+            let depth = book.spells.get(&a.cmd).map_or(0, |s| {
+                let mut d = 0;
+                let mut at = Some(&s.stage);
+                while let Some(stage) = at {
+                    if std::sync::Arc::ptr_eq(stage, &a.stage) {
+                        break;
+                    }
+                    d += 1;
+                    at = stage.next.as_ref();
+                }
+                d
+            });
+            actors.push(ShownActor {
+                serial: a.serial as u16,
+                cmd: a.cmd,
+                depth,
+                pos: a.pos,
+                dir: a.dir,
+            });
+        }
+        for b in self.bolts.iter().take(32) {
+            actors.push(ShownActor {
+                serial: b.serial as u16 | 0x8000,
+                cmd: if b.ragnarok { SHOT_RAGNAROK } else { SHOT_KOH },
+                depth: 0,
+                pos: b.pos,
+                dir: b.dir,
+            });
+        }
+        Shown {
+            row: book.row_ids.get(v.row).copied().unwrap_or(u16::MAX),
+            serial: v.serial as u8,
+            time: (v.time * 240.).round().clamp(0., 65535.) as u16,
+            axis: (v.at[0] * 16.).round().clamp(-32768., 32767.) as i16,
+            blend: if v.blend < 0. {
+                -1
+            } else {
+                (v.blend * 100.).round().clamp(0., 127.) as i8
+            },
+            looped: v.looped,
+            actors,
+            ..self.shown()
+        }
+    }
+
+    /// A joiner's copy of the actors, for the presenters.
+    pub fn apply_actors(&mut self, shown: &Shown, book: &attack::Book) {
+        self.actors.clear();
+        for a in &shown.actors {
+            let stage = match a.cmd {
+                SHOT_KOH => book.shots[0].clone(),
+                SHOT_RAGNAROK => book.shots[1].clone(),
+                cmd => book.spells.get(&cmd).map(|s| {
+                    let mut at = std::sync::Arc::clone(&s.stage);
+                    for _ in 0..a.depth {
+                        let Some(next) = at.next.clone() else { break };
+                        at = next;
+                    }
+                    at
+                }),
+            };
+            let Some(stage) = stage else { continue };
+            self.actors.push(spell::Actor {
+                serial: u32::from(a.serial),
+                cmd: a.cmd,
+                speed: 0.,
+                stage,
+                pos: a.pos,
+                dir: a.dir,
+                age: 0.,
+                turn: 0.,
+                homing_on: false,
+                finish: false,
+                grand: false,
+                hit: false,
+                previous: a.pos,
+                dead: false,
+            });
+        }
+        self.remote_visual = (shown.row != u16::MAX).then_some(RemoteVisual {
+            row: shown.row,
+            serial: shown.serial,
+            time: f32::from(shown.time) / 240.,
+            at: [f32::from(shown.axis) / 16., 0.],
+            blend: if shown.blend < 0 {
+                -1.
+            } else {
+                f32::from(shown.blend) / 100.
+            },
+            looped: shown.looped,
+        });
     }
 
     /// One tick of a Sora in the KH3 ruleset, in place of `Player::tick`.
@@ -713,10 +865,38 @@ impl Kh3 {
             out.grand = Some(spell);
         }
         self.shotlock_button(player, input, pad, scene, &mut out);
+        if let Some((cmd, left)) = self.grand_offer {
+            self.grand_offer = (left > 1).then_some((cmd, left - 1));
+            if pad.situation && !player.dead() && self.start_cast(player, cmd, input, scene, clips, &mut out.step) {
+                self.grand_offer = None;
+                self.style = 0.;
+            }
+        }
+        if self.take_cast_request(player, input, scene, clips, &mut out.step) {
+            out.began.push("cast");
+        }
         let before = self.mode;
+        let yaw_before = player.yaw;
         match self.mode {
             Mode::Kh2 => self.kh2(player, input, p, clips, world, scene, &mut out),
             _ => self.own(player, input, p, clips, world, scene, &mut out),
+        }
+        self.turning = wrap(player.yaw - yaw_before).to_degrees() * 60. / 36.;
+        if self.mode != Mode::Attack {
+            self.attack = None;
+        }
+        if self.mode != Mode::Cast {
+            self.cast = None;
+        }
+        let mut heal = 0;
+        self.step_actors(player, &mut heal, scene, world, p);
+        self.heal += heal;
+        self.visual.advance(visual::choose(self, player));
+        if let Some(a) = &self.attack {
+            self.visual.time = a.time;
+        }
+        if let Some(c) = &self.cast {
+            self.visual.time = c.time;
         }
         if self.mode != before
             && std::mem::discriminant(&self.mode) != std::mem::discriminant(&before)
@@ -919,7 +1099,7 @@ impl Kh3 {
             && self.counter > 0
             && self.has(A::CounterSlash)
             && matches!(player.action, Action::GuardRecoil | Action::Guard)
-            && self.play_record(player, record::COUNTER, input, clips)
+            && self.counter_swing_now(player, input, scene, clips, &mut out.step)
         {
             self.counter = 0;
             out.began.push("counter");
@@ -1197,6 +1377,27 @@ impl Kh3 {
         let pick = self
             .chain
             .next(&self.abilities, &self.ctx(player, scene, air));
+        if scene.book.is_some() {
+            if !self.start_attack(
+                player,
+                pick.id,
+                pick.finisher,
+                pick.last,
+                scene,
+                &mut out.step,
+                clips,
+            ) {
+                self.chain = saved.0;
+                return false;
+            }
+            self.queued = false;
+            out.began.push(if pick.finisher {
+                "combo_finisher"
+            } else {
+                "combo"
+            });
+            return true;
+        }
         if own && air {
             if !player.action.airborne() {
                 player.action = Action::Fall;
@@ -1230,6 +1431,21 @@ impl Kh3 {
             "combo"
         });
         true
+    }
+
+    /// Counter Slash: KH3's clip, or its KH2 stand-in without the book.
+    fn counter_swing_now(
+        &mut self,
+        player: &mut Player,
+        input: &Input,
+        scene: &Scene,
+        clips: &Clips,
+        step: &mut Step,
+    ) -> bool {
+        if scene.book.is_some() {
+            return self.start_attack(player, combo::id::COUNTER, false, true, scene, step, clips);
+        }
+        self.play_record(player, record::COUNTER, input, clips)
     }
 
     /// Rising Spiral's launch out of the chain (combo.rs's one-shot).
@@ -1347,6 +1563,14 @@ impl Kh3 {
         // in the KH2 controller's own tick: else a swing's lockout would
         // outlive it and refuse every attack from the layer's states.
         player.command_lockout(clips);
+        if self.mode == Mode::Attack {
+            self.attack_tick(player, input, p, clips, world, scene, out);
+            return;
+        }
+        if self.mode == Mode::Cast {
+            self.cast_tick(player, input, p, clips, world, scene, out);
+            return;
+        }
         // Shotlock aim takes the stick and the buttons.
         let aiming = self.aim.is_some();
         let free_input = Input {
@@ -1358,7 +1582,7 @@ impl Kh3 {
         };
         let input = if aiming { &free_input } else { input };
         match self.mode {
-            Mode::Kh2 => {}
+            Mode::Kh2 | Mode::Attack | Mode::Cast => {}
             Mode::Ground => self.ground(player, input, p, clips, world, scene, out),
             Mode::Air { .. } => self.air(player, input, p, clips, world, scene, out),
             Mode::Takeoff { tick, jump } => {
@@ -3145,8 +3369,10 @@ fn home(dir: Vec3, to: Vec3, rate: f32) -> Vec3 {
 }
 
 /// The modes by snapshot code.
-pub const MODE_NAMES: [&str; 33] = [
+pub const MODE_NAMES: [&str; 35] = [
     "kh2",
+    "attack",
+    "cast",
     "ground",
     "air",
     "doubleflight",
@@ -3187,6 +3413,8 @@ pub const MODE_NAMES: [&str; 33] = [
 fn mode_named(name: &str) -> Option<Mode> {
     Some(match name {
         "kh2" => Mode::Kh2,
+        "attack" => Mode::Attack,
+        "cast" => Mode::Cast,
         "ground" => Mode::Ground,
         "wall_run_up" | "wall_run_side" => Mode::WallRun {
             normal: [0.; 2],
@@ -3217,7 +3445,7 @@ fn mode_named(name: &str) -> Option<Mode> {
 }
 
 /// What the joiner is told of a Sora's KH3 state.
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct Shown {
     pub focus: u8,
     pub style: u8,
@@ -3233,6 +3461,42 @@ pub struct Shown {
     /// The offered grand magic's type (0: none).
     pub offer: u8,
     pub lean: [f32; 2],
+    /// KH3's animation by the anim set's row, its play, clock (1/240 s),
+    /// blend axis, blend in (1/100 s, -1 the asset's); `u16::MAX`: none.
+    pub row: u16,
+    pub serial: u8,
+    pub time: u16,
+    pub axis: i16,
+    pub blend: i8,
+    pub looped: bool,
+    /// The spell actors and shots out.
+    pub actors: Vec<ShownActor>,
+}
+
+/// A spell actor or a shot on the wire.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ShownActor {
+    pub serial: u16,
+    /// The command; `SHOT_KOH` and `SHOT_RAGNAROK` for the shotlock's.
+    pub cmd: u16,
+    /// How far along the chain of stages.
+    pub depth: u8,
+    pub pos: Vec3,
+    pub dir: Vec3,
+}
+
+pub const SHOT_KOH: u16 = 0xfffe;
+pub const SHOT_RAGNAROK: u16 = 0xffff;
+
+/// What a joiner plays for a Sora, from the host's snapshot.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct RemoteVisual {
+    pub row: u16,
+    pub serial: u8,
+    pub time: f32,
+    pub at: [f32; 2],
+    pub blend: f32,
+    pub looped: bool,
 }
 
 #[cfg(test)]

@@ -50,7 +50,7 @@ pub fn ticks(from: Action, to: Action, mode: &Mode) -> f32 {
         | Mode::Pole { .. }
         | Mode::Superslide { .. }
         | Mode::SlideEnd { .. } => FLOW,
-        Mode::Flow { .. } | Mode::Launch { .. } | Mode::Chase { .. } => SWING,
+        Mode::Flow { .. } | Mode::Launch { .. } | Mode::Chase { .. } | Mode::Attack | Mode::Cast => SWING,
         Mode::Takeoff { .. } | Mode::Land { .. } => JUMP,
         Mode::Air { .. } => match to {
             Action::Jump | Action::HighJump | Action::Growth(_) => JUMP,

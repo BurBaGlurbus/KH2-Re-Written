@@ -795,7 +795,11 @@ pub(crate) fn tick(mut game: ResMut<Game>) {
             Command::None => {}
             Command::Cast(t) => {
                 let mp = game.sora.player.mp.cur;
-                let ok = magic_room::request(game, t, tick);
+                let ok = if super::duel_kh3::on(game) && game.kh3_book.is_some() {
+                    super::duel_kh3::kh3_cast(game, t)
+                } else {
+                    magic_room::request(game, t, tick)
+                };
                 if ok && super::duel_kh3::on(game) {
                     game.sora.kh3.spell_released(t);
                 }
@@ -813,6 +817,7 @@ pub(crate) fn tick(mut game: ResMut<Game>) {
         }
         // [KH3 ruleset] The layer over the KH2 controller (duel_kh3.rs).
         let kh3 = super::duel_kh3::on(game);
+        let book = game.kh3_book.clone();
         let poles = if kh3 {
             super::duel_kh3::poles(game)
         } else {
@@ -833,7 +838,11 @@ pub(crate) fn tick(mut game: ResMut<Game>) {
                 ..
             } = &mut *game;
             let world = &*world;
-            let scene = player::kh3::Scene { foe, poles: &poles };
+            let scene = player::kh3::Scene {
+                foe,
+                poles: &poles,
+                book: book.as_deref(),
+            };
             let mut run = |sora: &mut Fighter| {
                 if kh3 {
                     let out =
