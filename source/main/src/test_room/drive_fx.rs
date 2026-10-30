@@ -2,9 +2,12 @@
 //! archive (`obj/P_EX100.a.us`, and each form's) started by his motions'
 //! frame trigger 1 (FUN_14040dd70 case 1 → FUN_1402c6b30), the revert's
 //! elements 15..27 (FUN_140405630) and the form level-up's system element
-//! 16 (FUN_1403ed390). Bound elements follow Sora's bone (or his object
-//! for bones from 0x4000) every tick; an element's own sound plays at its
-//! start.
+//! 16 (FUN_1403ed390). An element's flags say how it binds (FUN_1402c49d0,
+//! FUN_1402c58f0): 1 to Sora's bone, 2 only until its start wait has passed,
+//! 4 by position only, 0x100 keeps the bone's scale, 0x20000 to the camera;
+//! 0x20 makes it end with the motion that started it, by 0x80 (the loop
+//! ends) or 0x40 (it fades); 0x800 takes its alpha from what it is bound to.
+//! An element's own sound plays at its start.
 //!
 //! The drawing follows the event player's effect presenter
 //! (`cutscene/fx.rs`): the PC's texture for each TEX0
@@ -76,8 +79,11 @@ fn aimed(at: [f32; 3], dir: [f32; 3], scale: [f32; 3]) -> Mat {
 /// 0x4003 / 0x4004's point).
 pub fn blade_tip(game: &Game, slot: usize) -> Option<Vec3> {
     let pose = sora_pose(game);
-    let (_, tip) = pose.slots[slot]?;
-    Some(pose.root.transform_point3(tip))
+    let (bone, reach) = pose.slots[slot]?;
+    Some(
+        pose.root
+            .transform_point3(bone.transform_point3(Vec3::X * reach)),
+    )
 }
 
 /// A start request that names its anchor (Sora's own use [`FxRequest`]).
@@ -156,7 +162,13 @@ struct BatchKey {
 
 struct Bind {
     bone: i16,
-    local: Mat,
+    /// The element's translation, rotation and scale.
+    t: [f32; 3],
+    r: [f32; 3],
+    s: [f32; 3],
+    flags: u32,
+    /// Ticks left of its start wait.
+    wait: f32,
 }
 
 struct Running {
@@ -166,6 +178,12 @@ struct Running {
     /// The duel's other Sora whose object a bound element follows.
     rival: Option<u8>,
     owner: u8,
+    /// Flag 0x20000 (FUN_1402c4da0): the element's own matrix under the
+    /// camera's.
+    camera: Option<Mat>,
+    /// Flag 0x20 (FUN_1403c8000): the motion it ends with, with how it ends.
+    motion: Option<(u64, Action)>,
+    end: MotionEnd,
     /// The element, when it follows the room enemy's object.
     enemy_element: Option<object_effect::Element>,
     /// The battle actor an element follows, with the element.
@@ -191,6 +209,27 @@ struct Running {
     life: Option<f32>,
     /// A look's element: the tick it started (its end is logged).
     styled: Option<u64>,
+}
+
+/// What ending an element with its motion does (FUN_1402c7300): flag 0x80
+/// ends its loop, flag 0x40 fades it over its own fade frames (PAX +5).
+#[derive(Clone, Copy)]
+enum MotionEnd {
+    Release,
+    Fade(f32),
+    Stay,
+}
+
+impl MotionEnd {
+    fn of(element: &object_effect::Element) -> Self {
+        if element.flags & 0x80 != 0 {
+            Self::Release
+        } else if element.flags & 0x40 != 0 {
+            Self::Fade(f32::from(element.fadeout_frame))
+        } else {
+            Self::Stay
+        }
+    }
 }
 
 /// Odd layers behind everything, even layers in front, 0 by depth
@@ -244,12 +283,30 @@ impl DriveFx {
     }
 }
 
-/// Sora this frame: his scene-space object matrix, the bone matrices, and
-/// each weapon slot's grip matrix and blade tip (model space).
-struct SoraPose {
+/// A weapon slot's blade bone in Sora's model space and the Keyblade's reach
+/// along it (FUN_1403d7600 → FUN_1403b5d40: the bone of the weapon's first
+/// enabled shape of kind 15, bone 2, returning that shape's x), or `None`
+/// without the weapon's own motion.
+pub(super) fn slot_pose(cp: &ClipPoses, frame: usize, slot: usize) -> Option<(Mat4, f32)> {
+    let (hands, blades) = if slot == 0 {
+        (&cp.weapon, &cp.blade)
+    } else {
+        (&cp.weapon2, &cp.blade2)
+    };
+    let hand = *hands.get(frame.min(hands.len().checked_sub(1)?))?;
+    let blade = *blades.get(frame.min(blades.len().checked_sub(1)?))?;
+    Some((hand * blade, cp.blade_reach[slot]))
+}
+
+/// Sora this frame: his scene-space object matrix, the bone matrices, each
+/// weapon slot's blade bone and reach (model space), the hand holding slot 0
+/// and his current motion.
+pub(super) struct SoraPose {
     root: Mat4,
     bones: Option<HashMap<usize, Mat4>>,
-    slots: [Option<(Mat4, Vec3)>; 2],
+    slots: [Option<(Mat4, f32)>; 2],
+    hand: Option<Mat4>,
+    motion: (u64, Action),
     /// Bone codes 0x4001 / 0x4009 (FUN_1403b50f0): the centres of Sora's
     /// first type-1 and type-9 collision entries, above his origin.
     body_lift: f32,
@@ -269,7 +326,7 @@ fn rival_poses(game: &mut Game) -> Vec<(u8, SoraPose)> {
     out
 }
 
-fn sora_pose(game: &Game) -> SoraPose {
+pub(super) fn sora_pose(game: &Game) -> SoraPose {
     let p = game.sora.player.position;
     let root = Mat4::from_rotation_translation(
         Quat::from_rotation_y(game.sora.player.yaw),
@@ -283,22 +340,13 @@ fn sora_pose(game: &Game) -> SoraPose {
     let bones = cp
         .and_then(|c| c.body.get(frame.min(c.body.len().saturating_sub(1))))
         .cloned();
-    // FUN_1403b5450's slot matrix and the blade length along it: the hand
-    // joint holding the weapon, and the weapon vertex farthest from it [I].
-    let slot = |grips: &[Mat4], verts: &[Vec<Vec3>]| -> Option<(Mat4, Vec3)> {
-        let grip = *grips.get(frame.min(grips.len().checked_sub(1)?))?;
-        let v = verts.get(frame.min(verts.len().checked_sub(1)?))?;
-        let tip = v
-            .iter()
-            .copied()
-            .max_by(|a, b| a.length_squared().total_cmp(&b.length_squared()))?;
-        Some((grip, grip.transform_point3(tip)))
-    };
     let slots = cp.map_or([None, None], |c| {
-        [
-            slot(&c.weapon, &c.weapon_frames),
-            slot(&c.weapon2, &c.weapon2_frames),
-        ]
+        [slot_pose(c, frame, 0), slot_pose(c, frame, 1)]
+    });
+    let hand = cp.and_then(|c| {
+        c.weapon
+            .get(frame.min(c.weapon.len().checked_sub(1)?))
+            .copied()
     });
     let (body_lift, heal_lift) = game
         .magic
@@ -308,6 +356,8 @@ fn sora_pose(game: &Game) -> SoraPose {
         root,
         bones,
         slots,
+        hand,
+        motion: (game.action_started, game.sora.player.action),
         body_lift,
         heal_lift,
     }
@@ -316,40 +366,92 @@ fn sora_pose(game: &Game) -> SoraPose {
 /// FUN_1402c49d0 for a bound element: the bone's matrix (the bone read
 /// through FUN_1401a7af0 negates its y and z columns) or the object's.
 /// FUN_1403b50f0's codes: 0x4003 / 0x4004 a weapon slot's blade tip,
-/// 0x4005 / 0x4006 its grip, 0x4007 / 0x4008 the blade's middle (slot 0 /
-/// 1); 0x4001 / 0x4009 the body centre and heal point above the
+/// 0x4005 / 0x4006 its blade bone, 0x4007 / 0x4008 the blade's middle (slot
+/// 0 / 1); 0x4001 / 0x4009 the body centre and heal point above the
 /// object (the collision entries' heights; [I] their bones are not posed);
 /// 0x4000 and 0x4002 stay on the object.
-/// A weapon code's matrix: the grip's axes at the tip (0x4003 / 0x4004),
-/// the grip (0x4005 / 0x4006) or halfway along the blade (0x4007 / 0x4008).
-fn slot_matrix(grip: Mat4, tip: Vec3, code: i16) -> Mat4 {
+/// A weapon code's matrix: the blade bone's axes at the reach (0x4003 /
+/// 0x4004), half of it (0x4007 / 0x4008) or at the bone (0x4005 / 0x4006).
+pub(super) fn slot_matrix(bone: Mat4, reach: f32, code: i16) -> Mat4 {
     let along = match code {
-        0x4003 | 0x4004 => 1.,
-        0x4007 | 0x4008 => 0.5,
+        0x4003 | 0x4004 => reach,
+        0x4007 | 0x4008 => reach * 0.5,
         _ => 0.,
     };
-    let mut m = grip;
-    m.w_axis = grip.w_axis.truncate().lerp(tip, along).extend(1.);
+    let mut m = bone;
+    m.w_axis = bone.transform_point3(Vec3::X * along).extend(1.);
     m
 }
 
+/// Axes without their scale.
+fn unit_axes(m: &Mat) -> Mat {
+    let mut out = *m;
+    for axis in out.iter_mut().take(3) {
+        let v = Vec3::new(axis[0], axis[1], axis[2]).normalize_or_zero();
+        *axis = [v.x, v.y, v.z, axis[3]];
+    }
+    out
+}
+
+impl SoraPose {
+    /// FUN_1403b50f0's matrix for a bone code, in the scene's space.
+    fn matrix(&self, bone: i16) -> Mat4 {
+        let flip = Mat4::from_diagonal(Vec4::new(1., -1., -1., 1.));
+        let root = self.root;
+        match bone {
+            0x4003..=0x4008 => match self.slots[(bone - 0x4003) as usize % 2] {
+                Some((m, reach)) => root * slot_matrix(m, reach, bone) * flip,
+                None => root,
+            },
+            0x4001 => root * Mat4::from_translation(Vec3::new(0., self.body_lift, 0.)),
+            0x4009 => root * Mat4::from_translation(Vec3::new(0., self.heal_lift, 0.)),
+            b if !(0..0x4000).contains(&b) => root,
+            b => match self.bones.as_ref().and_then(|m| m.get(&(b as usize))) {
+                Some(m) => root * *m * flip,
+                None => root,
+            },
+        }
+    }
+
+    /// `local` on a bone code (`trap_obj_apply_bone_matrix`, 1:83), both in
+    /// the room's frame.
+    pub(super) fn point(&self, bone: i16, local: [f32; 3]) -> [f32; 3] {
+        self.matrix(bone)
+            .transform_point3(Vec3::from_array(local))
+            .to_array()
+    }
+
+    /// Where the object he carries in his hand stands (FUN_1403b5b40 reads an
+    /// attached object's world matrix, +0x70).
+    pub(super) fn hand_point(&self) -> Option<[f32; 3]> {
+        let hand = self.hand?;
+        Some(
+            self.root
+                .transform_point3(hand.w_axis.truncate())
+                .to_array(),
+        )
+    }
+}
+
 fn bound_world(pose: &SoraPose, bind: &Bind) -> Mat {
-    let flip = Mat4::from_diagonal(Vec4::new(1., -1., -1., 1.));
-    let root = pose.root;
-    let m = match bind.bone {
-        0x4003..=0x4008 => match pose.slots[(bind.bone - 0x4003) as usize % 2] {
-            Some((grip, tip)) => root * slot_matrix(grip, tip, bind.bone) * flip,
-            None => root,
-        },
-        0x4001 => root * Mat4::from_translation(Vec3::new(0., pose.body_lift, 0.)),
-        0x4009 => root * Mat4::from_translation(Vec3::new(0., pose.heal_lift, 0.)),
-        b if !(0..0x4000).contains(&b) => root,
-        b => match pose.bones.as_ref().and_then(|m| m.get(&(b as usize))) {
-            Some(m) => root * *m * flip,
-            None => root,
-        },
+    let m = pose.matrix(bind.bone);
+    // FUN_1402c49d0: the position through the bone; the rotation with it
+    // unless only its position binds (flag 4); the element's own scale unless
+    // it keeps the bone's (flag 0x100).
+    let bone = to_game(m);
+    let [x, y, z] = bind.t;
+    let o = ::effect::math::apply(&bone, [x, y, z, 1.]);
+    if bind.flags & 4 != 0 {
+        return ::effect::instance_matrix([o[0], o[1], o[2]], bind.r, bind.s);
+    }
+    let turn = if bind.flags & 0x100 != 0 {
+        bone
+    } else {
+        unit_axes(&bone)
     };
-    ::effect::math::mul(&to_game(m), &bind.local)
+    let mut world = ::effect::math::mul(&turn, &::effect::instance_matrix([0.; 3], bind.r, bind.s));
+    world[3] = [o[0], o[1], o[2], 1.];
+    world
 }
 
 /// One tick: start the queued elements, follow Sora, step every instance
@@ -360,6 +462,9 @@ pub fn tick(
     mut fx: ResMut<DriveFx>,
     mut sparks: ResMut<super::SparkRing>,
 ) {
+    let view = game_view(rig.camera.eye, rig.camera.look_at);
+    let view_inverse = Mat4::from_cols_array_2d(&view).inverse();
+    let camera_matrix = view_inverse.to_cols_array_2d();
     let mut requests: Vec<(Placed, Style)> = std::mem::take(&mut game.fx_queue)
         .into_iter()
         .map(|p| (p, Style::default()))
@@ -481,16 +586,32 @@ pub fn tick(
         // game's (y and z flipped).
         let t = element.translation;
         let o = style.offset;
-        let local = ::effect::instance_matrix(
-            [t[0] + o[0], t[1] - o[1], t[2] - o[2]],
-            element.rotation,
-            element.scale.map(|s| s * style.scale),
-        );
+        let t = [t[0] + o[0], t[1] - o[1], t[2] - o[2]];
+        let scale = element.scale.map(|s| s * style.scale);
+        let local = ::effect::instance_matrix(t, element.rotation, scale);
         let bone = style.bone.unwrap_or(element.bone);
+        // A bound element waits one extra tick (DAT_1406239f8, 0.1).
+        let wait = element.start_wait
+            + style.delay
+            + if element.flags & 1 != 0 && !matches!(anchor, Anchor::Map { .. }) {
+                0.1
+            } else {
+                0.
+            };
+        let binding = Bind {
+            bone,
+            t,
+            r: element.rotation,
+            s: scale,
+            flags: element.flags,
+            wait,
+        };
         let mut enemy_element = None;
         let mut actor_element = None;
         let mut bullet = None;
         let mut rival = None;
+        let mut camera = None;
+        let mut motion = None;
         let (bind, world) = match anchor {
             Anchor::Sora | Anchor::Rival(_) => {
                 let pose = match anchor {
@@ -503,15 +624,20 @@ pub fn tick(
                     }
                     _ => &pose,
                 };
-                let bind = (element.flags & 1 != 0).then_some(Bind { bone, local });
-                let world = match &bind {
-                    Some(b) => bound_world(pose, b),
+                motion = (element.flags & 0x21 == 0x21).then_some(pose.motion);
+                if element.flags & 0x20000 != 0 {
+                    camera = Some(local);
+                    (None, ::effect::math::mul(&camera_matrix, &local))
+                } else if element.flags & 1 != 0 {
+                    let world = bound_world(pose, &binding);
+                    (Some(binding), world)
+                } else if style.bone.is_some() {
                     // A look's bone places an unbound element where it
                     // starts.
-                    None if style.bone.is_some() => bound_world(pose, &Bind { bone, local }),
-                    None => ::effect::math::mul(&to_game(pose.root), &local),
-                };
-                (bind, world)
+                    (None, bound_world(pose, &binding))
+                } else {
+                    (None, ::effect::math::mul(&to_game(pose.root), &local))
+                }
             }
             Anchor::Map { .. } => (None, local),
             Anchor::Weapon(_) => (None, ::effect::math::IDENTITY),
@@ -539,17 +665,12 @@ pub fn tick(
             }
             Anchor::World { at, pitch, yaw } => (
                 None,
-                ::effect::instance_matrix(
-                    to_world(at.to_array()),
-                    [pitch, yaw, 0.],
-                    element.scale.map(|s| s * style.scale),
-                ),
+                ::effect::instance_matrix(to_world(at.to_array()), [pitch, yaw, 0.], scale),
             ),
             Anchor::Bullet(key) => {
                 let Some((pos, dir)) = bullet_at(&game, key) else {
                     continue;
                 };
-                let scale = element.scale.map(|s| s * style.scale);
                 bullet = Some((key, scale));
                 (None, aimed(pos, dir, scale))
             }
@@ -571,14 +692,6 @@ pub fn tick(
                 }
             }
         };
-        // A bound element waits one extra tick (DAT_1406239f8, 0.1).
-        let wait = element.start_wait
-            + style.delay
-            + if bind.is_some() || enemy_element.is_some() {
-                0.1
-            } else {
-                0.
-            };
         let dpd = req.pax.dpds[dpx.dpd].clone();
         // A sound plays only for sound > 0 (the element's SE id), at the
         // element's start: now when it has no wait.
@@ -608,6 +721,9 @@ pub fn tick(
                 rival,
                 spark,
                 owner: req.owner,
+                camera,
+                motion,
+                end: MotionEnd::of(element),
                 enemy_element,
                 actor_element,
                 bullet,
@@ -638,8 +754,6 @@ pub fn tick(
     for v in log {
         game.event(v);
     }
-    let view = game_view(rig.camera.eye, rig.camera.look_at);
-    let view_inverse = Mat4::from_cols_array_2d(&view).inverse();
     let pose = sora_pose(&game);
     let fx = &mut *fx;
     fx.batches.clear();
@@ -664,15 +778,42 @@ pub fn tick(
     }
     game.rivals = rivals;
     for (i, r) in fx.running.iter_mut().enumerate() {
-        if let Some(b) = &r.bind {
-            let own = match r.rival {
-                Some(slot) => rival_poses.iter().find(|p| p.0 == slot).map(|p| &p.1),
-                None => Some(&pose),
-            };
-            if let Some(own) = own {
+        let own = match r.rival {
+            Some(slot) => rival_poses.iter().find(|p| p.0 == slot).map(|p| &p.1),
+            None => Some(&pose),
+        };
+        if let (Some(b), Some(own)) = (r.bind.as_mut(), own) {
+            // FUN_1402c58f0: flag 2 binds only until the start wait has
+            // passed; the element then stays where it was.
+            if b.flags & 2 == 0 || b.wait > 0. {
                 r.instance.world = bound_world(own, b);
             }
+            b.wait -= 1.;
         }
+        if let Some(local) = &r.camera {
+            r.instance.world = ::effect::math::mul(&camera_matrix, local);
+        }
+        // FUN_1403c7300 marks a motion's elements when the next motion starts
+        // (+0xc bit 25); FUN_1402c58f0 → FUN_1402c7300 ends them.
+        if let (Some(started), Some(own)) = (r.motion, own)
+            && started != own.motion
+        {
+            r.motion = None;
+            match r.end {
+                MotionEnd::Release => r.instance.release(),
+                MotionEnd::Fade(frames) => r.instance.fade_out(frames),
+                MotionEnd::Stay => {}
+            }
+        }
+        // Flag 0x800 (FUN_1402c58f0): the alpha of what it is bound to: a
+        // weapon slot's, none when it is not there, or Sora's fade.
+        let faded = match r.bind.as_ref().filter(|b| b.flags & 0x800 != 0) {
+            Some(b) if (0x4003..=0x4008).contains(&b.bone) => own
+                .is_some_and(|o| o.slots[(b.bone - 0x4003) as usize % 2].is_none())
+                .then_some(0.),
+            Some(_) if r.rival.is_none() => Some(rig.fade.value),
+            _ => None,
+        };
         if let Some((id, element)) = &r.actor_element
             && let Some(&(position, yaw)) = game.actor_poses.get(id)
         {
@@ -700,8 +841,11 @@ pub fn tick(
             }
         }
         let mut q = r.instance.frame(&view, &mut fx.rng);
-        if r.tint != [1.; 4] {
-            let tint = r.tint;
+        let tint = faded.map_or(r.tint, |a| {
+            let t = r.tint;
+            [t[0], t[1], t[2], t[3] * a]
+        });
+        if tint != [1.; 4] {
             for quad in &mut q {
                 quad.colour = tinted(quad.colour, tint);
                 if let Some(c) = quad.corner_colours.as_mut() {
@@ -1049,17 +1193,80 @@ pub fn present(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::f32::consts::FRAC_PI_2;
 
     #[test]
     fn weapon_codes_sit_on_the_tip_the_grip_and_the_middle() {
-        let grip =
-            Mat4::from_rotation_translation(Quat::from_rotation_z(0.5), Vec3::new(1., 2., 3.));
-        let tip = Vec3::new(1., 12., 3.);
-        let at = |code| slot_matrix(grip, tip, code).w_axis.truncate();
-        assert_eq!(at(0x4003), tip);
+        // A bone with its x axis along +y: a reach of -78 runs down the blade.
+        let bone = Mat4::from_rotation_translation(
+            Quat::from_rotation_z(FRAC_PI_2),
+            Vec3::new(1., 2., 3.),
+        );
+        let at = |code| slot_matrix(bone, -78., code).w_axis.truncate();
+        assert!(at(0x4003).distance(Vec3::new(1., -76., 3.)) < 1e-3);
         assert_eq!(at(0x4006), Vec3::new(1., 2., 3.));
-        assert_eq!(at(0x4008), Vec3::new(1., 7., 3.));
-        // The grip's axes are kept.
-        assert_eq!(slot_matrix(grip, tip, 0x4003).x_axis, grip.x_axis);
+        assert!(at(0x4008).distance(Vec3::new(1., -37., 3.)) < 1e-3);
+        // The bone's axes are kept.
+        assert_eq!(slot_matrix(bone, -78., 0x4003).x_axis, bone.x_axis);
+    }
+
+    fn bind(flags: u32, t: [f32; 3]) -> Bind {
+        Bind {
+            bone: 0x4000,
+            t,
+            r: [0.; 3],
+            s: [2.; 3],
+            flags,
+            wait: 0.,
+        }
+    }
+
+    fn pose_at(yaw: f32, at: Vec3) -> SoraPose {
+        SoraPose {
+            root: Mat4::from_rotation_translation(Quat::from_rotation_y(yaw), at),
+            bones: None,
+            slots: [None, None],
+            hand: None,
+            motion: (0, Action::Idle),
+            body_lift: 85.,
+            heal_lift: 105.,
+        }
+    }
+
+    #[test]
+    fn a_bound_element_takes_the_bones_turn_and_flag_4_only_its_place() {
+        let pose = pose_at(FRAC_PI_2, Vec3::new(10., 0., 0.));
+        let turned = bound_world(&pose, &bind(1, [0., 0., 5.]));
+        let kept = bound_world(&pose, &bind(5, [0., 0., 5.]));
+        // Both sit at the same place, the element's offset turned with him.
+        assert!(Vec3::from_slice(&turned[3][..3]).distance(Vec3::from_slice(&kept[3][..3])) < 1e-3);
+        // Flag 4 keeps the element's own axes; plain binding turns them.
+        assert_eq!(kept[0][0], 2.);
+        assert!(turned[0][0].abs() < 1e-3);
+    }
+
+    #[test]
+    fn an_element_ends_with_its_motion_as_its_flags_say() {
+        let element = |flags, fadeout_frame| object_effect::Element {
+            effect_number: 0,
+            id: 0,
+            group: 0,
+            fadeout_frame,
+            bone: 0,
+            category: 0,
+            flags,
+            start_wait: 0.,
+            sound: -1,
+            translation: [0.; 3],
+            rotation: [0.; 3],
+            scale: [1.; 3],
+            bone_pos: Default::default(),
+        };
+        assert!(matches!(
+            MotionEnd::of(&element(0xa1, 0)),
+            MotionEnd::Release
+        ));
+        assert!(matches!(MotionEnd::of(&element(0x61, 8)), MotionEnd::Fade(f) if f == 8.));
+        assert!(matches!(MotionEnd::of(&element(0x21, 0)), MotionEnd::Stay));
     }
 }

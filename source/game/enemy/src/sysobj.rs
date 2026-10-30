@@ -1376,6 +1376,22 @@ impl Sysobj {
             self.leave_ground(clips, env);
             self.range_land(clips);
         }
+        // FUN_1403b89a0 adds a battle object's knock-back (FUN_1403d4570,
+        // `obj_hitback`) in every mode; under a reaction `update_reaction`
+        // steps it.
+        if !reacting
+            && self.class_flags & class_flag::BATTLE != 0
+            && let Some(d) = self.knock.as_mut().map(|k| k.step())
+        {
+            match d {
+                Some(d) => {
+                    let earlier = self.moved;
+                    self.apply_movement(d, env);
+                    self.moved = [0, 1, 2].map(|k| earlier[k] + self.moved[k]);
+                }
+                None => self.knock = None,
+            }
+        }
         // FUN_1403b89a0 adds the frame's move request (`obj_move_request`,
         // +0xa58 direction, +0xa64 speed) times the frame time, then clears
         // it. [I] Here it is a second step through the collision world.

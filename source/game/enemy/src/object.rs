@@ -644,15 +644,17 @@ impl Object {
                         let d = [at[0] - self.sys.position[0], at[2] - self.sys.position[2]];
                         if d[0].hypot(d[1]) > 50. {
                             let delta = crate::sysobj::wrap(d[0].atan2(d[1]) - self.sys.yaw);
+                            // FUN_1403b9f70: up to twice the parameter a
+                            // tick (DAT_1405b18ec); FUN_1403b6560 makes the
+                            // new heading the wished one too.
                             let turn = if !range && degrees == 0 {
                                 delta
                             } else {
-                                delta.clamp(
-                                    -f32::from(degrees).to_radians(),
-                                    f32::from(degrees).to_radians(),
-                                )
+                                let limit = f32::from(degrees).to_radians() * 2.;
+                                delta.clamp(-limit, limit)
                             };
                             self.sys.yaw = crate::sysobj::wrap(self.sys.yaw + turn);
+                            self.sys.wish_yaw = Some(self.sys.yaw);
                         }
                     }
                 }

@@ -279,7 +279,7 @@ impl FormSources {
         let keyblades =
             crate::keyblade_board::Keyblades::read(&self.went, &self.items, &self.objects, &name)?;
         let load_weapon = |item: u16| -> Result<
-            (model_inspection::InspectionModel, character_kit::Blade),
+            (model_inspection::InspectionModel, character_kit::Blade, f32),
             Box<dyn std::error::Error>,
         > {
             let weapon_name = keyblades
@@ -288,15 +288,17 @@ impl FormSources {
                 .to_owned();
             let w = find(&format!("obj/{weapon_name}.mdlx"))?;
             let mut library = Library::open(source)?;
-            let blade = character_kit::blade_spheres(&library.read_found(&w)?);
+            let archive = library.read_found(&w)?;
+            let blade = character_kit::blade_spheres(&archive);
+            let reach = character_kit::blade_reach(&archive);
             let mut models =
                 model_inspection::read_model_at(source, w.index, w.ordinal, w.name_hash)?;
             if models.is_empty() {
                 return Err(format!("{weapon_name} has no model").into());
             }
-            Ok((models.remove(0), blade))
+            Ok((models.remove(0), blade, reach))
         };
-        let (weapon, blade0) = load_weapon(weapons.main)?;
+        let (weapon, blade0, reach0) = load_weapon(weapons.main)?;
         // The Keyblade's own effects (swing trail, hit sparks).
         let weapon_pax = keyblades
             .model(weapons.main)
@@ -335,9 +337,9 @@ impl FormSources {
         } else {
             None
         };
-        let (weapon2, blade1) = match second {
-            Some((model, blade)) => (Some(model), blade),
-            None => (None, character_kit::Blade::new()),
+        let (weapon2, blade1, reach1) = match second {
+            Some((model, blade, reach)) => (Some(model), blade, reach),
+            None => (None, character_kit::Blade::new(), reach0),
         };
         // Slot 1's own effects (its trail): the slot-1 Keyblade's archive.
         let weapon2_pax = weapon2
@@ -374,6 +376,7 @@ impl FormSources {
                 weapon,
                 weapon2,
                 blades: [blade0, blade1],
+                blade_reach: [reach0, reach1],
                 weapon_pax,
                 weapon2_pax,
                 weapon_joint: self.weapon_joint,
@@ -724,9 +727,15 @@ impl DriveRt {
     }
 
     /// FUN_1403f7040 / FUN_1401626f0: the scene light factor,
-    /// (128 + trunc((0x30 − 0x80) × k)) / 128 for the overlay ramp k.
-    pub fn scene_light(&self) -> f32 {
-        (128. + ((LIGHT_TARGET - 128.) * self.overlay).trunc()) / 128.
+    /// The colour filters this holds (FUN_1403f7040: 0x80 + trunc((colour −
+    /// 0x80) × k), 0x80 = 1.0): the Drive change's grey over its ramp, and
+    /// the Limit Form limit's colour.
+    pub fn scene_filters(&self) -> [[u32; 3]; 2] {
+        let byte = |c: f32, k: f32| (128. + ((c - 128.) * k).trunc()).clamp(0., 255.) as u32;
+        [
+            [byte(LIGHT_TARGET, self.overlay); 3],
+            self.tint.map(|c| byte(f32::from(c), self.tint_k)),
+        ]
     }
 
     /// The party slots as FUN_140400740 sees them.
@@ -816,12 +825,6 @@ impl DriveRt {
                 )
             })
             .collect()
-    }
-
-    /// The scene colour of the limit's filter (0x80 = 1.0).
-    pub fn scene_tint(&self) -> [f32; 3] {
-        self.tint
-            .map(|c| (128. + ((c as f32 - 128.) * self.tint_k).trunc()) / 128.)
     }
 
     /// The Attack row's label: Wisdom's "Shoot" (0x16d) in that form,
@@ -1823,7 +1826,11 @@ pub fn party_visibility(
         }) || game
             .summon
             .as_ref()
-            .is_some_and(|s| s.stored.contains(&root.0));
+            .is_some_and(|s| s.stored.contains(&root.0))
+            || game
+                .party_limit
+                .as_ref()
+                .is_some_and(|r| r.hides(root.0, game.tick));
         let want = if hidden {
             Visibility::Hidden
         } else {

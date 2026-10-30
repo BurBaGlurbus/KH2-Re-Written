@@ -363,7 +363,7 @@ fn party_attack(ctx: &mut Ctx<'_>, m: &mut Memory<'_>, args: &mut Args) -> Resul
         let (dir, height, speed) = match toward {
             Some((at, reach)) => {
                 let v = [at[0] - sys.position[0], at[2] - sys.position[2]];
-                let rise = at[1] - sys.position[1];
+                let rise = at[1] - sys.position[1] - env.own_target_lift(id);
                 let height = rise.clamp(r.jump_min, r.jump_max.max(r.jump_min));
                 let len = v[0].hypot(v[1]);
                 let per_tick = (len - reach + r.reach) / actor_physics::rise_time(height);

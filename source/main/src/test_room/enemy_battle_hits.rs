@@ -265,7 +265,7 @@ pub fn tick(game: &mut Game, actors: &mut [GalleryActor], tick: u64) {
             moving: pv.moving,
             magic: None,
             guard: false,
-            member: Some(pv.member),
+            member: (pv.member != party_room::SCENE_MEMBER).then_some(pv.member),
             stats: Some(pv.stats),
             origin: Some(pv.origin),
             swept: pv.spell,
@@ -505,6 +505,8 @@ pub fn tick(game: &mut Game, actors: &mut [GalleryActor], tick: u64) {
                 // on the enemy through its hit callback).
                 if let Some(member) = v.member {
                     party_struck.push((member, v.key));
+                } else if v.key & party_room::SCENE_VOLUME == party_room::SCENE_VOLUME {
+                    party_struck.push((party_room::SCENE_MEMBER, v.key));
                 }
                 // Sora's own hits feed his combo, Drive and Valor EXP.
                 if damage > 0 {
@@ -512,6 +514,10 @@ pub fn tick(game: &mut Game, actors: &mut [GalleryActor], tick: u64) {
                 }
                 if v.member.is_none() {
                     player.connected = true;
+                    // FUN_1403d1730: ATKP +0x2f comes back as HP (vt+0xe8,
+                    // FUN_1403a75f0 -> FUN_1403d5e50).
+                    vitals.hp =
+                        (vitals.hp + i32::from(rows[row].hp_drain)).min(vitals.target.max_hp);
                     player.drive.hit(
                         rows[row].drive_drain,
                         true,

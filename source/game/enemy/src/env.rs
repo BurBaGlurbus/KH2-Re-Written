@@ -394,6 +394,11 @@ pub trait Env {
     ) -> Option<Vec3> {
         None
     }
+    /// The object's TARGET centre above its origin (FUN_1403d7520 measures a
+    /// hop from it).
+    fn own_target_lift(&self, _object: u32) -> f32 {
+        0.
+    }
     /// An effect handle `trap_obj_effect_start_bind` returned is still alive.
     fn effect_active(&self, _handle: u32) -> bool {
         false

@@ -113,6 +113,21 @@ fn a_body_leaves_and_lands_by_the_solver_not_the_room_floor() {
     assert!(s.is_jump(), "range 3 holds the landing");
 }
 
+#[test]
+fn a_battle_object_slides_by_its_knock_back_without_a_reaction() {
+    // FUN_1403b89a0 adds FUN_1403d4570 in every mode (`obj_hitback` on Sora
+    // during a limit).
+    let mut s = Sysobj::bare();
+    s.knock = actor_physics::Knock::new([1., 0., 0.], 100., 0.);
+    s.end_tick(&Flat);
+    assert!(s.position[0] > 5., "{:?}", s.position);
+    let mut other = Sysobj::bare();
+    other.class_flags &= !class_flag::BATTLE;
+    other.knock = actor_physics::Knock::new([1., 0., 0.], 100., 0.);
+    other.end_tick(&Flat);
+    assert_eq!(other.position[0], 0.);
+}
+
 fn close(a: f32, b: f32) -> bool {
     (a - b).abs() < 1.0e-3
 }

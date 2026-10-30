@@ -25,6 +25,8 @@ pub(super) struct KitInputs<'a> {
     /// The two Keyblades' ATTACK spheres by collision group (their mdlx
     /// object-collision tables, bone 2): offset, radius.
     pub blades: [Blade; 2],
+    /// Each Keyblade's reach ([`blade_reach`]).
+    pub blade_reach: [f32; 2],
     /// The slot 0 Keyblade's own effects (`obj/<model>.a.us`), when the kit
     /// was built for a chosen Keyblade.
     pub weapon_pax: Option<data::object_effect::Pax>,
@@ -96,6 +98,28 @@ pub(super) fn blade_spheres(archive: &[u8]) -> Blade {
         ));
     }
     blade
+}
+
+/// The Kingdom Key's reach, for a kit that reads no Keyblade of its own.
+pub(super) const KINGDOM_KEY_REACH: f32 = -78.;
+
+/// The Keyblade's reach along its blade bone: the x of the first shape of
+/// kind 15 in its collision table. FUN_1403b5d40 (weapon slot matrix) returns
+/// this for FUN_1403b50f0's codes 0x4003..0x4008, so 0x4003 / 0x4004 sit at
+/// (reach, 0, 0) on the bone and 0x4007 / 0x4008 at half of it.
+pub(super) fn blade_reach(archive: &[u8]) -> f32 {
+    let table = data::bar::read_bar(archive).ok();
+    table
+        .as_ref()
+        .and_then(|t| {
+            t.entries
+                .iter()
+                .find(|e| e.entry_type == 23 && e.offset > 0 && e.size > 0)
+        })
+        .and_then(|e| archive.get(e.offset as usize..e.offset as usize + e.size as usize))
+        .and_then(|b| object_collision::read(b).ok())
+        .and_then(|c| c.into_iter().find(|e| e.kind == 15))
+        .map_or(KINGDOM_KEY_REACH, |e| f32::from(e.position[0]))
 }
 
 /// A built kit.
@@ -210,6 +234,7 @@ pub(super) fn load_kit(
         weapon,
         weapon2,
         blades,
+        blade_reach,
         weapon_pax,
         weapon2_pax,
         weapon_joint,
@@ -510,6 +535,18 @@ pub(super) fn load_kit(
         let mut weapon2_frames = Vec::new();
         let mut blade = Vec::new();
         let mut blade2 = Vec::new();
+        // FUN_1401a7af0's return: the blade bone's length (record +0x1c),
+        // which a swing trail's ratios multiply (FUN_1403b54f0).
+        let bone_length = |m: &model_inspection::InspectionModel| {
+            m.skinning
+                .bones
+                .get(2)
+                .map_or(0., |b| f32::from_bits(b.transform_bits[3]))
+        };
+        let blade_length = [
+            bone_length(&weapon),
+            bone_length(weapon2.as_ref().unwrap_or(&weapon)),
+        ];
         let mut body_frames = Vec::new();
         // Attack volumes: the weapon motion's range triggers 10.
         let own_hits = |m: &motion::SelectedMotion| -> Vec<(u32, u32, u16, u8)> {
@@ -670,6 +707,8 @@ pub(super) fn load_kit(
                 root,
                 blade,
                 blade2,
+                blade_length,
+                blade_reach,
                 hits,
                 hits2,
                 trails,

@@ -11,7 +11,7 @@
 //! its position (flag 4, BindOnlyPos) or only at the start (flag 2,
 //! BindOnlyStart). Bone codes from 0x4000 are the object's own frames
 //! (`FUN_1403b50f0`): 0x4000 its root, 0x4001 / 0x4009 its body centre and
-//! 0x4003 / 0x4004 the Keyblade's top. An element's own sound plays at its
+//! 0x4003..0x4008 the Keyblades (`drive_fx::slot_matrix`). An element's own sound plays at its
 //! start, after its start wait.
 //!
 //! The drawing follows the Drive effects' presenter (`drive_fx.rs`): the
@@ -106,8 +106,8 @@ struct Running {
 /// Sora's frames of this tick.
 struct Frames {
     root: Mat4,
-    hand: Option<Mat4>,
-    tip: Vec3,
+    /// Each weapon slot's blade bone and reach (`drive_fx::slot_pose`).
+    slots: [Option<(Mat4, f32)>; 2],
     bones: Option<HashMap<usize, Mat4>>,
     body_lift: f32,
     heal_lift: f32,
@@ -144,27 +144,15 @@ impl Frames {
             .get(&(game.sora.player.action, game.sora.player.armed))
             .and_then(|&c| game.clip_poses.get(c));
         let frame = game.sora.player.motion_frame(&game.clips) as usize;
-        let hand = clip.and_then(|c| c.weapon.get(frame.min(c.weapon.len().saturating_sub(1))));
+        let slots = clip.map_or([None, None], |c| {
+            [
+                super::drive_fx::slot_pose(c, frame, 0),
+                super::drive_fx::slot_pose(c, frame, 1),
+            ]
+        });
         let bones = clip
             .and_then(|c| c.body.get(frame.min(c.body.len().saturating_sub(1))))
             .cloned();
-        // The Keyblade's top (WEAPON_TOP, FUN_1403b5450): the end of bone 2's
-        // reach, bone 2's origin plus its 78-unit offset along the blade
-        // (Kingdom Key, measured: the farthest vertex lies 77.96 from the
-        // bone). Without the weapon's own motion it is the vertex farthest
-        // from the grip.
-        let origin = clip
-            .and_then(|c| c.blade.get(frame.min(c.blade.len().saturating_sub(1))))
-            .map_or(Vec3::ZERO, |b| b.w_axis.truncate());
-        let tip = game
-            .weapon_display
-            .iter()
-            .copied()
-            .max_by(|a, b| {
-                a.distance_squared(origin)
-                    .total_cmp(&b.distance_squared(origin))
-            })
-            .unwrap_or(Vec3::ZERO);
         let members = game
             .party
             .iter()
@@ -214,8 +202,7 @@ impl Frames {
             .collect();
         Frames {
             root,
-            hand: hand.copied(),
-            tip,
+            slots,
             bones,
             body_lift: game.magic.as_ref().map_or(85., |m| m.src.body_lift),
             heal_lift: game.magic.as_ref().map_or(105., |m| m.src.heal_lift),
@@ -279,8 +266,12 @@ impl Frames {
             0x4000 => root,
             0x4001 => root * Mat4::from_translation(Vec3::new(0., body_lift, 0.)),
             0x4009 => root * Mat4::from_translation(Vec3::new(0., heal_lift, 0.)),
-            0x4003 | 0x4004 if own => match self.hand {
-                Some(h) => root * h * Mat4::from_translation(self.tip),
+            // FUN_1403b50f0's weapon codes, as Sora's own effects read them.
+            0x4003..=0x4008 if own => match self.slots[(bone - 0x4003) as usize % 2] {
+                Some((m, reach)) => {
+                    root * super::drive_fx::slot_matrix(m, reach, bone)
+                        * Mat4::from_diagonal(Vec4::new(1., -1., -1., 1.))
+                }
                 None => root * Mat4::from_translation(Vec3::new(0., body_lift, 0.)),
             },
             // A party member's weapon slot 0 top (FUN_1403b5450): the
@@ -828,8 +819,10 @@ mod tests {
                 Quat::from_rotation_y(std::f32::consts::FRAC_PI_2),
                 Vec3::new(100., 0., 50.),
             ),
-            hand: Some(Mat4::from_translation(Vec3::new(0., 40., 0.))),
-            tip: Vec3::new(0., 0., 30.),
+            slots: [
+                Some((Mat4::from_translation(Vec3::new(0., 40., 0.)), 30.)),
+                None,
+            ],
             bones: None,
             body_lift: 70.,
             heal_lift: 90.,
@@ -884,7 +877,7 @@ mod tests {
         let full = element_world(1, Some(Anchor::Caster), 0x4000, local, None, None, None, &f);
         close(pos(&full), [100., 92.88, 50.]);
         assert!((full[0][2].abs() - 1.).abs() < 1e-3);
-        // Bone 0x4003 is the Keyblade's top: root · hand · tip.
+        // Bone 0x4003 is the Keyblade's reach along its blade bone.
         let tip = element_world(
             3,
             Some(Anchor::Caster),
@@ -895,8 +888,9 @@ mod tests {
             None,
             &f,
         );
-        // tip (0,0,30) at hand height 40, then Sora turned a quarter.
-        close(pos(&tip), [130., 40., 50.]);
+        // Reach 30 along the bone's x at height 40, then Sora turned a
+        // quarter.
+        close(pos(&tip), [100., 40., 20.]);
         // A party member's frame.
         let m = element_world(
             1,

@@ -5,21 +5,20 @@
 //! (FUN_1402c5f70 → FUN_1403b54f0 build them the same way).
 //!
 //! The window rule is the exe's (FUN_1403effa0, see [`tick`]): one effect
-//! per open window, ended when the window closes. [I] The bone length
-//! (FUN_1401a7af0's skeleton field, taken from the blade mesh's extent along
-//! its bone) is inferred; the element, its points and the strip are the exe's.
+//! per open window, ended when the window closes. The bone length is
+//! FUN_1401a7af0's: the blade bone record's +0x1c.
 use super::*;
 use data::object_effect::{BonePos, Pax};
 
 /// The weapon PAX element the trail uses.
 const TRAIL_ELEMENT: u16 = 10;
 
-/// A slot's blade and hand matrices and its weapon vertices per frame.
-fn slot_poses(cp: &ClipPoses, slot: usize) -> (&[Mat4], &[Mat4], &[Vec<Vec3>]) {
+/// A slot's blade and hand matrices per frame.
+fn slot_poses(cp: &ClipPoses, slot: usize) -> (&[Mat4], &[Mat4]) {
     if slot == 0 {
-        (&cp.blade, &cp.weapon, &cp.weapon_frames)
+        (&cp.blade, &cp.weapon)
     } else {
-        (&cp.blade2, &cp.weapon2, &cp.weapon2_frames)
+        (&cp.blade2, &cp.weapon2)
     }
 }
 
@@ -31,7 +30,7 @@ pub fn points(game: &Game, bone: &BonePos, slot: usize) -> Option<[[f32; 3]; 2]>
         .get(&(game.sora.player.action, game.sora.player.armed))?;
     let cp = game.clip_poses.get(clip)?;
     let frame = game.sora.player.motion_frame(&game.clips) as usize;
-    let (blades, hands, _) = slot_poses(cp, slot);
+    let (blades, hands) = slot_poses(cp, slot);
     let blade = blades.get(frame.min(blades.len().checked_sub(1)?))?;
     let hand = hands.get(frame.min(hands.len().checked_sub(1)?))?;
     let length = game.trail_length[slot]?;
@@ -44,28 +43,14 @@ pub fn points(game: &Game, bone: &BonePos, slot: usize) -> Option<[[f32; 3]; 2]>
     Some([to_scene(bone.ratio_a), to_scene(bone.ratio_b)])
 }
 
-/// The blade bone's length: the mesh extent along the bone's x axis divided
-/// by the trail element's far ratio (3.7 for the Keyblades).
-fn calibrate(game: &Game, far_ratio: f32, slot: usize) -> Option<f32> {
+/// The blade bone's length (FUN_1401a7af0: the bone record's +0x1c); a
+/// trail's ratios are negative, its points lie on the bone's -x side.
+fn bone_length(game: &Game, slot: usize) -> Option<f32> {
     let clip = *game
         .poses
         .get(&(game.sora.player.action, game.sora.player.armed))?;
-    let cp = game.clip_poses.get(clip)?;
-    let (blades, _, frames) = slot_poses(cp, slot);
-    let blade = blades.first()?;
-    let verts = frames.first()?;
-    let inverse = blade.inverse();
-    let (mut lo, mut hi) = (f32::MAX, f32::MIN);
-    for v in verts {
-        let x = inverse.transform_point3(*v).x;
-        lo = lo.min(x);
-        hi = hi.max(x);
-    }
-    if lo > hi || far_ratio == 0. {
-        return None;
-    }
-    // The ratios are negative: the tip lies on the bone's -x side.
-    Some(lo.abs().max(hi.abs()) / far_ratio.abs())
+    let length = game.clip_poses.get(clip)?.blade_length[slot];
+    (length != 0.).then_some(length)
 }
 
 /// The effect owner ids of each slot's trail instance.
@@ -95,13 +80,13 @@ pub fn owner(rival: Option<u8>, slot: usize) -> u8 {
 /// with his state swapped in (`rival`: his slot).
 pub fn tick(game: &mut Game, pax: Option<&Arc<Pax>>, slot: usize, rival: Option<u8>) {
     let Some(pax) = pax else { return };
-    let Some(element) = pax.by_id(TRAIL_ELEMENT) else {
+    if pax.by_id(TRAIL_ELEMENT).is_none() {
         return;
-    };
+    }
     let owner = owner(rival, slot);
     let window = window_open(game, slot);
     if window && game.trail_length[slot].is_none() {
-        game.trail_length[slot] = calibrate(game, element.bone_pos.ratio_b, slot);
+        game.trail_length[slot] = bone_length(game, slot);
         let tick = game.tick;
         let length = game.trail_length[slot];
         let mut e = serde_json::json!({"event":"weapon_trail_length","tick":tick,"slot":slot,"length":length});

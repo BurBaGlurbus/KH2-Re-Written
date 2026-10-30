@@ -252,8 +252,25 @@ fn range_28_turns_sora_toward_his_target_by_its_degrees_beyond_50_units() {
         sora.carry_out_motion_effects(&mut world, &TargetAt { near });
         sora.sys.yaw
     };
-    assert!((turn(false) - 15f32.to_radians()).abs() < 1e-5);
+    // FUN_1403b9f70: up to twice the parameter a tick.
+    assert!((turn(false) - 30f32.to_radians()).abs() < 1e-5);
     assert_eq!(turn(true), 0.);
+}
+
+#[test]
+fn range_28_makes_the_new_heading_the_wished_one() {
+    // FUN_1403b6560: Sonic Rave's wish of turning round must not pull him
+    // back once range 28 has aimed him.
+    let mut world = World::default();
+    let mut sora = Object::bare(PLAYER_OBJECT);
+    sora.sys.wish_yaw = Some(-3.);
+    sora.sys.effects.push(Effect::Other {
+        range: true,
+        kind: 28,
+        params: vec![15],
+    });
+    sora.carry_out_motion_effects(&mut world, &TargetAt { near: false });
+    assert_eq!(sora.sys.wish_yaw, Some(sora.sys.yaw));
 }
 
 /// A program with OBJ_INIT (exit) and, when `fall_handler`, trigger 0xd:
@@ -308,8 +325,9 @@ fn leaving_the_ground_runs_trigger_0xd_before_the_engine_falls() {
 
 #[test]
 fn a_battle_object_turns_toward_its_target_under_range_0x16_and_frame_0xf() {
-    // FUN_1403d4b90 / FUN_1403d4b80 -> FUN_1403d3a90: up to the degrees,
-    // beyond 50 units; a frame event of 0 degrees faces the target at once.
+    // FUN_1403d4b90 / FUN_1403d4b80 -> FUN_1403d3a90: up to twice the
+    // degrees, beyond 50 units; a frame event of 0 degrees faces the target
+    // at once.
     let mut world = World::default();
     let env = TargetAt { near: false };
     let mut o = Object::bare(1);
@@ -322,7 +340,7 @@ fn a_battle_object_turns_toward_its_target_under_range_0x16_and_frame_0xf() {
     });
     o.carry_out_motion_effects(&mut world, &env);
     assert!(
-        (o.sys.yaw - 10f32.to_radians()).abs() < 1e-5,
+        (o.sys.yaw - 20f32.to_radians()).abs() < 1e-5,
         "{}",
         o.sys.yaw
     );

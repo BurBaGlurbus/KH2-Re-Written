@@ -664,6 +664,10 @@ struct ClipPoses {
     /// Keyblade bone 2 matrix in hand-joint space per frame (attack spheres).
     blade: Vec<Mat4>,
     blade2: Vec<Mat4>,
+    /// Each slot's blade bone length (FUN_1401a7af0) and reach
+    /// ([`character_kit::blade_reach`]).
+    blade_length: [f32; 2],
+    blade_reach: [f32; 2],
     /// Attack windows from the weapon motion's range trigger 10:
     /// (start, end, ATKP id, collision group), in clip ticks; then slot 1's.
     hits: Vec<(u32, u32, u16, u8)>,
@@ -3911,6 +3915,7 @@ fn load(
             weapon,
             weapon2: None,
             blades: Default::default(),
+            blade_reach: [character_kit::KINGDOM_KEY_REACH; 2],
             weapon_pax: None,
             weapon2_pax: None,
             weapon_joint,
@@ -5780,7 +5785,7 @@ fn field_npc_present(
         if let Some(mut m) = materials.get_mut(&material.0)
             && (m.base.base_color.alpha() - n.fade).abs() > 1e-4
         {
-            m.base.base_color = Color::WHITE.with_alpha(n.fade);
+            m.base.base_color = m.base.base_color.with_alpha(n.fade);
             m.base.alpha_mode = if n.fade < 1. {
                 AlphaMode::Blend
             } else {
@@ -6956,22 +6961,15 @@ fn compose_2d(
     game_over: Option<Res<game_over::GameOverRes>>,
 ) {
     let Some(c) = compose else { return };
-    // Brightness tints the scene; the HUD setting hides the field HUD. A
-    // Drive change darkens the scene's light (drive_room::scene_light).
-    let b = settings.current.brightness_factor()
-        * game
-            .drive
-            .as_ref()
-            .map_or(1., drive_room::DriveRt::scene_light);
-    let t = game
-        .drive
-        .as_ref()
-        .map_or([1.; 3], drive_room::DriveRt::scene_tint);
+    // Brightness tints the scene; the HUD setting hides the field HUD. (The
+    // colour filters tint the map and the actors, not the effects:
+    // `boss::map_tint`.)
+    let b = settings.current.brightness_factor();
     let scene = after
         .as_ref()
         .filter(|a| a.on)
         .map_or(c.scene_sheet, |a| a.blur.sheet());
-    frame.full_screen(scene, [b * t[0], b * t[1], b * t[2], 1.]);
+    frame.full_screen(scene, [b, b, b, 1.]);
     if let (Some(s), Some(t)) = (c.snapshot_sheet, &talk)
         && t.dissolve > 0
     {
@@ -8440,6 +8438,7 @@ fn simulate(
             party_anim_tour::drive(&mut game, tick);
         }
         party_room::tick(&mut game, tick);
+        party_limit::hand_over(&mut game);
         // Drive: requests, the form change, the form gauge (after the player
         // tick, like FUN_1403a92c0 / FUN_140404a40).
         {
@@ -10550,6 +10549,9 @@ fn combat_tick(game: &mut Game, tick: u64) {
             // FUN_1403d12c0: the attacker's obj+0x120 bit 25, which lets
             // the next press chain the combo.
             player.connected = true;
+            // FUN_1403d1730: ATKP +0x2f comes back as HP (vt+0xe8,
+            // FUN_1403a75f0 -> FUN_1403d5e50).
+            vitals.hp = (vitals.hp + i32::from(rows[row].hp_drain)).min(vitals.target.max_hp);
             effect_queue.push(EffectRequest::VictimSound {
                 object: 0,
                 reaction: rows[row].reaction,
@@ -11153,7 +11155,7 @@ fn first_person_fade(
             continue;
         }
         if let Some(mut m) = materials.get_mut(&material.0) {
-            m.base.base_color = Color::WHITE.with_alpha(alpha);
+            m.base.base_color = m.base.base_color.with_alpha(alpha);
             m.base.alpha_mode = if alpha < 1. {
                 AlphaMode::Blend
             } else {

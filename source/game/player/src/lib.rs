@@ -2511,8 +2511,9 @@ impl Player {
             .filter(|&&(f, _)| f == frame)
             .map(|&(_, deg)| deg);
         let limit = ranges.chain(ticks).fold(0f32, f32::max);
+        // FUN_1403b9f70: up to twice the parameter a tick (DAT_1405b18ec).
         if limit > 0. {
-            self.turn_toward(t, limit * std::f32::consts::PI / 180.);
+            self.turn_toward(t, limit * 2. * std::f32::consts::PI / 180.);
         }
     }
 

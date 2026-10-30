@@ -400,6 +400,8 @@ const ENEMY: ObjId = 2;
 const SORA_TEAM: i32 = 1;
 /// Effect keys of the scene's handles (above the spells' and the party's).
 const FX_KEY: u64 = 1 << 59;
+/// FUN_140400990's fade, in frames.
+const PARTY_FADE: u64 = 16;
 
 type V3 = [f32; 3];
 
@@ -437,21 +439,19 @@ struct RoomEnv<'a> {
     views: &'a [(u32, ClipView)],
     empty: ClipView,
     stick: V3,
-    enemy: Option<V3>,
+    enemy: Option<Foe>,
     /// Where Sora stands (the holder of his Keyblade and of what the scene
     /// attaches to him).
     player: V3,
     /// His heading (`obj_dir` of Sora, FUN_1403b56e0).
     player_yaw: f32,
-    /// His TARGET radius plus the Shadow's (FUN_1403d7520).
-    enemy_reach: Option<f32>,
+    /// His hand and bones this tick (FUN_1403b50f0).
+    pose: super::drive_fx::SoraPose,
+    /// His TARGET shape's centre above his feet (FUN_1403d7520).
+    target_lift: f32,
     /// The room's target holder (its port of FUN_1403dcd70 / FUN_1403dd650)
-    /// holds the Shadow, locked or not: Sora's +0xdc8 record.
+    /// holds an enemy, locked or not: Sora's +0xdc8 record.
     selected: bool,
-    /// Sora is locked on to the Shadow (his lock-on record, obj+0xdc8).
-    locked: bool,
-    /// The Shadow's TARGET shape radius.
-    enemy_radius: Option<f32>,
     /// Sora may take a command now (FUN_1403ba070's lockout and free
     /// windows), as his motion stood at the start of the tick.
     can_command: bool,
@@ -505,20 +505,40 @@ impl Env for RoomEnv<'_> {
     fn player_yaw(&self) -> f32 {
         self.player_yaw
     }
+    /// 2:56 FUN_140431ad0: &(obj+0xdc8)->+4, the target holder 6:67 reads
+    /// too, locked or not.
     fn lockon_target(&self) -> Option<u32> {
-        (self.locked && self.enemy.is_some()).then_some(enemy::traps::target::OBJECT_TARGET | ENEMY)
+        self.attack_target()
+    }
+    /// A carried object stands where its holder's hand is (FUN_1403b5b40).
+    fn attach_point(&self, holder: u32, _bone: i32) -> Option<V3> {
+        if holder == PLAYER_OBJECT {
+            self.pose.hand_point()
+        } else {
+            None
+        }
+    }
+    fn bone_point(&self, object: u32, bone: i32, local: V3, _: V3, _: f32) -> Option<V3> {
+        (object == PLAYER_OBJECT).then(|| self.pose.point(bone as i16, local))
+    }
+    fn own_target_lift(&self, object: u32) -> f32 {
+        if object == PLAYER_OBJECT {
+            self.target_lift
+        } else {
+            0.
+        }
     }
     fn attack_target(&self) -> Option<u32> {
         (self.selected && self.enemy.is_some())
             .then_some(enemy::traps::target::OBJECT_TARGET | ENEMY)
     }
     fn target_radius(&self, id: u32) -> Option<f32> {
-        (id == ENEMY).then_some(self.enemy_radius).flatten()
+        self.enemy.filter(|_| id == ENEMY).map(|f| f.radius)
     }
     fn target_position(&self, id: u32) -> Option<V3> {
-        (id & !enemy::traps::target::OBJECT_TARGET == ENEMY)
-            .then_some(self.enemy)
-            .flatten()
+        self.enemy
+            .filter(|_| id & !enemy::traps::target::OBJECT_TARGET == ENEMY)
+            .map(|f| f.centre)
     }
     fn pick_target(&self, _: i32, _: V3) -> Option<u32> {
         self.enemy.map(|_| ENEMY)
@@ -534,9 +554,9 @@ impl Env for RoomEnv<'_> {
         self.records.iter().find(|r| r.id == id).copied()
     }
     fn target_reach(&self, id: u32) -> Option<f32> {
-        (id & !enemy::traps::target::OBJECT_TARGET == ENEMY)
-            .then_some(self.enemy_reach)
-            .flatten()
+        self.enemy
+            .filter(|_| id & !enemy::traps::target::OBJECT_TARGET == ENEMY)
+            .map(|f| f.reach)
     }
     fn can_decide_command(&self, object: u32, _command: u16) -> bool {
         object == PLAYER_OBJECT && self.can_command
@@ -628,6 +648,14 @@ pub struct Running {
     /// The thrown Keyblade's axes (room frame, columns) from the last
     /// `obj_set_xyzrot` on it.
     weapon_axes: Option<[[f32; 3]; 3]>,
+    /// The tick the limit started (the party's fade).
+    started: u64,
+    /// The effects 1:149 bound to the Keyblade (keys).
+    weapon_effects: Vec<u64>,
+    /// This tick's attack objects, for the battle enemies (`hand_over`).
+    volumes: Vec<super::party_room::OutVolume>,
+    /// Which attack slot each of those keys is.
+    volume_slots: HashMap<u64, usize>,
 }
 
 /// An object's axes from `obj_set_xyzrot`'s angles (the script frame, the
@@ -731,6 +759,72 @@ pub(super) fn room_enemy_radius(game: &Game) -> Option<f32> {
         .map(|t| t.2)
 }
 
+/// What the limit's attacks go for: the enemy in Sora's target holder, or the
+/// nearest there is.
+#[derive(Clone, Copy)]
+struct Foe {
+    /// The TARGET shape's centre (FUN_1403bdde0).
+    centre: V3,
+    /// Its radius, and with Sora's (FUN_1403d7520).
+    radius: f32,
+    reach: f32,
+}
+
+fn limit_target(game: &Game) -> Option<Foe> {
+    let own = game.enemy.as_ref().map_or(0., |rt| rt.sora_target_radius);
+    let shadow = game
+        .enemy
+        .as_ref()
+        .filter(|rt| rt.enabled && rt.enemy.targetable())
+        .map(|rt| Foe {
+            centre: super::enemy_targets(rt)
+                .first()
+                .map_or(rt.enemy.position, |t| t.centre),
+            radius: room_enemy_radius(game).unwrap_or(0.),
+            reach: rt.target_reach,
+        });
+    let actors = game.gallery_targets.iter().map(|t| Foe {
+        centre: t.centre.to_array(),
+        radius: t.radius,
+        reach: t.radius + own,
+    });
+    let mut all: Vec<Foe> = actors.chain(shadow).collect();
+    let near = |to: V3| {
+        move |f: &Foe| {
+            let d = [
+                f.centre[0] - to[0],
+                f.centre[1] - to[1],
+                f.centre[2] - to[2],
+            ];
+            d[0] * d[0] + d[1] * d[1] + d[2] * d[2]
+        }
+    };
+    let Some(held) = game.selected_target else {
+        let at = near(game.sora.player.position);
+        all.sort_by(|a, b| at(a).total_cmp(&at(b)));
+        return all.first().copied();
+    };
+    let at = near(held);
+    all.sort_by(|a, b| at(a).total_cmp(&at(b)));
+    // The holder's point is this tick's, the list's the last tick's.
+    Some(
+        all.first()
+            .copied()
+            .filter(|f| at(f) < 150. * 150.)
+            .unwrap_or(Foe {
+                centre: held,
+                radius: 40.,
+                reach: 40. + own,
+            }),
+    )
+}
+
+/// His TARGET shape's centre above his feet.
+fn sora_lift(game: &Game) -> f32 {
+    super::enemy_target::player_targetcentre(game)
+        .map_or(0., |c| c[1] - game.sora.player.position[1])
+}
+
 pub(super) fn room_enemy(game: &Game) -> Option<V3> {
     game.enemy
         .as_ref()
@@ -743,6 +837,12 @@ impl Running {
     pub fn special_deck(&self) -> Option<Vec<(u16, u16)>> {
         let l = self.scene.limit();
         l.special.then(|| l.combo.to_vec())
+    }
+
+    /// FUN_140400990: a member the limit faded out is gone from view after
+    /// its 15 frames (the fade itself is not drawn, as the Drive's).
+    pub fn hides(&self, member: usize, tick: u64) -> bool {
+        self.faded.contains(&member) && tick >= self.started + PARTY_FADE
     }
 
     /// Where Sora's Keyblade flies while a Limit Form limit has let it go
@@ -852,6 +952,7 @@ pub fn start(game: &mut Game, command: u16, tick: u64) -> Result<(), String> {
     // His heading turns toward `obj_wish_dir` (+0x7a8) at his PRTY turn
     // speed per tick (the sysobj steps twice its rate).
     sora.turn_rate = game.params.turn_speed * 0.5;
+    sora.sstm.fall_max = game.params.fall_max;
     sora.weapons = vec![WEAPONS];
     let mut others = vec![Participant {
         id: WEAPONS,
@@ -875,10 +976,10 @@ pub fn start(game: &mut Game, command: u16, tick: u64) -> Result<(), String> {
         });
         friends.push(Participant { id, sys: s });
     }
-    let enemy = room_enemy(game);
-    if let Some(p) = enemy {
+    let enemy = limit_target(game);
+    {
         let mut s = Sysobj::bare();
-        s.position = p;
+        place_foe(&mut s, enemy, sora.position);
         // Enemies are team 2 (FUN_1403ab4a0, FUN_1403d0150 test +0x4dc).
         s.team = 2;
         others.push(Participant { id: ENEMY, sys: s });
@@ -888,7 +989,7 @@ pub fn start(game: &mut Game, command: u16, tick: u64) -> Result<(), String> {
             group: 0,
         };
         sora.target = target;
-        // The friends fight the same Shadow (their battle target, obj+0xbf8).
+        // The friends fight the same one (their battle target, obj+0xbf8).
         for f in &mut friends {
             f.sys.target = target;
         }
@@ -918,10 +1019,9 @@ pub fn start(game: &mut Game, command: u16, tick: u64) -> Result<(), String> {
         enemy,
         player: game.sora.player.position,
         player_yaw: game.sora.player.yaw,
-        enemy_reach: game.enemy.as_ref().map(|rt| rt.target_reach),
+        pose: super::drive_fx::sora_pose(game),
+        target_lift: sora_lift(game),
         selected: game.selected_target.is_some(),
-        locked: game.target_locked,
-        enemy_radius: room_enemy_radius(game),
         can_command: true,
         chains: &chains,
         pushers: &pushers,
@@ -966,6 +1066,10 @@ pub fn start(game: &mut Game, command: u16, tick: u64) -> Result<(), String> {
         offers: [None; 8],
         motion_serial: 0,
         weapon_axes: None,
+        started: tick,
+        weapon_effects: Vec::new(),
+        volumes: Vec::new(),
+        volume_slots: HashMap::new(),
         targets: [None; 8],
         effects: HashMap::new(),
         command,
@@ -994,7 +1098,29 @@ pub fn tick(
     };
     let source = game.party_limits.clone();
     let l = &source.limits[run.limit];
-    let enemy = room_enemy(game);
+    // Limit Form's: a hit outside the motions' invulnerable windows plays his
+    // damage motion, which fails the limit's motion test (`limitform` trigger
+    // 22) and the limit ends; he carries on with the reaction.
+    if l.own && matches!(game.sora.player.action, Action::Hurt(_)) {
+        game.event(serde_json::json!({"event":"party_limit_interrupted","tick":tick}));
+        end(game, run, tick, true);
+        return player::Step::default();
+    }
+    // The attack objects that landed on the battle enemies last tick.
+    let landed: Vec<u64> = game
+        .party_struck
+        .iter()
+        .filter(|s| s.1 & super::party_room::SCENE_VOLUME == super::party_room::SCENE_VOLUME)
+        .map(|s| s.1)
+        .collect();
+    game.party_struck
+        .retain(|s| s.1 & super::party_room::SCENE_VOLUME != super::party_room::SCENE_VOLUME);
+    for key in landed {
+        if let Some(&slot) = run.volume_slots.get(&key) {
+            run.scene.struck(slot);
+        }
+    }
+    let enemy = limit_target(game);
     let can_command = game.sora.player.can_command(&game.clips);
     let status = {
         let env = RoomEnv {
@@ -1006,10 +1132,9 @@ pub fn tick(
             enemy,
             player: game.sora.player.position,
             player_yaw: game.sora.player.yaw,
-            enemy_reach: game.enemy.as_ref().map(|rt| rt.target_reach),
+            pose: super::drive_fx::sora_pose(game),
+            target_lift: sora_lift(game),
             selected: game.selected_target.is_some(),
-            locked: game.target_locked,
-            enemy_radius: room_enemy_radius(game),
             can_command,
             chains: &run.chains,
             pushers: &run.pushers,
@@ -1019,10 +1144,9 @@ pub fn tick(
             tick,
             fresh_effects: run.scene.effect_watermark(),
         };
-        if let Some(e) = run.scene.object_mut(ENEMY)
-            && let Some(p) = enemy
-        {
-            e.sys.position = p;
+        let at = game.sora.player.position;
+        if let Some(e) = run.scene.object_mut(ENEMY) {
+            place_foe(&mut e.sys, enemy, at);
         }
         let record = if rc && run.offers[1].is_some() {
             Some(1)
@@ -1095,17 +1219,23 @@ pub fn tick(
             }
             // Limit Form's: what its program starts on Sora or his Keyblade
             // comes from the form's container (FUN_1403cc650 with Sora's
-            // object). [I] One on the Keyblade is placed where it is.
+            // object). [I] One on the Keyblade is placed where it is; 1:149's
+            // (`other`, FUN_1403b6670 on the Keyblade) goes with it.
             Event::EffectStart {
                 object,
                 effect,
                 handle,
                 position,
+                other,
                 ..
             } if l.own && (object == PLAYER_OBJECT || object == WEAPONS) => {
                 let key = FX_KEY | u64::from(handle);
                 run.effects.insert(handle, (key, tick));
-                let (bound, at) = if object == PLAYER_OBJECT {
+                let on_blade = other == Some(WEAPONS);
+                if on_blade {
+                    run.weapon_effects.push(key);
+                }
+                let (bound, at) = if object == PLAYER_OBJECT && !on_blade {
                     (position.is_none().then_some(Anchor::Caster), position)
                 } else {
                     (
@@ -1146,8 +1276,8 @@ pub fn tick(
             Event::EffectCommand {
                 trap,
                 handle,
+                words,
                 vector,
-                ..
             } => {
                 let Some(&(key, _)) = run.effects.get(&handle) else {
                     continue;
@@ -1159,6 +1289,7 @@ pub fn tick(
                     (41, Some(v)) => player::magic::Fx::Dir(key, v),
                     (44, _) => player::magic::Fx::LoopEnd(key),
                     (51 | 85, _) => player::magic::Fx::Kill(key),
+                    (52, _) => player::magic::Fx::Fade(key, f32::from_bits(words[0])),
                     _ => continue,
                 };
                 game.fx_calls.push(super::spell_fx::Call {
@@ -1195,6 +1326,15 @@ pub fn tick(
                 );
             }
             _ => {}
+        }
+    }
+    // What 1:149 bound to the Keyblade follows it.
+    if let Some(at) = run.scene.object(WEAPONS).map(|o| o.sys.position) {
+        for &key in &run.weapon_effects {
+            game.fx_calls.push(super::spell_fx::Call {
+                pax: pax.clone(),
+                fx: player::magic::Fx::Pos(key, at),
+            });
         }
     }
     // Limit Form's follow-ups: a range 20 of the motion Sora plays offers
@@ -1335,7 +1475,7 @@ pub fn tick(
         );
     }
     if status == Status::Over {
-        end(game, run, tick);
+        end(game, run, tick, false);
     } else {
         game.party_limit = Some(run);
     }
@@ -1355,7 +1495,10 @@ struct Strike {
 /// bodies, the ATKP rows' damage and reaction with the owner's stats (Sora's
 /// or the friend's), and the attack's hit flag for `attack_is_hit`. A
 /// direct strike (`attack_strike`, 2:17) lands where the Shadow stands.
-/// [I] Hit callbacks and hit sparks of the scene's attacks are not run.
+/// The program sets no hit callbacks. A hit on the Shadow does what
+/// FUN_1403d1730 and FUN_1403d1b40 do for Sora's: spark, victim sound, drive,
+/// HP drain, and the attack connects; the same attacks reach the battle
+/// enemies through `enemy_battle_hits` (`hand_over`).
 fn land_attacks(game: &mut Game, run: &mut Running, strikes: &[Strike], tick: u64) {
     let world = run.scene.world();
     let mut volumes: Vec<_> = super::enemy_script::script_attacks(world)
@@ -1371,7 +1514,7 @@ fn land_attacks(game: &mut Game, run: &mut Running, strikes: &[Strike], tick: u6
             (a.slot, a.serial, [a.id, a.extra], owner, at)
         })
         .collect();
-    if let Some(at) = room_enemy(game) {
+    if let Some(at) = limit_target(game).map(|f| f.centre) {
         for s in strikes {
             game.event(serde_json::json!({"event":"party_limit_strike","tick":tick,
                 "atkp":s.param[0],"serial":s.serial}));
@@ -1380,6 +1523,9 @@ fn land_attacks(game: &mut Game, run: &mut Running, strikes: &[Strike], tick: u6
     }
     for (slot, serial, [id, extra], owner, (centre, previous, radius)) in volumes {
         let member = run.members.iter().find(|m| Some(m.1) == owner).map(|m| m.0);
+        // A key `enemy_battle_hits` shows as one of Sora's own volumes.
+        let key = super::party_room::SCENE_VOLUME | serial << 7 | 2 << 5;
+        run.volume_slots.insert(key, slot);
         let Some(rt) = game.enemy.as_mut() else {
             return;
         };
@@ -1400,7 +1546,23 @@ fn land_attacks(game: &mut Game, run: &mut Running, strikes: &[Strike], tick: u6
             ),
             None => (usize::MAX, "sora", game.sora.vitals.attacker),
         };
-        let key = FX_KEY | 1 << 58 | serial;
+        run.volumes.push(super::party_room::OutVolume {
+            member: member.unwrap_or(super::party_room::SCENE_MEMBER),
+            key,
+            atkp: id as u16,
+            sub: extra as u8,
+            spheres: vec![(
+                bevy::math::Vec3::from_array(centre),
+                radius,
+                radius,
+                previous.map(bevy::math::Vec3::from_array),
+            )],
+            moving: None,
+            stats,
+            origin: bevy::math::Vec3::from_array(centre),
+            spell: true,
+            pax: None,
+        });
         let v = player::magic::Volume {
             key,
             atkp: id as u16,
@@ -1426,26 +1588,96 @@ fn land_attacks(game: &mut Game, run: &mut Running, strikes: &[Strike], tick: u6
             &mut game.sound_queue,
             &mut game.log,
         );
-        if landed.is_some() {
-            if member.is_none() {
-                rt.last_attacker = super::party_room::Attacker::Sora;
-            }
+        if let Some((at, direction, effect)) = landed {
             run.scene.struck(slot);
+            if member.is_some() {
+                continue;
+            }
+            rt.last_attacker = super::party_room::Attacker::Sora;
+            let row = rt.steps.get(&(v.atkp, v.sub)).map(|r| r[0]);
+            let Some(row) = row else { continue };
+            game.effect_queue.push(super::EffectRequest::VictimSound {
+                object: 0,
+                reaction: row.reaction,
+                key: 0,
+            });
+            if effect != 0 {
+                game.effect_queue.push(super::EffectRequest::Hit {
+                    effect,
+                    random: row.hit_effect_random,
+                    contact: at,
+                    direction,
+                    own: true,
+                });
+            }
+            let p = &mut game.sora.player;
+            p.connected = true;
+            let (charging, boost) = (p.mp_charging, p.abilities.drive_boost);
+            p.drive.hit(row.drive_drain, true, charging, boost);
+            let v = &mut game.sora.vitals;
+            v.hp = (v.hp + i32::from(row.hp_drain)).min(v.target.max_hp);
+        }
+    }
+}
+
+/// The attacks of this tick go to the battle enemies with the party's
+/// volumes (after `party_room::tick` empties those).
+pub fn hand_over(game: &mut Game) {
+    if let Some(run) = game.party_limit.as_mut() {
+        let volumes = std::mem::take(&mut run.volumes);
+        game.party_volumes.extend(volumes);
+    }
+}
+
+/// The scene's enemy object: on what the limit goes for, or out of its
+/// searches when there is nothing.
+fn place_foe(s: &mut Sysobj, foe: Option<Foe>, fallback: V3) {
+    match foe {
+        Some(f) => {
+            s.position = f.centre;
+            s.flags &= !enemy::world::SEARCH_SKIP_FLAGS;
+        }
+        None => {
+            s.position = fallback;
+            s.flags |= enemy::world::SEARCH_SKIP_FLAGS;
         }
     }
 }
 
 /// FUN_1403d8f40 / FUN_1403d83e0: the friends go back to their own control,
-/// the faded members return, Sora stands.
-fn end(game: &mut Game, run: Running, tick: u64) {
+/// the faded members return, Sora stands, or falls when the limit left him in
+/// the air (the motion it queued behind an air finisher keeps physics mode 1),
+/// or carries on with the damage that `interrupted` it.
+fn end(game: &mut Game, run: Running, tick: u64, interrupted: bool) {
     for &(i, _) in &run.members {
         game.party[i].limit = None;
     }
     for &i in &run.faded {
         game.party[i].stored = false;
     }
-    game.sora.player.action = Action::Idle;
-    game.sora.player.frame = 0;
+    if !interrupted {
+        let [x, y, z] = game.sora.player.position;
+        let airborne = game
+            .world
+            .floor(x, z, y + 1.)
+            .is_none_or(|floor| y > floor + 0.5);
+        if airborne {
+            let g = &mut *game;
+            g.sora.player.arrive(0, true, &g.clips);
+        } else {
+            game.sora.player.action = Action::Idle;
+            game.sora.player.frame = 0;
+        }
+    }
+    // A limit cut short leaves no thread to end the effects it started.
+    if player::limit_form::LIMITS.contains(&run.command) {
+        for &(key, _) in run.effects.values() {
+            game.fx_calls.push(super::spell_fx::Call {
+                pax: None,
+                fx: player::magic::Fx::LoopEnd(key),
+            });
+        }
+    }
     // FUN_1403d83e0: Limit Form's tint ramps out over 30 frames.
     if player::limit_form::LIMITS.contains(&run.command)
         && let Some(d) = game.drive.as_mut()

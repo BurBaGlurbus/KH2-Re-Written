@@ -256,18 +256,27 @@ pub fn requests(game: &mut Game, actors: &mut [enemy_gallery::GalleryActor]) {
             }
         }
     }
+    // The Drive change's grey and the Limit Form limit's colour are filters of
+    // the same list.
+    if let Some(d) = game.drive.as_ref() {
+        for filter in d.scene_filters() {
+            for k in 0..3 {
+                tint[k] = (tint[k] * filter[k]) >> 7;
+            }
+        }
+    }
     game.scene_tint = tint.map(|v| v.min(255) as u8);
     game.screen_fade.update(1.0);
 }
 
-/// FUN_1401626f0: the map chunks' colour is the scene tint (0x80 = 1.0) and
-/// the fog colour is the area record's times the tint (bytes, `>> 7`).
-/// [U] The map effects' colour (its loop over the effect groups), its calls
-/// FUN_1401714d0 / FUN_14016f2b0, and a tinted neutral fog turning fog on
-/// are not carried out.
+/// FUN_1401626f0: the map chunks' and the actors' colour is the scene tint
+/// (0x80 = 1.0; its light table and FUN_14016f2b0's list) and the fog colour
+/// is the area record's times the tint (bytes, `>> 7`). It reaches only the
+/// map's effects, never an object's. [U] The map effects' colour (its loop
+/// over the effect groups), FUN_1401714d0, and a tinted neutral fog turning
+/// fog on are not carried out.
 pub fn map_tint(
     game: Res<Game>,
-    parts: Query<&MeshMaterial3d<FogMaterial>, With<RoomPart>>,
     mut materials: ResMut<Assets<FogMaterial>>,
     mut last: Local<Option<[u8; 3]>>,
 ) {
@@ -276,17 +285,15 @@ pub fn map_tint(
     }
     *last = Some(game.scene_tint);
     let [r, g, b] = game.scene_tint.map(|c| f32::from(c) / 128.);
-    let mut seen = std::collections::HashSet::new();
-    for handle in &parts {
-        if !seen.insert(handle.0.id()) {
-            continue;
-        }
-        if let Some(mut m) = materials.get_mut(&handle.0) {
+    let textured: Vec<_> = materials
+        .iter()
+        .filter(|(_, m)| m.base.base_color_texture.is_some())
+        .map(|(id, _)| id)
+        .collect();
+    for id in textured {
+        if let Some(mut m) = materials.get_mut(id) {
             let alpha = m.base.base_color.alpha();
-            let textured = m.base.base_color_texture.is_some();
-            if textured {
-                m.base.base_color = Color::srgba(r, g, b, alpha);
-            }
+            m.base.base_color = Color::srgba(r, g, b, alpha);
         }
     }
     if let Some(fog) = visual::area_fog::tinted_colour(game.scene_tint) {

@@ -1572,6 +1572,11 @@ pub struct OutVolume {
     pub pax: Option<Arc<data::object_effect::Pax>>,
 }
 
+/// The keys of a limit scene's attack objects among the party's volumes.
+pub(super) const SCENE_VOLUME: u64 = 3 << 58;
+/// The `member` of such a volume when the attack is Sora's.
+pub(super) const SCENE_MEMBER: usize = usize::MAX;
+
 /// A gallery enemy a member may fight: its key, where it stands and its
 /// TARGET point.
 #[derive(Clone, Copy, Debug)]
