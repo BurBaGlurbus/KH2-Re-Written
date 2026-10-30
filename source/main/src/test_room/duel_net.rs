@@ -670,13 +670,17 @@ pub(crate) fn sample(net: Option<ResMut<DuelNet>>, mut game: ResMut<Game>) {
     let warnings: Vec<String> = net.warnings.iter().cloned().collect();
     lines.extend(warnings.into_iter().map(|w| (w, true)));
     lines.push((
-        format!(
-            "Damage x{}  magic x{}  cap {}   tick {}",
-            game.duel_rules.damage,
-            game.duel_rules.magic,
-            cap_text(game.duel_rules.hit_cap),
-            game.tick
-        ),
+        if game.duel_rules.ruleset == duel_rules::Ruleset::Kh3 {
+            format!("KH3's damage, level 99   tick {}", game.tick)
+        } else {
+            format!(
+                "Damage x{}  magic x{}  cap {}   tick {}",
+                game.duel_rules.damage,
+                game.duel_rules.magic,
+                cap_text(game.duel_rules.hit_cap),
+                game.tick
+            )
+        },
         false,
     ));
     net.starved = 0;

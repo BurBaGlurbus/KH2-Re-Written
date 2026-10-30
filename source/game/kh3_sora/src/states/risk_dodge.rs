@@ -18,8 +18,8 @@
 //! offered until the clip's `TresEnableChange`.
 //!
 //! Simplifications, each marked SIMPLIFIED below: the attacker's bounds are the host's target
-//! capsule; `RequestDirectMove` of types 2 / 3 is a direct velocity; the warp destination is the
-//! point behind the attacker without the two traces of slot 113; the camera requests are not made.
+//! capsule; `RequestDirectMove` of types 2 / 3 is a direct velocity; the camera requests are not
+//! made (the duel's own camera stands in).
 
 use glam::{Vec2, Vec3};
 
@@ -115,7 +115,12 @@ impl RiskDodge {
     /// The attacker now (the host's target while it exists).
     fn refresh(&mut self, cx: &Ctx) {
         if let Some(t) = cx.target(self.attacker) {
-            (self.attacker_position, self.attacker_yaw, self.attacker_radius, self.attacker_half_height) = (t.position, t.yaw, t.radius, t.half_height);
+            (
+                self.attacker_position,
+                self.attacker_yaw,
+                self.attacker_radius,
+                self.attacker_half_height,
+            ) = (t.position, t.yaw, t.radius, t.half_height);
         }
     }
 
@@ -125,13 +130,29 @@ impl RiskDodge {
             return;
         }
         if on {
-            cx.pawn.combat.guard.offer = Some(CounterOffer { source: StateId::Riskdodge, kind: self.attack_kind, target: self.attacker, just_guard: self.critical, push: true });
+            cx.pawn.combat.guard.offer = Some(CounterOffer {
+                source: StateId::Riskdodge,
+                kind: self.attack_kind,
+                target: self.attacker,
+                just_guard: self.critical,
+                push: true,
+            });
             cx.pawn.combat.guard.counter_used = false;
             // 0x141414350(controller, +0xDC, 2.0, 0): the reaction command prompt.
-            crate::combat::situation::set_reaction(cx, self.command, A.riskdodge_counter_command_time);
+            crate::combat::situation::set_reaction(
+                cx,
+                self.command,
+                A.riskdodge_counter_command_time,
+            );
             self.offered = true;
         } else if self.offered {
-            if cx.pawn.combat.guard.offer.is_some_and(|o| o.source == StateId::Riskdodge) {
+            if cx
+                .pawn
+                .combat
+                .guard
+                .offer
+                .is_some_and(|o| o.source == StateId::Riskdodge)
+            {
                 cx.pawn.combat.guard.offer = None;
             }
             crate::combat::situation::clear_reaction(cx, self.command);
@@ -174,7 +195,11 @@ impl RiskDodge {
 
     fn yaw_to(from: Vec3, to: Vec3, fallback: f32) -> f32 {
         let d = (to - from).truncate();
-        if d.length_squared() > 1.0e-8 { d.y.atan2(d.x).to_degrees() } else { fallback }
+        if d.length_squared() > 1.0e-8 {
+            d.y.atan2(d.x).to_degrees()
+        } else {
+            fallback
+        }
     }
 
     fn dir2(from: Vec3, to: Vec3) -> Vec2 {
@@ -188,14 +213,20 @@ impl RiskDodge {
                 let s = &mut *cx.pawn;
                 s.cmc.stop_movement();
                 // comiss +0xB4,[300]; jae -> else 300; comiss +0xB4,[1000]; jbe -> else 1000.
-                self.distance = self.half_diagonal().clamp(A.riskdodge_underslide_distance_min, A.riskdodge_underslide_distance_max);
+                self.distance = self.half_diagonal().clamp(
+                    A.riskdodge_underslide_distance_min,
+                    A.riskdodge_underslide_distance_max,
+                );
                 let a = self.attacker_yaw.to_radians();
                 // The point +0xB4 behind the attacker's back.
-                self.destination = self.attacker_position - Vec3::new(a.cos(), a.sin(), 0.0) * self.distance;
+                self.destination =
+                    self.attacker_position - Vec3::new(a.cos(), a.sin(), 0.0) * self.distance;
                 // +0xB8 = |(+0xA8 - +0x90).xy| x 0.00125 (1 / the clip's 800 cm).
-                self.root_scale = (self.destination - self.start).truncate().length() * A.riskdodge_underslide_root_scale;
+                self.root_scale = (self.destination - self.start).truncate().length()
+                    * A.riskdodge_underslide_root_scale;
                 s.root_scale = (self.root_scale, 1.0);
-                s.anim.play_with(AnimId::UnderSlide, PlayArgs::mode(2, -1.0));
+                s.anim
+                    .play_with(AnimId::UnderSlide, PlayArgs::mode(2, -1.0));
                 s.yaw = wrap_degrees(Self::yaw_to(self.start, self.destination, s.yaw));
                 self.sub = 1;
             }
@@ -207,7 +238,10 @@ impl RiskDodge {
                 }
                 self.point = self.attacker_position;
                 let own = cx.pawn.cmc.location;
-                let (a, b) = (Self::dir2(own, self.attacker_position), Self::dir2(own, self.destination));
+                let (a, b) = (
+                    Self::dir2(own, self.attacker_position),
+                    Self::dir2(own, self.destination),
+                );
                 // comiss dot,0; jae skip: he has passed the attacker.
                 if a.dot(b) < 0.0 {
                     if self.root_scale > 1.0 {
@@ -255,15 +289,18 @@ impl RiskDodge {
                 let c = a.cos() * d.y - a.sin() * d.x;
                 // comiss c,0; jae other.
                 if c < 0.0 {
-                    s.anim.play_with(AnimId::SlideTurnR, PlayArgs::mode(2, -1.0));
+                    s.anim
+                        .play_with(AnimId::SlideTurnR, PlayArgs::mode(2, -1.0));
                     (self.angle, self.angle_goal) = (120.0, -24.0);
                 } else {
-                    s.anim.play_with(AnimId::SlideTurnL, PlayArgs::mode(2, -1.0));
+                    s.anim
+                        .play_with(AnimId::SlideTurnL, PlayArgs::mode(2, -1.0));
                     (self.angle, self.angle_goal) = (-120.0, 24.0);
                 }
                 self.traction = true;
                 self.distance = self.half_diagonal().max(A.riskdodge_slideturn_radius_min);
-                self.destination = self.attacker_position + Vec3::new(d.x, d.y, 0.0) * self.distance;
+                self.destination =
+                    self.attacker_position + Vec3::new(d.x, d.y, 0.0) * self.distance;
                 self.sub = 1;
                 return;
             }
@@ -273,16 +310,25 @@ impl RiskDodge {
                     self.offer_counter(cx, true);
                     self.sub = 2;
                 } else {
-                    let yaw = (Self::yaw_to(self.attacker_position, self.destination, 0.0) + self.angle).to_radians();
-                    self.point = self.attacker_position + Vec3::new(yaw.cos(), yaw.sin(), 0.0) * self.distance;
+                    let yaw = (Self::yaw_to(self.attacker_position, self.destination, 0.0)
+                        + self.angle)
+                        .to_radians();
+                    self.point = self.attacker_position
+                        + Vec3::new(yaw.cos(), yaw.sin(), 0.0) * self.distance;
                     // +0xBC moves toward +0xC0 by dt x 540, clamped.
                     let step = dt * A.riskdodge_slideturn_angle_rate;
-                    self.angle = if self.angle < self.angle_goal { (self.angle + step).min(self.angle_goal) } else { (self.angle - step).max(self.angle_goal) };
+                    self.angle = if self.angle < self.angle_goal {
+                        (self.angle + step).min(self.angle_goal)
+                    } else {
+                        (self.angle - step).max(self.angle_goal)
+                    };
                     // pawn.vt+0x1668(normalise2D(+0x9C - pawnPos) x dt x 240000, 0): RequestDirectMove.
                     // SIMPLIFIED: the requested velocity, capped at the state's MaxWalkSpeed 3000, as a
                     // direct velocity.
                     let speed = (dt * A.riskdodge_slideturn_input).min(A.riskdodge_max_walk_speed);
-                    cx.pawn.cmc.set_velocity_xy(Self::dir2(own, self.point) * speed);
+                    cx.pawn
+                        .cmc
+                        .set_velocity_xy(Self::dir2(own, self.point) * speed);
                 }
             }
             2 => {
@@ -336,14 +382,26 @@ impl RiskDodge {
             1 => {
                 let s = &mut *cx.pawn;
                 if self.traction {
-                    // +0x9C = the attacker's position with z + (150 - bounds z extent - 20).
-                    self.point = self.attacker_position + Vec3::Z * (150.0 - self.attacker_half_height - 20.0);
-                    // While clip time x 4.2857 < 1 (the notify's 0.2333 s): a small direct move toward it.
-                    if s.anim.time * 4.2857 < 1.0 {
-                        let d = (self.point - s.cmc.location).normalize_or_zero();
-                        s.cmc.set_velocity_xy(d.truncate() * dt * 600.0);
+                    // +0x9C = the attacker's position, z + its bounds' height - 20 (0x1413B8280). The core's positions are
+                    // at the feet, the actors' at the capsule's centre.
+                    let height = 2.0 * self.attacker_half_height;
+                    let p = *s.params();
+                    self.point = self.attacker_position
+                        + Vec3::Z
+                            * (self.attacker_half_height + height - 20.0 - p.capsule_center_z);
+                    let v = self.point - s.cmc.location;
+                    // He has passed it when his forward looks away from it: traction ends.
+                    let yaw = s.yaw.to_radians();
+                    if Vec2::new(yaw.cos(), yaw.sin()).dot(v.truncate().normalize_or_zero()) < 0.0 {
+                        self.traction = false;
+                        return;
                     }
-                    // (The side test against the attacker's rotation that ends traction early: not ported.)
+                    // RequestDirectMove(v x clip time x 4.2857 x dt x 600) while that factor is under 1.
+                    let t = s.anim.time * 4.285_72;
+                    if t < 1.0 {
+                        s.cmc.set_velocity_xy(v.truncate() * t * dt * 600.0);
+                        s.cmc.set_velocity_z(v.z * t * dt * 600.0);
+                    }
                 } else {
                     s.cmc.direct_xy = None;
                     s.root_scale = (1.0, 1.0);
@@ -386,7 +444,8 @@ impl RiskDodge {
                 s.cmc.gravity_off = true;
                 s.cmc.stop_movement();
                 s.cmc.set_flying();
-                s.anim.play_with(AnimId::ShootFlowStart, PlayArgs::mode(2, -1.0));
+                s.anim
+                    .play_with(AnimId::ShootFlowStart, PlayArgs::mode(2, -1.0));
                 self.warp_delay = A.riskdodge_warp_delay;
                 self.sub = 1;
             }
@@ -395,18 +454,23 @@ impl RiskDodge {
                 if self.warp_delay > 0.0 {
                     return;
                 }
-                // Slot 113: the destination by two traces of pawn.vt+0x2750. SIMPLIFIED: the point
-                // behind the attacker's back at the under-slide distance, at his own height, swept
-                // there by the capsule so that a wall stops him.
-                let a = self.attacker_yaw.to_radians();
-                let behind = self.attacker_position - Vec3::new(a.cos(), a.sin(), 0.0) * self.half_diagonal().clamp(A.riskdodge_underslide_distance_min, A.riskdodge_underslide_distance_max);
-                self.point = Vec3::new(behind.x, behind.y, cx.pawn.cmc.location.z);
+                // Slot 113 (0x1413ACA10): a sphere trace of radius 60 (pawn.vt+0x2750) from him to the attacker; when it
+                // is clear, a second one from the attacker 150 cm on along that line, 100 lower (the view points'
+                // height: his feet). Stays where he is when the first is blocked. Then SetActorLocation with no sweep.
                 let (w, s) = (cx.world, &mut *cx.pawn);
-                let p = *s.params();
-                let centre = s.cmc.capsule_centre(&p);
-                let delta = self.point - s.cmc.location;
-                let free = w.sweep_capsule(centre + Vec3::Z * 5.0, centre + Vec3::Z * 5.0 + delta, p.capsule_radius, p.capsule_half_height).map_or(1.0, |h| (h.time - 0.02).max(0.0));
-                s.cmc.location += delta * free;
+                let own = s.cmc.location;
+                let a = self.attacker_position;
+                let along = (a - own).truncate().normalize_or_zero();
+                let eye = Vec3::Z * 100.0;
+                self.point = own;
+                if w.sweep_capsule(own + eye, a + eye, 60.0, 60.0).is_none() {
+                    let end = a + Vec3::new(along.x, along.y, 0.0) * 150.0;
+                    let free = w
+                        .sweep_capsule(a + eye, end + eye, 60.0, 60.0)
+                        .map_or(1.0, |h| h.time);
+                    self.point = a + (end - a) * free;
+                }
+                s.cmc.location = self.point;
                 s.yaw = wrap_degrees(Self::yaw_to(s.cmc.location, self.attacker_position, s.yaw));
                 s.queue.flags.enable_change = true;
                 self.slow_motion(cx, true);
@@ -430,7 +494,12 @@ pub(crate) fn choose_offer(s: &mut Pawn, attacker: TargetId) -> bool {
         return false;
     }
     let ground = on_ground(s);
-    let found = s.actions.risk_offers.iter().find(|o| o.attacker == attacker && o.kind != 0 && (o.kind != kind::UNDERSLIDE || ground)).copied();
+    let found = s
+        .actions
+        .risk_offers
+        .iter()
+        .find(|o| o.attacker == attacker && o.kind != 0 && (o.kind != kind::UNDERSLIDE || ground))
+        .copied();
     let Some(offer) = found else { return false };
     s.actions.risk_chosen = Some((offer.attacker, offer.kind));
     s.actions.risk_offers.clear();
@@ -441,11 +510,18 @@ pub(crate) fn choose_offer(s: &mut Pawn, attacker: TargetId) -> bool {
 /// 0x14143FF10): nothing queued, RISKDODGE, the running state is a Reflect whose risk-dodge
 /// window is open; a target and a type chosen. `ClearQueue`; `SetState(17)`; `Setup`.
 pub(crate) fn try_risk_dodge(state: &mut StateData, cx: &mut Ctx) -> bool {
-    let StateData::Reflect(reflect) = state else { return false };
-    if !reflect.risk_offered() || !cx.pawn.queue.nothing_queued() || !actions::has(cx.pawn, Ability::Riskdodge) {
+    let StateData::Reflect(reflect) = state else {
+        return false;
+    };
+    if !reflect.risk_offered()
+        || !cx.pawn.queue.nothing_queued()
+        || !actions::has(cx.pawn, Ability::Riskdodge)
+    {
         return false;
     }
-    let Some((attacker, kind)) = cx.pawn.actions.risk_chosen else { return false };
+    let Some((attacker, kind)) = cx.pawn.actions.risk_chosen else {
+        return false;
+    };
     if attacker == TargetId::NONE || kind == 0 {
         return false;
     }
@@ -458,9 +534,22 @@ pub(crate) fn try_risk_dodge(state: &mut StateData, cx: &mut Ctx) -> bool {
         kind::WARP => (10, 0x2B),
         _ => (7, 0x28),
     };
-    let mut next = RiskDodge { kind, attacker, start: s.cmc.location, critical: s.actions.critical, command, attack_kind, ..RiskDodge::RESET };
+    let mut next = RiskDodge {
+        kind,
+        attacker,
+        start: s.cmc.location,
+        critical: s.actions.critical,
+        command,
+        attack_kind,
+        ..RiskDodge::RESET
+    };
     if let Some(t) = info {
-        (next.attacker_position, next.attacker_yaw, next.attacker_radius, next.attacker_half_height) = (t.position, t.yaw, t.radius, t.half_height);
+        (
+            next.attacker_position,
+            next.attacker_yaw,
+            next.attacker_radius,
+            next.attacker_half_height,
+        ) = (t.position, t.yaw, t.radius, t.half_height);
         // Turn(rot(0, yaw(target - pawn), 0), 1.0).
         s.yaw = wrap_degrees(RiskDodge::yaw_to(s.cmc.location, t.position, s.yaw));
     } else {
@@ -502,7 +591,14 @@ impl PlayerState for RiskDodge {
         self.poll_counter_used(cx);
         // `TresTraction` begin / end set / clear state+0x84 bit 2: the bit the type tick set stays
         // until the notify state has been seen and has ended.
-        if self.traction && self.sub >= 1 && cx.pawn.anim.time > 0.0 && !cx.pawn.anim.state_active(NotifyClass::TresAnimNotifyStateTraction) {
+        if self.traction
+            && self.sub >= 1
+            && cx.pawn.anim.time > 0.0
+            && !cx
+                .pawn
+                .anim
+                .state_active(NotifyClass::TresAnimNotifyStateTraction)
+        {
             self.traction = false;
         }
         match self.kind {
@@ -557,7 +653,14 @@ pub struct RiskDodgeView {
 
 pub(crate) fn view(state: &StateData) -> Option<RiskDodgeView> {
     match state {
-        StateData::RiskDodge(r) => Some(RiskDodgeView { kind: r.kind, attacker: r.attacker, destination: r.destination, root_scale: r.root_scale, counter_offered: r.offered, slow_motion: r.slow }),
+        StateData::RiskDodge(r) => Some(RiskDodgeView {
+            kind: r.kind,
+            attacker: r.attacker,
+            destination: r.destination,
+            root_scale: r.root_scale,
+            counter_offered: r.offered,
+            slow_motion: r.slow,
+        }),
         _ => None,
     }
 }

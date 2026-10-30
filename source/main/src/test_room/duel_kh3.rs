@@ -317,7 +317,7 @@ pub(crate) fn after(game: &mut Game, out: &kh3::Outcome, slot: u8) {
             game.kh3_core_hits.push((slot, hit, at, yaw));
         }
         if let Some(book) = game.kh3_book.clone() {
-            let list = core_requests(&book, &out.core.spawned);
+            let list = core_requests(&book, &out.core, slot);
             game.sora.kh3.fx.extend(list);
         }
         return;
@@ -395,17 +395,41 @@ pub(crate) const CUE_SOUND: &str = "kh3";
 /// by what the seam's id says of that class (its body effect runs with the actor: `kh3_fx::actors_step`).
 fn core_requests(
     book: &kh3::attack::Book,
-    spawned: &[kh3::core::Spawned],
+    core: &kh3::core::CoreOut,
+    seat: u8,
 ) -> Vec<kh3::spell::FxRequest> {
     use kh3::core::{FIRE_EFFECTS, MAP_HIT, PAWN_HIT};
+    use kh3::spell::FxAttach;
     let mut out: Vec<kh3::spell::FxRequest> = Vec::new();
-    for s in spawned {
+    for s in &core.spawned {
+        // On a Sora, or there until stopped: the effect keeps a place and an end.
+        if !s.sound
+            && (s.on_sora || s.persistent)
+            && let Some(path) = book.by_name.get(&s.name.to_ascii_lowercase())
+        {
+            out.push(kh3::spell::FxRequest {
+                effect: Some(path.clone()),
+                sound: None,
+                at: s.at,
+                yaw: s.yaw,
+                attach: Some(FxAttach {
+                    seat,
+                    bone: s.bone.map(str::to_owned),
+                    offset: s.offset,
+                    handle: s.handle,
+                    group: s.id,
+                    stop: None,
+                }),
+            });
+            continue;
+        }
         let stage = book.stages.get(s.name.trim_end_matches("_C"));
         let request = |effect: Option<String>, sound: Option<String>| kh3::spell::FxRequest {
             effect,
             sound,
             at: s.at,
             yaw: s.yaw,
+            attach: None,
         };
         match (stage, s.id) {
             (Some(stage), FIRE_EFFECTS) => {
@@ -440,6 +464,22 @@ fn core_requests(
                 }
             }
         }
+    }
+    for &(handle, immediate) in &core.stopped {
+        out.push(kh3::spell::FxRequest {
+            effect: None,
+            sound: None,
+            at: [0.; 3],
+            yaw: 0.,
+            attach: Some(FxAttach {
+                seat,
+                bone: None,
+                offset: [0.; 3],
+                handle,
+                group: 0,
+                stop: Some(immediate),
+            }),
+        });
     }
     out
 }

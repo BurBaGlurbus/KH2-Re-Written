@@ -590,6 +590,8 @@ pub struct CoreOut {
     pub velocity: [f32; 3],
     pub position: [f32; 3],
     pub row: &'static str,
+    /// `Effects::stop`: the handle, and whether at once.
+    pub stopped: Vec<(u32, bool)>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -601,6 +603,11 @@ pub struct Spawned {
     pub yaw: f32,
     pub sound: bool,
     pub persistent: bool,
+    /// On Sora: at this bone or socket (none: the actor's origin), `offset` in its frame, cm.
+    pub on_sora: bool,
+    pub bone: Option<&'static str>,
+    pub offset: [f32; 3],
+    pub handle: u32,
 }
 
 /// The fire effects of a spell actor's class (`m_FireEffects`), in `Spawned::id`.
@@ -822,11 +829,8 @@ impl Kh3 {
             foe: scene.foe_body,
             hits: &mut hits,
         };
-        let (mut audio, mut effects, mut ui) = (
-            ks::host::NullAudio,
-            ks::host::NullEffects,
-            ks::host::NullUi,
-        );
+        let (mut audio, mut effects, mut ui) =
+            (ks::host::NullAudio, ks::host::NullEffects, ks::host::NullUi);
         let mut host = ks::Host {
             world: geometry,
             targets: &mut targets,
@@ -841,9 +845,18 @@ impl Kh3 {
         };
         for e in &out.events {
             match e.kind {
-                EventKind::EffectSpawn { spawn, .. } => {
+                EventKind::EffectSpawn { handle, spawn } => {
+                    let (on_sora, bone, offset) = match spawn.at {
+                        Attach::Sora { bone, offset } => (true, bone, offset.to_array()),
+                        _ => (false, None, [0.; 3]),
+                    };
                     let at = match spawn.at {
                         Attach::World(p) => from_core(p),
+                        // The other body, the one thing a target is here.
+                        Attach::Target { offset, .. } => {
+                            let foe = scene.foe_body.map_or(out.position, |f| f.position);
+                            from_core(foe + offset + Vec3::Z * BODY_CENTRE)
+                        }
                         _ => from_core(out.position + Vec3::Z * BODY_CENTRE),
                     };
                     result.spawned.push(Spawned {
@@ -853,7 +866,14 @@ impl Kh3 {
                         yaw: yaw_from_core(spawn.rotation.y),
                         sound: false,
                         persistent: spawn.persistent,
+                        on_sora,
+                        bone,
+                        offset,
+                        handle: handle.0,
                     });
+                }
+                EventKind::EffectStop { handle, immediate } => {
+                    result.stopped.push((handle.0, immediate));
                 }
                 EventKind::SoundPlay { play, .. } => {
                     let at = match play.at {
@@ -867,6 +887,10 @@ impl Kh3 {
                         yaw: 0.,
                         sound: true,
                         persistent: false,
+                        on_sora: false,
+                        bone: None,
+                        offset: [0.; 3],
+                        handle: 0,
                     });
                 }
                 EventKind::PlayerDied { .. } => result.died = true,

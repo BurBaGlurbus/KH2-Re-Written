@@ -30,9 +30,6 @@ const KEY_BASE: u32 = 0x4b33_0000;
 const SWING_BANK: &str = "/Game/Sound/SE/weapon/02001";
 const FOOT_TABLE: &str = "/Game/Sound/SE/_Data/MASTS/FsTable_Sora";
 const FOOT_SETTING: &str = "/Game/Sound/SE/_Data/MASTS/DetectioinSetting_Sora";
-/// The triangles of mesh particles built on the CPU each frame; past it every
-/// few are left out (a shot's bolts ask for a million).
-const MESH_BUDGET: usize = 150_000;
 const TRAIL: &str = "/Game/Effects/wep/w_so010/par/VW_SO010_LOC0";
 
 /// A material as the renderer draws it.
@@ -85,9 +82,20 @@ pub(crate) enum Cue {
     },
     /// The auto SE's detectors for the window (`SQEXSEADAnimNotifyState_ChangeAutoSeEnable`).
     AutoEnable(bool),
+    /// An attach-data asset's rows; replaced by `Effect`s when the asset is read.
+    Rows {
+        asset: String,
+        group: i64,
+        socket: String,
+        on_weapon: bool,
+        state: bool,
+    },
 }
 
 /// `FsTable_Sora`: per surface the sounds of motion types 1 to 6, then the others from type 7.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct AttachRows(pub(crate) HashMap<String, Vec<(i64, EffectRow)>>);
+
 #[derive(Clone, Debug, Default)]
 pub(crate) struct FootTable {
     pub(crate) per_surface: Vec<[Option<String>; 6]>,
@@ -170,6 +178,8 @@ pub(crate) struct FxData {
     /// Effect name to the sounds its SeAttach data plays.
     pub(crate) effect_sounds: HashMap<String, Vec<String>>,
     pub(crate) feet: FootTable,
+    /// `ead_*` by name: each row's group and placement.
+    pub(crate) ead: AttachRows,
 }
 
 /// Decoded sounds by their asset.
@@ -207,20 +217,108 @@ fn english(path: &str) -> String {
     path.replace("/Localization/ja/", "/Localization/en/")
 }
 
+/// One placement row (`SQEX_StructParticleAttachData`), `object` resolving its effects' references: its (group, row)s.
+fn placement(
+    row: &Props,
+    object: &dyn Fn(i32) -> Option<String>,
+    list_socket: &str,
+    on_weapon: bool,
+    state: bool,
+) -> Vec<(i64, EffectRow)> {
+    let mut out = Vec::new();
+    let socket = row
+        .str("SocketName")
+        .filter(|s| *s != "None")
+        .unwrap_or(list_socket);
+    for e in row.array("EffectDataList").unwrap_or(&[]) {
+        let Some(e) = e.as_props() else { continue };
+        let Some(path) = e.object("AttachEffect").and_then(object) else {
+            continue;
+        };
+        let (c, a) = (
+            row.floats("ParticleColor")
+                .filter(|v| v.len() >= 3)
+                .map_or([1.; 3], |v| [v[0], v[1], v[2]]),
+            row.f32("ParticleAlpha").unwrap_or(1.),
+        );
+        out.push((
+            e.int("GroupID").unwrap_or(0),
+            EffectRow {
+                effect: path,
+                socket: socket.to_owned(),
+                on_weapon,
+                attach: row.bool("ToAttach").unwrap_or(true),
+                location: vector(row, "LocationOffset", [0.; 3]),
+                rotation: vector(row, "RotationOffset", [0.; 3]),
+                scale: vector(row, "ScaleOffset", [1.; 3]),
+                fade_in: row.f32("FadeIn").unwrap_or(0.),
+                delay: row.f32("StartDelayTime").unwrap_or(0.),
+                color: [c[0], c[1], c[2], a],
+                ends_with_clip: !row
+                    .str("WhenChangeAnimationType")
+                    .is_some_and(|t| t.ends_with("NONE")),
+                state,
+            },
+        ));
+    }
+    out
+}
+
+/// An attach-data asset's rows (`SQEX_ParticleAttachDataAsset`).
+fn attach_rows(paks: &Paks, path: &str) -> Vec<(i64, EffectRow)> {
+    let mut out = Vec::new();
+    let Ok(Some(p)) = paks.game_package(path) else {
+        return out;
+    };
+    let Some(i) = p.export_of_class("SQEX_ParticleAttachDataAsset") else {
+        return out;
+    };
+    let Ok((props, _)) = data::kh3::props::export_props(&p, i) else {
+        return out;
+    };
+    let object = |o: i32| p.import_package(o).map(str::to_owned);
+    for row in props.array("EffectDataList").unwrap_or(&[]) {
+        if let Some(row) = row.as_props() {
+            out.extend(placement(row, &object, "", false, false));
+        }
+    }
+    out
+}
+
 /// The rows of a notify's `MetaAttachDataList` and weapon lists.
 fn effect_rows(n: &sora::Notify, out: &mut Vec<Trigger>) {
     if let Some(list) = n.props.array("AttachDataList") {
         for row in list {
             let Some(row) = row.as_props() else { continue };
-            if row.bool("bUseCommonAttachData") == Some(true)
-                && row
+            if row.bool("bUseCommonAttachData") == Some(true) {
+                if row
                     .str("AttachType")
                     .is_some_and(|t| t.ends_with("ATTACH_TO_WEAPON"))
-            {
+                {
+                    out.push(Trigger {
+                        start: n.start,
+                        end: n.end,
+                        cue: Cue::Trail,
+                    });
+                }
+                continue;
+            }
+            // Assets of placement rows.
+            let on_weapon = row.str("AttachType").is_some_and(|t| t.contains("WEAPON"));
+            for asset in row.array("AttachDatas").unwrap_or(&[]) {
+                let Some(path) = asset.as_object().and_then(|o| n.imports.get(&o)) else {
+                    continue;
+                };
                 out.push(Trigger {
                     start: n.start,
                     end: n.end,
-                    cue: Cue::Trail,
+                    cue: Cue::Rows {
+                        asset: path.clone(),
+                        group: row.int("GroupID").unwrap_or(-2),
+                        socket: row.str("SocketName").unwrap_or("").to_owned(),
+                        on_weapon,
+                        state: n.state,
+                    },
                 });
             }
         }
@@ -231,58 +329,26 @@ fn effect_rows(n: &sora::Notify, out: &mut Vec<Trigger>) {
         };
         let on_weapon = list.str("AttachType").is_some_and(|t| t.contains("WEAPON"));
         let list_socket = list.str("SocketName").unwrap_or("");
+        let object = |o: i32| n.imports.get(&o).cloned();
         for row in list.array("MetaAttachData").unwrap_or(&[]) {
             let Some(row) = row.as_props() else { continue };
-            let socket = row
-                .str("SocketName")
-                .filter(|s| *s != "None")
-                .unwrap_or(list_socket);
-            for e in row.array("EffectDataList").unwrap_or(&[]) {
-                let Some(e) = e.as_props() else { continue };
-                // The plain Keyblade's group is 0; -1 plays for any.
-                let group = e.int("GroupID").unwrap_or(0);
-                if group != 0 && group != -1 {
-                    continue;
+            for (group, placed) in placement(row, &object, list_socket, on_weapon, n.state) {
+                if plays_for_kingdom_key(group, &placed.effect) {
+                    out.push(Trigger {
+                        start: n.start,
+                        end: n.end,
+                        cue: Cue::Effect(placed),
+                    });
                 }
-                let Some(path) = e
-                    .object("AttachEffect")
-                    .and_then(|o| n.imports.get(&o).cloned())
-                else {
-                    continue;
-                };
-                let name = effect_json::base_name(&path).to_ascii_lowercase();
-                if name.starts_with("vw_so") && !name.starts_with("vw_so010") {
-                    continue;
-                }
-                let (c, a) = (
-                    row.floats("ParticleColor")
-                        .filter(|v| v.len() >= 3)
-                        .map_or([1.; 3], |v| [v[0], v[1], v[2]]),
-                    row.f32("ParticleAlpha").unwrap_or(1.),
-                );
-                out.push(Trigger {
-                    start: n.start,
-                    end: n.end,
-                    cue: Cue::Effect(EffectRow {
-                        effect: path,
-                        socket: socket.to_owned(),
-                        on_weapon,
-                        attach: row.bool("ToAttach").unwrap_or(true),
-                        location: vector(row, "LocationOffset", [0.; 3]),
-                        rotation: vector(row, "RotationOffset", [0.; 3]),
-                        scale: vector(row, "ScaleOffset", [1.; 3]),
-                        fade_in: row.f32("FadeIn").unwrap_or(0.),
-                        delay: row.f32("StartDelayTime").unwrap_or(0.),
-                        color: [c[0], c[1], c[2], a],
-                        ends_with_clip: !row
-                            .str("WhenChangeAnimationType")
-                            .is_some_and(|t| t.ends_with("NONE")),
-                        state: n.state,
-                    }),
-                });
             }
         }
     }
+}
+
+/// The plain Keyblade's group is 0; -1 plays for any.
+fn plays_for_kingdom_key(group: i64, effect: &str) -> bool {
+    let name = effect_json::base_name(effect).to_ascii_lowercase();
+    (group == 0 || group == -1) && !(name.starts_with("vw_so") && !name.starts_with("vw_so010"))
 }
 
 fn trigger_of(n: &sora::Notify, out: &mut Vec<Trigger>) {
@@ -455,7 +521,56 @@ pub(crate) fn load(
             triggers.insert(clip.name.clone(), list);
         }
     }
+    // The attach-data assets: the notifies' and the core's.
+    let mut ead = HashMap::new();
+    for list in triggers.values_mut() {
+        let mut expanded = Vec::with_capacity(list.len());
+        for t in list.drain(..) {
+            let Cue::Rows {
+                asset,
+                group,
+                socket,
+                on_weapon,
+                state,
+            } = &t.cue
+            else {
+                expanded.push(t);
+                continue;
+            };
+            let name = effect_json::base_name(asset).to_ascii_lowercase();
+            let rows: &Vec<(i64, EffectRow)> =
+                ead.entry(name).or_insert_with(|| attach_rows(paks, asset));
+            for (row_group, row) in rows {
+                // -2 asks for every current group: on the plain Keyblade, 0.
+                let wanted = if *group == -2 {
+                    plays_for_kingdom_key(*row_group, &row.effect)
+                } else {
+                    *row_group == *group || *row_group == -1
+                };
+                if wanted {
+                    let mut row = row.clone();
+                    if row.socket.is_empty() {
+                        row.socket.clone_from(socket);
+                    }
+                    row.on_weapon = *on_weapon;
+                    row.state = *state;
+                    expanded.push(Trigger {
+                        start: t.start,
+                        end: t.end,
+                        cue: Cue::Effect(row),
+                    });
+                }
+            }
+        }
+        *list = expanded;
+    }
+    for (name, path) in &book.by_name {
+        if name.starts_with("ead_") {
+            ead.insert(name.clone(), attach_rows(paks, path));
+        }
+    }
     let mut effects: Vec<String> = vec![TRAIL.to_owned()];
+    effects.extend(ead.values().flatten().map(|(_, row)| row.effect.clone()));
     let mut sounds: Vec<String> = (1..=10)
         .map(|i| format!("{SWING_BANK}/se02001_{}", 100 + i))
         .chain((1..=7).map(|i| format!("{SWING_BANK}/se02001_00{i}")))
@@ -478,7 +593,7 @@ pub(crate) fn load(
                     sounds.push(path.clone());
                     sounds.extend(end.clone());
                 }
-                Cue::Trail | Cue::AutoSe { .. } | Cue::AutoEnable(_) => {}
+                Cue::Trail | Cue::AutoSe { .. } | Cue::AutoEnable(_) | Cue::Rows { .. } => {}
             }
         }
     }
@@ -647,6 +762,7 @@ pub(crate) fn load(
         sounds: book,
         effect_sounds,
         feet,
+        ead: AttachRows(ead),
     })
 }
 
@@ -740,6 +856,8 @@ struct Live {
     serial: u32,
     trail: bool,
     state_end: Option<f32>,
+    /// The core's handle of an effect it spawned on Sora.
+    handle: Option<u32>,
 }
 
 /// One Sora's replay state.
@@ -1453,6 +1571,7 @@ fn replay(
                     serial,
                     trail: false,
                     state_end: row_data.state.then_some(t.end),
+                    handle: None,
                 });
                 let sounds = fx
                     .data
@@ -1476,6 +1595,7 @@ fn replay(
                         row: None,
                         serial,
                         trail: true,
+                        handle: None,
                         state_end: Some(t.end),
                     });
                 }
@@ -1539,6 +1659,7 @@ fn replay(
             Cue::AutoEnable(on) => {
                 fx.replays[seat].auto_enable = Some((*on, t.end));
             }
+            Cue::Rows { .. } => {}
         }
     }
 }
@@ -1584,9 +1705,76 @@ pub(crate) fn play_at(fx: &mut Kh3Fx, sound: &str, at: [f32; 3], camera: Vec3) {
     );
 }
 
+/// An effect the core put on a Sora or stops: it follows its bone (`body_step`) until stopped or done. The rows of an
+/// attach-data asset play by the group (0x1405B9370).
+fn attached(
+    fx: &mut Kh3Fx,
+    r: &player::kh3::spell::FxRequest,
+    a: &player::kh3::spell::FxAttach,
+    camera: Vec3,
+) {
+    if let Some(immediate) = a.stop {
+        let mut live = std::mem::take(&mut fx.live);
+        for l in &mut live {
+            if l.seat == a.seat
+                && l.handle == Some(a.handle)
+                && let Some(w) = fx.world.as_mut()
+            {
+                w.stop(l.id, immediate);
+                l.handle = None;
+                l.row = None;
+            }
+        }
+        fx.live = live;
+        return;
+    }
+    let Some(effect) = &r.effect else { return };
+    let name = effect_json::base_name(effect).to_ascii_lowercase();
+    let group = i64::from(a.group);
+    let rows: Vec<EffectRow> = match fx.data.as_ref().and_then(|d| d.ead.0.get(&name)) {
+        Some(rows) => rows
+            .iter()
+            .filter(|(g, _)| *g == group || *g == -1)
+            .map(|(_, row)| row.clone())
+            .collect(),
+        None => vec![EffectRow {
+            effect: effect.clone(),
+            socket: a.bone.clone().unwrap_or_else(|| "Trans".to_owned()),
+            on_weapon: false,
+            attach: true,
+            location: a.offset,
+            rotation: [0.; 3],
+            scale: [1.; 3],
+            fade_in: 0.,
+            delay: 0.,
+            color: [1.; 4],
+            ends_with_clip: false,
+            state: false,
+        }],
+    };
+    for row in rows {
+        let Some(id) = spawn_at(fx, &row.effect, r.at, r.yaw, camera) else {
+            continue;
+        };
+        fx.live.push(Live {
+            id,
+            seat: a.seat,
+            row: Some(row),
+            serial: 0,
+            trail: false,
+            state_end: None,
+            handle: Some(a.handle),
+        });
+    }
+}
+
 /// The requests a Sora's layer made this tick.
 pub(crate) fn requests(fx: &mut Kh3Fx, list: Vec<player::kh3::spell::FxRequest>, camera: Vec3) {
     for r in list {
+        if let Some(a) = &r.attach {
+            attached(fx, &r, a, camera);
+            continue;
+        }
         if let Some(e) = &r.effect {
             spawn_at(fx, e, r.at, r.yaw, camera);
         }
@@ -1911,14 +2099,7 @@ fn draw_list(
             last = Some((a, b));
         }
     }
-    let triangles: usize = list
-        .meshes
-        .iter()
-        .filter_map(|m| fx.meshes.get(&m.mesh))
-        .map(|m| m.indices.len() / 3)
-        .sum();
-    let stride = triangles / MESH_BUDGET + 1;
-    for m in list.meshes.iter().step_by(stride) {
+    for m in &list.meshes {
         let id = if fx.materials.contains_key(&m.material) {
             m.material
         } else {

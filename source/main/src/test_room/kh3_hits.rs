@@ -414,6 +414,7 @@ fn actor_contact(
 /// A Keyblade hit's effect and sound.
 fn hit_fx(book: &Book, hit_se: u8, at: [f32; 3]) -> player::kh3::spell::FxRequest {
     player::kh3::spell::FxRequest {
+        attach: None,
         effect: book.hit_effect.clone(),
         sound: Some(format!(
             "/Game/Sound/SE/weapon/02001/se02001_00{}",
@@ -471,6 +472,7 @@ fn bolts_tick(game: &mut Game, book: &Book, count: usize, tick: u64) {
             f.kh3.bolt_hit(serial);
             let stage = book.shots[usize::from(ragnarok)].clone();
             f.kh3.fx.push(player::kh3::spell::FxRequest {
+                attach: None,
                 effect: stage.as_ref().and_then(|s| s.hit_effect.clone()),
                 sound: stage.as_ref().and_then(|s| s.hit_sound.clone()),
                 at: on,
@@ -516,6 +518,18 @@ fn send_fx(game: &mut Game, book: &Book) {
             sound: id(&r.sound),
             at: r.at,
             yaw: r.yaw,
+            attach: r.attach.as_ref().map(|a| duel_wire::Kh3Attach {
+                seat: a.seat,
+                bone: id(&a.bone),
+                offset: a.offset,
+                handle: a.handle,
+                group: a.group,
+                stop: match a.stop {
+                    None => 0,
+                    Some(false) => 1,
+                    Some(true) => 2,
+                },
+            }),
         });
     }
     game.kh3_fx_remote.append(&mut list);

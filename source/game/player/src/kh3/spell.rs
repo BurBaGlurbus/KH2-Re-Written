@@ -167,6 +167,24 @@ pub struct FxRequest {
     pub sound: Option<String>,
     pub at: Vec3,
     pub yaw: f32,
+    /// The effect stays on a Sora until stopped, or follows a bone of his.
+    pub attach: Option<FxAttach>,
+}
+
+/// An effect on a Sora: `Effects::spawn` with `Attach::Sora`, or the stop of one.
+#[derive(Clone, Debug, PartialEq)]
+pub struct FxAttach {
+    pub seat: u8,
+    /// A bone or socket; none: the actor's origin.
+    pub bone: Option<String>,
+    /// cm, in the bone's frame.
+    pub offset: [f32; 3],
+    /// The core's handle, which a later stop names.
+    pub handle: u32,
+    /// The group: which rows of an attach-data asset (`ead_*`) play.
+    pub group: u32,
+    /// Stops the effect of `handle` (true: at once) instead of starting one.
+    pub stop: Option<bool>,
 }
 
 /// What a move's clips are per class.
@@ -346,6 +364,7 @@ impl Kh3 {
         self.visual.restart(row, 0., false);
         if let Some(e) = &spell.cast_effect {
             self.fx.push(FxRequest {
+                attach: None,
                 effect: Some(e.clone()),
                 sound: None,
                 at: player.position,
@@ -534,6 +553,7 @@ impl Kh3 {
         let stage = Arc::clone(&spell.stage);
         for (effect, sound) in &stage.fire_effects {
             self.fx.push(FxRequest {
+                attach: None,
                 effect: effect.clone(),
                 sound: sound.clone(),
                 at: muzzle,
@@ -681,6 +701,7 @@ impl Kh3 {
                 && next[1] <= floor
             {
                 self.fx.push(FxRequest {
+                    attach: None,
                     effect: a.stage.map_hit_effect.clone(),
                     sound: a.stage.map_hit_sound.clone(),
                     at: next,
@@ -716,6 +737,7 @@ impl Kh3 {
             a.dead = true;
         }
         self.fx.push(FxRequest {
+            attach: None,
             effect: stage.hit_effect.clone(),
             sound: stage.hit_sound.clone(),
             at,

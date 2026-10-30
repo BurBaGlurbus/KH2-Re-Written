@@ -379,7 +379,7 @@ const CORE_EFFECTS: [&str; 37] = [
 
 /// Finds the assets of the names the core gives (the mounted paths' last part), adds them to what the presenters
 /// load and to the wire's list. The weapon's sound aliases (`HIT1`..) are its bank's.
-pub(crate) fn name_assets(paks: &Paks, book: &mut player::kh3::attack::Book) {
+pub(crate) fn name_assets(paks: &Paks, data: &SoraData, book: &mut player::kh3::attack::Book) {
     let wanted: std::collections::HashSet<String> = CORE_EFFECTS
         .iter()
         .map(|n| n.to_ascii_lowercase())
@@ -422,6 +422,9 @@ pub(crate) fn name_assets(paks: &Paks, book: &mut player::kh3::attack::Book) {
     }
     let mut names: Vec<String> = book.names.clone();
     names.extend(book.by_name.values().cloned());
+    // The bones and sockets an effect may sit on, which the wire names too.
+    names.extend(data.mesh.bones.iter().map(|b| b.name.clone()));
+    names.extend(data.sockets.iter().map(|s| s.name.clone()));
     names.sort_unstable();
     names.dedup();
     book.names = names;

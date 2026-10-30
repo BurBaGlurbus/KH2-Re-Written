@@ -1476,11 +1476,7 @@ fn parse_emitter(e: &Value, names: &[&str]) -> EmitterDef {
             .and_then(Value::as_f64)
             .unwrap_or(0.0) as usize;
         if capacity > 0 {
-            // The game runs these on the GPU, this evaluator on the CPU: a shot's twenty bolts held
-            // 3000 each and cost the frame. An even share of the spawns stays within the budget.
-            const GPU_BUDGET: usize = 250;
-            def.max_particles = capacity.min(GPU_BUDGET);
-            def.keep = (GPU_BUDGET as f32 / capacity as f32).min(1.0);
+            def.max_particles = capacity;
             def.max_draw = def.max_draw.max(def.max_particles);
         }
     }

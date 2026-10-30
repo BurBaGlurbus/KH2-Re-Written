@@ -547,7 +547,20 @@ pub(crate) enum DuelEvent {
         sound: u16,
         at: [f32; 3],
         yaw: f32,
+        attach: Option<Kh3Attach>,
     },
+}
+
+/// [KH3 mode] An effect on a Sora, `bone` by the book's names.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct Kh3Attach {
+    pub(crate) seat: u8,
+    pub(crate) bone: u16,
+    pub(crate) offset: [f32; 3],
+    pub(crate) handle: u32,
+    pub(crate) group: u32,
+    /// 0 starts; 1 stops; 2 stops at once.
+    pub(crate) stop: u8,
 }
 
 /// Where a forwarded Drive effect starts.
@@ -740,12 +753,25 @@ pub(crate) fn encode_events(tick: u64, events: &[DuelEvent]) -> Vec<u8> {
                 sound,
                 at,
                 yaw,
+                attach,
             } => {
                 w.u8(8);
                 w.u16(*effect);
                 w.u16(*sound);
                 put_vec(&mut w, *at);
                 w.f32(*yaw);
+                match attach {
+                    Some(a) => {
+                        w.u8(1);
+                        w.u8(a.seat);
+                        w.u16(a.bone);
+                        put_vec(&mut w, a.offset);
+                        w.u32(a.handle);
+                        w.u32(a.group);
+                        w.u8(a.stop);
+                    }
+                    None => w.u8(0),
+                }
             }
         }
     }
@@ -843,11 +869,24 @@ pub(crate) fn decode_events(bytes: &[u8]) -> Option<(u64, Vec<DuelEvent>)> {
             8 => {
                 let (effect, sound) = (r.u16()?, r.u16()?);
                 let at = [r.f32()?, r.f32()?, r.f32()?];
+                let yaw = r.f32()?;
+                let attach = match r.u8()? {
+                    0 => None,
+                    _ => Some(Kh3Attach {
+                        seat: r.u8()?,
+                        bone: r.u16()?,
+                        offset: [r.f32()?, r.f32()?, r.f32()?],
+                        handle: r.u32()?,
+                        group: r.u32()?,
+                        stop: r.u8()?,
+                    }),
+                };
                 DuelEvent::Kh3Fx {
                     effect,
                     sound,
                     at,
-                    yaw: r.f32()?,
+                    yaw,
+                    attach,
                 }
             }
             _ => return None,

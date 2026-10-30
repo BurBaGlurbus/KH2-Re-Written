@@ -317,17 +317,16 @@ impl Secondary {
                 properties: p,
             });
         }
-        // The wind's scale from its second tick: the clip's float curve `Wind`, constant 2 on the fall loop 0033, the
-        // only clip of Sora's that has one [sora-animation-spec section 14; the curve itself is not decoded here].
-        if clip.is_some_and(|c| c.name == "0033")
-            && self
-                .running
-                .iter()
-                .any(|r| r.notify.class == "TresAnimNotifyState_Bonamik_CharaWind")
+        // The wind's scale from its second tick: the clip's float curve `Wind` (0x140562220).
+        if self
+            .running
+            .iter()
+            .any(|r| r.notify.class == "TresAnimNotifyState_Bonamik_CharaWind")
             && from >= 0.
+            && let Some(scale) = clip.and_then(|c| c.seq.curve("Wind", time))
             && let Some(solver) = &mut self.cloth
         {
-            solver.set_chara_wind_scale(2.);
+            solver.set_chara_wind_scale(scale);
         }
     }
 

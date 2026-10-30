@@ -276,6 +276,7 @@ fn play_event(game: &mut Game, event: &DuelEvent) {
             sound,
             at,
             yaw,
+            attach,
         } => {
             let name = |id: u16| {
                 game.kh3_book
@@ -287,6 +288,18 @@ fn play_event(game: &mut Game, event: &DuelEvent) {
                 sound: name(sound),
                 at,
                 yaw,
+                attach: attach.map(|a| player::kh3::spell::FxAttach {
+                    seat: a.seat,
+                    bone: name(a.bone),
+                    offset: a.offset,
+                    handle: a.handle,
+                    group: a.group,
+                    stop: match a.stop {
+                        0 => None,
+                        1 => Some(false),
+                        _ => Some(true),
+                    },
+                }),
             };
             game.kh3_fx_remote.push(request);
         }

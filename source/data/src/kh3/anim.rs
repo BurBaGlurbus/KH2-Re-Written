@@ -4,7 +4,7 @@
 //! `GetBoneAtom` (0x143F120E0) and per-track decoders (0x143F1BF10,
 //! 0x143F15D00, 0x143F19580).
 use super::package::{Package, Rd};
-use super::props::{Props, read_props};
+use super::props::{Props, Value, read_props};
 use super::{Result, bad};
 
 const F96: u8 = 1;
@@ -64,6 +64,8 @@ pub struct Track {
 #[derive(Clone, Debug, Default)]
 pub struct AnimSequence {
     pub props: Props,
+    /// `CompressedCurveData`: the clip's float curves by name, as (time, value) keys.
+    pub curves: Vec<(String, Vec<(f32, f32)>)>,
     pub length: f32,
     pub num_frames: u32,
     pub has_scale_table: bool,
@@ -322,7 +324,54 @@ fn lerp_frames(r: &mut Rd, keys: usize, variable: bool, num_frames: u32) -> Resu
     Ok(frames)
 }
 
+/// `FloatCurves`: `Name` is an `FSmartName` by its name's index, a key's time and value are its fourth and fifth numbers.
+fn read_curves(p: &Props, names: &[String]) -> Vec<(String, Vec<(f32, f32)>)> {
+    let mut out = Vec::new();
+    for c in p.array("FloatCurves").unwrap_or(&[]) {
+        let Some(c) = c.as_props() else { continue };
+        let name = match c.get("Name") {
+            Some(Value::Raw(b)) if b.len() >= 4 => {
+                let at = u32::from_le_bytes([b[0], b[1], b[2], b[3]]) as usize;
+                names.get(at).cloned().unwrap_or_default()
+            }
+            _ => String::new(),
+        };
+        let keys = c
+            .props("FloatCurve")
+            .and_then(|f| f.array("Keys"))
+            .unwrap_or(&[])
+            .iter()
+            .filter_map(|k| match k {
+                Value::Floats(k) if k.len() >= 5 => Some((k[3], k[4])),
+                _ => None,
+            })
+            .collect();
+        out.push((name, keys));
+    }
+    out
+}
+
 impl AnimSequence {
+    /// A float curve's value at a time, by straight lines between its keys.
+    pub fn curve(&self, name: &str, time: f32) -> Option<f32> {
+        let (_, keys) = self
+            .curves
+            .iter()
+            .find(|c| c.0.eq_ignore_ascii_case(name))?;
+        let first = keys.first()?;
+        let mut value = first.1;
+        for w in keys.windows(2) {
+            if time >= w[0].0 && time <= w[1].0 {
+                let t = (time - w[0].0) / (w[1].0 - w[0].0).max(1e-6);
+                return Some(w[0].1 + (w[1].1 - w[0].1) * t);
+            }
+            if time > w[1].0 {
+                value = w[1].1;
+            }
+        }
+        Some(value)
+    }
+
     /// Reads export `i` of the package.
     pub fn read(p: &Package, i: usize) -> Result<Self> {
         Self::parse(p.export_bytes(i)?, &p.names)
@@ -343,7 +392,7 @@ impl AnimSequence {
         let scale_offsets = read_i32s(&mut r)?;
         let strip = r.i32()?.max(1) as usize;
         let bones = read_i32s(&mut r)?;
-        read_props(&mut r, names)?;
+        let curves = read_curves(&read_props(&mut r, names)?, names);
         r.i32()?;
         let stream_len = usize::try_from(r.i32()?).map_err(|_| bad("stream length"))?;
         let stream = r.take(stream_len)?;
@@ -404,6 +453,7 @@ impl AnimSequence {
         }
         Ok(Self {
             props,
+            curves,
             length,
             num_frames,
             has_scale_table,
