@@ -11,6 +11,9 @@
 //! generator; the room holds 16 actors at most.
 use super::*;
 
+/// How long the tour stays in one group point's zone.
+const TOUR_ZONE_TICKS: u64 = 450;
+
 #[derive(Resource, Default)]
 pub struct AreaEnemies {
     /// The area (world, area) whose standing enemies were placed.
@@ -19,8 +22,9 @@ pub struct AreaEnemies {
     listed: std::collections::HashSet<u16>,
     /// Actors whose AI was already asked for.
     enabled: std::collections::HashSet<u64>,
-    /// The tour moved Sora into the first group's zone.
-    tour_moved: bool,
+    /// The group zone the tour put Sora in last, and when.
+    tour_zone: usize,
+    tour_moved: Option<u64>,
     /// The free-point search's generator and lap counter (DAT_142ae5d78).
     rng: enemy::world::Lcg,
     ring_counter: u32,
@@ -257,16 +261,22 @@ pub fn tick(
         );
     }
     // [Tour setup] The unattended tour walks no route: Sora is put in the
-    // first group point's zone, as if he had walked in.
-    if game.enemy_battle_tour && !state.tour_moved && tick >= 40 {
-        state.tour_moved = true;
-        let zone = area
+    // group points' zones, one after another, as if he had walked in.
+    if game.enemy_battle_tour
+        && tick >= 40
+        && state.tour_moved.is_none_or(|t| tick >= t + TOUR_ZONE_TICKS)
+    {
+        state.tour_moved = Some(tick);
+        let zones: Vec<_> = area
             .current
             .state
             .objects
             .iter()
             .filter(|o| o.point.kind == 2)
-            .find_map(|o| o.zones.first().map(|z| z.center));
+            .filter_map(|o| o.zones.first().map(|z| z.center))
+            .collect();
+        let zone = (!zones.is_empty()).then(|| zones[state.tour_zone % zones.len()]);
+        state.tour_zone += 1;
         if let Some([x, y, z]) = zone {
             let to = [x, -y, -z];
             game.sora.player.position = to;

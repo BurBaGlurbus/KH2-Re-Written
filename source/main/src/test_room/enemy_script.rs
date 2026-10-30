@@ -1387,6 +1387,8 @@ impl ScriptBrain {
             "map_body":s.map_body.map(|b| [b.radius, b.height, b.offset, b.mode as f32, b.class as f32]),
             "no_floor":s.no_floor,"motion_tick":s.motion.tick,"blend":s.motion.blend,
             "pending_mode":s.pending_mode,"acts_flags":self.object.acts.flags,
+            "pc":[self.object.script.main.as_ref().map(|t| t.pc),
+                  self.object.script.act_thread.as_ref().map(|t| t.pc)],
             "made":self.world.objects.iter().flatten().filter(|o| !o.sys.gone)
                 .map(|o| (o.id, o.sys.model, o.sys.hit_shapes.len())).collect::<Vec<_>>()})
     }
@@ -1427,6 +1429,11 @@ impl ScriptBrain {
     }
     pub fn elapsed(&self) -> u32 {
         self.object.sys.motion.tick
+    }
+    /// The playing motion has a clip (a script can name a slot the motion
+    /// set leaves empty).
+    pub fn has_clip(&self) -> bool {
+        enemy::env::Clips::length(&*self.clips, self.motion()) > 0
     }
     pub fn serial(&self) -> u64 {
         self.object.sys.motion.serial

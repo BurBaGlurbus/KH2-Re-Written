@@ -19,7 +19,17 @@ const ROSTER_ATTACK: u64 = 390;
 const ROSTER_SUMMARY: u64 = ROSTER_SLOT - 10;
 /// The tour ends itself when the roster is done.
 pub fn end() -> u64 {
-    if roster() { u64::MAX / 2 } else { END }
+    if roster() {
+        u64::MAX / 2
+    } else if area_enemies::enabled() {
+        // `KH2RW_TOUR_END`: a longer area run.
+        std::env::var("KH2RW_TOUR_END")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(END)
+    } else {
+        END
+    }
 }
 pub fn captures() -> Vec<u64> {
     if roster() {
@@ -33,6 +43,8 @@ pub fn attack_pressed(tick: u64) -> bool {
     if roster() {
         let start = ROSTER_START.load(std::sync::atomic::Ordering::Relaxed);
         tick >= start + ROSTER_ATTACK && tick.is_multiple_of(20)
+    } else if area_enemies::enabled() {
+        tick >= 300 && tick.is_multiple_of(20)
     } else {
         (700..1300).contains(&tick) && tick.is_multiple_of(20)
     }
@@ -84,6 +96,133 @@ pub struct Checks {
     slot: Option<Slot>,
     ran: u32,
     clean: u32,
+    /// The area run's view of each model and each actor.
+    models: std::collections::BTreeMap<String, ModelStats>,
+    tracks: HashMap<u64, ActorTrack>,
+}
+
+/// What an area run saw of one model, over all its actors.
+#[derive(Default)]
+struct ModelStats {
+    actors: std::collections::BTreeSet<u64>,
+    acts: std::collections::BTreeSet<String>,
+    motions: std::collections::BTreeSet<usize>,
+    /// Motions the script played that have no clip.
+    no_clip: std::collections::BTreeSet<usize>,
+    faults: std::collections::BTreeSet<String>,
+    unsupported: std::collections::BTreeSet<&'static str>,
+    services: std::collections::BTreeSet<&'static str>,
+    motion_events: std::collections::BTreeSet<String>,
+    /// How far an actor rose or sank from where it began.
+    rise: f32,
+    sink: f32,
+    travelled: f32,
+    /// The longest one actor stayed on one motion in place, and where.
+    longest_still: u64,
+    still_in: String,
+    non_finite: bool,
+    died: u32,
+}
+
+/// One actor from tick to tick.
+struct ActorTrack {
+    start: [f32; 3],
+    last: [f32; 3],
+    motion: usize,
+    since: u64,
+    alive: bool,
+}
+
+/// Every tick of an area run: what each actor does.
+fn area_track(game: &mut Game, gallery: &enemy_gallery::EnemyGallery, checks: &mut Checks) {
+    let tick = game.tick;
+    if tick >= 20 {
+        // Sora takes the hits but is topped up before he falls.
+        let v = &mut game.sora.vitals;
+        if v.hp * 3 < v.target.max_hp {
+            v.hp = v.target.max_hp;
+        }
+    }
+    for a in &gallery.actors {
+        let Some(b) = a.battle.as_ref() else {
+            continue;
+        };
+        let model = gallery.catalog.entries[a.entry].model_name.clone();
+        let stats = checks.models.entry(model).or_default();
+        stats.actors.insert(a.id);
+        let at = b.brain.position();
+        let motion = b.brain.motion();
+        let alive = b.brain.alive();
+        let track = checks.tracks.entry(a.id).or_insert(ActorTrack {
+            start: at,
+            last: at,
+            motion,
+            since: tick,
+            alive,
+        });
+        if !at.iter().all(|v| v.is_finite()) {
+            stats.non_finite = true;
+            continue;
+        }
+        let d = [
+            at[0] - track.last[0],
+            at[1] - track.last[1],
+            at[2] - track.last[2],
+        ];
+        let step = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt();
+        stats.travelled += step;
+        stats.rise = stats.rise.max(at[1] - track.start[1]);
+        stats.sink = stats.sink.max(track.start[1] - at[1]);
+        if motion != track.motion || step > 0.01 || !alive {
+            track.motion = motion;
+            track.since = tick;
+        } else if tick - track.since > stats.longest_still {
+            stats.longest_still = tick - track.since;
+            stats.still_in = format!("{} motion {motion}", b.brain.description());
+        }
+        track.last = at;
+        if track.alive && !alive {
+            stats.died += 1;
+        }
+        track.alive = alive;
+        if alive {
+            stats.acts.insert(b.brain.description());
+            stats.motions.insert(motion);
+        }
+        if let Some(e) = b
+            .error
+            .clone()
+            .or_else(|| b.brain.fault())
+            .or(a.error.clone())
+        {
+            stats.faults.insert(e);
+        }
+        if let enemy_battle::Brain::Script(s) = &b.brain {
+            if alive && !s.has_clip() {
+                stats.no_clip.insert(motion);
+            }
+            stats.unsupported.extend(s.unsupported.iter().copied());
+            stats.services.extend(s.services.iter().copied());
+            stats.motion_events.extend(
+                s.motion_events
+                    .iter()
+                    .map(|&(r, k)| format!("{}{k}", if r { "range " } else { "frame " })),
+            );
+        }
+    }
+    if tick == end() {
+        let models = std::mem::take(&mut checks.models);
+        for (model, s) in models {
+            game.event(
+                serde_json::json!({"event":"area_enemy_model","tick":tick,"model":model,
+                "actors":s.actors.len(),"died":s.died,"acts":s.acts,"motions":s.motions,
+                "no_clip":s.no_clip,"faults":s.faults,"unsupported":s.unsupported,
+                "services":s.services,"motion_events":s.motion_events,"rise":s.rise,"sink":s.sink,
+                "travelled":s.travelled,"longest_still":s.longest_still,"still_in":s.still_in,
+                "non_finite":s.non_finite}),
+            );
+        }
+    }
 }
 
 /// With `KH2RW_AREA_ENEMIES` the tour is the area's own enemies
@@ -91,7 +230,7 @@ pub struct Checks {
 /// (every placed actor fought without a fault).
 fn area_checkpoints(game: &mut Game, gallery: &enemy_gallery::EnemyGallery) {
     let tick = game.tick;
-    if !(tick.is_multiple_of(300) || tick == END) {
+    if !(tick.is_multiple_of(300) || tick == end()) {
         return;
     }
     let actors: Vec<_> = gallery
@@ -110,7 +249,7 @@ fn area_checkpoints(game: &mut Game, gallery: &enemy_gallery::EnemyGallery) {
     let (incoming, outgoing) = (game.enemy_incoming_hits, game.enemy_outgoing_hits);
     game.event(serde_json::json!({"event":"area_enemies_checkpoint","tick":tick,
         "actors":actors,"positive_damage_to_player":incoming,"positive_damage_to_enemies":outgoing}));
-    if tick == END {
+    if tick == end() {
         let pass = !gallery.actors.is_empty()
             && gallery
                 .actors
@@ -289,6 +428,7 @@ pub fn tick(
         return;
     }
     if area_enemies::enabled() {
+        area_track(&mut game, &gallery, &mut checks);
         area_checkpoints(&mut game, &gallery);
         return;
     }
