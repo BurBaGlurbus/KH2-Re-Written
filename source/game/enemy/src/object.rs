@@ -422,7 +422,9 @@ impl Object {
         };
         let (landing, bit, trigger) = match ground {
             crate::sysobj::Ground::Leave => (false, 0x400_0000, 0xd),
-            crate::sysobj::Ground::Land => (true, 0x800_0000, 0xe),
+            crate::sysobj::Ground::Land | crate::sysobj::Ground::RangeLand => {
+                (true, 0x800_0000, 0xe)
+            }
         };
         let actions = self.acts.ground_event(landing);
         self.apply_actions(Some((world, env)), actions);
@@ -431,7 +433,9 @@ impl Object {
         }
         if self.sys.flags & bit == 0 {
             let clips = env.clips(self.sys.model);
-            if landing {
+            if ground == crate::sysobj::Ground::RangeLand {
+                self.sys.land_on_range(clips);
+            } else if landing {
                 self.sys.land(clips);
             } else {
                 self.sys.finish_leave(clips);

@@ -77,6 +77,9 @@ pub enum Ground {
     Leave,
     /// Landing: act event 2, script event 0xe, `+0x120` bit 27.
     Land,
+    /// The same events for an object not in a jump mode, standing on a floor
+    /// under `+0x18c & 0x1000020` (see [`Sysobj::range_land`]).
+    RangeLand,
 }
 
 /// Reaction states the engine holds between a hit and returning to the script.
@@ -1054,21 +1057,24 @@ impl Sysobj {
     }
 
     /// FUN_1403b9f70 (`obj_turn_dir`): turn toward the direction's heading by
-    /// at most `2 * rate` radians. Returns true while the heading differs.
+    /// at most `2 * rate` radians, onto it once within reach. FUN_1403b6560
+    /// makes the new heading the wished one too, so an older wish does not
+    /// pull against the turn. Returns true while the heading differs.
     pub fn turn_dir(&mut self, direction: Vec3, rate: f32) -> bool {
         let rate = if rate == 0. { self.turn_rate } else { rate };
         let step = rate * actor_physics::PHYSICS_STEP;
-        let delta = wrap(direction[0].atan2(direction[2]) - self.yaw);
-        if delta > step {
-            self.yaw = wrap(step + self.yaw);
-            true
+        let heading = direction[0].atan2(direction[2]);
+        let delta = wrap(heading - self.yaw);
+        let (yaw, turning) = if delta > step {
+            (wrap(step + self.yaw), true)
         } else if -step <= delta {
-            self.yaw = wrap(self.yaw);
-            false
+            (wrap(heading), false)
         } else {
-            self.yaw = wrap(self.yaw - step);
-            true
-        }
+            (wrap(self.yaw - step), true)
+        };
+        self.yaw = yaw;
+        self.wish_yaw = Some(yaw);
+        turning
     }
 
     pub fn forward(&self) -> Vec3 {
@@ -1368,6 +1374,7 @@ impl Sysobj {
             };
             self.apply_movement(wished, env);
             self.leave_ground(clips, env);
+            self.range_land(clips);
         }
         // FUN_1403b89a0 adds the frame's move request (`obj_move_request`,
         // +0xa58 direction, +0xa64 speed) times the frame time, then clears
@@ -1574,6 +1581,45 @@ impl Sysobj {
         }
     }
 
+    /// FUN_1403b9090's land branch is the `else` of "a grounded mode with no
+    /// hold range": an object in a grounded mode under `+0x18c & 0x1000020`
+    /// (or `+0x120` bit 23, FUN_1403ba1e0) that is not rising, with a floor
+    /// under it, lands too, every tick until its motion changes. No range 3
+    /// (`+0x18c` bit 5). Script event 0xe often takes it (M_EX420's motion
+    /// 203 to 204); otherwise the ground mode's slot 6 does nothing and the
+    /// class's vt+0x58 runs ([`Sysobj::land_on_range`]).
+    fn range_land(&mut self, clips: &dyn Clips) {
+        let w = self.motion.flags.word;
+        if w & 0x100_0020 == 0 && self.flags >> 23 & 1 == 0 {
+            return;
+        }
+        if w & motion::flag::GRAVITY_FROZEN != 0 || self.wished[1] > 0. || self.no_floor {
+            return;
+        }
+        if self.map_body.is_none() {
+            return;
+        }
+        self.flags &= !0x800_0000;
+        if self.defer_ground {
+            self.ground = Some(Ground::RangeLand);
+        } else {
+            self.land_on_range(clips);
+        }
+    }
+
+    /// FUN_1403b7890 (the classes' vt+0x58): motion 5 with idle behind it,
+    /// if the set has it and not `+0x194` bit 4; the ground mode; `+0x120`
+    /// bit 27.
+    pub fn land_on_range(&mut self, clips: &dyn Clips) {
+        if self.motion.flags.word3 & 0x10 == 0
+            && clips.length(5) != 0
+            && self.motion_start(5, 0., clips)
+        {
+            self.motion_queue.push((0, 0.));
+        }
+        self.flags |= 0x800_0000;
+    }
+
     /// FUN_1403cb940 (mode slot 6): touching down plays the land motion with
     /// idle queued behind it (FUN_1403c8310(motion 0)) and returns to the
     /// ground mode.
@@ -1641,8 +1687,19 @@ impl Sysobj {
             self.sampler.store([velocity[0] * dt, dy, velocity[1] * dt]);
         }
         self.jump = Some((arc, velocity));
-        let d = self.sampler.displacement();
+        let mut d = self.sampler.displacement();
         self.jump_float = (floating, d[1]);
+        // FUN_1403b89a0 adds the motion root's change in every mode
+        // (FUN_1403b7ca0, turned by the facing). Its height counts too: while
+        // a gravity range holds the arc (FUN_1403cb100 adds no height under
+        // `+0x18c & 0x1000020`) an authored fall comes down by it (M_EX630's
+        // motion 210); otherwise the arc takes the height back on its next
+        // step, as FUN_1403cb100 aims at the arc's height.
+        let root = self.motion.root_step;
+        let (sin, cos) = self.yaw.sin_cos();
+        d[0] += root[0] * cos + root[2] * sin;
+        d[1] += root[1];
+        d[2] += -root[0] * sin + root[2] * cos;
         self.apply_movement(d, env);
         // FUN_1403cb680 (mode slot 7): the fall motion starts five ticks before
         // the apex, once.

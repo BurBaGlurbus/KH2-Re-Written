@@ -545,6 +545,20 @@ fn an_unblended_start_fires_the_frame_events_at_frame_0() {
     assert!(!s.effects.contains(&crate::motion::Effect::Takeoff));
 }
 #[test]
+fn turning_takes_over_the_wish_and_lands_on_the_heading() {
+    // FUN_1403b9f70 -> FUN_1403b6560: an older wish does not pull against the
+    // turn, and within reach the heading is the target's.
+    let mut s = Sysobj::bare();
+    s.turn_rate = 0.1;
+    s.wish_yaw = Some(-1.);
+    assert!(s.turn_dir([1., 0., 0.], 0.));
+    assert!((s.yaw - 0.2).abs() < 1e-6);
+    assert_eq!(s.wish_yaw, Some(s.yaw));
+    s.yaw = std::f32::consts::FRAC_PI_2 - 0.1;
+    assert!(!s.turn_dir([1., 0., 0.], 0.));
+    assert!((s.yaw - std::f32::consts::FRAC_PI_2).abs() < 1e-6);
+}
+#[test]
 fn a_fly_jump_plays_its_own_motions_and_goes_back_to_flying() {
     // M_EX890's `obj_flyjump(v, 3, 0, 1)`: fall on 4 near the apex
     // (FUN_1403cb610), land on 5 (FUN_1403cb2a0), back in mode 5 (+0x108).

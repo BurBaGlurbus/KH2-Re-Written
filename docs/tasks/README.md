@@ -254,6 +254,7 @@ Records through T128 retain historical commands and paths. See [the folder guide
 | [T283](T283-enemy-sweep-on-their-own-maps.md) | Every placed enemy run on a map where it spawns: placement list, trap census, per-model report | PARTIAL. Tools; fixes have their own records. |
 | [T287](T287-flyers-fly-jumps-and-hit-reactions.md) | Flyers know they fly, fly-jumps end, hit reactions and the flying blow follow the executable | PARTIAL. Frozen flyers move in tours; not compared with the installed game. |
 | [T288](T288-enemy-fades-shown-and-aerial-hop.md) | Enemies' alpha fades and hiding are drawn; an aerial hit hops from any mode | PARTIAL. Two hold-in-air behaviours stay open; not compared with the installed game. |
+| [T289](T289-range-held-motions-land-and-turns-arrive.md) | Range-held motions come down and land; `obj_turn_dir` arrives | PARTIAL. Stuck acts move in tours; not compared with the installed game. |
 | [T291](T291-area-glow-pass.md) | The area glow post-effect dk::Glow, on the scene's alpha as the exe's stencil (issue #21) | PASS for the room, world map and events; not compared with the installed game. |
 | [T292](T292-map-sun-lens-programs.md) | The map sun's lens programs 221, 223, 224, 225 and its depth visibility test (issue #62) | PASS for the programs and the count; the flare not yet seen in a capture. |
 | [T293](T293-ribbon-pair-and-spaces.md) | pppEiDrawShipoly's pair mode, averaged edges, taper and view-inverse space (issue #63) | PARTIAL. Pair ribbons draw through T295; space 2 needs the object list's writer (#65). |

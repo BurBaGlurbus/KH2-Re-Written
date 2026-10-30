@@ -55,7 +55,7 @@ modes come only from:
 - a Sora reaction (FUN_140405ed0, FUN_140406020, reaction 0x1a5);
 - Sora's own routines (FUN_140536330, FUN_14053b6f0, FUN_14053bc00, FUN_14053d230, FUN_14053d340).
 
-Nothing is ported for them here.
+Nothing is ported for them here. (Correction, T289: the Gambler's `player_dice` and `player_card` put Sora in modes 0x2b and 0x2e, and those lead to 0x2c and 0x31, so M_EX950 does reach them.)
 
 ## Changes
 
