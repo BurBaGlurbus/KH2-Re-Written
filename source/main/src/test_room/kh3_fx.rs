@@ -28,18 +28,11 @@ use visual::effect_draw::{Blend as DrawBlend, EffectMaterial};
 
 const KEY_BASE: u32 = 0x4b33_0000;
 const SWING_BANK: &str = "/Game/Sound/SE/weapon/02001";
-/// `se10010`, the rock surface's steps: slot 1 a walk's, slot 2 a run's.
-const FOOT_WALK: &str = "/Game/Sound/SE/footstep/10000_sora/10010/se10010_001";
-const FOOT_RUN: &str = "/Game/Sound/SE/footstep/10000_sora/10010/se10010_002";
-/// `BoneSet_Sora1`'s toes.
-const TOES: [&str; 2] = ["L_ashi2", "R_ashi2"];
-/// A foot this close to the sole of the pose may be coming down (cm).
-const STEP_HEIGHT: f32 = 25.;
+const FOOT_TABLE: &str = "/Game/Sound/SE/_Data/MASTS/FsTable_Sora";
+const FOOT_SETTING: &str = "/Game/Sound/SE/_Data/MASTS/DetectioinSetting_Sora";
 /// The triangles of mesh particles built on the CPU each frame; past it every
 /// few are left out (a shot's bolts ask for a million).
 const MESH_BUDGET: usize = 150_000;
-/// The least time between two of a Sora's steps (a foot that settles twice).
-const STEP_GAP: f32 = 0.18;
 const TRAIL: &str = "/Game/Effects/wep/w_so010/par/VW_SO010_LOC0";
 
 /// A material as the renderer draws it.
@@ -85,6 +78,78 @@ pub(crate) enum Cue {
         path: String,
         end: Option<String>,
     },
+    /// A table entry of the auto SE for the current surface (`SQEXSEADAnimNotify(State)_PlayAutoSe`).
+    AutoSe {
+        motion: kh3_autose::Motion,
+        state: bool,
+    },
+    /// The auto SE's detectors for the window (`SQEXSEADAnimNotifyState_ChangeAutoSeEnable`).
+    AutoEnable(bool),
+}
+
+/// `FsTable_Sora`: per surface the sounds of motion types 1 to 6, then the others from type 7.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct FootTable {
+    pub(crate) per_surface: Vec<[Option<String>; 6]>,
+    pub(crate) others: Vec<Option<String>>,
+    pub(crate) settings: kh3_autose::Settings,
+}
+
+impl FootTable {
+    fn sound(&self, surface: usize, motion: kh3_autose::Motion) -> Option<&String> {
+        let t = motion as usize;
+        if t <= 6 {
+            self.per_surface.get(surface)?.get(t - 1)?.as_ref()
+        } else {
+            self.others.get(t - 7)?.as_ref()
+        }
+    }
+
+    fn read(paks: &Paks) -> Option<FootTable> {
+        let p = paks.game_package(FOOT_TABLE).ok()??;
+        let (props, _) = data::kh3::props::export_props(&p, 0).ok()?;
+        let path = |v: &data::kh3::props::Value| {
+            v.as_str()
+                .filter(|s| !s.is_empty() && *s != "None")
+                .map(|s| s.split('.').next().unwrap_or(s).to_owned())
+        };
+        let mut table = FootTable::default();
+        for q in props.all("PerSurfaceInfos") {
+            let Some(row) = q.value.as_props() else {
+                continue;
+            };
+            let at = q.index.max(0) as usize;
+            if table.per_surface.len() <= at {
+                table.per_surface.resize(at + 1, Default::default());
+            }
+            for s in row.all("SoundAssetPaths") {
+                if let Some(slot) = table.per_surface[at].get_mut(s.index.max(0) as usize) {
+                    *slot = path(&s.value);
+                }
+            }
+        }
+        if let Some(row) = props.props("NonSurfaceInfos") {
+            for s in row.all("SoundAssetPaths") {
+                let at = s.index.max(0) as usize;
+                if table.others.len() <= at {
+                    table.others.resize(at + 1, None);
+                }
+                table.others[at] = path(&s.value);
+            }
+        }
+        if let Some(p) = paks.game_package(FOOT_SETTING).ok().flatten()
+            && let Ok((props, _)) = data::kh3::props::export_props(&p, 0)
+            && let Some(foot) = props.props("DetectorSettingFootStep")
+        {
+            if let Some(v) = foot.f32("FootShuffleAssumeBodyStopVelocityThreshold") {
+                table.settings.shuffle_body_velocity = v;
+            }
+            if let Some(v) = foot.f32("FootShuffleDetectFootAccelThreshold") {
+                table.settings.shuffle_foot_accel = v;
+            }
+        }
+        Some(table)
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -104,6 +169,7 @@ pub(crate) struct FxData {
     pub(crate) sounds: SoundBook,
     /// Effect name to the sounds its SeAttach data plays.
     pub(crate) effect_sounds: HashMap<String, Vec<String>>,
+    pub(crate) feet: FootTable,
 }
 
 /// Decoded sounds by their asset.
@@ -278,6 +344,29 @@ fn trigger_of(n: &sora::Notify, out: &mut Vec<Trigger>) {
                 });
             }
         }
+        "SQEXSEADAnimNotify_PlayAutoSe" | "SQEXSEADAnimNotifyState_PlayAutoSe" => {
+            let motion = n
+                .props
+                .props("PlaySettings")
+                .and_then(|s| s.str("MotionSoundType"))
+                .and_then(kh3_autose::Motion::named);
+            if let Some(motion) = motion {
+                out.push(Trigger {
+                    start: n.start,
+                    end: n.end,
+                    cue: Cue::AutoSe {
+                        motion,
+                        state: n.state,
+                    },
+                });
+            }
+        }
+        "SQEXSEADAnimNotifyState_ChangeAutoSeEnable" => out.push(Trigger {
+            start: n.start,
+            end: n.end,
+            // The class default is off; only the glide loops' windows turn it on.
+            cue: Cue::AutoEnable(n.props.0.iter().any(|q| q.value.as_bool() == Some(true))),
+        }),
         "SQEXSEADAnimNotifyState_AttachSound" => {
             if let Some(path) = object(&n.props, "Sound") {
                 out.push(Trigger {
@@ -370,8 +459,15 @@ pub(crate) fn load(
     let mut sounds: Vec<String> = (1..=10)
         .map(|i| format!("{SWING_BANK}/se02001_{}", 100 + i))
         .chain((1..=7).map(|i| format!("{SWING_BANK}/se02001_00{i}")))
-        .chain([FOOT_WALK.to_owned(), FOOT_RUN.to_owned()])
         .collect();
+    let feet = FootTable::read(paks).ok_or("KH3's footstep table is missing")?;
+    // The surfaces a duel has, and the sounds that have none.
+    for surface in [0, 10, 11] {
+        if let Some(row) = feet.per_surface.get(surface) {
+            sounds.extend(row.iter().flatten().cloned());
+        }
+    }
+    sounds.extend(feet.others.iter().flatten().cloned());
     for list in triggers.values() {
         for t in list {
             match &t.cue {
@@ -382,7 +478,7 @@ pub(crate) fn load(
                     sounds.push(path.clone());
                     sounds.extend(end.clone());
                 }
-                Cue::Trail => {}
+                Cue::Trail | Cue::AutoSe { .. } | Cue::AutoEnable(_) => {}
             }
         }
     }
@@ -550,6 +646,7 @@ pub(crate) fn load(
         textures,
         sounds: book,
         effect_sounds,
+        feet,
     })
 }
 
@@ -651,8 +748,10 @@ struct Replay {
     serial: u32,
     clip: String,
     time: f32,
-    /// Held sounds' mixer keys and when they end.
-    held: Vec<(u32, f32)>,
+    /// Held sounds' mixer keys, when they end and the sound that follows.
+    held: Vec<(u32, f32, Option<String>)>,
+    /// The auto SE's enable windows' ends (their value lasts until then).
+    auto_enable: Option<(bool, f32)>,
 }
 
 /// A sound scheduled in the near future.
@@ -687,9 +786,11 @@ pub(crate) struct Kh3Fx {
     holding: bool,
     rng: u32,
     draw: DrawList,
-    /// Each Sora's toes: last height, and whether they were coming down.
-    feet: [[(f32, bool); 2]; 4],
-    last_step: [f32; 4],
+    /// Each Sora's auto SE detector, and when it last ran.
+    autose: [kh3_autose::AutoSe; 2],
+    auto_clock: [f32; 2],
+    /// The arena's surface in `FsTable_Sora`.
+    pub(crate) surface: usize,
 }
 
 struct Batch {
@@ -1268,9 +1369,14 @@ fn replay(
         r.serial = serial;
         r.clip = clip.name.clone();
         r.time = -1e-4;
+        r.auto_enable = None;
         let held = std::mem::take(&mut r.held);
-        for (key, _) in held {
+        let at = socket_xform(data, body, "kubi", false).map(|x| x.position);
+        for (key, _, end) in held {
             stop_key(fx, key);
+            if let Some(end) = end {
+                play_sound(fx, &end, 1., 1., at, camera, None);
+            }
         }
     }
     let from = fx.replays[seat].time;
@@ -1280,15 +1386,22 @@ fn replay(
     }
     let from = fx.replays[seat].time;
     fx.replays[seat].time = time;
-    let ended: Vec<u32> = fx.replays[seat]
+    let ended: Vec<(u32, Option<String>)> = fx.replays[seat]
         .held
         .iter()
         .filter(|h| h.1 <= time)
-        .map(|h| h.0)
+        .map(|h| (h.0, h.2.clone()))
         .collect();
     fx.replays[seat].held.retain(|h| h.1 > time);
-    for key in ended {
+    let at = socket_xform(data, body, "kubi", false).map(|x| x.position);
+    for (key, end) in ended {
         stop_key(fx, key);
+        if let Some(end) = end {
+            play_sound(fx, &end, 1., 1., at, camera, None);
+        }
+    }
+    if fx.replays[seat].auto_enable.is_some_and(|e| e.1 <= time) {
+        fx.replays[seat].auto_enable = None;
     }
     let Some(triggers) = fx
         .data
@@ -1394,14 +1507,37 @@ fn replay(
                     play_sound(fx, &p, 1., 1., at, camera, Some(key));
                 }
             }
-            Cue::Held { path, .. } => {
+            Cue::Held { path, end } => {
                 let at = socket_xform(data, body, "kubi", false).map(|x| x.position);
                 fx.next_key = fx.next_key.wrapping_add(1) & 0xff;
                 let key = KEY_BASE | 0x4000 | fx.next_key;
                 fx.holding = true;
                 play_sound(fx, path, 1., 1., at, camera, Some(key));
                 fx.holding = false;
-                fx.replays[seat].held.push((key, t.end));
+                fx.replays[seat].held.push((key, t.end, end.clone()));
+            }
+            Cue::AutoSe { motion, state } => {
+                let path = fx
+                    .data
+                    .as_ref()
+                    .and_then(|d| d.feet.sound(fx.surface, *motion).cloned());
+                let Some(path) = path else {
+                    continue;
+                };
+                let at = socket_xform(data, body, "L_ashi1", false).map(|x| x.position);
+                if *state {
+                    fx.next_key = fx.next_key.wrapping_add(1) & 0xff;
+                    let key = KEY_BASE | 0x4000 | fx.next_key;
+                    fx.holding = true;
+                    play_sound(fx, &path, 1., 1., at, camera, Some(key));
+                    fx.holding = false;
+                    fx.replays[seat].held.push((key, t.end, None));
+                } else {
+                    play_sound(fx, &path, 1., 1., at, camera, None);
+                }
+            }
+            Cue::AutoEnable(on) => {
+                fx.replays[seat].auto_enable = Some((*on, t.end));
             }
         }
     }
@@ -1541,6 +1677,7 @@ pub(crate) fn body_step(
     row: u16,
     time_in: f32,
     camera: Vec3,
+    grounded: bool,
 ) {
     if fx.world.is_none() {
         return;
@@ -1561,7 +1698,7 @@ pub(crate) fn body_step(
         visual.at[0],
         to_kh3(camera),
     );
-    footsteps(fx, data, &body, visual.row, camera);
+    footsteps(fx, data, &body, grounded, camera);
     // Attached effects follow their sockets; trails take the blade's edge.
     let mut live = std::mem::take(&mut fx.live);
     for l in &live {
@@ -1589,40 +1726,39 @@ pub(crate) fn body_step(
     fx.live = live;
 }
 
-/// `SQEXSEADAutoSeComponent`'s footsteps: a step as a toe stops coming down.
-/// [approximate: the component's own detection was not read; the bones and
-/// the bank are its.]
-fn footsteps(fx: &mut Kh3Fx, data: &SoraData, body: &Body, row: &str, camera: Vec3) {
-    let sound = match row {
-        "WalkLoopB" => Some(FOOT_WALK),
-        "RunLoopB" => Some(FOOT_RUN),
-        _ => None,
-    };
-    let Some(seat) = fx.feet.get(usize::from(body.seat)).copied() else {
+/// `SQEXSEADAutoSeComponent`: the detector at 60 Hz on the pose's bones, its sounds at their parts' bones.
+fn footsteps(fx: &mut Kh3Fx, data: &SoraData, body: &Body, grounded: bool, camera: Vec3) {
+    let seat = usize::from(body.seat);
+    if seat >= fx.autose.len() {
+        return;
+    }
+    let dt = fx.clock - fx.auto_clock[seat];
+    if dt < 1. / 60. - 1e-4 {
+        return;
+    }
+    fx.auto_clock[seat] = fx.clock;
+    let mut bones = [glam::Vec3::ZERO; 14];
+    let actor = glam::Mat3::from_rotation_z(-body.yaw);
+    for (at, name) in bones.iter_mut().zip(kh3_autose::BONES) {
+        let Some(b) = data.bone(name).and_then(|i| body.component.get(i)) else {
+            return;
+        };
+        *at = body.at + actor * glam::Vec3::from_array(b.translation);
+    }
+    let frame = kh3_autose::Frame::of(&bones, grounded);
+    let listener = (body.at - to_kh3(camera)).length() * 0.01;
+    let Some(feet) = fx.data.clone() else {
         return;
     };
-    let mut seat = seat;
-    for (foot, name) in seat.iter_mut().zip(TOES) {
-        let Some(height) = data
-            .bone(name)
-            .and_then(|i| body.component.get(i))
-            .map(|b| b.translation[2])
-        else {
+    let enabled = fx.replays[seat].auto_enable.is_none_or(|e| e.0);
+    let events = fx.autose[seat].step(dt, &frame, listener, enabled, &feet.feet.settings);
+    for e in events {
+        let Some(path) = feet.feet.sound(fx.surface, e.motion) else {
             continue;
         };
-        let falling = height < foot.0 - 0.01;
-        if foot.1
-            && !falling
-            && height < STEP_HEIGHT
-            && fx.clock - fx.last_step[usize::from(body.seat)] >= STEP_GAP
-            && let Some(sound) = sound
-        {
-            fx.last_step[usize::from(body.seat)] = fx.clock;
-            play_sound(fx, sound, 1., 1., Some(body.at), to_kh3(camera), None);
-        }
-        *foot = (height, falling);
+        let at = socket_xform(data, body, e.part.bone(), false).map(|x| x.position);
+        play_sound(fx, path, e.volume, 1., at, to_kh3(camera), None);
     }
-    fx.feet[usize::from(body.seat)] = seat;
 }
 
 /// Steps the evaluator at 60 Hz, starts sounds due and draws.

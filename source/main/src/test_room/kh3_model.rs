@@ -574,6 +574,7 @@ pub(crate) fn update(
             dt,
         );
         sora::to_component(&data.mesh.bones, &rig.animator.saved, &mut rig.component);
+        fx.surface = kh3_autose::surface_of_arena(game.duel_arena);
         kh3_fx::body_step(
             &mut fx,
             data,
@@ -585,6 +586,7 @@ pub(crate) fn update(
             row,
             time_in,
             camera_at,
+            !p.in_air(),
         );
         for &(bone, e) in &rig.joints {
             if let (Ok(mut t), Some(c)) = (transforms.get_mut(e), rig.component.get(bone)) {

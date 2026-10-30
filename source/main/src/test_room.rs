@@ -105,6 +105,7 @@ mod enemy_script;
 mod enemy_target;
 mod enemy_tour;
 mod fighter;
+mod kh3_autose;
 mod kh3_book;
 mod kh3_core;
 mod kh3_camera;
