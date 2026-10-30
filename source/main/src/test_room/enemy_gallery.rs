@@ -22,8 +22,8 @@ pub struct GalleryRoot(pub u64);
 
 #[derive(Component)]
 pub struct GalleryPart {
-    /// The alpha last given to the part's material.
-    alpha: f32,
+    /// The colour and alpha last given to the part's material.
+    shown: [f32; 4],
     actor: u64,
     ordinal: usize,
     revision: u64,
@@ -744,7 +744,7 @@ fn summon(
                 actor: id,
                 ordinal,
                 revision: 0,
-                alpha: 1.,
+                shown: [1.; 4],
             });
         }
     }
@@ -1247,21 +1247,26 @@ pub fn present(
     for (mut part, mesh, mut visibility, material) in &mut parts {
         visibility.set_if_neq(model_visibility);
         // The object's alpha (+0xa08), scripts' fades and frame events 0x17
-        // and 0x18. A part is opaque again once the fade has run out.
-        let alpha = gallery
+        // and 0x18, and its mesh group's colour (+0xac4). A part is opaque
+        // again once the fades have run out.
+        let shown = gallery
             .actors
             .iter()
             .find(|a| a.id == part.actor)
-            .map_or(1., |a| {
-                a.battle
-                    .as_ref()
-                    .map_or(a.made_shown.0, |b| b.brain.shown().0)
+            .map_or([1.; 4], |a| {
+                let Some(b) = a.battle.as_ref() else {
+                    return [1., 1., 1., a.made_shown.0];
+                };
+                let group = a.kind.model.parts[part.ordinal].mesh_group;
+                let [r, g, b2, t] = b.brain.part_tint(group);
+                [r, g, b2, t * b.brain.shown().0]
             });
-        if part.alpha != alpha {
-            part.alpha = alpha;
+        if part.shown != shown {
+            part.shown = shown;
             if let Some(mut m) = materials.get_mut(material.0.id()) {
-                m.base.base_color.set_alpha(alpha);
-                m.base.alpha_mode = if alpha < 1. {
+                let [r, g, b, a] = shown;
+                m.base.base_color = Color::srgba(r, g, b, a);
+                m.base.alpha_mode = if a < 1. {
                     AlphaMode::Blend
                 } else {
                     AlphaMode::Opaque
@@ -1701,7 +1706,7 @@ mod tests {
             .world_mut()
             .spawn((
                 GalleryPart {
-                    alpha: 1.,
+                    shown: [1.; 4],
                     actor: 1,
                     ordinal: 0,
                     revision: 0,

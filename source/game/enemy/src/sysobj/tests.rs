@@ -662,3 +662,25 @@ fn a_hook_changes_only_the_motion_started_after_it() {
     assert_eq!(s.motion.table, Some(161));
     assert_eq!(s.playing_model() >> MODEL_ENTRY_BITS, 162);
 }
+
+#[test]
+fn a_part_colour_fades_in_on_its_groups_and_its_record_goes_when_it_fades_out() {
+    let mut s = Sysobj::bare();
+    assert_eq!(s.part_tint(3), [1.; 4]);
+    // FUN_1403cd670's frame event colour: no alpha at the end of the fade.
+    s.set_parts_color(1 << 3, 0x80_8080, 4.);
+    assert_eq!(s.part_tint(3), [1.; 4], "the fade starts at nothing");
+    for _ in 0..4 {
+        s.step_part_colors(1.);
+    }
+    assert_eq!(s.part_tint(3), [1., 1., 1., 0.]);
+    assert_eq!(s.part_tint(2), [1.; 4], "another group");
+    // The same mask finds the same record.
+    s.reset_parts_color(1 << 3, 4.);
+    assert_eq!(s.part_colors.iter().filter(|r| r.mask != 0).count(), 1);
+    for _ in 0..4 {
+        s.step_part_colors(1.);
+    }
+    assert_eq!(s.part_colors[7], PartColor::default());
+    assert_eq!(s.part_tint(3), [1.; 4]);
+}

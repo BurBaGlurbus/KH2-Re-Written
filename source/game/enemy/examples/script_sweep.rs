@@ -149,7 +149,7 @@ fn run(
     for partner in partners {
         match *partner {
             Partner::Entry(e) => {
-                world.appear(&env, 0, e);
+                world.appear(0, e);
             }
             other => {
                 let id = world.objects.len().max(1) as u32;

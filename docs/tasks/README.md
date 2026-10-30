@@ -273,3 +273,4 @@ Records through T128 retain historical commands and paths. See [the folder guide
 | [T302](T302-general-lag.md) | General lag, the biggest frame costs first: a model's parts merged by texture | PARTIAL. Each fix has its table; real play not measured. |
 | [T303](T303-journal-puzzles.md) | The Journal's Puzzles: menu, board, tutorial, solved banner, List of Pieces (issue #68) | PASS in the test room; piece pickups not built; not compared with the installed game. |
 | [T304](T304-motion-hook-tables.md) | Motion hook tables: the second forms of the Devastator, Trick Ghost, Creeper Plant and Gambler; `obj_is_air` | PARTIAL |
+| [T305](T305-made-init-boss-runs-part-colours.md) | A made object's OBJ_INIT waits for its first update; statics across fighters; boss-class objects run behind a switch; part colours | PARTIAL |

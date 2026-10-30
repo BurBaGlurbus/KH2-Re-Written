@@ -280,6 +280,16 @@ pub fn model_entry(model: u32) -> u32 {
 fn table_model(model: u32, hook: Option<i32>) -> u32 {
     model_entry(model) | hook.map_or(0, |h| (h as u32 + 1) << MODEL_ENTRY_BITS)
 }
+/// A part colour record (sysobj+0xac4, eight of them): the mesh groups it
+/// tints (a bit each), its colour and how far it has faded in.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct PartColor {
+    pub mask: u32,
+    /// Red, green, blue and alpha, with 0x80 as 1.0.
+    pub color: [u8; 4],
+    pub fade: Fade,
+}
+
 /// An alpha fade (sysobj+0xa08: value, rate per tick; FUN_1403b7810/77c0).
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Fade {
@@ -346,6 +356,8 @@ pub struct Sysobj {
     pub wish_yaw: Option<f32>,
     /// +0x30: scale (y animated by scripts).
     pub scale: Vec3,
+    /// +0xac4.
+    pub part_colors: [PartColor; 8],
     /// Alpha as faded by +0xa08.
     pub alpha: f32,
     pub fade: Fade,
@@ -773,6 +785,7 @@ impl Sysobj {
             yaw,
             wish_yaw: None,
             scale: [1.; 3],
+            part_colors: Default::default(),
             alpha: 1.,
             fade: Fade {
                 value: 1.,
@@ -979,6 +992,60 @@ impl Sysobj {
         m.blend = 0.;
         m.root_step = [0.; 3];
         m.flags.word |= motion::flag::ENDED;
+    }
+
+    /// FUN_14040efe0: the record of exactly this mask, else the last free one
+    /// (which then takes the mask).
+    fn part_color(&mut self, mask: u32) -> &mut PartColor {
+        let same = self.part_colors.iter().position(|r| r.mask == mask);
+        let free = self.part_colors.iter().rposition(|r| r.mask == 0);
+        let r = &mut self.part_colors[same.or(free).unwrap_or(7)];
+        r.mask = mask;
+        r
+    }
+
+    /// FUN_1403cd670 (`obj_set_parts_color`, frame event 0x1a).
+    pub fn set_parts_color(&mut self, mask: u32, color: u32, ticks: f32) {
+        let r = self.part_color(mask);
+        r.color = color.to_le_bytes();
+        r.fade.start(0., 1., ticks);
+    }
+
+    /// FUN_1403cd4c0 (`obj_reset_parts_color`, frame event 0x1b).
+    pub fn reset_parts_color(&mut self, mask: u32, ticks: f32) {
+        let r = self.part_color(mask);
+        let from = r.fade.value;
+        r.fade.start(from, 0., ticks);
+    }
+
+    /// FUN_14040f020's walk, once a frame: a record whose running fade has
+    /// reached nothing is freed.
+    fn step_part_colors(&mut self, frame_time: f32) {
+        for r in &mut self.part_colors {
+            if r.mask != 0 && r.fade.rate != 0. {
+                r.fade.step(frame_time);
+                if r.fade.value == 0. {
+                    *r = PartColor::default();
+                }
+            }
+        }
+    }
+
+    /// FUN_14040f020's colour for mesh group `group`, as multipliers of the
+    /// object's colour and alpha: each channel `(byte((c - 0x80) * fade) +
+    /// 0x80) / 0x80`. [I] The first record that names the group wins.
+    pub fn part_tint(&self, group: u8) -> [f32; 4] {
+        let Some(r) = self
+            .part_colors
+            .iter()
+            .find(|r| r.mask >> (group & 31) & 1 != 0)
+        else {
+            return [1.; 4];
+        };
+        r.color.map(|c| {
+            let c = ((f32::from(c) - 128.) * r.fade.value) as i32 as u8;
+            f32::from(c.wrapping_add(0x80)) / 128.
+        })
     }
 
     /// FUN_1403c7c10 / FUN_1403c8f10: a hook table's motions take over from
@@ -1199,6 +1266,7 @@ impl Sysobj {
         if self.gone {
             return;
         }
+        self.step_part_colors(1.);
         let clips = env.clips(self.playing_model());
         let m = &mut self.motion;
         m.flags.pulses = 0;
@@ -1240,13 +1308,15 @@ impl Sysobj {
             // FUN_1403c6740: a clock that reached the end with a motion queued
             // behind it (`trap_sysobj_motion_push`) starts that motion now, and
             // the end bit is set after the start (`motion_is_end` sees it).
+            // That motion comes from the table in use now, not the ended one's.
+            let next = env.clips(self.model);
             if ended
                 && !self.motion_queue.is_empty()
                 && let (slot, blend) = self.motion_queue.remove(0)
-                && self.motion_start(slot, blend, clips)
+                && self.motion_start(slot, blend, next)
             {
                 self.motion.flags.word |= motion::flag::ENDED;
-                self.dispatch_ranges(clips);
+                self.dispatch_ranges(next);
                 return;
             }
         }
@@ -1333,7 +1403,7 @@ impl Sysobj {
         if self.gone {
             return;
         }
-        let clips = env.clips(self.playing_model());
+        let clips = env.clips(self.model);
         let no_control = self.motion.flags.word & motion::flag::NO_CONTROL != 0;
         let reacting = self.reaction != Reaction::None && self.hp > 0;
         if reacting {

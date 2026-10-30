@@ -205,7 +205,12 @@ impl Catalog {
             // Objentry.cs names 3/12 bosses and 4/21 normal enemies. Keep
             // every candidate and every direct journal enemy, without treating
             // boss type as proof of Heartless/Nobody species.
+            // The gimmicks some bosses search for (type 8) only for the boss
+            // runs (`enemy_battle::supported`).
+            let gimmick =
+                object.object_type == 8 && std::env::var_os("KH2RW_ENEMY_BOSSES").is_some();
             if !matches!(object.object_type, 3 | 4 | 12 | 21)
+                && !gimmick
                 && !journal.iter().any(|j| j.object == object.object_id)
             {
                 continue;

@@ -1497,6 +1497,9 @@ impl ScriptBrain {
         }
         out
     }
+    pub fn part_tint(&self, group: u8) -> [f32; 4] {
+        self.object.sys.part_tint(group)
+    }
     /// See [`super::enemy_battle::Brain::shown`].
     pub fn shown(&self) -> (f32, bool) {
         let s = &self.object.sys;

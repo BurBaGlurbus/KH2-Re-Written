@@ -46,6 +46,8 @@ pub struct Object {
     /// It belongs to another world's host and is in this one's list only for
     /// searches and handle lookups: nothing here runs it.
     pub lent: bool,
+    /// FUN_1403b44d0 has not run yet: OBJ_INIT waits for the first update.
+    pub init_pending: bool,
 }
 
 /// A detached thread of an object's own program that shares its work
@@ -73,6 +75,7 @@ impl Object {
             friend: None,
             threads: Vec::new(),
             lent: false,
+            init_pending: false,
             script: ScriptSpace {
                 instance: Instance::placeholder(),
                 stack_bytes: 0,
@@ -490,8 +493,8 @@ pub struct World {
     pub player_proxy: Option<Box<Object>>,
     /// Objects that are in the engine's list but held outside `objects`
     /// for now: the one the host runs itself while the others tick, and the
-    /// object whose `sysobj_appear` is building another (its OBJ_INIT runs
-    /// inside the maker's trap). Searches and handle lookups see them.
+    /// object whose `sysobj_appear` is running. Searches and handle lookups
+    /// see them.
     pub held: Vec<Box<Object>>,
     /// The attack objects scripts created (`attack_new`), by slot.
     pub attacks: Vec<Option<crate::attack::Attack>>,
@@ -663,7 +666,7 @@ impl World {
     /// FUN_1403df930 as the host sees it: build the object the spawner
     /// describes, run its OBJ_INIT and put it in the object list. Returns its
     /// id; `me` is the object whose script asked (never reused).
-    pub fn appear(&mut self, env: &dyn Env, me: ObjId, entry: u32) -> Option<ObjId> {
+    pub fn appear(&mut self, me: ObjId, entry: u32) -> Option<ObjId> {
         // An OBJ_INIT that makes objects of its own entry would recurse
         // without end; the executable's object table is finite.
         if self.appear_depth >= MAX_APPEAR_DEPTH {
@@ -674,26 +677,22 @@ impl World {
         self.spawner = Some(spawner);
         let built = built?;
         self.appear_depth += 1;
-        let made = self.appear_built(env, me, entry, built);
+        let made = self.appear_built(me, entry, built);
         self.appear_depth -= 1;
         made
     }
 
-    fn appear_built(
-        &mut self,
-        env: &dyn Env,
-        me: ObjId,
-        entry: u32,
-        built: Appeared,
-    ) -> Option<ObjId> {
+    fn appear_built(&mut self, me: ObjId, entry: u32, built: Appeared) -> Option<ObjId> {
         let id = match self.make_id {
             Some(make) => make(),
             None => (self.objects.len() as u32).max(me + 1).max(1),
         };
         let mut sys = built.sys;
         sys.entry_id = entry;
+        // Its OBJ_INIT waits for its first update: the maker's script goes on
+        // first, and may set what that OBJ_INIT reads (B_LK120's unit argument).
         let object = match built.payload {
-            Some(payload) => Object::spawn(self, env, id, &payload, sys).ok()?,
+            Some(payload) => Object::spawn_later(id, &payload, sys).ok()?,
             None => {
                 let mut o = Object::bare(id);
                 o.sys = sys;
@@ -931,7 +930,20 @@ impl World {
 
     /// `trap_memory_alloc`: a zeroed block in the shared static area.
     pub fn alloc(&mut self, bytes: u32) -> u32 {
-        let words = bytes.div_ceil(4).max(1) as usize;
+        self.take_words(bytes.div_ceil(4).max(1) as usize)
+    }
+
+    /// Zeroed words: in a list of several worlds from the shared store, as a
+    /// handle one script hands another must mean the same to both.
+    fn take_words(&mut self, words: usize) -> u32 {
+        if self.in_list
+            && let Ok(mut team) = self.teamwork.lock()
+            && team.words.len() * 4 + words * 4 < TEAMWORK_SPAN as usize
+        {
+            let at = team.words.len() as u32 * 4;
+            team.words.extend(std::iter::repeat_n(0, words));
+            return TEAMWORK_HANDLES + at;
+        }
         let at = self.static_words.len() as u32 * 4;
         self.static_words.extend(std::iter::repeat_n(0, words));
         script::EXTERN_SEGMENT + STATIC_BASE + at
@@ -1075,21 +1087,18 @@ impl World {
 
     /// The static cell if some trap already allocated it.
     pub fn static_lookup(&self, table: u16, index: u16, slot: u16) -> Option<u32> {
-        self.statics
-            .get(&(table, index, slot))
-            .map(|at| script::EXTERN_SEGMENT + STATIC_BASE + at)
+        self.statics.get(&(table, index, slot)).copied()
     }
 
     /// The handle of a four-word static cell owned by `(table, index, slot)`;
     /// the first use allocates it zeroed.
     pub fn static_cell(&mut self, table: u16, index: u16, slot: u16) -> u32 {
-        let words = &mut self.static_words;
-        let at = *self.statics.entry((table, index, slot)).or_insert_with(|| {
-            let at = words.len() as u32 * 4;
-            words.extend([0; 4]);
-            at
-        });
-        script::EXTERN_SEGMENT + STATIC_BASE + at
+        if let Some(&handle) = self.statics.get(&(table, index, slot)) {
+            return handle;
+        }
+        let handle = self.take_words(4);
+        self.statics.insert((table, index, slot), handle);
+        handle
     }
 
     pub fn static_read(&self, handle: u32) -> Option<u32> {

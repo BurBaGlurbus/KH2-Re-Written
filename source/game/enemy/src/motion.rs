@@ -118,6 +118,10 @@ pub enum Effect {
     /// Frame events 0x17 / 0x18: the alpha fade (+0xa08) down or up over
     /// `ticks`.
     AlphaFade { to: f32, ticks: u16 },
+    /// Frame event 0x1a: mesh group `group` fades to a colour of no alpha.
+    PartsHide { group: u16, ticks: u16 },
+    /// Frame event 0x1b: its record fades back.
+    PartsShow { group: u16, ticks: u16 },
     /// Frame events 0xd / 0xe: the class's voice slot (vt+0xa0, as
     /// `obj_voice`) with voice `id` and `arg` (0 when the record has fewer
     /// than two parameters).
@@ -250,6 +254,14 @@ impl Flags {
             0x18 => out.push(Effect::AlphaFade {
                 to: 1.,
                 ticks: p(0),
+            }),
+            0x1a => out.push(Effect::PartsHide {
+                group: p(0),
+                ticks: p(1),
+            }),
+            0x1b => out.push(Effect::PartsShow {
+                group: p(0),
+                ticks: p(1),
             }),
             0xd | 0xe => out.push(Effect::Voice {
                 id: p(0),

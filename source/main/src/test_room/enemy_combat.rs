@@ -774,15 +774,10 @@ fn collision_shapes(entries: &[object_collision::Entry], bones: usize) -> Result
         if bone != 0x4000 && bone >= bones {
             return Err(format!("collision shape {ordinal} bone outside skeleton"));
         }
-        // FUN_1403c94c0 knows kinds 0, 1 (an upright cylinder) and 3.
+        // FUN_1403c94c0 knows kinds 0, 1 (an upright cylinder) and 3; a shape
+        // of another kind, or of no size, hits nothing.
         if !matches!(e.shape, 0 | 1 | object_collision::SPHERE) || e.radius <= 0 || e.height <= 0 {
-            return Err(format!("collision shape {ordinal} geometry unsupported"));
-        }
-        if e.parts != 0 {
-            return Err(format!(
-                "collision shape {ordinal} uses unimplemented HP pool {}",
-                e.parts
-            ));
+            continue;
         }
         // HIT shapes of any group are kept: the hit test asks the object
         // which groups are on (FUN_1403ba550).
@@ -827,7 +822,7 @@ mod tests {
         }
     }
     #[test]
-    fn preserves_non_sphere_dimensions_and_rejects_unbound_combat_pools() {
+    fn preserves_non_sphere_dimensions_and_keeps_each_shapes_pool() {
         let mut entries = vec![
             entry(object_collision::HIT, 0),
             entry(object_collision::TARGET, 3),
@@ -839,13 +834,15 @@ mod tests {
         );
         assert_eq!(targets.len(), 1);
         entries[0].parts = 1;
-        assert!(collision_shapes(&entries, 1).is_err());
+        let (body, ..) = collision_shapes(&entries, 1).unwrap();
+        assert_eq!(body[0].parts, 1);
         entries[0].parts = 0;
         entries[0].bone = 1;
         assert!(collision_shapes(&entries, 1).is_err());
         entries[0].bone = 0;
         entries[0].shape = 2;
-        assert!(collision_shapes(&entries, 1).is_err());
+        let (body, ..) = collision_shapes(&entries, 1).unwrap();
+        assert!(body.is_empty(), "a shape of no known kind hits nothing");
     }
     #[test]
     fn attack_window_is_half_open_and_rejects_nonfinite_time() {

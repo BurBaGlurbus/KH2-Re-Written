@@ -524,11 +524,10 @@ fn damage_attack_param_id(
 fn sysobj_appear(ctx: &mut Ctx<'_>, _: &mut Memory<'_>, args: &mut Args) -> Result<(), Fault> {
     let entry = args[0].value & 0x0fff_ffff;
     let me = ctx.me.id;
-    // The maker stays in the engine's list while the new object's OBJ_INIT
-    // runs (Chicken Little's fireworks search for him by entry).
+    // The maker stays in the engine's list while the new object is built.
     let maker = std::mem::replace(ctx.me, Object::bare(me));
     ctx.world.held.push(Box::new(maker));
-    let id = ctx.world.appear(ctx.env, me, entry);
+    let id = ctx.world.appear(me, entry);
     if let Some(k) = ctx.world.held.iter().rposition(|o| o.id == me) {
         *ctx.me = *ctx.world.held.remove(k);
     }

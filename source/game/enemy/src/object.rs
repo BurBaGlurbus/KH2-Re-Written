@@ -82,6 +82,59 @@ impl Object {
         Ok(obj)
     }
 
+    /// An object `sysobj_appear` builds: as [`Self::spawn`], with OBJ_INIT and
+    /// the main thread left for its first update.
+    pub fn spawn_later(id: ObjId, payload: &[u8], sys: Sysobj) -> Result<Object, SpawnError> {
+        let instance = Instance::new(id, payload).ok_or(SpawnError::Program)?;
+        let (stack_bytes, temp_bytes) = (instance.stack_bytes, instance.temp_bytes);
+        let mut obj = Object::bare(id);
+        obj.sys = sys;
+        obj.script = ScriptSpace {
+            instance,
+            stack_bytes,
+            temp_bytes,
+            main: None,
+            main_ended: false,
+            act_thread: None,
+            act_generation: 0,
+            faults: Vec::new(),
+        };
+        obj.init_pending = true;
+        Ok(obj)
+    }
+
+    /// The first update of an object made by a script (FUN_1403b44d0).
+    fn run_pending_init(&mut self, world: &mut World, env: &dyn Env) {
+        if !std::mem::take(&mut self.init_pending) {
+            return;
+        }
+        let init = self.script.instance.trigger(INIT);
+        let main = self.script.instance.trigger(MAIN);
+        let (stack_bytes, temp_bytes) = (self.script.stack_bytes, self.script.temp_bytes);
+        if init > 0 {
+            let handle = object_handle(self.id);
+            let mut t = Thread::with_sizes(
+                stack_bytes,
+                temp_bytes,
+                EVENT_SLOT,
+                init,
+                &[Slot::address(handle)],
+            );
+            run_thread(world, env, self, &mut t);
+        }
+        if main > 0 {
+            self.script.main = Some(Thread::with_sizes(
+                stack_bytes,
+                temp_bytes,
+                MAIN_SLOT,
+                main,
+                &[],
+            ));
+        } else {
+            self.script.main_ended = true;
+        }
+    }
+
     /// FUN_1403e1840: fire a trigger on a throw-away thread, run once.
     pub fn fire(&mut self, world: &mut World, env: &dyn Env, key: i32, args: &[Slot]) {
         let entry = self.script.instance.trigger(key);
@@ -293,6 +346,7 @@ impl Object {
     /// whose think and acts the hooked limit blocks (FUN_1401b15f0 with
     /// FUN_1403d7280).
     pub fn tick_main(&mut self, world: &mut World, env: &dyn Env) {
+        self.run_pending_init(world, env);
         let Some(mut main) = self.script.main.take() else {
             return;
         };
@@ -391,6 +445,7 @@ impl Object {
     /// One frame, in the executable's order: the motion clock and its events,
     /// the script (main thread, then acts), then root motion and physics.
     pub fn tick(&mut self, world: &mut World, env: &dyn Env) {
+        self.run_pending_init(world, env);
         self.decay_revenge(world.frame_time);
         // The tail of BTLOBJ vt+0x10, FUN_1403b4980: the movement request
         // (+0x10 direction, +0x1c speed) lasts one tick; a script that wants
@@ -555,6 +610,16 @@ impl Object {
                         self.sys.fade.start(1. - to, to, f32::from(ticks));
                     }
                 }
+                // FUN_14040dd70 cases 0x1a / 0x1b: the group's bit, and for
+                // the fade out FUN_1403cd670's colour 0x00808080.
+                Effect::PartsHide { group, ticks } => {
+                    let mask = 1 << (group & 31);
+                    self.sys.set_parts_color(mask, 0x80_8080, f32::from(ticks));
+                }
+                Effect::PartsShow { group, ticks } => {
+                    let mask = 1 << (group & 31);
+                    self.sys.reset_parts_color(mask, f32::from(ticks));
+                }
                 // FUN_14040dd70 cases 0xd / 0xe -> vt+0xa0 (FUN_1403dad90 for
                 // the ZAKO / ENEMY classes): a request to the object's voice
                 // player (+0xbb4, YS::VOICE_IOP; FUN_1403ce580 keeps the
@@ -593,7 +658,14 @@ impl Object {
                         Slot::int(i32::from(p1)),
                     ],
                 ),
-                Effect::SetSpeed { value } => self.sys.event_speed = f32::from(value) * 0.01,
+                // FUN_14040d810 case 0x18: +0x108, the steering modes' inertia
+                // (FUN_1403b7ad0 in FUN_1403cbdd0 and FUN_140421c80).
+                Effect::SetSpeed { value } => {
+                    self.sys.event_speed = f32::from(value) * 0.01;
+                    if let Some(steer) = self.sys.steer.as_mut() {
+                        steer.inertia = self.sys.event_speed;
+                    }
+                }
                 Effect::SetParameter { value } => self.sys.event_parameter = u32::from(value),
                 Effect::PatternBit { word, bit } => {
                     if word == 0 {

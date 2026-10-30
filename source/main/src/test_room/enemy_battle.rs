@@ -226,6 +226,14 @@ impl Brain {
             _ => (1., false),
         }
     }
+    /// The part colour of mesh group `group` (`obj_set_parts_color`, frame
+    /// events 0x1a and 0x1b).
+    pub fn part_tint(&self, group: u8) -> [f32; 4] {
+        match self {
+            Self::Script(a) => a.part_tint(group),
+            _ => [1.; 4],
+        }
+    }
     pub fn scale_y(&self) -> f32 {
         match self {
             Self::Script(a) => a.scale_y(),
@@ -734,10 +742,13 @@ pub const SEPHIROTH_SHEET: u16 = 140;
 const FALLBACK_SHEET: u16 = 0x45;
 /// Objects that can fight in the room: Sephiroth, and every ordinary enemy
 /// (objentry types 4 and 21, OpenKH Objentry.cs's normal enemies), each run
-/// by its own object script.
+/// by its own object script. `KH2RW_ENEMY_BOSSES` admits the boss types (3
+/// and 12) and the gimmicks some of them search for (8), for unattended runs:
+/// most are not playable fights yet.
 pub fn supported(e: &Entry) -> bool {
     (e.object_id, e.model_name.as_str()) == (SEPHIROTH, "N_HB630")
         || matches!(e.object_type, 4 | 21)
+        || (matches!(e.object_type, 3 | 8 | 12) && std::env::var_os("KH2RW_ENEMY_BOSSES").is_some())
 }
 /// The hand-written Soldier, Shadow and Dusk brains, kept for comparison
 /// runs only (`KH2RW_ENEMY_AI=port`).

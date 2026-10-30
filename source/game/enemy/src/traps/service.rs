@@ -265,8 +265,6 @@ forward_traps! {
     obj_star = "obj_star", Some(0), None, None;
     motion_sync = "obj_motion_sync", Some(0), Some(1), None;
     motion_unsync = "obj_motion_unsync", Some(0), Some(1), None;
-    set_parts_color = "obj_set_parts_color", Some(0), None, None;
-    reset_parts_color = "obj_reset_parts_color", Some(0), None, None;
     set_stealth = "obj_set_stealth", Some(0), None, None;
     reset_stealth = "obj_reset_stealth", Some(0), None, None;
     disable_occ = "obj_disable_occ", Some(0), None, None;
@@ -801,6 +799,22 @@ fn effect_dir(ctx: &mut Ctx<'_>, m: &mut Memory<'_>, args: &mut Args) -> Result<
         ctx.write_f32(m, cell + 4 * k as u32, *lane);
     }
     args[0] = Slot::address(cell);
+    Ok(())
+}
+
+/// 1:185 FUN_14042cb40 -> FUN_1403cd670.
+fn set_parts_color(ctx: &mut Ctx<'_>, m: &mut Memory<'_>, args: &mut Args) -> Result<(), Fault> {
+    let id = ctx.sys_of_ai(m, args[0].value)?;
+    let (mask, color, ticks) = (args[1].value, args[2].value, args[3].as_float());
+    ctx.object(id)?.sys.set_parts_color(mask, color, ticks);
+    Ok(())
+}
+
+/// 1:186 FUN_14042cb90 -> FUN_1403cd4c0.
+fn reset_parts_color(ctx: &mut Ctx<'_>, m: &mut Memory<'_>, args: &mut Args) -> Result<(), Fault> {
+    let id = ctx.sys_of_ai(m, args[0].value)?;
+    let (mask, ticks) = (args[1].value, args[2].as_float());
+    ctx.object(id)?.sys.reset_parts_color(mask, ticks);
     Ok(())
 }
 
