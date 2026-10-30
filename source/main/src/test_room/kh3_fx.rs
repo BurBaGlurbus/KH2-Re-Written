@@ -28,6 +28,15 @@ use visual::effect_draw::{Blend as DrawBlend, EffectMaterial};
 
 const KEY_BASE: u32 = 0x4b33_0000;
 const SWING_BANK: &str = "/Game/Sound/SE/weapon/02001";
+/// `se10010`, the rock surface's steps: slot 1 a walk's, slot 2 a run's.
+const FOOT_WALK: &str = "/Game/Sound/SE/footstep/10000_sora/10010/se10010_001";
+const FOOT_RUN: &str = "/Game/Sound/SE/footstep/10000_sora/10010/se10010_002";
+/// `BoneSet_Sora1`'s toes.
+const TOES: [&str; 2] = ["L_ashi2", "R_ashi2"];
+/// A foot this close to the sole of the pose may be coming down (cm).
+const STEP_HEIGHT: f32 = 25.;
+/// The least time between two of a Sora's steps (a foot that settles twice).
+const STEP_GAP: f32 = 0.18;
 const TRAIL: &str = "/Game/Effects/wep/w_so010/par/VW_SO010_LOC0";
 
 /// A material as the renderer draws it.
@@ -358,6 +367,7 @@ pub(crate) fn load(
     let mut sounds: Vec<String> = (1..=10)
         .map(|i| format!("{SWING_BANK}/se02001_{}", 100 + i))
         .chain((1..=7).map(|i| format!("{SWING_BANK}/se02001_00{i}")))
+        .chain([FOOT_WALK.to_owned(), FOOT_RUN.to_owned()])
         .collect();
     for list in triggers.values() {
         for t in list {
@@ -667,6 +677,9 @@ pub(crate) struct Kh3Fx {
     holding: bool,
     rng: u32,
     draw: DrawList,
+    /// Each Sora's toes: last height, and whether they were coming down.
+    feet: [[(f32, bool); 2]; 4],
+    last_step: [f32; 4],
 }
 
 struct Batch {
@@ -1538,6 +1551,7 @@ pub(crate) fn body_step(
         visual.at[0],
         to_kh3(camera),
     );
+    footsteps(fx, data, &body, visual.row, camera);
     // Attached effects follow their sockets; trails take the blade's edge.
     let mut live = std::mem::take(&mut fx.live);
     for l in &live {
@@ -1563,6 +1577,42 @@ pub(crate) fn body_step(
         live.retain(|l| w.is_alive(l.id));
     }
     fx.live = live;
+}
+
+/// `SQEXSEADAutoSeComponent`'s footsteps: a step as a toe stops coming down.
+/// [approximate: the component's own detection was not read; the bones and
+/// the bank are its.]
+fn footsteps(fx: &mut Kh3Fx, data: &SoraData, body: &Body, row: &str, camera: Vec3) {
+    let sound = match row {
+        "WalkLoopB" => Some(FOOT_WALK),
+        "RunLoopB" => Some(FOOT_RUN),
+        _ => None,
+    };
+    let Some(seat) = fx.feet.get(usize::from(body.seat)).copied() else {
+        return;
+    };
+    let mut seat = seat;
+    for (foot, name) in seat.iter_mut().zip(TOES) {
+        let Some(height) = data
+            .bone(name)
+            .and_then(|i| body.component.get(i))
+            .map(|b| b.translation[2])
+        else {
+            continue;
+        };
+        let falling = height < foot.0 - 0.01;
+        if foot.1
+            && !falling
+            && height < STEP_HEIGHT
+            && fx.clock - fx.last_step[usize::from(body.seat)] >= STEP_GAP
+            && let Some(sound) = sound
+        {
+            fx.last_step[usize::from(body.seat)] = fx.clock;
+            play_sound(fx, sound, 1., 1., Some(body.at), to_kh3(camera), None);
+        }
+        *foot = (height, falling);
+    }
+    fx.feet[usize::from(body.seat)] = seat;
 }
 
 /// Steps the evaluator at 60 Hz, starts sounds due and draws.
