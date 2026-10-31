@@ -25,9 +25,7 @@ fn slot_poses(cp: &ClipPoses, slot: usize) -> (&[Mat4], &[Mat4]) {
 /// The two points of `bone` on weapon slot `slot`'s blade in engine world
 /// space for this tick, or `None` without a weapon pose.
 pub fn points(game: &Game, bone: &BonePos, slot: usize) -> Option<[[f32; 3]; 2]> {
-    let clip = *game
-        .poses
-        .get(&(game.sora.player.action, game.sora.player.armed))?;
+    let clip = *game.poses.get(&game.sora.player.pose_key())?;
     let cp = game.clip_poses.get(clip)?;
     let frame = game.sora.player.motion_frame(&game.clips) as usize;
     let (blades, hands) = slot_poses(cp, slot);
@@ -46,9 +44,7 @@ pub fn points(game: &Game, bone: &BonePos, slot: usize) -> Option<[[f32; 3]; 2]>
 /// The blade bone's length (FUN_1401a7af0: the bone record's +0x1c); a
 /// trail's ratios are negative, its points lie on the bone's -x side.
 fn bone_length(game: &Game, slot: usize) -> Option<f32> {
-    let clip = *game
-        .poses
-        .get(&(game.sora.player.action, game.sora.player.armed))?;
+    let clip = *game.poses.get(&game.sora.player.pose_key())?;
     let length = game.clip_poses.get(clip)?.blade_length[slot];
     (length != 0.).then_some(length)
 }
@@ -118,13 +114,10 @@ pub fn tick(game: &mut Game, pax: Option<&Arc<Pax>>, slot: usize, rival: Option<
 
 /// Whether the slot's weapon motion holds range 12 at this frame.
 fn window_open(game: &Game, slot: usize) -> bool {
-    if slot == 0 && !game.sora.player.armed {
+    if slot == 0 && !game.sora.player.weapon.shown {
         return false;
     }
-    let Some(&clip) = game
-        .poses
-        .get(&(game.sora.player.action, game.sora.player.armed))
-    else {
+    let Some(&clip) = game.poses.get(&game.sora.player.pose_key()) else {
         return false;
     };
     let frame = game.sora.player.motion_frame(&game.clips);

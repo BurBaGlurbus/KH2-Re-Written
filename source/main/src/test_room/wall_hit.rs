@@ -137,10 +137,7 @@ pub fn tick(game: &mut Game, tick: u64) {
     if game.sora.player.dead() {
         return;
     }
-    let Some(&clip) = game
-        .poses
-        .get(&(game.sora.player.action, game.sora.player.armed))
-    else {
+    let Some(&clip) = game.poses.get(&game.sora.player.pose_key()) else {
         return;
     };
     let Some(cp) = game.clip_poses.get(clip) else {

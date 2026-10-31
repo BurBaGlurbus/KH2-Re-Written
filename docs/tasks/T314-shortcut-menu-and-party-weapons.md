@@ -70,6 +70,8 @@ Built: `party_motion::WeaponDraw`, `PartyKind::bare` (the hidden-weapon field cl
 
 PARTIAL. The menu and the weapons follow the executable and pass the tours above; neither is compared with the installed game. No gameplay gate moves.
 
+[T315](T315-weapons-after-battle-and-sora-keyblade.md) later put party weapons away after a battle, at the owner's choice, and moved Sora's Keyblade to this rule.
+
 ## Next
 
 Capture the installed game's L1 menu and Donald and Goofy after a battle, and compare. Then Sora's Keyblade on the same rule.

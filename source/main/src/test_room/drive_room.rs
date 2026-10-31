@@ -1074,6 +1074,9 @@ fn swap_kit(game: &mut Game, form: u8) -> Result<(), String> {
         weight: std::mem::replace(&mut game.sora_weight, incoming.weight),
     };
     game.weapon_pax_changed = true;
+    // The change swaps the player object: its new weapons start hidden
+    // (FUN_1403d7c70, FUN_1403ef750).
+    game.sora.player.weapon = Default::default();
     // The trail's length follows the new Keyblade's size.
     game.trail_length = [None; 2];
     // The new kit's attack rows (ATKP by id, sub-table 0) for the hits.
@@ -1376,10 +1379,12 @@ pub fn tick(game: &mut Game, abilities: Option<&[u16]>) {
     let target = game.versus
         || game.enemy.as_ref().is_some_and(|rt| {
             let e = rt.enemy.position;
-            !matches!(
-                rt.enemy.current_act(),
-                Some(shadow::ActKind::Leave | shadow::ActKind::Dead)
-            ) && ((e[0] - p[0]).powi(2) + (e[2] - p[2]).powi(2)).sqrt() < BATTLE_DISTANCE
+            rt.enabled
+                && !matches!(
+                    rt.enemy.current_act(),
+                    Some(shadow::ActKind::Leave | shadow::ActKind::Dead)
+                )
+                && ((e[0] - p[0]).powi(2) + (e[2] - p[2]).powi(2)).sqrt() < BATTLE_DISTANCE
         });
     d.battle.update(target);
     // The party slots (FUN_1403c3270): Donald and Goofy when in the room;
@@ -1644,7 +1649,7 @@ pub fn present(
 ) {
     let Some(form) = game.drive.as_mut().and_then(|d| d.respawn.take()) else {
         // The second Keyblade follows slot 1's joint.
-        let clip = game.poses[&(game.sora.player.action, game.sora.player.armed)];
+        let clip = game.poses[&game.sora.player.pose_key()];
         let frame = game.sora.player.motion_frame(&game.clips) as usize;
         let cp = &game.clip_poses[clip];
         let hands = &cp.weapon2;
@@ -1665,7 +1670,7 @@ pub fn present(
             if let Some(m) = hands.get(frame.min(hands.len().saturating_sub(1))) {
                 *t = Transform::from_matrix(*m);
             }
-            *v = if game.sora.player.armed && !hands.is_empty() {
+            *v = if game.sora.player.weapon.shown && !hands.is_empty() {
                 Visibility::Inherited
             } else {
                 Visibility::Hidden

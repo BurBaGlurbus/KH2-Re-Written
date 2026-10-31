@@ -346,7 +346,9 @@ pub const WEAPON_FADE: f32 = 16.;
 /// (`FUN_1403c8cd0` leaves `ctl+0x18` empty) hides it again at once. While it
 /// is hidden and has a motion, the owner playing variant 0 or 3 (`+0x188`)
 /// shows it, fading in. Nothing else about the stance puts it away: variants
-/// 1 and 2 only keep a hidden weapon hidden.
+/// 1 and 2 only keep a hidden weapon hidden. `put_away` is the one departure
+/// from the executable, the owner's choice for party members: see
+/// [`WeaponDraw::tick`].
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct WeaponDraw {
     /// `+0x124` bit 8 clear.
@@ -368,9 +370,21 @@ impl WeaponDraw {
     /// One tick. `motion`: the weapon has a motion for the owner's slot;
     /// `variant`: that slot's variant (`slot & 3`). True when the weapon
     /// comes out this tick (`FUN_1403b6670` starts its element 0).
-    pub fn tick(&mut self, motion: bool, variant: usize) -> bool {
+    ///
+    /// [User request, not the executable] `put_away`: the battle is over and
+    /// the put-away motion has finished. The weapon fades out as it faded in,
+    /// where the executable keeps it in hand. Coming back in battle it fades
+    /// up again from where it was.
+    pub fn tick(&mut self, motion: bool, variant: usize, put_away: bool) -> bool {
         if !motion {
             *self = WeaponDraw::default();
+            return false;
+        }
+        if self.shown && put_away {
+            self.alpha -= 1. / WEAPON_FADE;
+            if self.alpha <= 0. {
+                *self = WeaponDraw::default();
+            }
             return false;
         }
         if !self.shown && matches!(variant, 0 | 3) {
@@ -522,24 +536,53 @@ mod tests {
         let mut w = WeaponDraw::default();
         assert!(!w.shown);
         // Field idle (variant 2): its motion exists, the weapon stays hidden.
-        assert!(!w.tick(true, 2));
+        assert!(!w.tick(true, 2, false));
         assert!(!w.shown);
         // The draw (slot 24, variant 0): out, fading in over 16 ticks.
-        assert!(w.tick(true, 0));
+        assert!(w.tick(true, 0, false));
         assert_eq!((w.shown, w.alpha), (true, 0.));
         for t in 1..=16 {
-            assert!(!w.tick(true, 0));
+            assert!(!w.tick(true, 0, false));
             assert_eq!(w.alpha, t as f32 / WEAPON_FADE);
         }
         // The put-away (slot 27, variant 3) and field idle keep it out.
-        assert!(!w.tick(true, 3));
-        assert!(!w.tick(true, 2));
+        assert!(!w.tick(true, 3, false));
+        assert!(!w.tick(true, 2, false));
         assert!(w.shown);
         // A slot its set lacks (bare walk, slot 6) hides it at once.
-        assert!(!w.tick(false, 2));
+        assert!(!w.tick(false, 2, false));
         assert_eq!(w, WeaponDraw::default());
         // A slot variant 3 brings it back.
-        assert!(w.tick(true, 3));
+        assert!(w.tick(true, 3, false));
+    }
+
+    #[test]
+    fn put_away_fades_the_weapon_out_and_a_new_battle_brings_it_back() {
+        let mut w = WeaponDraw {
+            shown: true,
+            alpha: 1.,
+        };
+        for t in 1..16 {
+            assert!(!w.tick(true, 2, true));
+            assert!(w.shown);
+            assert_eq!(w.alpha, 1. - t as f32 / WEAPON_FADE);
+        }
+        assert!(!w.tick(true, 2, true));
+        assert_eq!(w, WeaponDraw::default());
+        // Once hidden it stays hidden; a hidden weapon has nothing to fade.
+        assert!(!w.tick(true, 2, true));
+        assert!(!w.shown);
+        // A battle during the fade turns it round, with no second element 0.
+        assert!(w.tick(true, 0, false));
+        for _ in 0..16 {
+            w.tick(true, 0, false);
+        }
+        for _ in 0..4 {
+            w.tick(true, 2, true);
+        }
+        assert_eq!(w.alpha, 0.75);
+        assert!(!w.tick(true, 0, false));
+        assert_eq!(w.alpha, 0.8125);
     }
 
     /// Idle (slots 0 battle, 2 field), walk (4, 7), run (8, 11), the stance

@@ -141,7 +141,7 @@ impl Frames {
         );
         let clip = game
             .poses
-            .get(&(game.sora.player.action, game.sora.player.armed))
+            .get(&game.sora.player.pose_key())
             .and_then(|&c| game.clip_poses.get(c));
         let frame = game.sora.player.motion_frame(&game.clips) as usize;
         let slots = clip.map_or([None, None], |c| {

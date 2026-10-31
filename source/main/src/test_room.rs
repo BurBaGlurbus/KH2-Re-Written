@@ -605,7 +605,6 @@ pub const BODY_RADIUS: f32 = 30.;
 pub const BODY_HEIGHT: f32 = 140.;
 pub const FLOOR_MIN_NORMAL_Y: f32 = 0.5;
 /// Test-room choice: put the weapon away after 6 s without attacking.
-pub const DISARM_TICKS: u32 = 360;
 pub const PARTY_STAND: u32 = 1 << 0;
 pub const PARTY_COLLIDE: u32 = 1 << 4;
 
@@ -3330,7 +3329,6 @@ pub fn player_params(
         walk_threshold: WALK_THRESHOLD,
         radius: BODY_RADIUS,
         height: BODY_HEIGHT,
-        disarm_ticks: DISARM_TICKS,
     };
     params.validate()?;
     Ok((params, prty_index, prty_offset))
@@ -4181,7 +4179,7 @@ pub fn load(
         "evaluation_totals":kit.summary["evaluation_totals"],"weapon_joint":weapon_joint,"objentry_joint":objentry_joint,"weapon_bounds":weapon_bounds,"idle_hand_matrix":idle_hand,"weapon_root_matrix":weapon_root,"weapon_bones":kit.weapon.skinning.bones.len(),"object_candidates":object_candidates,
         "object_count":objects.len(),
         "missing":["scale channels","up-vector/path/camera constraint types","limiter damping","root rotation","weapon constraint motion","hit detection","enemies","measured installed timing"],
-        "inferred_rules":["direction constraints aim local +X","two-joint IK bends the middle joint about local Z","expression list/condition semantics","Hermite tangents scaled by key span","field/battle mode switch with 6 s disarm timeout"],
+        "inferred_rules":["direction constraints aim local +X","two-joint IK bends the middle joint about local Z","expression list/condition semantics","Hermite tangents scaled by key span"],
         "gameplay_verified":false});
     timer.mark("room join and collision");
     let mut banks = Banks::default();
@@ -5164,10 +5162,7 @@ pub fn frame_stats(
 /// so at frame rates under 60 a tick could read a pose two or more ticks
 /// old; kept here, every tick reads its predecessor's, as at 60 FPS.
 pub fn keep_weapon_pose(mut game: ResMut<Game>) {
-    let Some(&clip) = game
-        .poses
-        .get(&(game.sora.player.action, game.sora.player.armed))
-    else {
+    let Some(&clip) = game.poses.get(&game.sora.player.pose_key()) else {
         return;
     };
     let frame = game.sora.player.motion_frame(&game.clips) as usize;
@@ -8305,6 +8300,10 @@ pub fn simulate(
                 .flatten()
         });
         game.summon_stick = [direction.x, 0., direction.y];
+        // The battle flag, and a Drive form, which holds the stance
+        // (FUN_1403ba460).
+        game.sora.player.battle_flag =
+            second_deck::battle(&game) || game.drive.as_ref().is_some_and(|d| d.active);
         let rc = game
             .reaction
             .pressed(player::reaction_command::Source::Offered)
@@ -8329,6 +8328,7 @@ pub fn simulate(
             sora.player.tick(&input, params, clips, world)
         }
     };
+    keyblade_tick(&mut game, tick);
     if game.magic_tour && magic_tour::probing(tick, game.magic_shift) {
         let p = &game.sora.player;
         let record = serde_json::json!({"event":"move_probe","tick":tick,
@@ -8646,6 +8646,7 @@ pub fn simulate(
                 | Action::Run
                 | Action::Fall
                 | Action::Land
+                | Action::StanceSwitch
                 | Action::Hurt(_)
         ) {
             game.reaction.request_made = true;
@@ -9522,7 +9523,7 @@ pub fn rumble_output(
 }
 
 pub fn sora_sounds(game: &mut Game) {
-    let clip = game.poses[&(game.sora.player.action, game.sora.player.armed)];
+    let clip = game.poses[&game.sora.player.pose_key()];
     let frame = game.sora.player.motion_frame(&game.clips);
     let started = game.action_started;
     let from = match game.sound_frame {
@@ -10328,7 +10329,7 @@ pub fn combat_tick(game: &mut Game, tick: u64) {
     }
     let sora_at = Vec3::from_array(player.position);
     let sora_turn = Quat::from_rotation_y(player.yaw);
-    let clip = poses[&(player.action, player.armed)];
+    let clip = poses[&player.pose_key()];
     let frame = player.motion_frame(clips) as usize;
     let cp = &clip_poses[clip];
     let e = &rt.enemy;
@@ -11154,16 +11155,73 @@ pub type CameraOnly = (
 /// Sora's body parts and the Keyblade's.
 pub type SoraOrWeapon = Or<(With<SoraPart>, With<WeaponPart>)>;
 
+/// FUN_1403efa60 for Sora's Keyblade (slot 0, slot 1 the same): hidden when
+/// its set has no motion for his slot, out, with element 0 and a fade, on
+/// variant 0 or 3. In a limit's or summon's scene and for a Sora another
+/// instance moves, it just follows the stance they set. The executable has no
+/// put-away here: after a battle he keeps it in hand, lowered.
+fn keyblade_tick(game: &mut Game, tick: u64) {
+    let p = &game.sora.player;
+    if game.party_limit.is_some() || game.replica || summon::sora_camera_pose(game).is_some() {
+        game.sora.player.weapon = player::party_motion::WeaponDraw {
+            shown: game.sora.player.armed,
+            alpha: 1.,
+        };
+        return;
+    }
+    let Some(cp) = game
+        .poses
+        .get(&p.pose_key())
+        .and_then(|&c| game.clip_poses.get(c))
+    else {
+        return;
+    };
+    let motion = cp.weapon_motions[0].is_some();
+    let variant = p.clip(&game.clips).slot & 3;
+    let was = p.weapon.shown;
+    if game.sora.player.weapon.tick(motion, variant, false)
+        && let Some(pax) = game.weapon_pax.clone().filter(|p| p.by_id(0).is_some())
+    {
+        // [I] At the hand: effects have no weapon object to bind to yet.
+        let root = Transform::from_translation(Vec3::from_array(game.sora.player.position))
+            .with_rotation(Quat::from_rotation_y(game.sora.player.yaw));
+        let at = root.transform_point(game.display_hand.translation);
+        game.fx_calls.push(spell_fx::Call {
+            pax: Some(pax),
+            fx: player::magic::Fx::Start {
+                key: 1 << 62 | tick << 8 | 0xf0,
+                id: 0,
+                bound: None,
+                at: Some(at.to_array()),
+            },
+        });
+    }
+    if game.sora.player.weapon.shown != was {
+        let (shown, motion) = (
+            game.sora.player.weapon.shown,
+            game.sora.player.motion_id(&game.clips),
+        );
+        game.event(
+            serde_json::json!({"event":"sora_weapon_draw","tick":tick,"shown":shown,
+            "motion":motion,"variant":variant}),
+        );
+    }
+}
+
 /// First person hides Sora (the ramp at `actor+0xa10`): his body and the
 /// Keyblade he carries fade with it [I: the weapon follows the owner's flag,
-/// FUN_1403d9fe0, not a measured capture].
+/// FUN_1403d9fe0, not a measured capture]. The Keyblade's own fade multiplies
+/// it (`+0xa9c`).
 pub fn first_person_fade(
+    game: Res<Game>,
     rig: Res<CameraRig>,
     mut materials: ResMut<Assets<FogMaterial>>,
-    parts: Query<&MeshMaterial3d<FogMaterial>, SoraOrWeapon>,
+    parts: Query<(&MeshMaterial3d<FogMaterial>, Has<WeaponPart>), SoraOrWeapon>,
 ) {
-    let alpha = rig.fade.value.clamp(0., 1.);
-    for material in &parts {
+    let body = rig.fade.value.clamp(0., 1.);
+    let keyblade = body * game.sora.player.weapon.alpha;
+    for (material, is_keyblade) in &parts {
+        let alpha = if is_keyblade { keyblade } else { body };
         let Some(current) = materials.get(&material.0) else {
             continue;
         };
@@ -11697,7 +11755,7 @@ pub fn present(
         game.shown_action = Some((action, started));
     }
     let frame = game.sora.player.motion_frame(&game.clips) as usize;
-    let clip = game.poses[&(action, game.sora.player.armed)];
+    let clip = game.poses[&game.sora.player.pose_key()];
     let skin = game.clip_poses[clip].skin.clone();
     // The skinned target is kept while the kit, clip and frame stay (the
     // pose changes once per tick; frames between ticks reuse it).
@@ -11795,8 +11853,8 @@ pub fn present(
     game.display_hand = hand;
     if let Ok((mut transform, mut visibility)) = hands.single_mut() {
         *transform = hand;
-        // The Keyblade is drawn only in battle mode.
-        *visibility = if game.sora.player.armed {
+        // FUN_1403efa60's state, kept by `keyblade_tick`.
+        *visibility = if game.sora.player.weapon.shown {
             Visibility::Inherited
         } else {
             Visibility::Hidden

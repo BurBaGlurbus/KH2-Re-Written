@@ -138,7 +138,7 @@ pub fn tick(game: &mut Game, actors: &mut [GalleryActor], tick: u64) {
     let sora_at = Vec3::from_array(player.position);
     let sora_turn = Quat::from_rotation_y(player.yaw);
     let sora_facing = Vec3::new(player.yaw.sin(), 0., player.yaw.cos());
-    let Some(&clip_index) = poses.get(&(player.action, player.armed)) else {
+    let Some(&clip_index) = poses.get(&player.pose_key()) else {
         return;
     };
     let cp = &clip_poses[clip_index];

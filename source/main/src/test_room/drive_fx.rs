@@ -450,9 +450,7 @@ pub fn sora_pose(game: &Game) -> SoraPose {
         Quat::from_rotation_y(game.sora.player.yaw),
         Vec3::from_array(p),
     );
-    let clip = game
-        .poses
-        .get(&(game.sora.player.action, game.sora.player.armed));
+    let clip = game.poses.get(&game.sora.player.pose_key());
     let frame = game.sora.player.motion_frame(&game.clips) as usize;
     let cp = clip.and_then(|&c| game.clip_poses.get(c));
     let bones = cp

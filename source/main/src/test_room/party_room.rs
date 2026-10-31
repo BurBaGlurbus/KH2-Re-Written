@@ -2245,13 +2245,15 @@ pub fn probe_claw(game: &mut Game, member: usize, atkp: u16, shield: bool) -> bo
     true
 }
 
-/// A room's objects are made anew: each member stands in its field stance
-/// with its weapon hidden (the constructors FUN_1403d5840, FUN_1403ef750).
+/// A room's objects are made anew: Sora and each member stand in their field
+/// stance with their weapons hidden (the constructors FUN_1403d5840,
+/// FUN_1403ef750).
 pub fn room_loaded(game: &mut Game) {
     for m in &mut game.party {
         m.follower.room_loaded();
         m.weapon_draw = Default::default();
     }
+    game.sora.player.room_loaded();
 }
 
 /// Puts a member at a point facing a heading (the tour stages its cases).
@@ -2595,7 +2597,17 @@ pub fn tick(game: &mut Game, tick: u64) {
         let variant = m.follower.ctl.clip.map_or(0, |c| c.slot & 3);
         let weapon_motion = m.shield.is_some() || m.shown().is_some_and(|(d, _)| d.weapon_slot);
         let was_shown = m.weapon_draw.shown;
-        if m.weapon_draw.tick(weapon_motion, variant)
+        // [User request, not the executable] The owner chose to have party
+        // weapons put away after a battle: once the flag and the stance are
+        // down and the put-away motion (6) is over, on a field variant, the
+        // weapon fades out. The executable keeps it in hand here.
+        let put_away = !battle
+            && !m.follower.battle_stance
+            && m.follower.ctl.motion != party_motion::STANCE_SWITCH
+            && variant >= 2
+            && m.limit.is_none()
+            && m.shield.is_none();
+        if m.weapon_draw.tick(weapon_motion, variant, put_away)
             && kind
                 .weapon_pax
                 .as_ref()

@@ -300,7 +300,7 @@ pub fn target_centre(
         .ok()
         .filter(|&b| b != 0x4000)
         .and_then(|bone| {
-            let clip = clip_poses.get(*poses.get(&(player.action, player.armed))?)?;
+            let clip = clip_poses.get(*poses.get(&player.pose_key())?)?;
             let frame = player.motion_frame(clips) as usize;
             clip.body
                 .get(frame.min(clip.body.len().saturating_sub(1)))?

@@ -387,6 +387,35 @@ pub fn load_kit(source: &ProbeSource, k: KitInputs) -> Result<Kit, Box<dyn std::
         .collect();
     motions.extend(growth_found.into_iter().flatten());
     ids.extend(&growth_ids);
+    // Field walk and run with the Keyblade in hand (FUN_1403d7640 turns
+    // FUN_1403c7c50's order to 3, 2, 0, 1: slots 7, 11).
+    let lowered = |s: &motion::MotionSetSelection| motion::MotionSetSelection {
+        battle: false,
+        has_weapon: true,
+        ..s.clone()
+    };
+    let lowered_fb = fb.map(lowered);
+    motions.extend(read_with_fallback(
+        source,
+        &lowered(&motion_set),
+        lowered_fb.as_ref(),
+        &[1, 2],
+    )?);
+    ids.extend([1, 2]);
+    // Motion 6, which FUN_1403c88c0 plays when idle changes stance: the draw
+    // (order 0, 1, 3, 2: slot 24) and the put-away (2, 3, 1, 0: slot 27).
+    let draw_found = motion::read_motion_ids_optional(source, &motion_set, &[6])?
+        .pop()
+        .flatten();
+    let put_away_found = motion::read_motion_ids_optional(source, &field(&motion_set), &[6])?
+        .pop()
+        .flatten();
+    let has_draw = draw_found.is_some();
+    let has_put_away = put_away_found.is_some();
+    for m in [draw_found, put_away_found].into_iter().flatten() {
+        ids.push(6);
+        motions.push(m);
+    }
     // Motions from other files, after everything read from the set.
     let external_at = ids.len();
     let external_ids: Vec<u16> = external.iter().map(|e| e.0).collect();
@@ -497,6 +526,20 @@ pub fn load_kit(source: &ProbeSource, k: KitInputs) -> Result<Kit, Box<dyn std::
         {
             if let Some(selected) = selected {
                 weapon_motions[k].insert(own.slot, selected);
+            }
+        }
+        // The Keyblade plays the player's slot (FUN_1403c8cd0), in every
+        // motion: a slot its set lacks hides it (FUN_1403efa60).
+        let slots: Vec<usize> = motions
+            .iter()
+            .map(|m| m.slot)
+            .filter(|s| !weapon_motions[k].contains_key(s))
+            .collect();
+        let found =
+            motion::read_slots_optional(source, &set.index, set.ordinal, set.name_hash, &slots)?;
+        for (slot, selected) in slots.into_iter().zip(found) {
+            if let Some(selected) = selected {
+                weapon_motions[k].insert(slot, selected);
             }
         }
     }
@@ -729,6 +772,7 @@ pub fn load_kit(source: &ProbeSource, k: KitInputs) -> Result<Kit, Box<dyn std::
     let mut slots = Vec::new();
     for selected in &motions {
         let (mut clip, key_start) = clip_for(selected)?;
+        clip.slot = selected.slot;
         // Range 35 opens the combo window only for its own motion id
         // (FUN_14040d810 case 0x23).
         let own_id = ids[clip_list.len()];
@@ -851,7 +895,14 @@ pub fn load_kit(source: &ProbeSource, k: KitInputs) -> Result<Kit, Box<dyn std::
         }
     }
     let growth_at = k;
+    let lowered_at = growth_at + growth_ids.len();
+    let draw_at = has_draw.then_some(lowered_at + 2);
+    let put_away_at = has_put_away.then_some(lowered_at + 2 + usize::from(has_draw));
     let clips = Clips {
+        lowered_walk: clip_list[lowered_at].0.clone(),
+        lowered_run: clip_list[lowered_at + 1].0.clone(),
+        draw: draw_at.map(|i| clip_list[i].0.clone()),
+        put_away: put_away_at.map(|i| clip_list[i].0.clone()),
         idle: clip_list[0].0.clone(),
         walk: clip_list[1].0.clone(),
         run: clip_list[2].0.clone(),
@@ -920,7 +971,15 @@ pub fn load_kit(source: &ProbeSource, k: KitInputs) -> Result<Kit, Box<dyn std::
         ((Action::Idle, false), clip_list[field].1),
         ((Action::Walk, false), clip_list[field + 1].1),
         ((Action::Run, false), clip_list[field + 2].1),
+        ((Action::LoweredWalk, false), clip_list[lowered_at].1),
+        ((Action::LoweredRun, false), clip_list[lowered_at + 1].1),
     ];
+    if let Some(i) = draw_at {
+        actions.push(((Action::StanceSwitch, true), clip_list[i].1));
+    }
+    if let Some(i) = put_away_at {
+        actions.push(((Action::StanceSwitch, false), clip_list[i].1));
+    }
     let mut both = vec![
         (Action::Jump, clip_list[3].1),
         (Action::Fall, clip_list[4].1),

@@ -66,9 +66,6 @@ pub struct Params {
     /// Test-room choice: body radius/height for wall contact.
     pub radius: f32,
     pub height: f32,
-    /// Test-room choice: ticks without attacking before the weapon is put
-    /// away and field locomotion resumes.
-    pub disarm_ticks: u32,
 }
 
 impl Params {
@@ -98,6 +95,9 @@ impl Params {
 /// `loop_start` FrameReturn; a return at or past the end holds the last frame.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Clip {
+    /// The motion set slot (`FUN_1403c7c50`'s pick); `slot & 3` is its
+    /// variant (`+0x188`).
+    pub slot: usize,
     pub end: u32,
     pub loop_start: u32,
     /// Range trigger 11, "Allow combo".
@@ -244,10 +244,19 @@ pub struct Clips {
     pub idle: Clip,
     pub walk: Clip,
     pub run: Clip,
-    /// Field-mode (weapon put away) locomotion.
+    /// Field locomotion with the weapon hidden (slots 2, 6, 10).
     pub field_idle: Clip,
     pub field_walk: Clip,
     pub field_run: Clip,
+    /// Field walk and run with the weapon in hand, lowered (slots 7, 11;
+    /// idle is slot 2 either way): `FUN_1403d7640` turns `FUN_1403c7c50`'s
+    /// order while a weapon shows.
+    pub lowered_walk: Clip,
+    pub lowered_run: Clip,
+    /// Motion 6 (A010): the draw (slot 24) and the put-away (slot 27), which
+    /// `FUN_1403c88c0` plays when idle crosses to the other stance.
+    pub draw: Option<Clip>,
+    pub put_away: Option<Clip>,
     pub jump: Clip,
     pub fall: Clip,
     pub land: Clip,
@@ -348,6 +357,13 @@ pub enum Action {
     AirCast(usize),
     /// A damage reaction (index into `Clips::hurt`).
     Hurt(usize),
+    /// Motion 6: the weapon drawn (armed) or put away, with idle behind it
+    /// (`FUN_1403c88c0`).
+    StanceSwitch,
+    /// Pose table keys only ([`Player::pose_key`]): walk and run in the field
+    /// with the weapon in hand. Sora's action stays `Walk` or `Run`.
+    LoweredWalk,
+    LoweredRun,
     /// Guard (PTYA 0x0b, motion 173): one press, actionable from its
     /// range-2 tick.
     Guard,
@@ -532,11 +548,19 @@ pub struct Player {
     pub action: Action,
     /// Ticks since the current action started.
     pub frame: u32,
-    /// Battle mode: weapon drawn, battle locomotion clips.
+    /// The stance (`obj+0x120` bit 20): battle locomotion clips.
     pub armed: bool,
+    /// The room's battle flag this tick (`FUN_1403abb20`), or a Drive form,
+    /// which holds the stance (`FUN_1403ba460`).
+    pub battle_flag: bool,
+    /// The Keyblade object's state (`FUN_1403efa60`), which the room updates.
+    pub weapon: party_motion::WeaponDraw,
+    /// The variant of the motion playing at the last tick's end (`+0x188`),
+    /// and the stance then.
+    played_variant: usize,
+    played_armed: bool,
     /// Blend, in ticks, from the previous motion into the current one.
     pub blend: f32,
-    idle_ticks: u32,
     /// Combo counters obj+0xd74 / +0xd75.
     pub combo: ptya::Combo,
     /// obj+0x120 bit 25: the last attack connected (set by a hit or a
@@ -735,8 +759,11 @@ impl Player {
             action: Action::Idle,
             frame: 0,
             armed: false,
+            battle_flag: false,
+            weapon: party_motion::WeaponDraw::default(),
+            played_variant: 2,
+            played_armed: false,
             blend: 0.,
-            idle_ticks: 0,
             combo: ptya::Combo::default(),
             connected: false,
             abilities: abilities::Abilities::default(),
@@ -864,7 +891,6 @@ impl Player {
         self.action = Action::Hurt(index);
         self.frame = 0;
         self.blend = 0.;
-        self.arm();
         Some(self.action)
     }
 
@@ -1271,8 +1297,13 @@ impl Player {
             (Action::Walk, true) => &clips.walk,
             (Action::Run, true) => &clips.run,
             (Action::Idle, false) => &clips.field_idle,
+            (Action::Walk, false) if self.weapon.shown => &clips.lowered_walk,
+            (Action::Run, false) if self.weapon.shown => &clips.lowered_run,
             (Action::Walk, false) => &clips.field_walk,
             (Action::Run, false) => &clips.field_run,
+            (Action::LoweredWalk, _) => &clips.lowered_walk,
+            (Action::LoweredRun, _) => &clips.lowered_run,
+            (Action::StanceSwitch, _) => self.stance_switch(clips).unwrap_or(&clips.field_idle),
             (Action::Jump, _) => &clips.jump,
             (Action::Fall, _) => &clips.fall,
             (Action::Land, _) => &clips.land,
@@ -1326,7 +1357,33 @@ impl Player {
 
     fn arm(&mut self) {
         self.armed = true;
-        self.idle_ticks = 0;
+    }
+
+    /// A room's objects are made anew: the field stance, the weapon hidden
+    /// (FUN_1403ef750), its idle next.
+    pub fn room_loaded(&mut self) {
+        self.armed = false;
+        self.weapon = party_motion::WeaponDraw::default();
+        self.played_variant = 2;
+        self.played_armed = false;
+    }
+
+    /// The pose table's key for what plays now.
+    pub fn pose_key(&self) -> (Action, bool) {
+        match (self.action, self.armed, self.weapon.shown) {
+            (Action::Walk, false, true) => (Action::LoweredWalk, false),
+            (Action::Run, false, true) => (Action::LoweredRun, false),
+            (action, armed, _) => (action, armed),
+        }
+    }
+
+    /// The motion 6 of the stance, when the set has it.
+    fn stance_switch<'a>(&self, clips: &'a Clips) -> Option<&'a Clip> {
+        if self.armed {
+            clips.draw.as_ref()
+        } else {
+            clips.put_away.as_ref()
+        }
     }
 
     /// In the jump/fall mode: airborne actions once any pending jump has
@@ -1695,6 +1752,59 @@ impl Player {
     }
 
     pub fn tick(&mut self, input: &Input, p: &Params, clips: &Clips, world: &impl World) -> Step {
+        // FUN_1403d4cc0: the battle flag sets the stance each tick.
+        if self.battle_flag {
+            self.armed = true;
+        }
+        let was = self.action;
+        let mut step = self.tick_action(input, p, clips, world);
+        self.stance_after_tick(was, clips, &mut step);
+        step
+    }
+
+    /// The stance's end and the motions that follow from it, after the
+    /// tick's own action. FUN_1403c6740 calls FUN_1403ba350 at a loop's end,
+    /// and at a motion's end with a motion behind it unless that motion's
+    /// variant was 0: on the ground, with the flag down, the stance ends.
+    /// FUN_1403c88c0 then plays motion 6 when idle crosses to the other
+    /// stance; a walk or run just changes slot (FUN_1403c6dc0).
+    fn stance_after_tick(&mut self, was: Action, clips: &Clips, step: &mut Step) {
+        let locomotion = matches!(self.action, Action::Idle | Action::Walk | Action::Run);
+        let looped = was == self.action
+            && locomotion
+            && self.frame > 0
+            && self.clip(clips).looped_frame(self.frame)
+                < self.clip(clips).looped_frame(self.frame - 1);
+        let ended = was != self.action && locomotion && self.played_variant != 0;
+        if self.armed && !self.battle_flag && (looped || ended) {
+            self.armed = false;
+        }
+        if self.action == Action::Idle
+            && (self.played_variant < 2) != self.armed
+            && self.stance_switch(clips).is_some()
+        {
+            self.start(Action::StanceSwitch, step);
+        } else if was == Action::StanceSwitch && self.action == Action::Idle {
+            // The idle queued behind motion 6 starts unblended.
+            self.blend = 0.;
+        } else if was == self.action
+            && matches!(self.action, Action::Walk | Action::Run)
+            && self.armed != self.played_armed
+        {
+            self.switch_gait(self.action, clips, step);
+        }
+        self.played_variant = self.clip(clips).slot & 3;
+        self.played_armed = self.armed;
+    }
+
+    /// One tick of the action.
+    fn tick_action(
+        &mut self,
+        input: &Input,
+        p: &Params,
+        clips: &Clips,
+        world: &impl World,
+    ) -> Step {
         let mut step = Step::default();
         self.jump_reach_height = self.jump_height(p).0;
         self.frame = self.frame.saturating_add(1);
@@ -1755,7 +1865,9 @@ impl Player {
             self.recover(input, clips, direction, &mut step);
         }
         match self.action {
-            Action::Idle | Action::Walk | Action::Run | Action::Land => {
+            // Pose table keys, never Sora's action.
+            Action::LoweredWalk | Action::LoweredRun => {}
+            Action::Idle | Action::Walk | Action::Run | Action::Land | Action::StanceSwitch => {
                 // Commands need an active ANB range 0, 1 or 2 (obj+0x18c &
                 // 0x1c, FUN_1401b15f0): always during locomotion, from
                 // LAND's range-2 start (tick 12 installed) after a landing.
@@ -1779,6 +1891,10 @@ impl Player {
                     let target = if !moving {
                         if landing && self.frame < clips.land.end {
                             Action::Land
+                        } else if self.action == Action::StanceSwitch
+                            && self.frame < self.clip(clips).end
+                        {
+                            Action::StanceSwitch
                         } else {
                             Action::Idle
                         }
@@ -1789,12 +1905,7 @@ impl Player {
                     } else {
                         Action::Run
                     };
-                    self.idle_ticks = self.idle_ticks.saturating_add(1);
-                    if self.armed && self.idle_ticks >= p.disarm_ticks && target != Action::Land {
-                        // Weapon put away: restart the locomotion clip in field mode.
-                        self.armed = false;
-                        self.start(target, &mut step);
-                    } else if target != self.action {
+                    if target != self.action {
                         if matches!(
                             (self.action, target),
                             (Action::Walk, Action::Run) | (Action::Run, Action::Walk)
@@ -2146,8 +2257,9 @@ impl Player {
             Action::Attack(i) | Action::AirAttack(i) => clips.records[i].motion,
             Action::Cast(i) | Action::AirCast(i) => clips.spells[i].motion,
             Action::Idle => 0,
-            Action::Walk => 1,
-            Action::Run => 2,
+            Action::Walk | Action::LoweredWalk => 1,
+            Action::Run | Action::LoweredRun => 2,
+            Action::StanceSwitch => party_motion::STANCE_SWITCH,
             Action::Jump => 3,
             Action::Fall => 4,
             Action::Land => 5,
@@ -2940,7 +3052,6 @@ mod tests {
             walk_threshold: 0.5,
             radius: 30.,
             height: 140.,
-            disarm_ticks: 120,
         }
     }
     fn attack(end: u32, window: (u32, u32), hop: f32) -> AttackStep {
@@ -3002,14 +3113,21 @@ mod tests {
             ..Clip::looping(end, 0)
         }
     }
+    fn slotted(slot: usize, end: u32) -> Clip {
+        Clip { slot, ..open(end) }
+    }
     fn clips() -> Clips {
         Clips {
-            idle: open(100),
-            walk: open(60),
-            run: open(40),
-            field_idle: open(90),
-            field_walk: open(50),
-            field_run: open(36),
+            idle: slotted(0, 100),
+            walk: slotted(4, 60),
+            run: slotted(8, 40),
+            field_idle: slotted(2, 90),
+            field_walk: slotted(6, 50),
+            field_run: slotted(10, 36),
+            lowered_walk: slotted(7, 52),
+            lowered_run: slotted(11, 38),
+            draw: None,
+            put_away: None,
             jump: open(30),
             fall: open(30),
             land: Clip::looping(12, 0),
@@ -3991,11 +4109,88 @@ mod tests {
     }
 
     #[test]
-    fn attacking_draws_the_weapon_until_idle_timeout() {
+    fn the_stance_follows_the_battle_flag_with_its_motions() {
+        let (p, w) = (params(), room());
+        let c = Clips {
+            draw: Some(Clip {
+                loop_start: 26,
+                ..slotted(24, 26)
+            }),
+            put_away: Some(Clip {
+                loop_start: 70,
+                ..slotted(27, 70)
+            }),
+            ..clips()
+        };
+        let mut player = Player::new([0., 0., 0.], 0.);
+        let idle = Input::default();
+        player.tick(&idle, &p, &c, &w);
+        assert!(!player.armed);
+        assert_eq!(player.clip(&c).slot, 2);
+        // The flag: the draw, then battle idle, and it holds through a loop.
+        player.battle_flag = true;
+        player.tick(&idle, &p, &c, &w);
+        assert!(player.armed);
+        assert_eq!(player.action, Action::StanceSwitch);
+        assert_eq!(player.clip(&c).slot, 24);
+        while player.action == Action::StanceSwitch {
+            player.tick(&idle, &p, &c, &w);
+        }
+        assert_eq!((player.action, player.blend), (Action::Idle, 0.));
+        assert_eq!(player.clip(&c).slot, 0);
+        for _ in 0..150 {
+            player.tick(&idle, &p, &c, &w);
+        }
+        assert!(player.armed);
+        assert_eq!(player.clip(&c).slot, 0);
+        // The flag down: at the loop's end, the put-away, then field idle.
+        player.battle_flag = false;
+        let mut ticks = 0;
+        while player.armed {
+            player.tick(&idle, &p, &c, &w);
+            ticks += 1;
+        }
+        assert!((1..=100).contains(&ticks));
+        assert_eq!(player.action, Action::StanceSwitch);
+        assert_eq!(player.clip(&c).slot, 27);
+        while player.action == Action::StanceSwitch {
+            player.tick(&idle, &p, &c, &w);
+        }
+        assert_eq!(player.clip(&c).slot, 2);
+        // No second put-away, whatever the idle loop does.
+        for _ in 0..200 {
+            player.tick(&idle, &p, &c, &w);
+            assert_eq!(player.action, Action::Idle);
+        }
+    }
+
+    #[test]
+    fn walking_and_running_in_the_field_follow_the_keyblade() {
         let (p, c, w) = (params(), clips(), room());
         let mut player = Player::new([0., 0., 0.], 0.);
-        assert!(!player.armed);
-        assert_eq!(player.clip(&c).end, 90);
+        let walk = Input {
+            direction: [0., 0.3],
+            ..Input::default()
+        };
+        player.tick(&walk, &p, &c, &w);
+        assert_eq!(player.action, Action::Walk);
+        assert_eq!(player.clip(&c).slot, 6);
+        assert_eq!(player.pose_key(), (Action::Walk, false));
+        player.weapon.shown = true;
+        assert_eq!(player.clip(&c).slot, 7);
+        assert_eq!(player.pose_key(), (Action::LoweredWalk, false));
+        // The stance: a walk changes slot with no motion 6 in between.
+        player.battle_flag = true;
+        player.tick(&walk, &p, &c, &w);
+        assert_eq!(player.action, Action::Walk);
+        assert_eq!(player.clip(&c).slot, 4);
+        assert_eq!(player.pose_key(), (Action::Walk, true));
+    }
+
+    #[test]
+    fn attacking_sets_the_stance_and_idle_lets_it_go_at_its_loop_end() {
+        let (p, c, w) = (params(), clips(), room());
+        let mut player = Player::new([0., 0., 0.], 0.);
         player.tick(
             &Input {
                 attack: true,
@@ -4011,12 +4206,11 @@ mod tests {
         }
         assert_eq!(player.action, Action::Idle);
         assert!(player.armed);
-        assert_eq!(player.clip(&c).end, 100);
-        for _ in 0..p.disarm_ticks {
+        assert_eq!(player.clip(&c).slot, 0);
+        for _ in 0..101 {
             player.tick(&Input::default(), &p, &c, &w);
         }
         assert!(!player.armed);
-        assert_eq!(player.clip(&c).end, 90);
     }
 
     #[test]
@@ -4182,7 +4376,6 @@ mod tests {
         let world = room();
         let mut player = Player::new([0.; 3], 0.);
         assert_eq!(player.hurt(1, [0., -1.], 100., &c), Some(Action::Hurt(1)));
-        assert!(player.armed);
         let p = params();
         player.tick(&Input::default(), &p, &c, &world);
         assert!((player.position[2] + 10.).abs() < 1e-3);

@@ -88,9 +88,7 @@ pub fn player_targetcentre(game: &Game) -> Option<[f32; 3]> {
     let matrix = if bone == 0x4000 {
         Mat4::IDENTITY
     } else {
-        let index = *game
-            .poses
-            .get(&(game.sora.player.action, game.sora.player.armed))?;
+        let index = *game.poses.get(&game.sora.player.pose_key())?;
         let clip = game.clip_poses.get(index)?;
         let frame = game.sora.player.motion_frame(&game.clips) as usize;
         *clip
