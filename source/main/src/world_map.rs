@@ -2408,6 +2408,7 @@ fn present(
     // The map objects: looping motions and the slots' hiding.
     if let Some(bobs) = bobs {
         let mut bob_parts = bob_parts;
+        let mut bob_poses = visual::scenery::PoseCache::default();
         for (part, handle, material, mut visibility) in &mut bob_parts {
             if wm.hidden_bobs.get(part.placement).copied().unwrap_or(false) {
                 *visibility = Visibility::Hidden;
@@ -2430,8 +2431,14 @@ fn present(
             let Some(anim) = bob.anims.get(p.motion as usize) else {
                 continue;
             };
-            let tick = (wm.tick as f32 + p.start) as usize % anim.frames.len().max(1);
-            let frame = &anim.frames[tick];
+            if anim.is_empty() {
+                continue;
+            }
+            let tick = (wm.tick as f32 + p.start) as usize % anim.len();
+            let frame = bob_poses.positions(bob, p, tick);
+            if frame.is_empty() {
+                continue;
+            }
             let positions = bob.model.parts[part.ordinal]
                 .indices
                 .iter()
@@ -3485,7 +3492,10 @@ fn run(args: Vec<PathBuf>) -> Result<AppExit> {
             exit_condition: bevy::window::ExitCondition::DontExit,
             close_when_requested: false,
             ..default()
-        }).set(early_renderer.plugin()))
+        }).set(early_renderer.plugin()).set(visual::low_cost::task_pools()))
+        .insert_resource(visual::frame_limit::FrameLimit::new(visual::frame_limit::ORIGINAL_FPS))
+        .add_plugins(visual::frame_limit::FrameLimitPlugin)
+        .add_plugins(visual::low_cost::LowCostPlugin)
         .add_plugins(FogPlugin)
         .add_plugins(visual::effect_draw::EffectPlugin)
         .add_plugins(Ui2dPlugin {

@@ -10,26 +10,26 @@ pub struct LocalPose {
     pub translation: [f32; 3],
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Clone, Debug, Serialize)]
 pub struct InitialPose {
     pub bone_id: i16,
     pub channel: i16,
     pub value_bits: u32,
 }
-#[derive(Debug, Serialize)]
+#[derive(Clone, Debug, Serialize)]
 pub struct Curve {
     pub joint_id: i16,
     pub channel: u8,
     pub key_count: u8,
     pub key_start: i16,
 }
-#[derive(Debug, Serialize)]
+#[derive(Clone, Debug, Serialize)]
 pub struct Table {
     pub offset: i32,
     pub stride: usize,
     pub bytes: Vec<u8>,
 }
-#[derive(Debug, Serialize)]
+#[derive(Clone, Debug, Serialize)]
 pub struct InterpolatedMotion {
     /// Authoritative type-one records use this matrix profile; the legacy
     /// interpolated fields below stay empty rather than fabricating curves.

@@ -20,6 +20,7 @@ pub mod lens_probe;
 pub mod level_up;
 pub mod limit_hud;
 pub mod lock_on;
+pub mod low_cost;
 pub mod menu_screen;
 pub mod mission_timer;
 pub mod new_game;

@@ -5,8 +5,8 @@
 //! object entry during the drive-start motion, FUN_1403e0630, and waits
 //! for the load, FUN_14039e340).
 use super::{
-    ClipPoses, HURT_COUNT, LOCOMOTION, SORA_GUARD, SORA_HURT, Skin, WEAPON_BANK, clip_for,
-    ptya_record, sound_triggers,
+    ClipPoses, HURT_COUNT, LOCOMOTION, SORA_GUARD, SORA_HURT, Skin, WEAPON_BANK, WeaponMotion,
+    clip_for, ptya_record, sound_triggers,
 };
 use bevy::prelude::*;
 use data::{model_inspection, motion, object_collision, probe_source::ProbeSource, ptya};
@@ -518,18 +518,20 @@ pub fn load_kit(source: &ProbeSource, k: KitInputs) -> Result<Kit, Box<dyn std::
             .collect(),
         weapon_joint,
     });
-    // One clip's frames: the evaluated joints (skinned when shown), the
-    // matrices the simulation reads, the weapon's own vertices, and the
-    // evaluation statistics.
+    // Each slot's weapon, whose own motions are skinned when shown.
+    let weapon_skins = [
+        Arc::new(weapon.skinning.clone()),
+        Arc::new(weapon2.as_ref().unwrap_or(&weapon).skinning.clone()),
+    ];
+    // One clip's frames: what is evaluated when shown, the matrices the
+    // simulation reads, and the evaluation statistics.
     let build = |selected: &motion::SelectedMotion, end: u32, key_start: u32| -> BuiltClip {
         let mut stats = [0usize; 4];
         let mut frames = Vec::with_capacity(end as usize);
-        let mut joints = Vec::new();
+        let mut has_joints = false;
         let mut hand = Vec::with_capacity(end as usize);
         let mut hand2 = Vec::new();
         let mut root = Vec::with_capacity(end as usize);
-        let mut weapon_frames = Vec::new();
-        let mut weapon2_frames = Vec::new();
         let mut blade = Vec::new();
         let mut blade2 = Vec::new();
         // FUN_1401a7af0's return: the blade bone's length (record +0x1c),
@@ -601,13 +603,7 @@ pub fn load_kit(source: &ProbeSource, k: KitInputs) -> Result<Kit, Box<dyn std::
         let trails2 = trail_windows(1);
         for offset in 0..=end {
             let frame = key_start + offset;
-            for (k, (frames_k, blade_k)) in [
-                (&mut weapon_frames, &mut blade),
-                (&mut weapon2_frames, &mut blade2),
-            ]
-            .into_iter()
-            .enumerate()
-            {
+            for (k, blade_k) in [&mut blade, &mut blade2].into_iter().enumerate() {
                 if let Some(own) = weapon_motions[k].get(&selected.slot) {
                     let model = if k == 1 {
                         weapon2.as_ref().unwrap_or(&weapon)
@@ -615,12 +611,6 @@ pub fn load_kit(source: &ProbeSource, k: KitInputs) -> Result<Kit, Box<dyn std::
                         &weapon
                     };
                     let (pose, _) = model.skinning.sample_evaluated(&own.motion, frame as f32)?;
-                    frames_k.push(
-                        pose.position_bits
-                            .iter()
-                            .map(|p| Vec3::from_array(p.map(f32::from_bits)))
-                            .collect(),
-                    );
                     if let Some(m) = pose.matrix_bits.get(2) {
                         blade_k.push(Mat4::from_cols_array(&m.map(f32::from_bits)));
                     }
@@ -637,11 +627,9 @@ pub fn load_kit(source: &ProbeSource, k: KitInputs) -> Result<Kit, Box<dyn std::
                 let r = evaluated.root_translation;
                 root.push(Vec3::from_array(r));
                 // Raw-matrix motions have no joints to blend; the
-                // others keep their joints (root included) and are
-                // skinned when shown (`ClipPoses::frame`).
-                if let Some(own) = evaluated.joints.get(..skin.parents.len()) {
-                    joints.push(own.to_vec());
-                }
+                // others are evaluated and skinned when shown
+                // (`ClipPoses::posed`).
+                has_joints = evaluated.joints.len() >= skin.parents.len();
                 for p in &mut pose.position_bits {
                     *p = std::array::from_fn(|i| (f32::from_bits(p[i]) - r[i]).to_bits());
                 }
@@ -683,7 +671,7 @@ pub fn load_kit(source: &ProbeSource, k: KitInputs) -> Result<Kit, Box<dyn std::
                     &pose.matrix_bits[j].map(f32::from_bits),
                 ));
             }
-            if joints.is_empty() {
+            if !has_joints {
                 frames.push(
                     pose.position_bits
                         .iter()
@@ -695,12 +683,19 @@ pub fn load_kit(source: &ProbeSource, k: KitInputs) -> Result<Kit, Box<dyn std::
         Ok((
             ClipPoses {
                 frames,
-                joints,
+                motion: has_joints.then(|| Arc::new(selected.motion.clone())),
+                key_start,
                 skin: Some(skin.clone()),
                 weapon: hand,
                 weapon2: hand2,
-                weapon_frames,
-                weapon2_frames,
+                weapon_motions: std::array::from_fn(|k| {
+                    weapon_motions[k]
+                        .get(&selected.slot)
+                        .map(|own| WeaponMotion {
+                            motion: Arc::new(own.motion.clone()),
+                            skinning: weapon_skins[k].clone(),
+                        })
+                }),
                 root,
                 blade,
                 blade2,

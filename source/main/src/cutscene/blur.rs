@@ -105,11 +105,10 @@ impl Blur {
         zoom: [f32; 2],
     ) -> Self {
         let outputs: [Handle<Image>; 2] = std::array::from_fn(|_| {
-            images.add(Image::new_target_texture(
+            images.add(visual::room::render_target(
                 size[0],
                 size[1],
                 TextureFormat::Rgba8UnormSrgb,
-                None,
             ))
         });
         let sheets = [0, 1].map(|i| frame.add_image(outputs[i].clone(), size, true));

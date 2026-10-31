@@ -3,7 +3,7 @@
 //! the camp is open. They are kept beside the room's configuration.
 use super::*;
 use bevy::window::{MonitorSelection, PresentMode, VideoModeSelection, WindowMode};
-use visual::frame_limit::FrameLimit;
+use visual::frame_limit::{FrameLimit, ORIGINAL_FPS};
 use visual::settings::{LANGUAGES, Settings};
 use visual::smoothing::Smoothing;
 
@@ -372,7 +372,9 @@ pub fn apply_settings(
         if w.mode != mode {
             w.mode = mode;
         }
-        let present = if s.vsync {
+        // A cap at or under the original's frame rate cannot need more than a
+        // monitor's refresh, so it presents without tearing.
+        let present = if s.vsync || s.frame_limit().is_some_and(|c| c <= ORIGINAL_FPS) {
             PresentMode::AutoVsync
         } else {
             PresentMode::AutoNoVsync
@@ -415,6 +417,8 @@ mod tests {
     #[test]
     fn frame_caps_follow_settings_and_focus() {
         let mut s = Settings::default();
+        assert_eq!(frame_limit(&s, true, false), Some(60), "the default");
+        s.vsync = true;
         assert_eq!(frame_limit(&s, true, false), None, "V-Sync paces itself");
         assert_eq!(frame_limit(&s, false, false), Some(UNFOCUSED_FPS));
         assert_eq!(

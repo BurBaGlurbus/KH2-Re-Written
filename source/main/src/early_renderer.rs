@@ -2,14 +2,15 @@
 //! data decodes. Bevy otherwise creates them in `RenderPlugin`'s build, about
 //! a second spent after the decode, before the first frame.
 //!
-//! Same settings as Bevy's own creation (`WgpuSettings::default()`, which
-//! reads the `WGPU_*` environment overrides); the adapter is requested
+//! Bevy's own settings (`WgpuSettings::default()`, which reads the `WGPU_*`
+//! environment overrides), allocating for memory use rather than speed: this
+//! game's GPU data is small and rarely changes. The adapter is requested
 //! without the window's surface, which does not exist yet. If the thread
 //! fails, `RenderPlugin` creates the device itself as before.
 use bevy::render::{
     RenderPlugin,
     renderer::initialize_renderer,
-    settings::{RenderCreation, RenderResources, WgpuSettings},
+    settings::{MemoryHints, RenderCreation, RenderResources, WgpuSettings},
 };
 use std::thread::JoinHandle;
 
@@ -18,7 +19,10 @@ pub struct EarlyRenderer(JoinHandle<Option<RenderResources>>);
 impl EarlyRenderer {
     pub fn start() -> Self {
         Self(std::thread::spawn(|| {
-            let settings = WgpuSettings::default();
+            let settings = WgpuSettings {
+                memory_hints: MemoryHints::MemoryUsage,
+                ..Default::default()
+            };
             let backends = settings.backends?;
             Some(bevy::tasks::block_on(initialize_renderer(
                 backends, None, &settings,

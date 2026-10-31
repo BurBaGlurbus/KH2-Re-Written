@@ -64,14 +64,23 @@ pub struct Settings {
     pub show_hud: bool,
     /// Mouse camera turn speed, 1..=10, 5 the PC version's.
     pub camera_speed: u8,
+    /// Which frame rate default the file has seen: a file from before the
+    /// original's pacing became the default moves to it once.
+    #[serde(default)]
+    pub pacing: u8,
 }
+
+/// The current pacing.
+const PACING: u8 = 1;
+/// The default frame cap, as the original: one tick per frame.
+const DEFAULT_FRAME_CAP: u16 = 60;
 
 impl Default for Settings {
     fn default() -> Self {
         Self {
             display: 0,
-            vsync: true,
-            frame_cap: 0,
+            vsync: false,
+            frame_cap: DEFAULT_FRAME_CAP,
             custom_frame_cap: false,
             custom_cap: 200,
             render_scale: 2,
@@ -85,6 +94,7 @@ impl Default for Settings {
             language: "us".into(),
             show_hud: true,
             camera_speed: 5,
+            pacing: PACING,
         }
     }
 }
@@ -126,6 +136,12 @@ impl Settings {
     }
 
     fn clamped(mut self) -> Self {
+        if self.pacing < PACING {
+            self.vsync = false;
+            self.frame_cap = DEFAULT_FRAME_CAP;
+            self.custom_frame_cap = false;
+            self.pacing = PACING;
+        }
         self.display = self.display.min(DISPLAY_MODES.len() as u8 - 1);
         if !FRAME_CAPS.contains(&self.frame_cap) {
             self.frame_cap = 0;
@@ -404,7 +420,7 @@ mod tests {
         let s = Settings::default();
         let g = s.rows(1, &langs());
         assert_eq!(g[0].choices, ["Window", "Borderless", "Fullscreen"]);
-        assert_eq!(g[1].choices[g[1].selected], "V-Sync");
+        assert_eq!(g[1].choices[g[1].selected], "60 FPS");
         assert_eq!(g[2].choices[g[2].selected], "200 FPS");
         assert_eq!(g[3].choices[g[3].selected], "100%");
         assert_eq!(g[5].choices[g[5].selected], "5");
@@ -458,13 +474,16 @@ mod tests {
         let s = s.clamped();
         assert_eq!(s.brightness, 10);
         assert_eq!(s.display, 2);
-        assert!(s.vsync);
+        assert_eq!(s.frame_limit(), Some(60));
         assert_eq!(s.language, "us");
     }
 
     #[test]
     fn frame_rate_choices_map_to_limits() {
-        let mut s = Settings::default();
+        let mut s = Settings {
+            vsync: true,
+            ..Settings::default()
+        };
         let l = langs();
         assert_eq!(s.frame_limit(), None);
         s.step(1, 1, true, &l);
@@ -496,20 +515,28 @@ mod tests {
 
     #[test]
     fn loading_keeps_old_files_and_validates_caps() {
-        let old: Settings = serde_json::from_str(r#"{"vsync":false}"#).unwrap();
+        let old: Settings = serde_json::from_str(r#"{"vsync":false,"frame_cap":0}"#).unwrap();
+        let old = old.clamped();
+        assert_eq!(old.frame_limit(), Some(60), "an old file moves to 60 once");
+        let unlimited: Settings =
+            serde_json::from_str(r#"{"vsync":false,"frame_cap":0,"pacing":1}"#).unwrap();
         assert_eq!(
-            old.clamped().frame_limit(),
+            unlimited.clamped().frame_limit(),
             None,
-            "an old file's V-Sync off is Unlimited"
+            "after that the choice stays"
         );
+        let vsync: Settings = serde_json::from_str(r#"{"vsync":true,"pacing":1}"#).unwrap();
+        assert_eq!(vsync.clamped().frame_limit(), None);
         let s: Settings =
-            serde_json::from_str(r#"{"vsync":false,"frame_cap":77,"custom_cap":9000}"#).unwrap();
+            serde_json::from_str(r#"{"vsync":false,"frame_cap":77,"custom_cap":9000,"pacing":1}"#)
+                .unwrap();
         let s = s.clamped();
         assert_eq!(s.frame_cap, 0);
         assert_eq!(s.custom_cap, CUSTOM_CAP_MAX);
-        let s: Settings =
-            serde_json::from_str(r#"{"vsync":false,"custom_frame_cap":true,"custom_cap":2}"#)
-                .unwrap();
+        let s: Settings = serde_json::from_str(
+            r#"{"vsync":false,"custom_frame_cap":true,"custom_cap":2,"pacing":1}"#,
+        )
+        .unwrap();
         assert_eq!(s.clamped().frame_limit(), Some(CUSTOM_CAP_MIN));
     }
 }

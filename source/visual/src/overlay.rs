@@ -142,7 +142,13 @@ impl Plugin for Ui2dPlugin {
             .add_systems(Startup, spawn_camera)
             .add_systems(
                 PostUpdate,
-                (present, rebind_resized.after(AssetEventSystems)),
+                // A slot's rewrite must reach this frame's asset events: an
+                // event a frame late finds the mesh already taken, and the
+                // renderer then frees it without a new copy.
+                (
+                    present.before(AssetEventSystems),
+                    rebind_resized.after(AssetEventSystems),
+                ),
             );
     }
 }

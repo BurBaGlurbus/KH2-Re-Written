@@ -1648,9 +1648,8 @@ pub fn present(
         let frame = game.sora.player.motion_frame(&game.clips) as usize;
         let cp = &game.clip_poses[clip];
         let hands = &cp.weapon2;
-        if let Some(pose) = cp
-            .weapon2_frames
-            .get(frame.min(cp.weapon2_frames.len().saturating_sub(1)))
+        if !second_parts.is_empty()
+            && let Some(pose) = cp.weapon_frame(1, frame)
         {
             for (part, handle) in &second_parts {
                 let positions: Vec<[f32; 3]> = game.weapon2_indices[part.0]
@@ -1708,7 +1707,9 @@ pub fn present(
     // As in setup: the weapon's own motion poses it in the hand joint's
     // space; without one its bind pose is moved into its root joint's.
     let battle_idle = &g.clip_poses[g.poses[&(Action::Idle, true)]];
-    let weapon_pose: Vec<Vec3> = if battle_idle.weapon_frames.is_empty() {
+    let weapon_pose: Vec<Vec3> = if let Some(pose) = battle_idle.weapon_frame(0, 0) {
+        pose
+    } else {
         let weapon_root =
             Mat4::from_cols_array(&weapon.poses[0].matrix_bits[0].map(f32::from_bits));
         weapon.poses[0]
@@ -1720,14 +1721,10 @@ pub fn present(
                     .transform_point3(Vec3::from_array(p.map(f32::from_bits)))
             })
             .collect()
-    } else {
-        battle_idle.weapon_frames[0].clone()
     };
     // Slot 1's Keyblade is posed by its own motion at the same key time.
     let weapon2_pose = battle_idle
-        .weapon2_frames
-        .first()
-        .cloned()
+        .weapon_frame(1, 0)
         .unwrap_or_else(|| weapon_pose.clone());
     let mut hands_to_fill = Vec::new();
     if count >= 1 {

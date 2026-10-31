@@ -13,9 +13,60 @@ use data::{
 
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 
-/// Per-tick vertex positions of one looping motion.
+/// One looping motion, evaluated and skinned when shown as the original does.
 pub struct BobAnim {
-    pub frames: Vec<Vec<Vec3>>,
+    motion: InterpolatedMotion,
+    ticks: usize,
+    frame_start: f32,
+    scale: f32,
+}
+
+impl BobAnim {
+    pub fn len(&self) -> usize {
+        self.ticks
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.ticks == 0
+    }
+
+    /// The vertex positions at `tick` (wrapped into the loop).
+    pub fn positions(&self, model: &InspectionModel, tick: usize) -> Vec<Vec3> {
+        if self.ticks == 0 {
+            return Vec::new();
+        }
+        let frame = self.frame_start + (tick % self.ticks) as f32 / self.scale;
+        model
+            .skinning
+            .sample_evaluated(&self.motion, frame)
+            .map(|(pose, _)| {
+                pose.position_bits
+                    .iter()
+                    .map(|p| Vec3::from_array(p.map(f32::from_bits)))
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+}
+
+/// The poses of a frame's motion parts, so the parts of one object at one
+/// tick skin it once.
+#[derive(Default)]
+pub struct PoseCache(std::collections::HashMap<(usize, i32, usize), Vec<Vec3>>);
+
+impl PoseCache {
+    pub fn positions(&mut self, bob: &Bob, placement: &Placement, tick: usize) -> &[Vec3] {
+        let key = (placement.model, placement.motion, tick);
+        self.0
+            .entry(key)
+            .or_insert_with(|| {
+                bob.anims
+                    .get(placement.motion as usize)
+                    .map(|a| a.positions(&bob.model, tick))
+                    .unwrap_or_default()
+            })
+            .as_slice()
+    }
 }
 
 pub struct Bob {
@@ -63,7 +114,7 @@ pub struct LoadedBobs {
     pub placements: Vec<Placement>,
 }
 
-fn build_anim(model: &InspectionModel, m: &InterpolatedMotion) -> Result<BobAnim> {
+fn build_anim(model: &InspectionModel, m: InterpolatedMotion) -> Result<BobAnim> {
     let (frame_start, frame_end, fps, _) = m.frame_window()?;
     if !(1. ..=60.).contains(&fps) || frame_end <= frame_start {
         return Err("BOB motion frame window outside profile".into());
@@ -76,18 +127,18 @@ fn build_anim(model: &InspectionModel, m: &InterpolatedMotion) -> Result<BobAnim
         .clamp(1, 4096);
     let scale = 60. / fps;
     // The ticks are independent: evaluated on several threads, in order.
-    let frames = crate::par::map_indexed(ticks, |tick| {
-        let (pose, _) = model
+    // A motion that cannot be sampled is left out, as before.
+    for tick in [0, ticks - 1] {
+        model
             .skinning
-            .sample_evaluated(m, frame_start + tick as f32 / scale)?;
-        Ok::<_, std::io::Error>(
-            pose.position_bits
-                .iter()
-                .map(|p| Vec3::from_array(p.map(f32::from_bits)))
-                .collect(),
-        )
-    })?;
-    Ok(BobAnim { frames })
+            .sample_evaluated(&m, frame_start + tick as f32 / scale)?;
+    }
+    Ok(BobAnim {
+        motion: m,
+        ticks,
+        frame_start,
+        scale,
+    })
 }
 
 /// Places the model's region-sized remaster images in their pages (the
@@ -172,7 +223,7 @@ pub fn load(
                     continue;
                 };
                 if let Ok(motion) = motion::read_interpolated(raw)
-                    && let Ok(a) = build_anim(&model, &motion)
+                    && let Ok(a) = build_anim(&model, motion)
                 {
                     anims.push(a);
                 }

@@ -36,10 +36,16 @@ const REACTIONS: [u16; 15] = [10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 41, 54, 55
 
 /// One motion, sampled per tick (60 Hz).
 pub struct MotionData {
-    /// Model vertices with the root removed.
-    pub frames: Vec<Vec<Vec3>>,
-    /// The weapon's vertices in model space (empty when it has no motion).
-    pub weapon: Vec<Vec<Vec3>>,
+    /// The motion's ticks.
+    pub ticks: u32,
+    /// Model vertices with the root removed, kept only for motions without
+    /// evaluated joints (raw matrices); the others are skinned from `joints`
+    /// when shown (`MemberRt` and `vertices`), which keeps hundreds of
+    /// megabytes of vertices out of memory.
+    pub raw_frames: Vec<Vec<Vec3>>,
+    /// A weapon without motions: its vertices in its bind pose, which hang on
+    /// the hand.
+    pub weapon_bind: Option<Arc<Vec<Vec3>>>,
     /// The weapon bone 2 matrix in model space (attack spheres).
     pub blade: Vec<Mat4>,
     /// Root translation per tick (model space).
@@ -73,23 +79,94 @@ pub struct MotionData {
     pub item_use: Option<u32>,
     /// The clip's trigger tables as the object-script engine reads them.
     pub events: enemy::motion::MotionEvents,
-    /// The hand bone in model space (root removed) and the weapon's vertices
-    /// in its own space, per tick (a thrown shield flies with the latter).
+    /// The hand bone in model space (root removed) per tick.
     pub hand: Vec<Mat4>,
-    pub weapon_local: Vec<Vec<Vec3>>,
     /// The motion set slot the clip was read from (FUN_1403c7c50's pick for
     /// the stance; the weapon plays the same slot).
     pub slot: usize,
-    /// Every bone's evaluated transform per tick (the body's with the root
-    /// removed) and the weapon's own: a blending switch mixes them joint by
-    /// joint (FUN_1401c3970).
-    pub joints: Vec<Vec<Joint>>,
-    pub weapon_joints: Vec<Vec<Joint>>,
+    /// The motion, and the weapon's own, each evaluated when shown as the
+    /// original does (a blending switch mixes their joints, FUN_1401c3970),
+    /// and the key of tick 0.
+    pub motion: Option<Arc<data::motion::InterpolatedMotion>>,
+    pub weapon_motion: Option<Arc<data::motion::InterpolatedMotion>>,
+    pub key_start: u32,
 }
 
 impl MotionData {
     pub fn end(&self) -> u32 {
-        self.frames.len().saturating_sub(1) as u32
+        self.ticks.saturating_sub(1)
+    }
+
+    /// Tick `f`'s vertices and joints with the root removed: the kept
+    /// vertices, or one evaluation skinned as the motion's own pose (the same
+    /// matrices, then the root taken off each position).
+    pub fn posed(
+        &self,
+        model: &model_inspection::InspectionModel,
+        f: usize,
+    ) -> Option<(Vec<Vec3>, Vec<Joint>)> {
+        if !self.raw_frames.is_empty() {
+            return Some((self.raw_frames.get(f).cloned()?, Vec::new()));
+        }
+        let r = *self.root.get(f)?;
+        let key = (self.key_start as usize + f) as f32;
+        let bones = &model.skinning.bones;
+        let evaluated = data::motion_eval::evaluate(bones, self.motion.as_ref()?, key).ok()?;
+        let joints = evaluated.joints.get(..bones.len())?;
+        let pose = model.skinning.pose_from_worlds(joints).ok()?;
+        let vertices = pose
+            .position_bits
+            .iter()
+            .map(|p| Vec3::from_array(p.map(f32::from_bits)) - r)
+            .collect();
+        let rootless = joints
+            .iter()
+            .map(|w| {
+                let mut w = *w;
+                for (t, r) in w.translation.iter_mut().zip(r.to_array()) {
+                    *t -= r;
+                }
+                w
+            })
+            .collect();
+        Some((vertices, rootless))
+    }
+
+    /// Tick `f`'s weapon vertices in the member's model space.
+    pub fn weapon_vertices(
+        &self,
+        weapon: Option<&model_inspection::InspectionModel>,
+        f: usize,
+    ) -> Option<Vec<Vec3>> {
+        let (local, _) = self.weapon_local(weapon, f)?;
+        let hand = *self.hand.get(f)?;
+        Some(local.iter().map(|v| hand.transform_point3(*v)).collect())
+    }
+
+    /// Whether the weapon has a pose in this motion, own or bind.
+    pub fn has_weapon(&self) -> bool {
+        self.weapon_motion.is_some() || self.weapon_bind.is_some()
+    }
+
+    /// Tick `f`'s weapon vertices in the weapon's own space (a thrown shield
+    /// flies with these) and its joints (empty without a motion of its own).
+    pub fn weapon_local(
+        &self,
+        weapon: Option<&model_inspection::InspectionModel>,
+        f: usize,
+    ) -> Option<(Vec<Vec3>, Vec<Joint>)> {
+        if let Some(bind) = &self.weapon_bind {
+            return Some(((**bind).clone(), Vec::new()));
+        }
+        let (weapon, motion) = (weapon?, self.weapon_motion.as_ref()?);
+        let key = (self.key_start as usize + f) as f32;
+        let (pose, evaluated) = weapon.skinning.sample_evaluated(motion, key).ok()?;
+        let joints = evaluated
+            .joints
+            .get(..weapon.skinning.bones.len())
+            .map(<[_]>::to_vec)
+            .unwrap_or_default();
+        Some((unbits(&pose.position_bits), joints))
     }
 
     pub fn frame_of(&self, tick: u32) -> usize {
@@ -407,8 +484,8 @@ fn build_motion(
     let end = (frame_end * scale).round() as u32 - start;
     let loop_start = ((frame_return * scale).round() as u32).saturating_sub(start);
     let mut data = MotionData {
-        frames: Vec::new(),
-        weapon: Vec::new(),
+        ticks: 0,
+        raw_frames: Vec::new(),
         blade: Vec::new(),
         root: Vec::new(),
         hits: Vec::new(),
@@ -501,10 +578,11 @@ fn build_motion(
                 .collect(),
         },
         hand: Vec::new(),
-        weapon_local: Vec::new(),
         slot: selected.slot,
-        joints: Vec::new(),
-        weapon_joints: Vec::new(),
+        motion: None,
+        weapon_bind: None,
+        weapon_motion: None,
+        key_start: start,
     };
     let bones = model.skinning.bones.len();
     // A weapon without motions hangs on the hand in its bind pose.
@@ -551,16 +629,13 @@ fn build_motion(
     // in order (each list as the loop used to push it).
     struct Tick {
         root: Vec3,
-        joints: Option<Vec<data::motion_eval::World>>,
-        frame: Vec<Vec3>,
+        has_joints: bool,
+        frame: Option<Vec<Vec3>>,
         hit: Vec<Vec3>,
         body_attack: Vec<Vec3>,
         hand: Mat4,
-        weapon: Option<Vec<Vec3>>,
-        weapon_local: Option<Vec<Vec3>>,
         blade: Option<Mat4>,
         staff: Option<Mat4>,
-        weapon_joints: Option<Vec<data::motion_eval::World>>,
     }
     let ticks = visual::par::map_indexed(end as usize + 1, |offset| -> std::io::Result<Tick> {
         // The keys run at 60 a second, twice the declared frame rate (the
@@ -568,23 +643,14 @@ fn build_motion(
         let key = (start + offset as u32) as f32;
         let (pose, evaluated) = model.skinning.sample_evaluated(&selected.motion, key)?;
         let r = Vec3::from_array(evaluated.root_translation);
-        // Raw-matrix motions have no joints to blend.
-        let joints = evaluated.joints.get(..bones).map(|own| {
-            own.iter()
-                .map(|w| {
-                    let mut w = *w;
-                    for (t, r) in w.translation.iter_mut().zip(r.to_array()) {
-                        *t -= r;
-                    }
-                    w
-                })
+        // Raw-matrix motions have no joints to blend, or to skin from later.
+        let has_joints = evaluated.joints.len() >= bones;
+        let frame = (!has_joints).then(|| {
+            pose.position_bits
+                .iter()
+                .map(|p| Vec3::from_array(p.map(f32::from_bits)) - r)
                 .collect()
         });
-        let frame = pose
-            .position_bits
-            .iter()
-            .map(|p| Vec3::from_array(p.map(f32::from_bits)) - r)
-            .collect();
         let hit = hit_shapes
             .iter()
             .map(|&(bone, offset, _, _)| {
@@ -609,35 +675,21 @@ fn build_motion(
             .map_or(Mat4::IDENTITY, |m| matrix(m, r));
         let mut tick = Tick {
             root: r,
-            joints,
+            has_joints,
             frame,
             hit,
             body_attack,
             hand,
-            weapon: None,
-            weapon_local: None,
             blade: None,
             staff: None,
-            weapon_joints: None,
         };
-        if let Some((local, bone)) = &bind {
-            tick.weapon = Some(local.iter().map(|p| hand.transform_point3(*p)).collect());
-            tick.weapon_local = Some(local.clone());
+        if let Some((_, bone)) = &bind {
             let blade = bone.map_or(hand, |b| hand * b);
             tick.blade = Some(blade);
             tick.staff = Some(blade);
         }
         if let (Some(w), Some(own)) = (weapon, own) {
-            let (wp, we) = w.skinning.sample_evaluated(&own.motion, key)?;
-            if let Some(joints) = we.joints.get(..w.skinning.bones.len()) {
-                tick.weapon_joints = Some(joints.to_vec());
-            }
-            tick.weapon_local = Some(
-                wp.position_bits
-                    .iter()
-                    .map(|p| Vec3::from_array(p.map(f32::from_bits)))
-                    .collect(),
-            );
+            let (wp, _) = w.skinning.sample_evaluated(&own.motion, key)?;
             let weapon_now: Vec<Vec3> = wp
                 .position_bits
                 .iter()
@@ -661,22 +713,25 @@ fn build_motion(
                 blade.z_axis,
                 top.extend(1.),
             ));
-            tick.weapon = Some(weapon_now);
         }
         Ok(tick)
     })?;
+    data.ticks = ticks.len() as u32;
+    if ticks.iter().all(|t| t.has_joints) {
+        data.motion = Some(Arc::new(selected.motion.clone()));
+    }
+    if weapon.is_some() {
+        data.weapon_motion = own.map(|own| Arc::new(own.motion.clone()));
+    }
+    data.weapon_bind = bind.map(|(local, _)| Arc::new(local));
     for t in ticks {
         data.root.push(t.root);
-        data.joints.extend(t.joints);
-        data.frames.push(t.frame);
+        data.raw_frames.extend(t.frame);
         data.hit.push(t.hit);
         data.body_attack.push(t.body_attack);
         data.hand.push(t.hand);
-        data.weapon.extend(t.weapon);
-        data.weapon_local.extend(t.weapon_local);
         data.blade.extend(t.blade);
         data.staff.extend(t.staff);
-        data.weapon_joints.extend(t.weapon_joints);
     }
     Ok(data)
 }
@@ -1266,12 +1321,16 @@ pub fn swap_weapons(
             }
         }
         let root = roots.iter().find(|(_, r)| r.0 == i).map(|(e, _)| e);
-        let pose = m.kind.motions.get(&0).and_then(|idle| idle.weapon.first());
+        let pose = m
+            .kind
+            .motions
+            .get(&0)
+            .and_then(|idle| idle.weapon_vertices(m.kind.weapon.as_ref(), 0));
         if let (Some(root), Some(weapon), Some(pose)) = (root, &m.kind.weapon, pose) {
             for (ordinal, entity) in spawn_model(
                 &mut commands,
                 weapon,
-                pose,
+                &pose,
                 root,
                 &mut meshes,
                 &mut materials,
@@ -3211,15 +3270,19 @@ fn pose_member(m: &MemberRt, shown: &mut ShownPose) -> Option<(Vec<Vec3>, Vec<Ve
         }
     }
     // A motion without its own weapon pose keeps the idle one.
-    let weapon_source = if data.weapon.is_empty() {
+    let weapon_source = if !data.has_weapon() {
         kind.motions.get(&0).map(|d| (d, 0))
     } else {
         Some((data, f))
     };
-    let body_target = data.joints.get(f).cloned().unwrap_or_default();
-    let weapon_target = weapon_source
-        .and_then(|(d, i)| d.weapon_joints.get(i).cloned())
+    let (body_vertices, body_target) = data.posed(&kind.model, f)?;
+    let (weapon_local, weapon_target) = weapon_source
+        .and_then(|(d, i)| d.weapon_local(kind.weapon.as_ref(), i))
         .unwrap_or_default();
+    // The hand the weapon's vertices hang on, unblended.
+    let weapon_hand = weapon_source
+        .and_then(|(d, i)| d.hand.get(i).copied())
+        .unwrap_or(Mat4::IDENTITY);
     if let Some(w) = ctl.weight()
         && !body_target.is_empty()
         && shown.from_body.len() == body_target.len()
@@ -3263,23 +3326,24 @@ fn pose_member(m: &MemberRt, shown: &mut ShownPose) -> Option<(Vec<Vec3>, Vec<Ve
                 })
                 .unwrap_or_default(),
             // A weapon without joints (no motion set) rides the hand.
-            _ => weapon_source
-                .and_then(|(d, i)| d.weapon_local.get(i))
-                .map(|l| l.iter().map(|v| hand.transform_point3(*v)).collect())
-                .unwrap_or_default(),
+            _ => weapon_local
+                .iter()
+                .map(|v| hand.transform_point3(*v))
+                .collect(),
         };
-        let body_vertices = unbits(&pose.position_bits);
+        let blended_vertices = unbits(&pose.position_bits);
         shown.body = body;
         shown.weapon = weapon;
-        return Some((body_vertices, weapon_vertices));
+        return Some((blended_vertices, weapon_vertices));
     }
     shown.body = body_target;
     shown.weapon = weapon_target;
     Some((
-        data.frames.get(f)?.clone(),
-        weapon_source
-            .and_then(|(d, i)| d.weapon.get(i).cloned())
-            .unwrap_or_default(),
+        body_vertices,
+        weapon_local
+            .iter()
+            .map(|v| weapon_hand.transform_point3(*v))
+            .collect(),
     ))
 }
 
@@ -3353,7 +3417,7 @@ pub fn present(
             && let Some(s) = m.shield
             && let Some(weapon) = &m.kind.weapon
             && let Some(motion) = m.kind.motions.get(&s.motion)
-            && let Some(local) = motion.weapon_local.get(motion.frame_of(s.tick))
+            && let Some((local, _)) = motion.weapon_local(Some(weapon), motion.frame_of(s.tick))
         {
             let turn = Quat::from_rotation_y(s.yaw);
             let member = Vec3::from_array(m.follower.position);

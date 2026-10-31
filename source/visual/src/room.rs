@@ -741,6 +741,14 @@ pub fn rgba_image(
     images.add(image)
 }
 
+/// An image a camera renders into. The GPU clears it; no zeroed copy of its
+/// pixels stays in memory.
+pub fn render_target(width: u32, height: u32, format: TextureFormat) -> Image {
+    let mut image = Image::new_target_texture(width, height, format, None);
+    image.data = None;
+    image
+}
+
 /// `rgba_image` for a texture that never changes after upload: the pixels
 /// live only on the GPU (no copy kept in the main world).
 pub fn static_rgba_image(

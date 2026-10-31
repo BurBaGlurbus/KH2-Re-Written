@@ -1427,14 +1427,26 @@ pub fn main() -> std::process::ExitCode {
         })
         .insert_resource(ClearColor(Color::BLACK))
         .insert_resource(WinitSettings::game())
-        .add_plugins(DefaultPlugins.set(WindowPlugin {
-            primary_window: Some(Window {
-                title: format!("Kingdom Hearts II Re:Written {}", env!("CARGO_PKG_VERSION")),
-                resolution: WindowResolution::new(1280, 720),
-                ..default()
-            }),
-            ..default()
-        }))
+        .add_plugins(
+            DefaultPlugins
+                .set(WindowPlugin {
+                    primary_window: Some(Window {
+                        title: format!(
+                            "Kingdom Hearts II Re:Written {}",
+                            env!("CARGO_PKG_VERSION")
+                        ),
+                        resolution: WindowResolution::new(1280, 720),
+                        ..default()
+                    }),
+                    ..default()
+                })
+                .set(visual::low_cost::task_pools()),
+        )
+        .insert_resource(visual::frame_limit::FrameLimit::new(
+            visual::frame_limit::ORIGINAL_FPS,
+        ))
+        .add_plugins(visual::frame_limit::FrameLimitPlugin)
+        .add_plugins(visual::low_cost::LowCostPlugin)
         .add_plugins(Ui2dPlugin {
             order: 0,
             overlay: false,

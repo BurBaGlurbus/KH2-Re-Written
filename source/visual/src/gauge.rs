@@ -845,20 +845,25 @@ pub struct Canvas {
     /// Canvas pixels per layout unit.
     pub scale: f32,
     pub rgba: Vec<u8>,
-    color: Vec<[f32; 4]>,
-    depth: Vec<i32>,
     tiles_x: usize,
     /// Per tile: this frame's and the last frame's hash (0: nothing drawn).
     hash: Vec<u64>,
     last_hash: Vec<u64>,
     /// Tiles this frame redrew.
     redraw: Vec<bool>,
+    /// Tiles drawn before, by tile and hash: the same triangles draw the same
+    /// bytes, so a looping animation is rasterized once per loop.
+    drawn: std::collections::HashMap<(u32, u64), Box<[u8]>>,
+    drawn_bytes: usize,
     /// Threads for a large frame.
     pub threads: usize,
 }
 
 /// Side of the canvas tiles, in pixels.
 const TILE: usize = 16;
+
+/// The most tile bytes to keep; past this the saved tiles start over.
+const DRAWN_BYTES: usize = 16 << 20;
 
 pub struct Texture<'a> {
     pub rgba: &'a [u8],
@@ -894,6 +899,21 @@ impl Texture<'_> {
             self.rgba[o..o + 4].hash(&mut h);
         }
         h.finish()
+    }
+
+    /// Whether the four texels a bilinear sample reads all have alpha 0.
+    fn clear_at(&self, u: f32, v: f32) -> bool {
+        let [tw, th] = self.size;
+        let (x0, y0) = ((u - 0.5).floor(), (v - 0.5).floor());
+        let alpha = |x: f32, y: f32| {
+            let x = (x.max(0.) as usize).min(tw - 1);
+            let y = (y.max(0.) as usize).min(th - 1);
+            self.rgba[(y * tw + x) * 4 + 3]
+        };
+        alpha(x0, y0) == 0
+            && alpha(x0 + 1., y0) == 0
+            && alpha(x0, y0 + 1.) == 0
+            && alpha(x0 + 1., y0 + 1.) == 0
     }
 
     /// Bilinear sample in texels, clamped to the edge.
@@ -1048,12 +1068,12 @@ impl Canvas {
             height,
             scale,
             rgba: vec![0; width * height * 4],
-            color: vec![[0.; 4]; width * height],
-            depth: vec![0; width * height],
             tiles_x,
             hash: vec![0; tiles],
             last_hash: vec![0; tiles],
             redraw: vec![false; tiles],
+            drawn: std::collections::HashMap::new(),
+            drawn_bytes: 0,
             threads: std::thread::available_parallelism().map_or(1, |n| n.get().min(8)),
         }
     }
@@ -1062,17 +1082,13 @@ impl Canvas {
     pub fn forget(&mut self) {
         // Tile hashes are 0 or odd, so 2 matches none.
         self.last_hash.fill(2);
+        self.drawn.clear();
+        self.drawn_bytes = 0;
     }
 
     /// A tile's pixel rectangle.
     fn tile_rect(&self, t: usize) -> [usize; 4] {
-        let (x0, y0) = ((t % self.tiles_x) * TILE, (t / self.tiles_x) * TILE);
-        [
-            x0,
-            y0,
-            (x0 + TILE).min(self.width),
-            (y0 + TILE).min(self.height),
-        ]
+        tile_rect(t, self.tiles_x, self.width, self.height)
     }
 
     /// Draws this frame; `rgba` then holds straight-alpha pixels. Returns
@@ -1150,21 +1166,25 @@ impl Canvas {
                 }
             }
         }
-        let mut rows = [usize::MAX, 0];
         let mut any = false;
+        // The tiles to draw: a changed tile with triangles over it, unless
+        // it was drawn with these triangles before (a looping animation's
+        // tiles come back every loop).
+        let mut to_draw = Vec::new();
         for t in 0..self.hash.len() {
             let r = self.hash[t] != self.last_hash[t];
             self.redraw[t] = r;
-            if r {
-                any = true;
-                let [x0, y0, x1, y1] = self.tile_rect(t);
-                rows = [rows[0].min(y0), rows[1].max(y1)];
-                for y in y0..y1 {
-                    let row = y * width;
-                    self.color[row + x0..row + x1].fill([0.; 4]);
-                    self.depth[row + x0..row + x1].fill(0);
-                    self.rgba[(row + x0) * 4..(row + x1) * 4].fill(0);
-                }
+            if !r {
+                continue;
+            }
+            any = true;
+            let rect = self.tile_rect(t);
+            if self.hash[t] == 0 {
+                write_tile(&mut self.rgba, width, rect, None);
+            } else if let Some(pixels) = self.drawn.get(&(t as u32, self.hash[t])) {
+                write_tile(&mut self.rgba, width, rect, Some(pixels));
+            } else {
+                to_draw.push(t);
             }
         }
         std::mem::swap(&mut self.hash, &mut self.last_hash);
@@ -1172,52 +1192,51 @@ impl Canvas {
         if !any {
             return false;
         }
-        let _raster = bevy::log::info_span!("hud_raster").entered();
-        // Only triangles over a redrawn tile draw; rows go to the threads
-        // in turn, so drawing that sits in a few rows still spreads.
-        let (tiles_x, redraw) = (self.tiles_x, &self.redraw);
-        tris.retain(|tri| {
-            let b = tri.b;
-            (b[1] / TILE..b[3].div_ceil(TILE)).any(|ty| {
-                redraw[ty * tiles_x + b[0] / TILE..ty * tiles_x + b[2].div_ceil(TILE)]
-                    .contains(&true)
-            })
-        });
-        let work: usize = tris
-            .iter()
-            .map(|t| (t.b[2] - t.b[0]) * (t.b[3] - t.b[1]))
-            .sum();
-        let threads = if work >= 1 << 16 { self.threads } else { 1 };
-        let mut bands: Vec<Band> = (0..threads)
-            .map(|k| Band {
-                first: rows[0] + k,
-                step: threads,
-                end: rows[1],
-                tiles_x,
-                redraw,
-                rows: Vec::new(),
-            })
-            .collect();
-        let (y0, y1) = (rows[0] * width, rows[1] * width);
-        for (n, ((color, depth), rgba)) in self.color[y0..y1]
-            .chunks_mut(width)
-            .zip(self.depth[y0..y1].chunks_mut(width))
-            .zip(self.rgba[y0 * 4..y1 * 4].chunks_mut(width * 4))
-            .enumerate()
-        {
-            bands[n % threads].rows.push(Row { color, depth, rgba });
+        if to_draw.is_empty() {
+            return true;
         }
-        let tris = &tris;
-        if threads == 1 {
-            for mut band in bands {
-                band.draw(tris);
-            }
+        let _raster = bevy::log::info_span!("hud_raster").entered();
+        // A usual frame's few tiles are quicker to draw here than to start
+        // threads for; the full-screen iris and fade take several.
+        let threads = if to_draw.len() * TILE * TILE >= 1 << 18 {
+            self.threads
+        } else {
+            1
+        };
+        let (tiles_x, tris) = (self.tiles_x, &tris);
+        let draw_tiles = |tiles: &[usize]| -> Vec<(usize, Box<[u8]>)> {
+            let mut scratch = TileScratch::default();
+            tiles
+                .iter()
+                .map(|&t| {
+                    let rect = tile_rect(t, tiles_x, width, height);
+                    (t, scratch.draw(rect, tris))
+                })
+                .collect()
+        };
+        let finished: Vec<(usize, Box<[u8]>)> = if threads == 1 {
+            draw_tiles(&to_draw)
         } else {
             std::thread::scope(|s| {
-                for mut band in bands {
-                    s.spawn(move || band.draw(tris));
-                }
-            });
+                let workers: Vec<_> = to_draw
+                    .chunks(to_draw.len().div_ceil(threads))
+                    .map(|tiles| s.spawn(|| draw_tiles(tiles)))
+                    .collect();
+                workers
+                    .into_iter()
+                    .flat_map(|w| w.join().expect("HUD raster thread"))
+                    .collect()
+            })
+        };
+        for (t, pixels) in finished {
+            let rect = self.tile_rect(t);
+            write_tile(&mut self.rgba, width, rect, Some(&pixels));
+            if self.drawn_bytes + pixels.len() > DRAWN_BYTES {
+                self.drawn.clear();
+                self.drawn_bytes = 0;
+            }
+            self.drawn_bytes += pixels.len();
+            self.drawn.insert((t as u32, self.last_hash[t]), pixels);
         }
         true
     }
@@ -1316,91 +1335,106 @@ impl<'a> Tri<'a> {
     }
 }
 
-/// One canvas row of every pixel's colour, depth and resolved bytes.
-struct Row<'a> {
-    color: &'a mut [[f32; 4]],
-    depth: &'a mut [i32],
-    rgba: &'a mut [u8],
+/// A tile's pixel rectangle.
+fn tile_rect(t: usize, tiles_x: usize, width: usize, height: usize) -> [usize; 4] {
+    let (x0, y0) = ((t % tiles_x) * TILE, (t / tiles_x) * TILE);
+    [x0, y0, (x0 + TILE).min(width), (y0 + TILE).min(height)]
 }
 
-/// One thread's share of the frame: rows `first`, `first + step`, ...
-/// before `end`.
-struct Band<'a> {
-    first: usize,
-    step: usize,
-    end: usize,
-    tiles_x: usize,
-    /// The tiles this frame redraws.
-    redraw: &'a [bool],
-    rows: Vec<Row<'a>>,
-}
-
-impl Band<'_> {
-    fn draw(&mut self, tris: &[Tri]) {
-        for tri in tris {
-            self.raster(tri);
-        }
-        for (n, row) in self.rows.iter_mut().enumerate() {
-            let y = self.first + n * self.step;
-            let tiles = &self.redraw[(y / TILE) * self.tiles_x..][..self.tiles_x];
-            for (tx, _) in tiles.iter().enumerate().filter(|(_, d)| **d) {
-                let x1 = ((tx + 1) * TILE).min(row.color.len());
-                for x in tx * TILE..x1 {
-                    let c = row.color[x];
-                    let o = x * 4;
-                    if c[3] > 0. {
-                        for k in 0..3 {
-                            row.rgba[o + k] = ((c[k] / c[3]).min(1.) * 255. + 0.5) as u8;
-                        }
-                        row.rgba[o + 3] = (c[3].min(1.) * 255. + 0.5) as u8;
-                    } else {
-                        row.rgba[o..o + 4].fill(0);
-                    }
-                }
-            }
+/// Writes a tile's resolved pixels (None: transparent) into the canvas.
+fn write_tile(rgba: &mut [u8], width: usize, rect: [usize; 4], pixels: Option<&[u8]>) {
+    let [x0, y0, x1, y1] = rect;
+    let row_bytes = (x1 - x0) * 4;
+    for y in y0..y1 {
+        let out = &mut rgba[(y * width + x0) * 4..][..row_bytes];
+        match pixels {
+            Some(pixels) => out.copy_from_slice(&pixels[(y - y0) * row_bytes..][..row_bytes]),
+            None => out.fill(0),
         }
     }
+}
 
-    /// Each pixel centre of this band's rows, in a redrawn tile, inside the
-    /// triangle.
-    fn raster(&mut self, tri: &Tri) {
+/// One tile's colour and depth while it draws. Nothing of them outlives the
+/// tile: the resolved bytes are all the canvas keeps.
+struct TileScratch {
+    color: [[f32; 4]; TILE * TILE],
+    depth: [i32; TILE * TILE],
+}
+
+impl Default for TileScratch {
+    fn default() -> Self {
+        Self {
+            color: [[0.; 4]; TILE * TILE],
+            depth: [0; TILE * TILE],
+        }
+    }
+}
+
+impl TileScratch {
+    /// The tile's resolved straight-alpha pixels: every triangle over it, in
+    /// order.
+    fn draw(&mut self, rect: [usize; 4], tris: &[Tri]) -> Box<[u8]> {
+        let [x0, y0, x1, y1] = rect;
+        let (w, h) = (x1 - x0, y1 - y0);
+        self.color[..w * h].fill([0.; 4]);
+        self.depth[..w * h].fill(0);
+        for tri in tris {
+            let b = tri.b;
+            if b[0] < x1 && b[2] > x0 && b[1] < y1 && b[3] > y0 {
+                self.raster(rect, tri);
+            }
+        }
+        let mut rgba = vec![0; w * h * 4].into_boxed_slice();
+        for (c, o) in self.color[..w * h]
+            .iter()
+            .zip(rgba.as_chunks_mut::<4>().0.iter_mut())
+        {
+            if c[3] > 0. {
+                for k in 0..3 {
+                    o[k] = ((c[k] / c[3]).min(1.) * 255. + 0.5) as u8;
+                }
+                o[3] = (c[3].min(1.) * 255. + 0.5) as u8;
+            }
+        }
+        rgba
+    }
+
+    /// Each pixel centre of the tile inside the triangle.
+    fn raster(&mut self, rect: [usize; 4], tri: &Tri) {
         let (p, b, area) = (&tri.p, tri.b, tri.area);
+        let [x0, y0, x1, y1] = rect;
+        let w = x1 - x0;
         // The weights are the edge values over the area, so a pixel is
         // inside when all three edge values have the area's sign (or are
         // zero); only those pay for the divisions.
         let positive = area > 0.;
-        // This band's first row at or after the triangle's top.
-        let start = b[1].max(self.first);
-        let start = start + (self.step - (start - self.first) % self.step) % self.step;
-        for y in (start..b[3].min(self.end)).step_by(self.step) {
-            let row = &mut self.rows[(y - self.first) / self.step];
-            let tiles = &self.redraw[(y / TILE) * self.tiles_x..][..self.tiles_x];
-            let first_tile = b[0] / TILE;
-            let over = &tiles[first_tile..b[2].div_ceil(TILE)];
-            for (n, _) in over.iter().enumerate().filter(|(_, r)| **r) {
-                let tx = first_tile + n;
-                for x in b[0].max(tx * TILE)..b[2].min((tx + 1) * TILE) {
-                    let (px, py) = (x as f32 + 0.5, y as f32 + 0.5);
-                    let edge = |a: [f32; 2], c: [f32; 2]| {
-                        (c[0] - a[0]) * (py - a[1]) - (px - a[0]) * (c[1] - a[1])
-                    };
-                    let e = [edge(p[1], p[2]), edge(p[2], p[0]), edge(p[0], p[1])];
-                    let inside = if positive {
-                        e.iter().all(|&v| v >= 0.)
-                    } else {
-                        e.iter().all(|&v| v <= 0.)
-                    };
-                    if inside {
-                        let w = e.map(|v| v / area);
-                        pixel(row, &tri.fill, x, w);
-                    }
+        for y in b[1].max(y0)..b[3].min(y1) {
+            for x in b[0].max(x0)..b[2].min(x1) {
+                let (px, py) = (x as f32 + 0.5, y as f32 + 0.5);
+                let edge = |a: [f32; 2], c: [f32; 2]| {
+                    (c[0] - a[0]) * (py - a[1]) - (px - a[0]) * (c[1] - a[1])
+                };
+                let e = [edge(p[1], p[2]), edge(p[2], p[0]), edge(p[0], p[1])];
+                let inside = if positive {
+                    e.iter().all(|&v| v >= 0.)
+                } else {
+                    e.iter().all(|&v| v <= 0.)
+                };
+                if inside {
+                    let i = (y - y0) * w + (x - x0);
+                    pixel(
+                        &mut self.color[i],
+                        &mut self.depth[i],
+                        &tri.fill,
+                        e.map(|v| v / area),
+                    );
                 }
             }
         }
     }
 }
 
-fn pixel(row: &mut Row, fill: &Fill, i: usize, w: [f32; 3]) {
+fn pixel(dst: &mut [f32; 4], depth: &mut i32, fill: &Fill, w: [f32; 3]) {
     let Fill::Sprite {
         quad,
         t,
@@ -1410,23 +1444,27 @@ fn pixel(row: &mut Row, fill: &Fill, i: usize, w: [f32; 3]) {
     } = fill
     else {
         if let Fill::Mask(z) = fill {
-            row.depth[i] = *z;
+            *depth = *z;
         }
         return;
     };
-    if *z != 0 && *z <= row.depth[i] {
+    if *z != 0 && *z <= *depth {
         return;
     }
     // Barycentric interpolation (same operation order as one sum).
     let mix = |v: [f32; 4]| v[t[0]] * w[0] + v[t[1]] * w[1] + v[t[2]] * w[2];
-    let tex = texture.sample(mix(uv.map(|c| c[0])), mix(uv.map(|c| c[1])));
+    let (u, v) = (mix(uv.map(|c| c[0])), mix(uv.map(|c| c[1])));
+    // Most of a sprite's quad is often clear: nothing to draw.
+    if texture.clear_at(u, v) {
+        return;
+    }
+    let tex = texture.sample(u, v);
     let vc: [f32; 4] = std::array::from_fn(|ch| mix(quad.colors.map(|c| c[ch])));
     let a = (tex[3] * vc[3]).clamp(0., 1.);
     if a <= 0. {
         return;
     }
     let src: [f32; 3] = std::array::from_fn(|ch| (tex[ch] * vc[ch]).min(1.));
-    let dst = &mut row.color[i];
     match quad.blend {
         1 => {
             for ch in 0..3 {
@@ -1814,7 +1852,45 @@ mod tests {
     }
 
     #[test]
-    fn banded_frames_match_one_thread() {
+    fn a_looping_animation_draws_each_state_once() {
+        let white = [255u8; 16];
+        let texture = Texture {
+            rgba: &white,
+            size: [2, 2],
+            texel_scale: 1.,
+        };
+        let frame = |alpha: f32| Draw::Quads {
+            quads: vec![Quad {
+                corners: [[0., 0.], [40., 0.], [0., 40.], [40., 40.]],
+                uv: [0, 0, 2, 2],
+                colors: [[1., 1., 1., alpha]; 4],
+                blend: 0,
+            }],
+            z: 0,
+            sheet: 0,
+        };
+        let mut canvas = Canvas::new(1.);
+        let textures = std::slice::from_ref(&texture);
+        assert!(canvas.render(&[frame(0.25)], textures));
+        let first = canvas.rgba.clone();
+        let tiles = canvas.drawn.len();
+        assert!(tiles > 0);
+        assert!(canvas.render(&[frame(0.75)], textures));
+        assert_ne!(canvas.rgba, first);
+        assert_eq!(canvas.drawn.len(), tiles * 2);
+        // Back to the first state: the saved tiles, the same bytes.
+        assert!(canvas.render(&[frame(0.25)], textures));
+        assert_eq!(canvas.rgba, first);
+        assert_eq!(canvas.drawn.len(), tiles * 2, "nothing new was drawn");
+        // Nothing over a tile any more clears it.
+        assert!(canvas.render(&[], textures));
+        assert!(canvas.rgba.iter().all(|&b| b == 0));
+        canvas.forget();
+        assert!(canvas.drawn.is_empty());
+    }
+
+    #[test]
+    fn threaded_frames_match_one_thread() {
         let texture = Texture {
             rgba: &[
                 255, 0, 0, 255, 0, 255, 0, 128, 0, 0, 255, 255, 255, 255, 255, 0,

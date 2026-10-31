@@ -956,8 +956,14 @@ fn run(mut args: Vec<PathBuf>) -> Result<AppExit, Box<dyn std::error::Error>> {
                     close_when_requested: false,
                     ..default()
                 })
-                .set(early_renderer.plugin()),
+                .set(early_renderer.plugin())
+                .set(visual::low_cost::task_pools()),
         )
+        .insert_resource(visual::frame_limit::FrameLimit::new(
+            visual::frame_limit::ORIGINAL_FPS,
+        ))
+        .add_plugins(visual::frame_limit::FrameLimitPlugin)
+        .add_plugins(visual::low_cost::LowCostPlugin)
         .add_plugins(Ui2dPlugin {
             order: 0,
             overlay: false,

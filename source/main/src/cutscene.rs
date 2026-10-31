@@ -399,11 +399,10 @@ fn setup(
         .single()
         .map(|w| [w.physical_width().max(1), w.physical_height().max(1)])
         .unwrap_or([1280, 720]);
-    overlay.scene = images.add(Image::new_target_texture(
+    overlay.scene = images.add(visual::room::render_target(
         size[0],
         size[1],
         TextureFormat::Rgba8UnormSrgb,
-        None,
     ));
     overlay.scene_sheet = Some(frame.add_image(overlay.scene.clone(), size, true));
     let blur = blur::Blur::spawn(
@@ -1221,8 +1220,14 @@ fn run(args: Vec<PathBuf>) -> Result<AppExit, Box<dyn std::error::Error>> {
                 close_when_requested: false,
                 ..default()
             })
-            .set(early_renderer.plugin()),
+            .set(early_renderer.plugin())
+            .set(visual::low_cost::task_pools()),
     )
+    .insert_resource(visual::frame_limit::FrameLimit::new(
+        visual::frame_limit::ORIGINAL_FPS,
+    ))
+    .add_plugins(visual::frame_limit::FrameLimitPlugin)
+    .add_plugins(visual::low_cost::LowCostPlugin)
     .add_plugins(FogPlugin)
     .add_plugins(visual::effect_draw::EffectPlugin)
     .add_plugins(visual::glow::GlowPlugin)

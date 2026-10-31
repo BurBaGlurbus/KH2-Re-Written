@@ -7,7 +7,7 @@ pub type Matrix = [[f32; 4]; 4];
 pub type Sample = (Vec<Matrix>, [f32; 3]);
 pub const PROFILE: &str = "raw_stored_matrix_floor_inspection_v2";
 
-#[derive(Debug, Serialize)]
+#[derive(Clone, Debug, Serialize)]
 pub struct RawMotion {
     pub header_words: [u32; 4],
     pub raw_header_words: [u32; 20],

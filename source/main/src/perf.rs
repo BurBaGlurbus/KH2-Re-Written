@@ -98,13 +98,13 @@ struct PerfRecord {
 // Bevy systems take each resource as a parameter.
 #[allow(clippy::too_many_arguments)]
 fn record_frame(
-    real: Res<Time<Real>>,
     virt: Res<Time<Virtual>>,
     fixed: Res<Time<Fixed>>,
     entities: &Entities,
     store: Res<DiagnosticsStore>,
     mut record: ResMut<PerfRecord>,
     mut last_fixed: Local<Duration>,
+    mut last_at: Local<f64>,
     mut meshes: MessageReader<AssetEvent<Mesh>>,
     mut images: MessageReader<AssetEvent<Image>>,
 ) {
@@ -122,9 +122,14 @@ fn record_frame(
     let heap_bytes = total.bytes_allocated as i64 - total.bytes_deallocated as i64;
     let (meshes_added, meshes_modified) = count(&mut meshes);
     let (images_added, images_modified) = count(&mut images);
+    // (The frame limiter can advance the clock by one tick, so the frame's
+    // real length comes from the wall clock.)
+    let at_ms = record.started.elapsed().as_secs_f64() * 1e3;
+    let frame_ms = at_ms - *last_at;
+    *last_at = at_ms;
     let row = Row {
-        at_ms: record.started.elapsed().as_secs_f64() * 1e3,
-        frame_ms: real.delta_secs_f64() * 1e3,
+        at_ms,
+        frame_ms,
         paused: virt.is_paused(),
         fixed_ticks,
         entities: entities.count_spawned(),

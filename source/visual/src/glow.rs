@@ -20,7 +20,7 @@ use bevy::{
         FullscreenShader,
         schedule::{Core3d, Core3dSystems},
     },
-    light::ShadowFilteringMethod,
+    light::{ShadowFilteringMethod, cluster::ClusterConfig},
     mesh::VertexBufferLayout,
     pbr::MeshPipelineKey,
     prelude::*,
@@ -68,10 +68,15 @@ fn clear_stencil(global: Res<ClearColor>, mut cameras: Query<(&mut Camera, &Glow
 
 /// What a [`Glow`] camera wears: the marker below in its pipeline key, and a
 /// depth buffer the sun's visibility test can copy from.
-pub fn camera(on: bool, clear: Option<Color>) -> (Glow, ShadowFilteringMethod, Camera3d) {
+pub fn camera(
+    on: bool,
+    clear: Option<Color>,
+) -> (Glow, ShadowFilteringMethod, ClusterConfig, Camera3d) {
     (
         Glow { on, clear },
         ShadowFilteringMethod::Hardware2x2,
+        // Everything drawn is unlit: no lights to sort into clusters.
+        ClusterConfig::None,
         Camera3d {
             depth_texture_usages: (TextureUsages::RENDER_ATTACHMENT
                 | TextureUsages::TEXTURE_BINDING)

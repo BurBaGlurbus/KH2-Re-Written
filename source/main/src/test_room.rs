@@ -616,27 +616,31 @@ pub struct Skin {
     pub weapon_joint: usize,
 }
 
-/// Precomputed skinned positions for every frame of one clip.
+/// A weapon's own motion and the skinning that poses its vertices.
+pub struct WeaponMotion {
+    pub motion: Arc<data::motion::InterpolatedMotion>,
+    pub skinning: Arc<data::model_pose::Skinning>,
+}
+
+/// One clip's per-frame results, and what its pose is evaluated from.
 pub struct ClipPoses {
     /// Vertex positions per frame (root motion removed), kept only for
     /// motions without evaluated joints (raw matrices, basic FK); the others
-    /// are skinned from `joints` when shown (`frame`), which keeps a few
-    /// hundred megabytes of vertices out of memory.
+    /// are evaluated and skinned when shown (`posed`), as the original
+    /// does, which keeps hundreds of megabytes of poses out of memory.
     pub frames: Vec<Vec<Vec3>>,
-    /// The evaluated joints of each frame, root motion included (empty for
-    /// basic FK and raw matrices); `rootless_joints` gives them as blended
-    /// joint by joint when a motion switch cross-fades.
-    pub joints: Vec<Vec<data::motion_eval::World>>,
+    /// The motion, for the frames not kept.
+    pub motion: Option<Arc<data::motion::InterpolatedMotion>>,
+    /// The key of frame 0.
+    pub key_start: u32,
     pub skin: Option<Arc<Skin>>,
     /// Model-space matrix of the objentry weapon joint for each frame.
     pub weapon: Vec<Mat4>,
     /// The same for weapon slot 1's joint (forms with two Keyblades).
     pub weapon2: Vec<Mat4>,
-    /// Weapon vertices in hand-joint space per frame, from the weapon's own
-    /// motion at the same slot and key time (empty when it has none).
-    pub weapon_frames: Vec<Vec<Vec3>>,
-    /// The same for weapon slot 1's Keyblade.
-    pub weapon2_frames: Vec<Vec<Vec3>>,
+    /// Each weapon slot's own motion at the same slot and key time, evaluated
+    /// when shown (None when it has none).
+    pub weapon_motions: [Option<WeaponMotion>; 2],
     /// Root-position curve translation for each frame (model space).
     pub root: Vec<Vec3>,
     /// Keyblade bone 2 matrix in hand-joint space per frame (attack spheres).
@@ -669,39 +673,30 @@ impl ClipPoses {
         self.root.len()
     }
 
-    /// Frame `f`'s joints with the root motion removed (clamped to the
-    /// clip; None without evaluated joints).
-    pub fn rootless_joints(&self, f: usize) -> Option<Vec<data::motion_eval::World>> {
-        let f = f.min(self.joints.len().checked_sub(1)?);
-        let r = self.root[f.min(self.root.len() - 1)].to_array();
-        Some(
-            self.joints[f]
-                .iter()
-                .map(|w| {
-                    let mut w = *w;
-                    for (t, r) in w.translation.iter_mut().zip(r) {
-                        *t -= r;
-                    }
-                    w
-                })
-                .collect(),
-        )
-    }
-
-    /// Frame `f`'s vertex positions with the root motion removed (clamped
-    /// to the clip): the kept ones, or the evaluated joints skinned the way
-    /// the frames were once precomputed (the same matrices, then the root
-    /// taken off each position).
-    pub fn frame(&self, f: usize) -> Vec<Vec3> {
+    /// Frame `f`'s vertex positions and joints, both with the root motion
+    /// removed (clamped to the clip): the kept vertices, or one evaluation of
+    /// the motion skinned as the session's first pose was (the same matrices,
+    /// then the root taken off each position). The joints (None without an
+    /// evaluation) are what a motion switch blends joint by joint.
+    pub fn posed(&self, f: usize) -> (Vec<Vec3>, Option<Vec<data::motion_eval::World>>) {
         if !self.frames.is_empty() {
-            return self.frames[f.min(self.frames.len() - 1)].clone();
+            return (self.frames[f.min(self.frames.len() - 1)].clone(), None);
         }
-        let f = f.min(self.joints.len().saturating_sub(1));
-        let (Some(skin), Some(joints)) = (&self.skin, self.joints.get(f)) else {
-            return Vec::new();
+        let (Some(skin), Some(motion)) = (&self.skin, &self.motion) else {
+            return (Vec::new(), None);
         };
-        let r = self.root[f.min(self.root.len() - 1)].to_array();
-        skin.skinning
+        let f = f.min(self.root.len().saturating_sub(1));
+        let bones = &skin.skinning.bones;
+        let key = (self.key_start as usize + f) as f32;
+        let Ok(evaluated) = data::motion_eval::evaluate(bones, motion, key) else {
+            return (Vec::new(), None);
+        };
+        let Some(joints) = evaluated.joints.get(..skin.parents.len()) else {
+            return (Vec::new(), None);
+        };
+        let r = self.root[f].to_array();
+        let vertices = skin
+            .skinning
             .pose_from_worlds(joints)
             .map(|pose| {
                 pose.position_bits
@@ -709,7 +704,40 @@ impl ClipPoses {
                     .map(|p| Vec3::from_array(std::array::from_fn(|i| f32::from_bits(p[i]) - r[i])))
                     .collect()
             })
-            .unwrap_or_default()
+            .unwrap_or_default();
+        let rootless = joints
+            .iter()
+            .map(|w| {
+                let mut w = *w;
+                for (t, r) in w.translation.iter_mut().zip(r) {
+                    *t -= r;
+                }
+                w
+            })
+            .collect();
+        (vertices, Some(rootless))
+    }
+
+    /// Frame `f`'s vertex positions (`posed`).
+    pub fn frame(&self, f: usize) -> Vec<Vec3> {
+        self.posed(f).0
+    }
+
+    /// Weapon `slot`'s vertices in hand-joint space at frame `f` (clamped
+    /// to the clip; None when it has no motion here).
+    pub fn weapon_frame(&self, slot: usize, f: usize) -> Option<Vec<Vec3>> {
+        let own = self.weapon_motions[slot].as_ref()?;
+        let f = f.min(self.root.len().saturating_sub(1));
+        let (pose, _) = own
+            .skinning
+            .sample_evaluated(&own.motion, (self.key_start as usize + f) as f32)
+            .ok()?;
+        Some(
+            pose.position_bits
+                .iter()
+                .map(|p| Vec3::from_array(p.map(f32::from_bits)))
+                .collect(),
+        )
     }
 }
 
@@ -5127,11 +5155,10 @@ pub fn keep_weapon_pose(mut game: ResMut<Game>) {
         return;
     };
     let frame = game.sora.player.motion_frame(&game.clips) as usize;
-    let weapon_frames = &game.clip_poses[clip].weapon_frames;
-    if let Some(pose) = weapon_frames.get(frame.min(weapon_frames.len().saturating_sub(1)))
-        && *pose != game.weapon_display
+    if let Some(pose) = game.clip_poses[clip].weapon_frame(0, frame)
+        && pose != game.weapon_display
     {
-        game.weapon_display = pose.clone();
+        game.weapon_display = pose;
     }
 }
 
@@ -5359,6 +5386,7 @@ pub fn bob_present(
         return;
     }
     *shown = Some(game.tick);
+    let mut poses = visual::scenery::PoseCache::default();
     for (part, handle, seen) in &parts {
         let p = &area.current.bobs.placements[part.placement];
         // (Its background group hidden: nothing to upload; the pose reads
@@ -5373,8 +5401,14 @@ pub fn bob_present(
         let Some(anim) = bob.anims.get(p.motion as usize) else {
             continue;
         };
-        let tick = (game.tick as f32 + p.start) as usize % anim.frames.len();
-        let frame = &anim.frames[tick];
+        if anim.is_empty() {
+            continue;
+        }
+        let tick = (game.tick as f32 + p.start) as usize % anim.len();
+        let frame = poses.positions(bob, p, tick);
+        if frame.is_empty() {
+            continue;
+        }
         let positions = bob.model.parts[part.ordinal]
             .indices
             .iter()
@@ -6191,7 +6225,7 @@ pub fn setup(
             TextureDimension::D2,
             canvas.rgba.clone(),
             TextureFormat::Rgba8UnormSrgb,
-            RenderAssetUsages::MAIN_WORLD | RenderAssetUsages::RENDER_WORLD,
+            RenderAssetUsages::RENDER_WORLD,
         );
         image.sampler = ImageSampler::linear();
         let image = images.add(image);
@@ -6406,11 +6440,10 @@ pub fn setup(
                     .insert((MenuModelPart { member, ordinal }, layer.clone()));
             }
         }
-        let menu_target = images.add(Image::new_target_texture(
+        let menu_target = images.add(visual::room::render_target(
             MENU_TARGET[0],
             MENU_TARGET[1],
             TextureFormat::Rgba8UnormSrgb,
-            None,
         ));
         commands.spawn((
             Camera3d::default(),
@@ -6504,12 +6537,7 @@ pub fn setup(
     // With the weapon's own motion, its posed vertices are already in the
     // hand joint's space; otherwise fall back to the bind pose above.
     let battle_idle = &game.clip_poses[game.poses[&(Action::Idle, true)]];
-    let animated = !battle_idle.weapon_frames.is_empty();
-    let weapon_pose = if animated {
-        battle_idle.weapon_frames[0].clone()
-    } else {
-        weapon_pose
-    };
+    let weapon_pose = battle_idle.weapon_frame(0, 0).unwrap_or(weapon_pose);
     let mut weapon_indices = Vec::new();
     for (ordinal, entity) in spawn_model(
         &mut commands,
@@ -6561,6 +6589,9 @@ pub fn setup(
         let Some(idle) = kind.motions.get(&0) else {
             continue;
         };
+        let Some((idle_pose, _)) = idle.posed(&kind.model, 0) else {
+            continue;
+        };
         let root = commands
             .spawn((
                 party_room::PartyRoot(i),
@@ -6572,7 +6603,7 @@ pub fn setup(
         for (ordinal, entity) in spawn_model(
             &mut commands,
             &kind.model,
-            &idle.frames[0],
+            &idle_pose,
             root,
             &mut meshes,
             &mut materials,
@@ -6586,11 +6617,13 @@ pub fn setup(
                 });
             }
         }
-        if let (Some(weapon), Some(pose)) = (&kind.weapon, idle.weapon.first()) {
+        if let (Some(weapon), Some(pose)) =
+            (&kind.weapon, idle.weapon_vertices(kind.weapon.as_ref(), 0))
+        {
             for (ordinal, entity) in spawn_model(
                 &mut commands,
                 weapon,
-                pose,
+                &pose,
                 root,
                 &mut meshes,
                 &mut materials,
@@ -6634,11 +6667,10 @@ pub fn setup(
         talk.indices = indices;
         // The cross-dissolve: a second camera renders the old view into an
         // image, drawn under the HUD while it fades.
-        let snapshot = images.add(Image::new_target_texture(
+        let snapshot = images.add(visual::room::render_target(
             1280,
             720,
             TextureFormat::Rgba8UnormSrgb,
-            None,
         ));
         commands.spawn((
             Camera3d::default(),
@@ -6698,11 +6730,10 @@ pub fn setup(
         .single()
         .map(|w| [w.physical_width().max(1), w.physical_height().max(1)])
         .unwrap_or([1280, 720]);
-    compose.scene = images.add(Image::new_target_texture(
+    compose.scene = images.add(visual::room::render_target(
         size[0],
         size[1],
         TextureFormat::Rgba8UnormSrgb,
-        None,
     ));
     compose.scene_sheet = frame.add_image(compose.scene.clone(), size, true);
     commands.spawn((
@@ -11592,8 +11623,12 @@ pub fn skate_present(
     board_models.shown = Some(wanted);
 }
 
-/// Sora's skinned target pose and its (kit, clip, frame).
-pub type ShownTarget = Option<((usize, usize, usize), Vec<Vec3>)>;
+/// Sora's skinned target pose, its joints and its (kit, clip, frame).
+pub type ShownTarget = Option<(
+    (usize, usize, usize),
+    Vec<Vec3>,
+    Option<Vec<data::motion_eval::World>>,
+)>;
 
 // Bevy systems take each resource as a parameter.
 #[allow(clippy::too_many_arguments)]
@@ -11624,14 +11659,14 @@ pub fn present(
     let frame = game.sora.player.motion_frame(&game.clips) as usize;
     let clip = game.poses[&(action, game.sora.player.armed)];
     let skin = game.clip_poses[clip].skin.clone();
-    let target_joints = game.clip_poses[clip].rootless_joints(frame);
     // The skinned target is kept while the kit, clip and frame stay (the
     // pose changes once per tick; frames between ticks reuse it).
     let key = (game.clip_poses.as_ptr() as usize, clip, frame);
-    if shown_target.as_ref().is_none_or(|(k, _)| *k != key) {
-        *shown_target = Some((key, game.clip_poses[clip].frame(frame)));
+    if shown_target.as_ref().is_none_or(|(k, ..)| *k != key) {
+        let (vertices, joints) = game.clip_poses[clip].posed(frame);
+        *shown_target = Some((key, vertices, joints));
     }
-    let target = &shown_target.as_ref().expect("target pose kept").1;
+    let (_, target, target_joints) = shown_target.as_ref().expect("target pose kept");
     // Unattended runs log how far each switch of action moves the shown
     // pose when it is not blended (the first frame of the new motion
     // against the pose left behind).
@@ -11675,7 +11710,7 @@ pub fn present(
         if weight >= 1. {
             game.blend_from = None;
             game.blend_from_joints.clear();
-        } else if let (Some(skin), Some(to)) = (&skin, &target_joints)
+        } else if let (Some(skin), Some(to)) = (&skin, target_joints)
             && game.blend_from_joints.len() == to.len()
             && let Ok(pose) = {
                 shown_joints = data::motion_eval::blend_poses(
@@ -11757,9 +11792,7 @@ pub fn present(
     game.display = display;
     game.display_frame = frame;
     // The Keyblade's own motion (key chain and blade) at the same frame.
-    let weapon_frames = &game.clip_poses[clip].weapon_frames;
-    if !weapon_frames.is_empty() {
-        let pose = weapon_frames[frame.min(weapon_frames.len() - 1)].clone();
+    if let Some(pose) = game.clip_poses[clip].weapon_frame(0, frame) {
         for (part, handle) in &weapon_parts {
             let positions = game.weapon_indices[part.0]
                 .iter()
@@ -15385,8 +15418,10 @@ pub fn run(
                     close_when_requested: false,
                     ..default()
                 })
-                .set(early_renderer.plugin()),
+                .set(early_renderer.plugin())
+                .set(visual::low_cost::task_pools()),
         )
+        .add_plugins(visual::low_cost::LowCostPlugin)
         .add_plugins(FogPlugin)
         .add_plugins(visual::frame_limit::FrameLimitPlugin)
         .add_plugins(visual::texel_upload::TexelUploadPlugin)
