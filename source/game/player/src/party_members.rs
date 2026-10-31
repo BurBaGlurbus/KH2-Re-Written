@@ -1689,6 +1689,13 @@ impl Follower {
         self.gait = Gait::Stand;
     }
 
+    /// The room's objects are made anew: the field stance, its idle next.
+    pub fn room_loaded(&mut self) {
+        self.battle_stance = false;
+        self.ctl = Ctl::default();
+        self.request = Some(Request::start(party_motion::IDLE, 0., None));
+    }
+
     /// One tick of the hop (FUN_1403cbdd0 in mode 2): it waits for the jump
     /// motion's take-off, then the velocity keeps its inertia, gravity pulls
     /// and the fall motion starts five ticks before the apex; the floor ends

@@ -43,9 +43,10 @@ pub struct MotionData {
     /// when shown (`MemberRt` and `vertices`), which keeps hundreds of
     /// megabytes of vertices out of memory.
     pub raw_frames: Vec<Vec<Vec3>>,
-    /// A weapon without motions: its vertices in its bind pose, which hang on
-    /// the hand.
-    pub weapon_bind: Option<Arc<Vec<Vec3>>>,
+    /// The weapon object's own motion set has this slot: without it
+    /// `FUN_1403c8cd0` leaves the weapon no motion and `FUN_1403efa60` hides
+    /// it.
+    pub weapon_slot: bool,
     /// The weapon bone 2 matrix in model space (attack spheres).
     pub blade: Vec<Mat4>,
     /// Root translation per tick (model space).
@@ -143,11 +144,6 @@ impl MotionData {
         Some(local.iter().map(|v| hand.transform_point3(*v)).collect())
     }
 
-    /// Whether the weapon has a pose in this motion, own or bind.
-    pub fn has_weapon(&self) -> bool {
-        self.weapon_motion.is_some() || self.weapon_bind.is_some()
-    }
-
     /// Tick `f`'s weapon vertices in the weapon's own space (a thrown shield
     /// flies with these) and its joints (empty without a motion of its own).
     pub fn weapon_local(
@@ -155,9 +151,6 @@ impl MotionData {
         weapon: Option<&model_inspection::InspectionModel>,
         f: usize,
     ) -> Option<(Vec<Vec3>, Vec<Joint>)> {
-        if let Some(bind) = &self.weapon_bind {
-            return Some(((**bind).clone(), Vec::new()));
-        }
         let (weapon, motion) = (weapon?, self.weapon_motion.as_ref()?);
         let key = (self.key_start as usize + f) as f32;
         let (pose, evaluated) = weapon.skinning.sample_evaluated(motion, key).ok()?;
@@ -229,6 +222,9 @@ pub struct PartyKind {
     /// The field-stance variants that differ from the battle ones (idle,
     /// walk, run and the weapon switch: slots 4m + 3 or 2 against 4m + 0).
     pub field: HashMap<u16, MotionData>,
+    /// The field variants with the weapon hidden, where they differ again
+    /// (`FUN_1403c7c50`: order 2, 3, 1, 0 for 3, 2, 0, 1; walk 6, run 10).
+    pub bare: HashMap<u16, MotionData>,
     /// Each bone's parent (body, weapon) and the hand joint the weapon
     /// hangs from.
     pub parents: Vec<i32>,
@@ -312,6 +308,7 @@ impl PartyKind {
         self.motions
             .values()
             .chain(self.field.values())
+            .chain(self.bare.values())
             .find(|d| d.slot == slot)
     }
 }
@@ -319,12 +316,16 @@ impl PartyKind {
 /// An open attack window: its key index, ATKP id and spheres (member space).
 pub type OpenWindow = (u64, u16, Vec<(Vec3, f32)>);
 
-/// The member's motion set as its controller reads it.
-pub struct KindClips<'a>(pub &'a PartyKind);
+/// The member's motion set as its controller reads it, and whether its
+/// weapon shows (`FUN_1403d7640`, which turns `FUN_1403c7c50`'s order).
+pub struct KindClips<'a>(pub &'a PartyKind, pub bool);
 
 impl party_motion::Clips for KindClips<'_> {
     fn clip(&self, motion: u16, field: bool) -> Option<party_motion::Clip> {
-        let d = self.0.data(motion, field)?;
+        let bare = (field && !self.1)
+            .then(|| self.0.bare.get(&motion))
+            .flatten();
+        let d = bare.or_else(|| self.0.data(motion, field))?;
         Some(party_motion::Clip {
             slot: d.slot,
             length: d.end().max(1),
@@ -392,6 +393,8 @@ pub struct MemberRt {
     pub item_fired: bool,
     /// The member's character record (abilities, item slots, frequencies).
     pub save: party_members::Save,
+    /// The weapon object's own state: hidden, shown or fading in.
+    pub weapon_draw: party_motion::WeaponDraw,
     /// What the record's weapon, armor and accessories add to its status
     /// totals (FUN_1403c1d90 through FUN_1403c1190), rebuilt when the camp
     /// closes; the level row's numbers stay in `kind`.
@@ -580,28 +583,22 @@ fn build_motion(
         hand: Vec::new(),
         slot: selected.slot,
         motion: None,
-        weapon_bind: None,
+        weapon_slot: own.is_some(),
         weapon_motion: None,
         key_start: start,
     };
     let bones = model.skinning.bones.len();
-    // A weapon without motions hangs on the hand in its bind pose.
+    // A slot the weapon's set lacks shows no weapon (`FUN_1403efa60`); what
+    // reads its top keeps the hand at the bind pose's bone 2.
     let bind = match (weapon, own) {
         (Some(w), None) => w
             .skinning
             .bind_pose(data::model_pose::PoseProfile::Legacy)
             .ok()
             .map(|b| {
-                let local: Vec<Vec3> = b
-                    .position_bits
-                    .iter()
-                    .map(|p| Vec3::from_array(p.map(f32::from_bits)))
-                    .collect();
-                let bone = b
-                    .matrix_bits
+                b.matrix_bits
                     .get(2)
-                    .map(|m| Mat4::from_cols_array(&m.map(f32::from_bits)));
-                (local, bone)
+                    .map(|m| Mat4::from_cols_array(&m.map(f32::from_bits)))
             }),
         _ => None,
     };
@@ -683,7 +680,7 @@ fn build_motion(
             blade: None,
             staff: None,
         };
-        if let Some((_, bone)) = &bind {
+        if let Some(bone) = &bind {
             let blade = bone.map_or(hand, |b| hand * b);
             tick.blade = Some(blade);
             tick.staff = Some(blade);
@@ -723,7 +720,6 @@ fn build_motion(
     if weapon.is_some() {
         data.weapon_motion = own.map(|own| Arc::new(own.motion.clone()));
     }
-    data.weapon_bind = bind.map(|(local, _)| Arc::new(local));
     for t in ticks {
         data.root.push(t.root);
         data.raw_frames.extend(t.frame);
@@ -815,6 +811,15 @@ pub fn load(
         },
         &wanted,
     )?;
+    let bare_motions = motion::read_motion_ids_optional(
+        source,
+        &motion::MotionSetSelection {
+            battle: false,
+            has_weapon: false,
+            ..selection(name)?
+        },
+        &wanted,
+    )?;
     // The base weapon object: the first of the WENT set the object entry's
     // neo-moveset selects (Donald's and Goofy's sets go on with the staves
     // and shields an item equips). Ping's is Mulan's W_MU000.
@@ -874,6 +879,7 @@ pub fn load(
             let slots: Vec<usize> = actor_motions
                 .iter()
                 .chain(&field_motions)
+                .chain(&bare_motions)
                 .flatten()
                 .map(|m| m.slot)
                 .collect();
@@ -1031,6 +1037,29 @@ pub fn load(
                 field.insert(wanted[i], data);
             }
             Err(e) => eprintln!("{name}: field motion {} left out: {e}", wanted[i]),
+        }
+    }
+    // The field variants with the weapon hidden, where they differ again.
+    let mut bare = HashMap::new();
+    for (i, selected) in bare_motions.iter().enumerate() {
+        let Some(selected) = selected else { continue };
+        let shown = field.get(&wanted[i]).or_else(|| motions.get(&wanted[i]));
+        if shown.is_some_and(|d: &MotionData| d.slot == selected.slot) {
+            continue;
+        }
+        match build_motion(
+            &model,
+            weapon.as_ref(),
+            hand_bone,
+            &hit_shapes,
+            &attack_shapes,
+            selected,
+            weapon_motions.get(&selected.slot),
+        ) {
+            Ok(data) => {
+                bare.insert(wanted[i], data);
+            }
+            Err(e) => eprintln!("{name}: bare motion {} left out: {e}", wanted[i]),
         }
     }
     let parents: Vec<i32> = model
@@ -1200,6 +1229,7 @@ pub fn load(
         item_boost_rate,
         field,
         parents,
+        bare,
         weapon_parents,
         hand_bone,
         helpers,
@@ -1315,6 +1345,8 @@ pub fn swap_weapons(
         kind.voices = m.kind.voices.clone();
         m.kind = Arc::new(kind);
         m.weapon_item = item;
+        // FUN_1403d7c70: a new weapon object starts hidden (FUN_1403ef750).
+        m.weapon_draw = Default::default();
         for (e, part) in &parts {
             if part.member == i && part.weapon {
                 commands.entity(e).despawn();
@@ -1740,8 +1772,11 @@ impl MemberRt {
     pub fn shown(&self) -> Option<(&MotionData, usize)> {
         let ctl = &self.follower.ctl;
         match ctl.clip {
-            Some(_) => {
-                let d = self.kind.data(ctl.motion, ctl.field)?;
+            Some(clip) => {
+                let bare = self.kind.bare.get(&ctl.motion);
+                let d = bare
+                    .filter(|d| ctl.field && d.slot == clip.slot)
+                    .or_else(|| self.kind.data(ctl.motion, ctl.field))?;
                 Some((d, d.frame_of(ctl.frame().max(0.) as u32)))
             }
             None => {
@@ -2210,6 +2245,15 @@ pub fn probe_claw(game: &mut Game, member: usize, atkp: u16, shield: bool) -> bo
     true
 }
 
+/// A room's objects are made anew: each member stands in its field stance
+/// with its weapon hidden (the constructors FUN_1403d5840, FUN_1403ef750).
+pub fn room_loaded(game: &mut Game) {
+    for m in &mut game.party {
+        m.follower.room_loaded();
+        m.weapon_draw = Default::default();
+    }
+}
+
 /// Puts a member at a point facing a heading (the tour stages its cases).
 pub fn place_member(game: &mut Game, member: usize, at: Vec3, yaw: f32) {
     if let Some(m) = game.party.get_mut(member) {
@@ -2539,12 +2583,43 @@ pub fn tick(game: &mut Game, tick: u64) {
             battle,
             scripted,
             can_bash: kind.script.is_some(),
-            clips: Some(&KindClips(&kind)),
+            clips: Some(&KindClips(&kind, m.weapon_draw.shown)),
         };
         let was = m.follower.attack.is_some();
         match m.limit {
             Some(s) => m.follower.follow_script(s),
             None => m.follower.tick(kind.records, &scene),
+        }
+        // FUN_1403efa60, the weapon's own update. A limit's scene shows its
+        // motion past the controller; the owner stays on the battle variant.
+        let variant = m.follower.ctl.clip.map_or(0, |c| c.slot & 3);
+        let weapon_motion = m.shield.is_some() || m.shown().is_some_and(|(d, _)| d.weapon_slot);
+        let was_shown = m.weapon_draw.shown;
+        if m.weapon_draw.tick(weapon_motion, variant)
+            && kind
+                .weapon_pax
+                .as_ref()
+                .is_some_and(|p| p.by_id(0).is_some())
+        {
+            // FUN_1403b6670: element 0 of the weapon's own container. [I] Bound
+            // to the member: effects have no weapon object to bind to yet.
+            fx_calls.push(spell_fx::Call {
+                pax: kind.weapon_pax.clone(),
+                fx: player::magic::Fx::Start {
+                    key: FX_BASE | (index as u64) << 40 | 3 << 36 | (tick << 4),
+                    id: 0,
+                    bound: Some(player::magic::Anchor::Party(index + 1)),
+                    at: None,
+                },
+            });
+        }
+        if m.weapon_draw.shown != was_shown {
+            log_event(
+                log,
+                serde_json::json!({"event":"party_weapon_draw","tick":tick,"member":kind.name,
+                "shown":m.weapon_draw.shown,"motion":m.follower.ctl.motion,
+                "slot":m.follower.ctl.clip.map(|c| c.slot)}),
+            );
         }
         // FUN_1401b41a0: standing at its spot behind Sora clears the leash.
         if m.targeting.far
@@ -3269,20 +3344,12 @@ fn pose_member(m: &MemberRt, shown: &mut ShownPose) -> Option<(Vec<Vec3>, Vec<Ve
             shown.from_weapon.clear();
         }
     }
-    // A motion without its own weapon pose keeps the idle one.
-    let weapon_source = if !data.has_weapon() {
-        kind.motions.get(&0).map(|d| (d, 0))
-    } else {
-        Some((data, f))
-    };
     let (body_vertices, body_target) = data.posed(&kind.model, f)?;
-    let (weapon_local, weapon_target) = weapon_source
-        .and_then(|(d, i)| d.weapon_local(kind.weapon.as_ref(), i))
+    let (weapon_local, weapon_target) = data
+        .weapon_local(kind.weapon.as_ref(), f)
         .unwrap_or_default();
     // The hand the weapon's vertices hang on, unblended.
-    let weapon_hand = weapon_source
-        .and_then(|(d, i)| d.hand.get(i).copied())
-        .unwrap_or(Mat4::IDENTITY);
+    let weapon_hand = data.hand.get(f).copied().unwrap_or(Mat4::IDENTITY);
     if let Some(w) = ctl.weight()
         && !body_target.is_empty()
         && shown.from_body.len() == body_target.len()
@@ -3352,8 +3419,14 @@ pub fn present(
     mut game: ResMut<Game>,
     mut shown: Local<Vec<ShownPose>>,
     mut roots: Query<(&PartyRoot, &mut Transform)>,
-    parts: Query<(&PartyPart, &Mesh3d)>,
+    mut parts: Query<(
+        &PartyPart,
+        &Mesh3d,
+        &mut Visibility,
+        &MeshMaterial3d<FogMaterial>,
+    )>,
     mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<FogMaterial>>,
 ) {
     for (root, mut t) in &mut roots {
         if let Some(m) = game.party.get(root.0) {
@@ -3406,10 +3479,38 @@ pub fn present(
             game.event(j);
         }
     }
-    for (part, handle) in &parts {
+    for (part, handle, mut visibility, material) in &mut parts {
         let Some(m) = game.party.get(part.member) else {
             continue;
         };
+        // FUN_1403efa60's state: hidden (`+0x124` bit 8), or the colour
+        // alpha while it fades in (`+0xa9c`).
+        if part.weapon {
+            let shown = m.weapon_draw.shown || m.shield.is_some();
+            visibility.set_if_neq(if shown {
+                Visibility::Inherited
+            } else {
+                Visibility::Hidden
+            });
+            if !shown {
+                continue;
+            }
+            let alpha = if m.shield.is_some() {
+                1.
+            } else {
+                m.weapon_draw.alpha
+            };
+            if let Some(mut mat) = materials.get_mut(&material.0)
+                && (mat.base.base_color.alpha() - alpha).abs() > 1e-4
+            {
+                mat.base.base_color = mat.base.base_color.with_alpha(alpha);
+                mat.base.alpha_mode = if alpha < 1. {
+                    AlphaMode::Blend
+                } else {
+                    AlphaMode::Opaque
+                };
+            }
+        }
         // A thrown shield flies as an object of its own: its vertices in its
         // own space, placed in the world by the script and brought back into
         // the member's space for the mesh.

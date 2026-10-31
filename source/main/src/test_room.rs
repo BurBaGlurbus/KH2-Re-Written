@@ -5314,6 +5314,7 @@ pub fn area_transition(
     game.fx_clear_map.push(None);
     game.map_fx_pending = true;
     game.cleanups.push(cleanup::Scope::RoomChange);
+    party_room::room_loaded(&mut game);
     trim.after_load();
     if let Some(t) = area.transition.as_mut() {
         t.stage = Stage::Opening;
@@ -14793,6 +14794,7 @@ pub fn run(
                 }),
                 started: 0,
                 stored: false,
+                weapon_draw: Default::default(),
                 cast: None,
                 casts: 0,
                 armed: false,

@@ -337,6 +337,54 @@ impl Ctl {
     }
 }
 
+/// The ticks a weapon takes to fade in (`DAT_140623bc4`).
+pub const WEAPON_FADE: f32 = 16.;
+
+/// A member's weapon object as `FUN_1403efa60` shows it each tick. The
+/// constructor (`FUN_1403ef750`, through its class's `+0x80`) hides it; a tick
+/// on which its own motion set has no motion for the owner's slot
+/// (`FUN_1403c8cd0` leaves `ctl+0x18` empty) hides it again at once. While it
+/// is hidden and has a motion, the owner playing variant 0 or 3 (`+0x188`)
+/// shows it, fading in. Nothing else about the stance puts it away: variants
+/// 1 and 2 only keep a hidden weapon hidden.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct WeaponDraw {
+    /// `+0x124` bit 8 clear.
+    pub shown: bool,
+    /// `+0xa9c`: the colour alpha.
+    pub alpha: f32,
+}
+
+impl Default for WeaponDraw {
+    fn default() -> Self {
+        WeaponDraw {
+            shown: false,
+            alpha: 1.,
+        }
+    }
+}
+
+impl WeaponDraw {
+    /// One tick. `motion`: the weapon has a motion for the owner's slot;
+    /// `variant`: that slot's variant (`slot & 3`). True when the weapon
+    /// comes out this tick (`FUN_1403b6670` starts its element 0).
+    pub fn tick(&mut self, motion: bool, variant: usize) -> bool {
+        if !motion {
+            *self = WeaponDraw::default();
+            return false;
+        }
+        if !self.shown && matches!(variant, 0 | 3) {
+            self.shown = true;
+            self.alpha = 0.;
+            return true;
+        }
+        if self.shown {
+            self.alpha = (self.alpha + 1. / WEAPON_FADE).min(1.);
+        }
+        false
+    }
+}
+
 /// FUN_140422520 (the ground mode): idle at no speed, run from
 /// `(walk + run) / 2`, walk below.
 pub fn ground_motion(speed: f32, walk: f32, run: f32) -> u16 {
@@ -468,6 +516,31 @@ impl Follow {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_weapon_starts_hidden_comes_out_on_variant_0_or_3_and_hides_without_a_motion() {
+        let mut w = WeaponDraw::default();
+        assert!(!w.shown);
+        // Field idle (variant 2): its motion exists, the weapon stays hidden.
+        assert!(!w.tick(true, 2));
+        assert!(!w.shown);
+        // The draw (slot 24, variant 0): out, fading in over 16 ticks.
+        assert!(w.tick(true, 0));
+        assert_eq!((w.shown, w.alpha), (true, 0.));
+        for t in 1..=16 {
+            assert!(!w.tick(true, 0));
+            assert_eq!(w.alpha, t as f32 / WEAPON_FADE);
+        }
+        // The put-away (slot 27, variant 3) and field idle keep it out.
+        assert!(!w.tick(true, 3));
+        assert!(!w.tick(true, 2));
+        assert!(w.shown);
+        // A slot its set lacks (bare walk, slot 6) hides it at once.
+        assert!(!w.tick(false, 2));
+        assert_eq!(w, WeaponDraw::default());
+        // A slot variant 3 brings it back.
+        assert!(w.tick(true, 3));
+    }
 
     /// Idle (slots 0 battle, 2 field), walk (4, 7), run (8, 11), the stance
     /// switch (24, 27) and an attack (604) with range 0 on the locomotion.
