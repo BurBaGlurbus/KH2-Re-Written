@@ -514,11 +514,7 @@ fn motion_choices(bytes: &[u8]) -> Result<Vec<MotionChoice>> {
 
 impl Kind {
     #[cfg(test)]
-    pub(super) fn synthetic(
-        model: InspectionModel,
-        motions: Vec<MotionChoice>,
-        bytes: Vec<u8>,
-    ) -> Self {
+    pub fn synthetic(model: InspectionModel, motions: Vec<MotionChoice>, bytes: Vec<u8>) -> Self {
         Self {
             model,
             motions,
@@ -574,6 +570,7 @@ impl Kind {
     /// whole motion table of its own, with each table's motions by slot. The
     /// smaller type 20 entries (`AA00`, `AB40`) are not hook tables any script
     /// names. A motion that does not decode is left out.
+    #[allow(clippy::type_complexity)]
     pub fn hook_tables(&self) -> Vec<(i32, Vec<(usize, Arc<SelectedMotion>)>)> {
         const WHOLE_TABLE: usize = 100;
         let Ok(table) = bar::read_bar(&self.bytes) else {

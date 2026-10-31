@@ -438,7 +438,7 @@ pub fn scan_view(
 ) -> Option<ScanView> {
     // [Duel rule] The other Sora's HP stays on the Scan gauge for the whole
     // duel, Scan equipped or not, down to zero at a knock-out.
-    if game.duel
+    if game.versus
         && let Some(r) = game.rivals.first()
     {
         let v = &r.fighter.vitals;

@@ -74,7 +74,7 @@ const ARMOR_ROW: usize = 4;
 const ACCESSORY_ROW: usize = 8;
 
 /// `quick` limits the walk to the first few items of each kind.
-pub(super) fn tour(table: &[ItemInfo], owned: &[u16], slots: Vec<u16>, quick: bool) -> Tour {
+pub fn tour(table: &[ItemInfo], owned: &[u16], slots: Vec<u16>, quick: bool) -> Tour {
     let keyblades = of_kind(table, 2, owned, &[KINGDOM_KEY]);
     let mut armors = of_kind(table, 14, owned, &[]);
     let mut accessories = of_kind(table, 15, owned, &[]);

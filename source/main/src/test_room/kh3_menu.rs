@@ -12,7 +12,7 @@ use player::kh3::ability::{ALL, AP_MAX, Set};
 use visual::pause_menu::{DuelPages, DuelRow};
 
 /// The camp screen id (duel_camp.rs's LOBBY, VOTE, RESULT, FORFEIT are 1-4).
-pub(crate) const SCREEN: u8 = 5;
+pub const SCREEN: u8 = 5;
 /// The top level's entries: the pages (the Config entry's id) and Close.
 const ENTRY_PAGES: u8 = 9;
 const ENTRY_CLOSE: u8 = pause_menu::CALLER_ENTRY + 1;
@@ -24,7 +24,7 @@ const NOTE_TICKS: u64 = 300;
 
 /// The pages: name and how many of `ALL` (in its order) each lists after
 /// the AP row (eight fit the Config screen's panel).
-pub(crate) const PAGES: [(&str, usize); 9] = [
+pub const PAGES: [(&str, usize); 9] = [
     ("KH3 Movement", 8),
     ("KH3 Actions", 8),
     ("KH3 Attacks", 7),
@@ -43,7 +43,7 @@ fn first(page: usize) -> usize {
 
 /// The pages: names and rows (each: the AP used, then its abilities with
 /// their copies).
-pub(crate) fn pages(set: Set, note: Option<&str>) -> Vec<(Vec<u8>, Vec<DuelRow>)> {
+pub fn pages(set: Set, note: Option<&str>) -> Vec<(Vec<u8>, Vec<DuelRow>)> {
     let text = pause_menu::encode_text;
     let help = |h: &str| duel_camp::help_text(note.unwrap_or(h));
     PAGES
@@ -81,12 +81,7 @@ pub(crate) fn pages(set: Set, note: Option<&str>) -> Vec<(Vec<u8>, Vec<DuelRow>)
 
 /// Left / Right on row `row` of page `page` (row 0 is the AP): None for a
 /// row that is not an ability, else whether the AP allowed it.
-pub(crate) fn step(
-    set: &mut Set,
-    page: usize,
-    row: usize,
-    forward: bool,
-) -> Option<Result<(), String>> {
+pub fn step(set: &mut Set, page: usize, row: usize, forward: bool) -> Option<Result<(), String>> {
     let (_, n) = *PAGES.get(page)?;
     let r = row.checked_sub(1).filter(|&r| r < n)?;
     let info = &ALL[first(page) + r];
@@ -109,7 +104,7 @@ fn fresh(note: &Option<(String, u64)>, now: u64) -> Option<String> {
 
 /// Test KH3 mode's menu: START opens it on the KH3 pages; Close, or Cancel
 /// on its top level, shuts it. Not in a LAN duel (the lobby has the pages).
-pub(crate) fn tick(
+pub fn tick(
     net: Option<Res<DuelNet>>,
     camp: Option<ResMut<CampRes>>,
     mut note: Local<Option<(String, u64)>>,
@@ -124,17 +119,17 @@ pub(crate) fn tick(
     };
     let game = &mut *game;
     script(game, &mut script_at);
-    if std::mem::take(&mut game.duel_start) && game.kh3_menu.is_none() {
-        game.kh3_menu = Some(game.tick as u32);
+    if std::mem::take(&mut game.start_pressed) && game.ext.online().kh3_menu.is_none() {
+        game.ext.online_mut().kh3_menu = Some(game.tick as u32);
         game.sound_queue.push((SE_OPEN, "kh3_menu"));
         let tick = game.tick;
         game.event(serde_json::json!({"event":"kh3_menu","tick":tick,"open":true}));
     }
-    let set = game.sora.kh3.abilities;
+    let set = game.sora.ext.fighter().kh3.abilities;
     let (names, rows): (Vec<_>, Vec<_>) = pages(set, fresh(&note, game.tick).as_deref())
         .into_iter()
         .unzip();
-    let want = game.kh3_menu;
+    let want = game.ext.online().kh3_menu;
     let menu = duel_camp::hold(&mut camp, game, SCREEN, want, || duel_camp::Request {
         entries: vec![
             duel_camp::entry(
@@ -166,7 +161,7 @@ pub(crate) fn tick(
         .as_mut()
         .map(|d| std::mem::take(&mut d.steps))
         .unwrap_or_default();
-    let mut set = game.sora.kh3.abilities;
+    let mut set = game.sora.ext.fighter().kh3.abilities;
     for (page, row, forward) in steps {
         match step(&mut set, page, row, forward) {
             Some(Err(why)) => {
@@ -177,8 +172,8 @@ pub(crate) fn tick(
             None => {}
         }
     }
-    if set != game.sora.kh3.abilities {
-        game.sora.kh3.abilities = set;
+    if set != game.sora.ext.fighter().kh3.abilities {
+        game.sora.ext.fighter_mut().kh3.abilities = set;
         let tick = game.tick;
         game.event(abilities_event(set, tick));
     }
@@ -189,7 +184,7 @@ pub(crate) fn tick(
             .collect();
     }
     if close {
-        game.kh3_menu = None;
+        game.ext.online_mut().kh3_menu = None;
         let tick = game.tick;
         game.event(serde_json::json!({"event":"kh3_menu","tick":tick,"open":false}));
     }
@@ -203,8 +198,8 @@ const PRESS_RIGHT: u64 = 0x80;
 const PRESS_CANCEL: u64 = 0x8;
 const PRESS_R2: u64 = 0x1_0000;
 /// [Test] When the unattended menu opens: past the KH3 script's acting
-/// half (rival::KH3_SECOND), while Sora stands.
-pub(crate) const SCRIPT_OPEN: u64 = rival::KH3_SECOND + 120;
+/// half (rival_play::KH3_SECOND), while Sora stands.
+pub const SCRIPT_OPEN: u64 = rival_play::KH3_SECOND + 120;
 /// [Test] When the unattended run locks on to the dummy.
 const SCRIPT_LOCK: u64 = 90;
 /// [Test] The unattended menu's presses (ticks after `SCRIPT_OPEN`; the
@@ -234,7 +229,7 @@ fn abilities_event(set: Set, tick: u64) -> serde_json::Value {
 /// presses, on the camp's pad as the lobby's script's are; a second Cancel
 /// after the first shuts the menu.
 fn script(game: &mut Game, at: &mut usize) {
-    if game.autoplay.is_none() || !game.kh3_dummy {
+    if game.autoplay.is_none() || !game.ext.online().kh3_dummy {
         return;
     }
     // The lock-on, for the KH3 lock-on camera, once the dummy has risen.
@@ -247,10 +242,10 @@ fn script(game: &mut Game, at: &mut usize) {
     if let Some(&(when, key)) = SCRIPT.get(*at)
         && t >= when
     {
-        game.duel_camp_press = key;
+        game.camp_press = key;
         *at += 1;
-    } else if *at == SCRIPT.len() && t >= 820 && game.kh3_menu.is_some() {
-        game.duel_camp_press = PRESS_CANCEL;
+    } else if *at == SCRIPT.len() && t >= 820 && game.ext.online().kh3_menu.is_some() {
+        game.camp_press = PRESS_CANCEL;
     }
 }
 

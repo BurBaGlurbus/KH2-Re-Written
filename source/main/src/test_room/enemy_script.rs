@@ -16,7 +16,7 @@ type Vec3 = [f32; 3];
 
 /// Sora's team number (`sysobj+0x4dc`): attacks with her team in their mask
 /// can hit her.
-pub(super) const SORA_TEAM: u8 = 1;
+pub const SORA_TEAM: u8 = 1;
 
 /// The host view the engine reads each tick.
 struct BrainEnv<'a> {
@@ -589,7 +589,7 @@ pub struct ScriptBrain {
     pub presentations: Vec<(&'static str, Option<u32>, [u32; 8])>,
 }
 
-pub(super) fn script_payload(source: &ProbeSource, model: &str) -> Result<Vec<u8>, String> {
+pub fn script_payload(source: &ProbeSource, model: &str) -> Result<Vec<u8>, String> {
     let mut library = Library::open(source).map_err(|e| e.to_string())?;
     let bytes = library
         .read(&format!("obj/{model}.mdlx"))
@@ -611,7 +611,7 @@ pub(super) fn script_payload(source: &ProbeSource, model: &str) -> Result<Vec<u8
 /// type 23): model-space offset raised by the entry's height offset, and
 /// radius. [I] Bone-bound entries are taken at the model origin: the made
 /// objects that use them (B_EX360) have no skeleton loaded here.
-pub(super) fn hit_spheres(source: &ProbeSource, model: &str) -> Vec<([f32; 3], f32)> {
+pub fn hit_spheres(source: &ProbeSource, model: &str) -> Vec<([f32; 3], f32)> {
     let read = || -> Option<Vec<([f32; 3], f32)>> {
         let mut library = Library::open(source).ok()?;
         let bytes = library.read(&format!("obj/{model}.mdlx")).ok()?;

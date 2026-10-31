@@ -17,7 +17,7 @@ use super::*;
 const WORLD_MAP_KIND: u8 = 0;
 const WORLD_MAP_WORLD: i32 = 15;
 
-pub(crate) struct WorldMapCamp {
+pub struct WorldMapCamp {
     c: CampRes,
     settings: settings_room::SettingsRes,
     /// The camp's pages count frames as the room does.
@@ -31,7 +31,7 @@ pub(crate) struct WorldMapCamp {
 /// Loads the camp and journal sources named by the field configuration at
 /// `config_path` (its `camp`, `menu`, `journal`, `system` and `battle`).
 /// `unattended` runs keep the default settings and save none.
-pub(crate) fn load(
+pub fn load(
     source: Arc<ProbeSource>,
     config_path: &Path,
     unattended: bool,

@@ -40,7 +40,7 @@ const WORLDS: [&str; 19] = [
 
 /// The files the menus are built from, as configured (for a language swap).
 #[derive(Clone)]
-pub(super) struct LanguageSources {
+pub struct LanguageSources {
     pub camp: Locator,
     pub menu: MenuSources,
     pub journal: Option<JournalConfig>,
@@ -49,7 +49,7 @@ pub(super) struct LanguageSources {
 }
 
 #[derive(Resource)]
-pub(super) struct SettingsRes {
+pub struct SettingsRes {
     pub current: Settings,
     saved: Settings,
     /// None: an unattended run, which uses the defaults and saves nothing.
@@ -349,7 +349,7 @@ fn frame_limit(s: &Settings, focused: bool, unattended: bool) -> Option<u16> {
 
 /// The window, the frame rate, the scene camera's multisampling and the
 /// mixer's volumes.
-pub(super) fn apply_settings(
+pub fn apply_settings(
     mut settings: ResMut<SettingsRes>,
     mut windows: Query<&mut Window>,
     mut limit: ResMut<FrameLimit>,

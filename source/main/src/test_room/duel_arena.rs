@@ -7,7 +7,7 @@ use super::*;
 use std::f32::consts::PI;
 
 /// Where an arena's fighters are held in.
-pub(crate) enum Bounds {
+pub enum Bounds {
     /// The room's own collision walls hold them (their extent is logged
     /// with the starts, to show both starts inside).
     Collision,
@@ -17,7 +17,7 @@ pub(crate) enum Bounds {
 }
 
 /// One arena.
-pub(crate) struct Arena {
+pub struct Arena {
     pub name: &'static str,
     /// The command-line name (`--duel-arena`).
     pub key: &'static str,
@@ -32,7 +32,7 @@ pub(crate) struct Arena {
 /// talk or exits in a duel]. Mirage Arena is Birth by Sleep's arena stage
 /// (mirage_arena.rs): its floor stands at y 10 (0.1 m), its wall ring at a
 /// radius of about 2160, so the starts 600 apart are well inside.
-pub(crate) const ARENAS: [Arena; 2] = [
+pub const ARENAS: [Arena; 2] = [
     Arena {
         name: "Mirage Arena",
         key: "mirage",
@@ -49,11 +49,11 @@ pub(crate) const ARENAS: [Arena; 2] = [
     },
 ];
 /// The rows by name.
-pub(crate) const MIRAGE: usize = 0;
-pub(crate) const TEST_ROOM: usize = 1;
+pub const MIRAGE: usize = 0;
+pub const TEST_ROOM: usize = 1;
 
 /// An arena's row by its command-line name.
-pub(crate) fn named(key: &str) -> Option<u8> {
+pub fn named(key: &str) -> Option<u8> {
     ARENAS.iter().position(|a| a.key == key).map(|i| i as u8)
 }
 
@@ -85,7 +85,7 @@ fn inside(e: &[f32; 4], at: [f32; 3]) -> bool {
 /// Where the host's Sora (seat 0) and the joiner's (seat 1) start, as
 /// (position, yaw): mirrored through `centre` along the heading `yaw`,
 /// each facing the other.
-pub(crate) fn starts(arena: &Arena, centre: [f32; 3], yaw: f32) -> [([f32; 3], f32); 2] {
+pub fn starts(arena: &Arena, centre: [f32; 3], yaw: f32) -> [([f32; 3], f32); 2] {
     let (x, z) = (yaw.sin() * arena.spacing, yaw.cos() * arena.spacing);
     [
         ([centre[0] - x, centre[1], centre[2] - z], yaw),
@@ -95,10 +95,12 @@ pub(crate) fn starts(arena: &Arena, centre: [f32; 3], yaw: f32) -> [([f32; 3], f
 
 /// Host: both Soras to the arena's starts, standing (their builds, gauges
 /// and forms stay; the motion starts over).
-pub(crate) fn place(game: &mut Game) {
+pub fn place(game: &mut Game) {
     // The arena this instance shows (the Mirage Arena once loaded and
     // chosen, else the room's).
-    let arena = ARENAS.get(game.duel_arena).unwrap_or(&ARENAS[TEST_ROOM]);
+    let arena = ARENAS
+        .get(game.ext.online().duel_arena)
+        .unwrap_or(&ARENAS[TEST_ROOM]);
     let (centre, yaw) = arena.centre.unwrap_or(game.room_start);
     let starts = starts(arena, centre, yaw);
     let tick = game.tick;

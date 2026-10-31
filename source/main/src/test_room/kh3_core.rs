@@ -379,7 +379,7 @@ const CORE_EFFECTS: [&str; 37] = [
 
 /// Finds the assets of the names the core gives (the mounted paths' last part), adds them to what the presenters
 /// load and to the wire's list. The weapon's sound aliases (`HIT1`..) are its bank's.
-pub(crate) fn name_assets(paks: &Paks, data: &SoraData, book: &mut player::kh3::attack::Book) {
+pub fn name_assets(paks: &Paks, data: &SoraData, book: &mut player::kh3::attack::Book) {
     let wanted: std::collections::HashSet<String> = CORE_EFFECTS
         .iter()
         .map(|n| n.to_ascii_lowercase())
@@ -431,7 +431,7 @@ pub(crate) fn name_assets(paks: &Paks, data: &SoraData, book: &mut player::kh3::
 }
 
 /// Reads and installs everything. A row this install cannot give is an error: the mode needs them all.
-pub(crate) fn install(paks: &Paks, data: &SoraData) -> Result<()> {
+pub fn install(paks: &Paks, data: &SoraData) -> Result<()> {
     if kh3_sora::sheets::installed() {
         return Ok(());
     }

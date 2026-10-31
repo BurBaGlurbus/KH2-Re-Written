@@ -47,7 +47,7 @@ fn held(pad: RivalPad) -> RivalPad {
 
 /// The joiner's buttons for this host tick: the oldest unused one, older
 /// ones merged in when too many wait.
-pub(crate) fn next_input(
+pub fn next_input(
     inputs: &mut std::collections::BTreeMap<u32, RivalPad>,
 ) -> Option<(u32, RivalPad)> {
     while inputs.len() > INPUT_BACKLOG {
@@ -61,7 +61,7 @@ pub(crate) fn next_input(
 }
 
 /// Host, before the rivals move: the joiner's buttons for its Sora.
-pub(crate) fn host_take_inputs(net: Option<ResMut<DuelNet>>, mut game: ResMut<Game>) {
+pub fn host_take_inputs(net: Option<ResMut<DuelNet>>, mut game: ResMut<Game>) {
     let Some(mut net) = net else { return };
     if net.role != Role::Host || !net.playing() {
         return;
@@ -144,28 +144,30 @@ fn state_of(
             .map(|d| d.bullets.iter().map(|b| (b.key, b.pos, b.dir)).collect())
             .unwrap_or_default(),
         kh3: kh3.then(|| match book {
-            Some(book) => fighter.kh3.shown_in(book),
-            None => fighter.kh3.shown(),
+            Some(book) => fighter.ext.fighter().kh3.shown_in(book),
+            None => fighter.ext.fighter().kh3.shown(),
         }),
     }
 }
 
 /// Host, after the field's tick: both Soras and the tick's events.
-pub(crate) fn host_send(net: Option<ResMut<DuelNet>>, mut game: ResMut<Game>) {
+pub fn host_send(net: Option<ResMut<DuelNet>>, mut game: ResMut<Game>) {
     // Out of a LAN duel nobody reads the events.
-    let events = std::mem::take(&mut game.duel_events);
+    let events = std::mem::take(&mut game.ext.online_mut().duel_events);
     let Some(mut net) = net else { return };
     if net.role != Role::Host || !net.playing() {
         return;
     }
     // The rules, whenever the joiner does not have the current ones.
-    if net.sent_rules != Some(game.duel_rules) {
-        net.sent_rules = Some(game.duel_rules);
-        net.session
-            .send(RELIABLE, duel_wire::encode_rules(&game.duel_rules));
+    if net.sent_rules != Some(game.ext.online().duel_rules) {
+        net.sent_rules = Some(game.ext.online().duel_rules);
+        net.session.send(
+            RELIABLE,
+            duel_wire::encode_rules(&game.ext.online().duel_rules),
+        );
     }
-    let kh3 = game.duel_rules.kh3();
-    let book = game.kh3_book.clone();
+    let kh3 = game.ext.online().duel_rules.kh3();
+    let book = game.ext.online().kh3_book.clone();
     let book = book.as_deref();
     let mut fighters = vec![state_of(
         fighter_slots::HOST,
@@ -207,9 +209,9 @@ fn apply_state(
     book: Option<&player::kh3::attack::Book>,
 ) -> bool {
     if let Some(k) = &s.kh3 {
-        fighter.kh3.apply_shown(k);
+        fighter.ext.fighter_mut().kh3.apply_shown(k);
         if let Some(book) = book {
-            fighter.kh3.apply_actors(k, book);
+            fighter.ext.fighter_mut().kh3.apply_actors(k, book);
         }
     }
     let (player, vitals) = (&mut fighter.player, &mut fighter.vitals);
@@ -279,7 +281,9 @@ fn play_event(game: &mut Game, event: &DuelEvent) {
             attach,
         } => {
             let name = |id: u16| {
-                game.kh3_book
+                game.ext
+                    .online()
+                    .kh3_book
                     .as_ref()
                     .and_then(|b| b.names.get(usize::from(id)).cloned())
             };
@@ -301,13 +305,13 @@ fn play_event(game: &mut Game, event: &DuelEvent) {
                     },
                 }),
             };
-            game.kh3_fx_remote.push(request);
+            game.ext.online_mut().kh3_fx_remote.push(request);
         }
     }
 }
 
 /// Joiner, before its field tick: the host's snapshots and events.
-pub(crate) fn join_apply(net: Option<ResMut<DuelNet>>, mut game: ResMut<Game>) {
+pub fn join_apply(net: Option<ResMut<DuelNet>>, mut game: ResMut<Game>) {
     let Some(mut net) = net else { return };
     if net.role != Role::Join || !net.playing() {
         return;
@@ -324,7 +328,7 @@ pub(crate) fn join_apply(net: Option<ResMut<DuelNet>>, mut game: ResMut<Game>) {
             // Played with the snapshot of the tick they happened on.
             net.events.push_back((tick, events));
         } else if let Some(rules) = duel_wire::decode_rules(&m) {
-            game.duel_rules = rules;
+            game.ext.online_mut().duel_rules = rules;
         } else {
             net.inbox.push(m);
         }
@@ -376,7 +380,7 @@ pub(crate) fn join_apply(net: Option<ResMut<DuelNet>>, mut game: ResMut<Game>) {
     // [KH3 ruleset] Wisdom's container is named by the host's KH3 cues
     // (the airstep's afterimage, the bolts' flash and sparks): ready on
     // both Soras before an event names it.
-    let kh3 = game.duel_rules.kh3();
+    let kh3 = game.ext.online().duel_rules.kh3();
     if kh3 && let Some(d) = game.drive.as_mut() {
         d.wisdom_pax();
     }
@@ -403,7 +407,7 @@ pub(crate) fn join_apply(net: Option<ResMut<DuelNet>>, mut game: ResMut<Game>) {
             if let Some(d) = game.drive.as_mut() {
                 d.show_bullets(&s.bullets, &mut game.fx_styled);
             }
-            let book = game.kh3_book.clone();
+            let book = game.ext.online().kh3_book.clone();
             if apply_state(s, &mut game.sora, book.as_deref()) {
                 game.action_started = now;
             }
@@ -415,7 +419,7 @@ pub(crate) fn join_apply(net: Option<ResMut<DuelNet>>, mut game: ResMut<Game>) {
             if let Some(d) = r.own.drive.as_mut() {
                 d.show_bullets(&s.bullets, &mut game.fx_styled);
             }
-            let book = game.kh3_book.clone();
+            let book = game.ext.online().kh3_book.clone();
             if apply_state(s, &mut r.fighter, book.as_deref()) {
                 r.started = now;
             }
@@ -444,7 +448,7 @@ fn show_form(game: &mut Game, slot: u8, form: u8) {
 }
 
 /// Joiner, after its field tick: this tick's buttons, with the last few.
-pub(crate) fn join_send(net: Option<ResMut<DuelNet>>, game: Res<Game>) {
+pub fn join_send(net: Option<ResMut<DuelNet>>, game: Res<Game>) {
     let Some(mut net) = net else { return };
     if net.role != Role::Join || !net.playing() {
         return;
@@ -453,7 +457,7 @@ pub(crate) fn join_send(net: Option<ResMut<DuelNet>>, game: Res<Game>) {
         net.recent.pop_front();
     }
     let tick = game.tick as u32;
-    net.recent.push_back((tick, game.net_pad));
+    net.recent.push_back((tick, game.ext.online().net_pad));
     let recent: Vec<_> = net.recent.iter().copied().collect();
     net.session
         .send(UNRELIABLE, duel_wire::encode_input(&recent));

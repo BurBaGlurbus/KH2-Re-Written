@@ -151,8 +151,8 @@ fn in_cone(row: &data::battle_tables::Attack, facing: Vec3, v: Vec3) -> bool {
     v.dot(turn * facing) < -(row.reflect_range as f32).to_radians().cos()
 }
 
-pub(crate) fn tick(mut game: ResMut<Game>, mut previous: Local<HashMap<(u64, usize), Vec3>>) {
-    if game.rivals.is_empty() || game.net_client {
+pub fn tick(mut game: ResMut<Game>, mut previous: Local<HashMap<(u64, usize), Vec3>>) {
+    if game.rivals.is_empty() || game.replica {
         return;
     }
     let game = &mut *game;
@@ -172,7 +172,7 @@ pub(crate) fn tick(mut game: ResMut<Game>, mut previous: Local<HashMap<(u64, usi
             who: Who::Room,
             slot: game.local_slot,
             at: Vec3::from_array(p.position),
-            turn: super::duel_kh3::turn(p.yaw, &game.sora.kh3),
+            turn: super::duel_kh3::turn(p.yaw, &game.sora.ext.fighter().kh3),
             facing: Vec3::new(p.yaw.sin(), 0., p.yaw.cos()),
             started: game.action_started,
             cp: &game.clip_poses[clip],
@@ -197,7 +197,7 @@ pub(crate) fn tick(mut game: ResMut<Game>, mut previous: Local<HashMap<(u64, usi
             who: Who::Rival(i),
             slot: r.slot,
             at: Vec3::from_array(p.position),
-            turn: super::duel_kh3::turn(p.yaw, &r.fighter.kh3),
+            turn: super::duel_kh3::turn(p.yaw, &r.fighter.ext.fighter().kh3),
             facing: Vec3::new(p.yaw.sin(), 0., p.yaw.cos()),
             started: r.started,
             cp,
@@ -401,7 +401,7 @@ pub(crate) fn tick(mut game: ResMut<Game>, mut previous: Local<HashMap<(u64, usi
     }
     let facts: Vec<(Vec3, Vec3, u8)> = views.iter().map(|v| (v.at, v.facing, v.slot)).collect();
     let sstm = rt.enemy.sstm;
-    let rules = game.duel_rules;
+    let rules = game.ext.online().duel_rules;
     for hit in landed {
         land(game, rules, &kit, sstm, &facts, hit, tick);
     }
@@ -533,7 +533,7 @@ fn land(
     // volley has its cap (duel_kh3.rs).
     let (grand, volley_dealt) = {
         let (a, _) = fighter(game, kit, hit.attacker);
-        (super::duel_kh3::grand(a), a.kh3.volley_dealt)
+        (super::duel_kh3::grand(a), a.ext.fighter().kh3.volley_dealt)
     };
     let bolt = hit.spell.is_some_and(super::duel_kh3::is_bolt);
     // [KH3 ruleset] What the hit came from decides its damage kind
@@ -548,7 +548,7 @@ fn land(
                 heavy: combat::reaction_class(rows[0].reaction) == 4,
                 grand,
             },
-            None => a.kh3.source(&a.player, a_clips),
+            None => a.ext.fighter().kh3.source(&a.player, a_clips),
         };
         (source, player::kh3::hurt::strike(source), a.player.in_air())
     });
@@ -595,7 +595,7 @@ fn land(
             // offers the Risk Dodge.
             let (victim, _) = fighter(game, kit, hit.victim);
             if let Some((_, strike, attacker_air)) = kh3_hit {
-                victim.kh3.guarded(
+                victim.ext.fighter_mut().kh3.guarded(
                     &mut victim.player,
                     strike,
                     [away.x, away.z],
@@ -625,7 +625,9 @@ fn land(
             id: flash,
             at: hit.contact,
         });
-        game.duel_events
+        game.ext
+            .online_mut()
+            .duel_events
             .push(DuelEvent::Guard(hit.contact.to_array(), flash));
         game.event(serde_json::json!({"event":"duel_guard","tick":tick,
             "attacker":attacker_slot,"victim":victim_slot,"atkp":hit.atkp,
@@ -633,14 +635,14 @@ fn land(
         return;
     }
     let missed = if rules.kh3() {
-        victim.kh3.untouchable(&victim.player, clips)
+        victim.ext.fighter().kh3.untouchable(&victim.player, clips)
     } else {
         untouchable(&victim.player, clips)
     };
     if victim.vitals.invulnerable > 0. || missed {
         // [KH3 ruleset] A dodge that met a hit opens the counter window.
         if rules.kh3() {
-            victim.kh3.dodged();
+            victim.ext.fighter_mut().kh3.dodged();
         }
         victim.vitals.record.hit(aid, group, false, |_| (0, 0));
         let why = format!("invulnerable in {:?}", victim.player.action);
@@ -694,7 +696,7 @@ fn land(
                 return;
             }
         }
-        victim.kh3.hit_taken();
+        victim.ext.fighter_mut().kh3.hit_taken();
     }
     let damage_motion = (10..=39).contains(&victim.player.motion_id(clips));
     let veto = combat::sora_veto(ab.has(127), ab.has(128), victim.vitals.hp, 0, damage_motion);
@@ -738,11 +740,15 @@ fn land(
     let mut kh3_log = None;
     let mut started = match kh3_hit {
         Some((source, strike, _)) if !magnet => {
-            let shrug = victim.kh3.shrugs_strike(&victim.player, strike);
+            let shrug = victim
+                .ext
+                .fighter()
+                .kh3
+                .shrugs_strike(&victim.player, strike);
             kh3_log = Some((source, strike, shrug));
             // A body already in the air keeps its motion (no new voice).
             !shrug
-                && victim.kh3.hurt(
+                && victim.ext.fighter_mut().kh3.hurt(
                     &mut victim.player,
                     strike,
                     [away.x, away.z],
@@ -753,12 +759,12 @@ fn land(
         _ => victim.player.react(&reaction, &sstm, clips).is_some(),
     };
     let reacted = (
-        victim.kh3.mode.name(),
+        victim.ext.fighter().kh3.mode.name(),
         format!("{:?}", victim.player.action),
     );
     // A bolt's own impact: Wisdom's shot spark and its sound, once in a
     // few ticks on one Sora.
-    let bolt_spark = bolt && victim.kh3.spark_ready();
+    let bolt_spark = bolt && victim.ext.fighter_mut().kh3.spark_ready();
     let hp = victim.vitals.hp;
     if hp == 0 && victim.player.die(clips).is_some() {
         started = true;
@@ -771,12 +777,12 @@ fn land(
         a.player.connected = true;
         if rules.kh3() {
             if bolt {
-                a.kh3.volley_dealt += taken as i32;
+                a.ext.fighter_mut().kh3.volley_dealt += taken as i32;
             } else {
-                a.kh3.landed(hit.spell.is_none());
+                a.ext.fighter_mut().kh3.landed(hit.spell.is_none());
             }
             if let Some((source, strike, _)) = kh3_log {
-                a.kh3.struck(source, strike);
+                a.ext.fighter_mut().kh3.struck(source, strike);
             }
         }
     }
@@ -836,7 +842,7 @@ fn land(
     if let Some(calls) = spell_spark {
         let mut calls = calls.unwrap_or_default();
         if hit.attacker != Who::Room {
-            rival::retag_calls(&mut calls, attacker_slot);
+            rival_play::retag_calls(&mut calls, attacker_slot);
         }
         game.fx_calls.extend(calls);
     } else if let Some((effect, random)) = spark.filter(|s| s.0 != 0) {
@@ -859,12 +865,13 @@ fn land(
     if hp == 0 {
         events.push(DuelEvent::KnockOut(victim_slot));
     }
-    game.duel_events.extend(events);
+    game.ext.online_mut().duel_events.extend(events);
     // The match's tally, by the attacker's slot.
     let s = usize::from(attacker_slot);
     if s < 2 {
-        game.duel_dealt[s] += taken;
-        game.duel_landed[s] = game.duel_landed[s].saturating_add(1);
+        game.ext.online_mut().duel_dealt[s] += taken;
+        game.ext.online_mut().duel_landed[s] =
+            game.ext.online_mut().duel_landed[s].saturating_add(1);
     }
     game.event(
         serde_json::json!({"event":"duel_hit","tick":tick,"attacker":attacker_slot,
@@ -879,7 +886,7 @@ fn land(
 /// with full HP after 120 ticks; the room Sora's own KO stays the room's.
 fn knock_outs(game: &mut Game, tick: u64) {
     // In a match a knock-out ends the round (duel_match.rs).
-    if game.duel_match {
+    if game.ext.online().duel_match {
         return;
     }
     let mut stood = Vec::new();
@@ -901,7 +908,10 @@ fn knock_outs(game: &mut Game, tick: u64) {
         }
     }
     for slot in stood {
-        game.duel_events.push(DuelEvent::StoodUp(slot));
+        game.ext
+            .online_mut()
+            .duel_events
+            .push(DuelEvent::StoodUp(slot));
         game.event(serde_json::json!({"event":"duel_stood_up","tick":tick,"slot":slot}));
     }
 }

@@ -55,7 +55,7 @@ fn actor(p: [f32; 3]) -> [f32; 3] {
 
 /// Blade hit points through the pose: hand, its socket, the blade's bone, its
 /// socket.
-pub(crate) struct Blade {
+pub struct Blade {
     hand: usize,
     grip: BonePose,
     bone: BonePose,
@@ -64,7 +64,7 @@ pub(crate) struct Blade {
 
 impl Blade {
     /// The two sockets in the actor's axes, from the component pose.
-    pub(crate) fn points(&self, comp: &[BonePose]) -> Option<[[f32; 3]; 2]> {
+    pub fn points(&self, comp: &[BonePose]) -> Option<[[f32; 3]; 2]> {
         let hand = comp.get(self.hand)?;
         let root = sora::compose(&sora::compose(hand, &self.grip), &self.bone);
         let point = |s: &BonePose| actor(sora::compose(&root, s).translation);
@@ -80,7 +80,7 @@ fn socket_pose(s: &sora::Socket) -> BonePose {
     }
 }
 
-pub(crate) fn blade(data: &SoraData) -> Option<Blade> {
+pub fn blade(data: &SoraData) -> Option<Blade> {
     let grip = data.sockets.iter().find(|s| s.name == "R_wep_skt")?;
     let hand = data.bone(&grip.bone)?;
     let sock = |name: &str| data.keyblade_sockets.iter().find(|s| s.name == name);
@@ -687,7 +687,7 @@ fn hit_effect(paks: &Paks) -> Option<String> {
 }
 
 /// Reads the book.
-pub(crate) fn read(paks: &Paks, data: &SoraData) -> Result<Book> {
+pub fn read(paks: &Paks, data: &SoraData) -> Result<Book> {
     let mut book = Book::default();
     let b = blade(data);
     let wanted = (0u8..=0x7f)

@@ -8,17 +8,17 @@ use super::duel_rules::{MatchRules, Mode};
 use net::wire::{Reader, Writer};
 
 /// Ticks each of 3, 2, 1 is up; the fight starts after them.
-pub(crate) const COUNT_STEP: u64 = 60;
-pub(crate) const COUNTDOWN: u64 = 3 * COUNT_STEP;
+pub const COUNT_STEP: u64 = 60;
+pub const COUNTDOWN: u64 = 3 * COUNT_STEP;
 /// Ticks "GO" stays up once the fight has started.
-pub(crate) const GO_SHOWN: u64 = 45;
+pub const GO_SHOWN: u64 = 45;
 /// Ticks a round's result stays up before the next round or the result.
-pub(crate) const ROUND_OVER: u64 = 180;
+pub const ROUND_OVER: u64 = 180;
 /// Rounds a Best of 3 can go to when rounds are drawn.
 const MAX_ROUNDS: u8 = 5;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum Phase {
+pub enum Phase {
     Countdown,
     Fight,
     RoundOver,
@@ -27,7 +27,7 @@ pub(crate) enum Phase {
 
 /// How a round (or the match) was decided.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum Why {
+pub enum Why {
     KnockOut,
     /// The clock ran out: the larger share of HP left won.
     Time,
@@ -40,7 +40,7 @@ pub(crate) enum Why {
 
 /// The match (the host's; the joiner shows the copy it receives).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct Match {
+pub struct Match {
     pub phase: Phase,
     /// The host tick the phase began, and the match.
     pub since: u64,
@@ -64,7 +64,7 @@ pub(crate) struct Match {
 
 /// What the host sees of the fight this tick.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct View {
+pub struct View {
     pub hp: [i32; 2],
     pub max_hp: [i32; 2],
     /// The seat's player is still in the session.
@@ -73,7 +73,7 @@ pub(crate) struct View {
 
 /// What a step started, for the room to act on (sounds, resets).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum Cue {
+pub enum Cue {
     /// 3, 2 or 1 came up.
     Count(u8),
     Go,
@@ -86,7 +86,7 @@ pub(crate) enum Cue {
 }
 
 /// Round wins that take a match under the rules.
-pub(crate) fn wins_needed(rules: &MatchRules) -> u8 {
+pub fn wins_needed(rules: &MatchRules) -> u8 {
     match rules.mode {
         Mode::BestOf3 => 2,
         Mode::Stock | Mode::Timed => 1,
@@ -95,12 +95,12 @@ pub(crate) fn wins_needed(rules: &MatchRules) -> u8 {
 
 /// The count showing `elapsed` ticks into the countdown (3, 2, 1), or None
 /// once it has run.
-pub(crate) fn count_at(elapsed: u64) -> Option<u8> {
+pub fn count_at(elapsed: u64) -> Option<u8> {
     (elapsed < COUNTDOWN).then(|| 3 - (elapsed / COUNT_STEP) as u8)
 }
 
 impl Match {
-    pub(crate) fn new(now: u64) -> Self {
+    pub fn new(now: u64) -> Self {
         Match {
             phase: Phase::Countdown,
             since: now,
@@ -118,7 +118,7 @@ impl Match {
     }
 
     /// The Soras may move and fight.
-    pub(crate) fn fighting(&self) -> bool {
+    pub fn fighting(&self) -> bool {
         self.phase == Phase::Fight
     }
 
@@ -129,7 +129,7 @@ impl Match {
 
     /// Host: `seat` gives up the match; the other takes it. False when it
     /// was already decided.
-    pub(crate) fn forfeit(&mut self, seat: usize, now: u64) -> bool {
+    pub fn forfeit(&mut self, seat: usize, now: u64) -> bool {
         if self.phase == Phase::Over || seat > 1 {
             return false;
         }
@@ -140,7 +140,7 @@ impl Match {
     }
 
     /// Host: one tick of the match.
-    pub(crate) fn step(&mut self, now: u64, rules: &MatchRules, v: &View) -> Vec<Cue> {
+    pub fn step(&mut self, now: u64, rules: &MatchRules, v: &View) -> Vec<Cue> {
         let mut cues = Vec::new();
         let elapsed = now.saturating_sub(self.since);
         // A player who leaves loses: the one still here wins.
@@ -245,7 +245,7 @@ fn why_code(w: Option<Why>) -> u8 {
     }
 }
 
-pub(crate) fn encode_match(kind: u8, m: &Match) -> Vec<u8> {
+pub fn encode_match(kind: u8, m: &Match) -> Vec<u8> {
     let mut w = Writer::default();
     w.u8(kind);
     w.u8(m.phase as u8);
@@ -269,7 +269,7 @@ pub(crate) fn encode_match(kind: u8, m: &Match) -> Vec<u8> {
     w.finish()
 }
 
-pub(crate) fn decode_match(kind: u8, bytes: &[u8]) -> Option<Match> {
+pub fn decode_match(kind: u8, bytes: &[u8]) -> Option<Match> {
     let mut r = Reader::new(bytes);
     if r.u8()? != kind {
         return None;

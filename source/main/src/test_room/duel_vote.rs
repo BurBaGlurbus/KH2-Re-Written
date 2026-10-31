@@ -22,14 +22,14 @@ const DOWN: u64 = 0x20;
 const DECIDE: u64 = 0x4;
 
 /// Ticks the coin spins before it lands, and how often it turns over.
-pub(crate) const FLIP_TICKS: u64 = 90;
+pub const FLIP_TICKS: u64 = 90;
 const TURN_TICKS: u64 = 6;
 /// Ticks the result stays on screen.
 const RESULT_TICKS: u64 = 150;
 
 /// A vote's question and choices.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct Vote {
+pub struct Vote {
     /// What the vote is for (a caller's own number).
     pub topic: u8,
     pub question: String,
@@ -41,14 +41,14 @@ pub(crate) struct Vote {
 
 /// How a vote ended.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct Outcome {
+pub struct Outcome {
     pub choice: u8,
     /// The coin flip's seed when the ballots differed.
     pub flip: Option<u32>,
 }
 
 impl Vote {
-    pub(crate) fn new(topic: u8, question: &str, options: &[&str]) -> Self {
+    pub fn new(topic: u8, question: &str, options: &[&str]) -> Self {
         Vote {
             topic,
             question: question.to_string(),
@@ -59,7 +59,7 @@ impl Vote {
     }
 
     /// A seat's ballot; once cast it stands.
-    pub(crate) fn cast(&mut self, seat: usize, choice: u8) -> Result<(), String> {
+    pub fn cast(&mut self, seat: usize, choice: u8) -> Result<(), String> {
         if self.outcome.is_some() {
             return Err("the vote is over".into());
         }
@@ -76,7 +76,7 @@ impl Vote {
 
     /// Host: once both have voted, the outcome; a tie flips the coin with
     /// `seed`.
-    pub(crate) fn decide(&mut self, seed: u32) -> Option<Outcome> {
+    pub fn decide(&mut self, seed: u32) -> Option<Outcome> {
         if self.outcome.is_none()
             && let [Some(a), Some(b)] = self.ballots
         {
@@ -97,13 +97,13 @@ impl Vote {
 }
 
 /// The coin: the seed's low bit picks one of the two ballots.
-pub(crate) fn flip_result(seed: u32, a: u8, b: u8) -> u8 {
+pub fn flip_result(seed: u32, a: u8, b: u8) -> u8 {
     if seed & 1 == 0 { a } else { b }
 }
 
 /// Which of the two tied ballots the spinning coin shows at a tick of its
 /// flip (it turns every few ticks and lands on the result).
-pub(crate) fn flip_face(seed: u32, a: u8, b: u8, ticks: u64) -> u8 {
+pub fn flip_face(seed: u32, a: u8, b: u8, ticks: u64) -> u8 {
     if ticks >= FLIP_TICKS {
         return flip_result(seed, a, b);
     }
@@ -123,7 +123,7 @@ pub(crate) fn flip_face(seed: u32, a: u8, b: u8, ticks: u64) -> u8 {
 /// of its height (edge-on as each turn ends, when the face changes) and its
 /// size (a short pop on landing), by the tick (`frac`: the part of a tick
 /// since), so it turns at the same speed at any frame rate.
-pub(crate) fn coin(room: &VoteRoom, game: &Game, frac: f32) -> Option<(f32, f32)> {
+pub fn coin(room: &VoteRoom, game: &Game, frac: f32) -> Option<(f32, f32)> {
     let v = room.vote.as_ref()?;
     let (o, at) = (v.outcome?, room.decided_at?);
     o.flip?;
@@ -140,7 +140,7 @@ pub(crate) fn coin(room: &VoteRoom, game: &Game, frac: f32) -> Option<(f32, f32)
     Some(((u * std::f32::consts::PI).sin().max(0.06), 1.))
 }
 
-pub(crate) fn encode_vote(vote: &Vote) -> Vec<u8> {
+pub fn encode_vote(vote: &Vote) -> Vec<u8> {
     let mut w = Writer::default();
     w.u8(VOTE);
     w.u8(vote.topic);
@@ -169,7 +169,7 @@ pub(crate) fn encode_vote(vote: &Vote) -> Vec<u8> {
     w.finish()
 }
 
-pub(crate) fn decode_vote(bytes: &[u8]) -> Option<Vote> {
+pub fn decode_vote(bytes: &[u8]) -> Option<Vote> {
     let mut r = Reader::new(bytes);
     if r.u8()? != VOTE {
         return None;
@@ -213,7 +213,7 @@ pub(crate) fn decode_vote(bytes: &[u8]) -> Option<Vote> {
 /// The duel's vote in the room: the one running (if any), this player's
 /// cursor, and when its outcome arrived.
 #[derive(Resource, Default)]
-pub(crate) struct VoteRoom {
+pub struct VoteRoom {
     pub vote: Option<Vote>,
     cursor: usize,
     /// The tick the outcome reached this instance (the flip's clock).
@@ -225,18 +225,18 @@ pub(crate) struct VoteRoom {
 }
 
 /// The F3 test vote's topic.
-pub(crate) const TOPIC_TEST: u8 = 0;
+pub const TOPIC_TEST: u8 = 0;
 
 impl VoteRoom {
     /// The vote holds the pad: one is open and this player has not voted.
-    pub(crate) fn menu_up(&self, seat: usize) -> bool {
+    pub fn menu_up(&self, seat: usize) -> bool {
         self.vote
             .as_ref()
             .is_some_and(|v| v.ballots[seat].is_none())
     }
 
     /// Host: puts a question to both players.
-    pub(crate) fn start(&mut self, vote: Vote) {
+    pub fn start(&mut self, vote: Vote) {
         *self = VoteRoom {
             vote: Some(vote),
             serial: self.serial + 1,
@@ -251,7 +251,7 @@ fn seat_of(net: &DuelNet) -> usize {
 
 /// One fixed step: ballots and outcomes over the wire, this player's
 /// choice, the result's time on screen.
-pub(crate) fn tick(
+pub fn tick(
     net: Option<ResMut<DuelNet>>,
     room: Option<ResMut<VoteRoom>>,
     mut camp: Option<ResMut<CampRes>>,
@@ -266,7 +266,7 @@ pub(crate) fn tick(
             serial: room.serial,
             ..VoteRoom::default()
         };
-        game.duel_vote_up = false;
+        game.ext.online_mut().duel_vote_up = false;
         if let Some(c) = camp.as_deref_mut() {
             duel_camp::hold(c, game, duel_camp::VOTE, None, || unreachable!());
         }
@@ -274,7 +274,7 @@ pub(crate) fn tick(
     }
     let seat = seat_of(net);
     // Host: F3's test question.
-    if std::mem::take(&mut game.duel_test_vote) && net.role == Role::Host {
+    if std::mem::take(&mut game.ext.online_mut().duel_test_vote) && net.role == Role::Host {
         room.start(Vote::new(TOPIC_TEST, "Test vote", &["Left", "Right"]));
         game.sound_queue.push((SE_DECIDE, "vote"));
     }
@@ -307,7 +307,7 @@ pub(crate) fn tick(
         }
     }
     // The pause menu: the vote's choices, its state on the help line.
-    game.duel_vote_up = room.vote.is_some();
+    game.ext.online_mut().duel_vote_up = room.vote.is_some();
     // [Test] `--duel-shots`: the coin as it spins.
     if let Some(at) = room.decided_at.filter(|&at| game.tick == at + 60) {
         duel_camp::shot(game, (4, at, 0));
@@ -483,7 +483,7 @@ fn status(room: &VoteRoom, net: &DuelNet, game: &Game) -> String {
 }
 
 /// The vote's lines on screen: (text, highlighted).
-pub(crate) fn lines(room: &VoteRoom, net: &DuelNet, game: &Game) -> Vec<(String, bool)> {
+pub fn lines(room: &VoteRoom, net: &DuelNet, game: &Game) -> Vec<(String, bool)> {
     let Some(v) = &room.vote else {
         return Vec::new();
     };

@@ -29,7 +29,7 @@ const ENTRY_LEAVE: u8 = pause_menu::CALLER_ENTRY + 6;
 /// (FUN_1403c1d90 / FUN_1403eda00, the cap in FUN_1403c0950; Standard
 /// difficulty). The 61 boosts the game hands out once would give 129; the
 /// cap takes the Skill Recipe's repeatable ones (private trace `ap-max-01`).
-pub(crate) const DUEL_AP: i32 = 166;
+pub const DUEL_AP: i32 = 166;
 /// Type-2 records that are not Sora's Keyblades: the Struggle weapons (the
 /// camp's menu flag 0x77), and the unused Detection Saber, Frontier of
 /// Ultima, Antiform Dummy and unnamed 0x51 (the last has no weapon model
@@ -88,7 +88,7 @@ struct Picking {
 }
 
 #[derive(Resource, Default)]
-pub(crate) struct LobbyRoom {
+pub struct LobbyRoom {
     /// The host's lobby; on the joiner, the last one received.
     pub lobby: Lobby,
     pub limits: Limits,
@@ -152,7 +152,7 @@ pub(crate) struct LobbyRoom {
 
 impl LobbyRoom {
     /// The lobby holds the pad (its camp is up, or about to be).
-    pub(crate) fn menu_up(&self) -> bool {
+    pub fn menu_up(&self) -> bool {
         self.up
     }
 }
@@ -218,7 +218,7 @@ fn build_of(game: &Game) -> Loadout {
             .as_ref()
             .map(|i| i.slots.clone())
             .unwrap_or_default(),
-        kh3: game.sora.kh3.abilities.0,
+        kh3: game.sora.ext.fighter().kh3.abilities.0,
     }
 }
 
@@ -296,11 +296,11 @@ fn prepare_builds(room: &mut LobbyRoom, game: &mut Game, camp: &mut CampRes) {
 /// Host: why the Mirage Arena cannot be the duel's arena (an install
 /// cannot show it), if it cannot.
 fn mirage_refused(room: &LobbyRoom, net: &DuelNet, game: &Game) -> Option<String> {
-    if usize::from(game.duel_rules.arena) != duel_arena::MIRAGE {
+    if usize::from(game.ext.online().duel_rules.arena) != duel_arena::MIRAGE {
         return None;
     }
     let them = net.peer.as_deref().unwrap_or("The other player");
-    match (&game.mirage, room.peer_mirage) {
+    match (&game.ext.online().mirage, room.peer_mirage) {
         (mirage_arena::Avail::Missing(_), _) => {
             Some("This install has no Birth by Sleep: the Test room it is.".into())
         }
@@ -316,15 +316,15 @@ fn mirage_refused(room: &LobbyRoom, net: &DuelNet, game: &Game) -> Option<String
 /// test room's arena when either cannot.
 fn mirage_check(room: &mut LobbyRoom, net: &mut DuelNet, game: &mut Game) {
     if net.role == Role::Join {
-        if !room.mirage_sent && game.mirage != mirage_arena::Avail::Unknown {
+        if !room.mirage_sent && game.ext.online().mirage != mirage_arena::Avail::Unknown {
             room.mirage_sent = true;
-            let ok = game.mirage == mirage_arena::Avail::Ready;
+            let ok = game.ext.online().mirage == mirage_arena::Avail::Ready;
             intend(room, net, game, Intent::Arena(ok));
         }
         return;
     }
     if let Some(why) = mirage_refused(room, net, game) {
-        game.duel_rules.arena = duel_arena::TEST_ROOM as u8;
+        game.ext.online_mut().duel_rules.arena = duel_arena::TEST_ROOM as u8;
         room.lobby.rules_changed();
         let tick = game.tick;
         game.event(serde_json::json!({"event":"duel_arena_fallback","tick":tick,"why":why}));
@@ -336,7 +336,7 @@ fn mirage_check(room: &mut LobbyRoom, net: &mut DuelNet, game: &mut Game) {
 /// KH3's files, so both players need the same copy of the game.
 fn kh3_refused(room: &LobbyRoom, net: &DuelNet, game: &Game) -> Option<String> {
     let them = net.peer.as_deref().unwrap_or("The other player");
-    let Some(own) = &game.kh3_install else {
+    let Some(own) = &game.ext.online().kh3_install else {
         return Some("KH3 needs your copy of KINGDOM HEARTS III: set it in the launcher.".into());
     };
     match room.peer_kh3 {
@@ -355,17 +355,17 @@ fn kh3_check(room: &mut LobbyRoom, net: &mut DuelNet, game: &mut Game) {
     if net.role == Role::Join {
         if !room.kh3_sent {
             room.kh3_sent = true;
-            let identity = game.kh3_install.as_ref().map(|i| i.identity);
+            let identity = game.ext.online().kh3_install.as_ref().map(|i| i.identity);
             intend(room, net, game, Intent::Kh3(identity));
         }
         return;
     }
-    if game.duel_rules.kh3()
+    if game.ext.online().duel_rules.kh3()
         && net.session.is_connected()
         && room.peer_kh3.is_some()
         && let Some(why) = kh3_refused(room, net, game)
     {
-        game.duel_rules.ruleset = duel_rules::Ruleset::Kh2;
+        game.ext.online_mut().duel_rules.ruleset = duel_rules::Ruleset::Kh2;
         room.lobby.rules_changed();
         let tick = game.tick;
         game.event(serde_json::json!({"event":"duel_kh3_fallback","tick":tick,"why":why}));
@@ -424,7 +424,7 @@ fn put_build(game: &mut Game, build: &Loadout) {
     }
     let kh3 = player::kh3::ability::Set(build.kh3);
     if kh3.valid() {
-        game.sora.kh3.abilities = kh3;
+        game.sora.ext.fighter_mut().kh3.abilities = kh3;
     }
     drive_room::rebuild_abilities(game, None);
 }
@@ -446,7 +446,7 @@ fn intend(room: &mut LobbyRoom, net: &mut DuelNet, game: &mut Game, intent: Inte
 
 /// One fixed step of the lobby: messages, stage changes, the camp.
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn tick(
+pub fn tick(
     net: Option<ResMut<DuelNet>>,
     room: Option<ResMut<LobbyRoom>>,
     camp: Option<ResMut<CampRes>>,
@@ -490,8 +490,8 @@ pub(crate) fn tick(
                 names: std::mem::take(&mut room.names),
                 ..LobbyRoom::default()
             };
-            game.duel_frozen = false;
-            game.duel_camp = None;
+            game.ext.online_mut().duel_frozen = false;
+            game.camp_request = None;
         }
         return;
     }
@@ -509,7 +509,7 @@ pub(crate) fn tick(
         if net.role == Role::Host
             && let Some(r) = prefs.as_ref().and_then(|p| p.rules)
         {
-            game.duel_rules = r;
+            game.ext.online_mut().duel_rules = r;
             room.lobby.rules_changed();
         }
         // Slots that hold no ability record (the room's catalog) stay out.
@@ -622,13 +622,13 @@ pub(crate) fn tick(
             r.fighter.player.armed = true;
         }
     }
-    game.duel_frozen = room.up;
+    game.ext.online_mut().duel_frozen = room.up;
     run_camp(room, net, camp, prefs.as_deref(), game);
     // What to keep for next time: the rules the host set, the build this
     // player readied with.
     if let Some(p) = prefs.as_deref_mut() {
         if std::mem::take(&mut room.rules_set) {
-            p.save_rules(game.duel_rules);
+            p.save_rules(game.ext.online().duel_rules);
         }
         let ready = room.lobby.seats[room.seat].ready;
         if ready
@@ -667,10 +667,10 @@ fn run_camp(
     // One version of the lobby's camp a match and stage (the builds add
     // the camp's Abilities and Items); a vote takes the camp meanwhile.
     let version = room.lobby.match_no * 2 + u32::from(builds);
-    let want = (room.up && !game.duel_vote_up).then_some(version);
+    let want = (room.up && !game.ext.online().duel_vote_up).then_some(version);
     // The builds start from the duel's inventory once the camp before them
     // has closed (its close writes the camp back).
-    let free = camp.open.is_none() && game.duel_camp.is_none();
+    let free = camp.open.is_none() && game.camp_request.is_none();
     if builds && want.is_some() && free && room.builds_for != Some(room.lobby.match_no) {
         room.builds_for = Some(room.lobby.match_no);
         // The first builds start from the one this player readied with last
@@ -691,7 +691,7 @@ fn run_camp(
         room.built = Some(build.clone());
         intend(room, net, game, Intent::Loadout(build));
     }
-    let asked = game.duel_camp.is_some();
+    let asked = game.camp_request.is_some();
     // The pages as they stand, for a camp about to open.
     let first = (want.is_some() && camp.open.is_none() && !asked).then(|| {
         let ap = room.limits.ap_used(&build_of(game).abilities);
@@ -702,7 +702,7 @@ fn run_camp(
             ..DuelPages::default()
         }
     });
-    let kh3 = game.duel_rules.kh3();
+    let kh3 = game.ext.online().duel_rules.kh3();
     let menu = duel_camp::hold(camp, game, duel_camp::LOBBY, want, || {
         let mut entries = vec![duel_camp::entry(
             7,
@@ -731,7 +731,7 @@ fn run_camp(
             pages: first.unwrap_or_default(),
         }
     });
-    if !asked && game.duel_camp.is_some() {
+    if !asked && game.camp_request.is_some() {
         game.sound_queue.push((SE_OPEN, "lobby"));
     }
     let Some(menu) = menu else {
@@ -877,27 +877,27 @@ fn step(
     forward: bool,
 ) {
     let s = if forward { 1 } else { -1 };
-    let rules_before = game.duel_rules;
+    let rules_before = game.ext.online().duel_rules;
     match kind {
-        RowKind::Mode => game.duel_rules.cycle_mode(s),
-        RowKind::Damage => game.duel_rules.step_damage(s),
-        RowKind::Magic => game.duel_rules.step_magic(s),
-        RowKind::HitCap => game.duel_rules.cycle_cap(s),
+        RowKind::Mode => game.ext.online_mut().duel_rules.cycle_mode(s),
+        RowKind::Damage => game.ext.online_mut().duel_rules.step_damage(s),
+        RowKind::Magic => game.ext.online_mut().duel_rules.step_magic(s),
+        RowKind::HitCap => game.ext.online_mut().duel_rules.cycle_cap(s),
         RowKind::Arena => {
-            game.duel_rules.cycle_arena(s);
+            game.ext.online_mut().duel_rules.cycle_arena(s);
             if let Some(why) = mirage_refused(room, net, game) {
-                game.duel_rules.arena = duel_arena::TEST_ROOM as u8;
+                game.ext.online_mut().duel_rules.arena = duel_arena::TEST_ROOM as u8;
                 room.note = Some((why, game.tick));
                 game.sound_queue.push((SE_ERROR, "lobby"));
             }
         }
-        RowKind::Time => game.duel_rules.cycle_time(s),
+        RowKind::Time => game.ext.online_mut().duel_rules.cycle_time(s),
         RowKind::Ruleset => {
-            game.duel_rules.cycle_ruleset(s);
-            if game.duel_rules.kh3()
+            game.ext.online_mut().duel_rules.cycle_ruleset(s);
+            if game.ext.online().duel_rules.kh3()
                 && let Some(why) = kh3_refused(room, net, game)
             {
-                game.duel_rules.ruleset = duel_rules::Ruleset::Kh2;
+                game.ext.online_mut().duel_rules.ruleset = duel_rules::Ruleset::Kh2;
                 room.note = Some((why, game.tick));
                 game.sound_queue.push((SE_ERROR, "lobby"));
             }
@@ -933,7 +933,7 @@ fn step(
         }
         RowKind::Ready => {
             // The KH3 ruleset waits for this PC's KH3 files.
-            if game.duel_rules.kh3() && game.kh3_book.is_none() {
+            if game.ext.online().duel_rules.kh3() && game.ext.online().kh3_book.is_none() {
                 room.note = Some((
                     "KINGDOM HEARTS III's files are still loading.".into(),
                     game.tick,
@@ -945,19 +945,23 @@ fn step(
             intend(room, net, game, Intent::Ready(ready));
         }
         RowKind::Kh3(page, row) => {
-            if let Some(Err(why)) = kh3_menu::step(&mut game.sora.kh3.abilities, page, row, forward)
-            {
+            if let Some(Err(why)) = kh3_menu::step(
+                &mut game.sora.ext.fighter_mut().kh3.abilities,
+                page,
+                row,
+                forward,
+            ) {
                 room.note = Some((why, game.tick));
                 game.sound_queue.push((SE_ERROR, "lobby"));
             }
         }
         RowKind::Info | RowKind::Choice(_) => {}
     }
-    if game.duel_rules != rules_before {
+    if game.ext.online().duel_rules != rules_before {
         room.lobby.rules_changed();
         room.rules_set = true;
         let tick = game.tick;
-        let rules = game.duel_rules;
+        let rules = game.ext.online().duel_rules;
         game.event(serde_json::json!({"event":"duel_rules","tick":tick,
             "mode":rules.info().name,"damage":rules.damage,"magic":rules.magic,
             "hit_cap":rules.hit_cap,"time_limit":rules.time_limit,
@@ -1045,7 +1049,7 @@ fn multiplier_at(k: f32) -> usize {
 fn pages(room: &LobbyRoom, net: &DuelNet, game: &Game, ap: i32) -> Pages {
     let host = net.role == Role::Host;
     let them = net.peer.as_deref().unwrap_or("Opponent");
-    let rules = game.duel_rules;
+    let rules = game.ext.online().duel_rules;
     let stage = room.lobby.stage;
     let mine = &room.lobby.seats[room.seat];
     let theirs = &room.lobby.seats[1 - room.seat];
@@ -1247,7 +1251,7 @@ fn pages(room: &LobbyRoom, net: &DuelNet, game: &Game, ap: i32) -> Pages {
         let shown = note
             .as_ref()
             .map(|_| room.note.as_ref().map_or("", |n| n.0.as_str()));
-        for (k, (name, r)) in kh3_menu::pages(game.sora.kh3.abilities, shown)
+        for (k, (name, r)) in kh3_menu::pages(game.sora.ext.fighter().kh3.abilities, shown)
             .into_iter()
             .enumerate()
         {
@@ -1422,9 +1426,9 @@ fn script(room: &mut LobbyRoom, net: &mut DuelNet, camp: &mut CampRes, game: &mu
         .is_some_and(|d| d.owner.0 == duel_camp::LOBBY);
     // With `--duel-shots` each page stays up longer (a capture lands a
     // second or so after it is asked for).
-    let slow = if game.duel_shots { 2 } else { 1 };
+    let slow = if game.ext.online().duel_shots { 2 } else { 1 };
     if on_lobby {
-        game.duel_camp_press = match (room.lobby.stage, room.stage_ticks) {
+        game.camp_press = match (room.lobby.stage, room.stage_ticks) {
             (Stage::Bans, 30) | (Stage::Loadout, 40 | 46) => KEY_R2,
             (Stage::Bans, 40) if room.seat == 1 => KEY_RIGHT,
             // The joiner opens Ban 1's list and backs out of it.
@@ -1432,8 +1436,12 @@ fn script(room: &mut LobbyRoom, net: &mut DuelNet, camp: &mut CampRes, game: &mu
             (Stage::Bans, 52) if room.seat == 1 => KEY_CANCEL,
             // The joiner's Keyblade from the list (Decide on the Keyblade
             // row, down two, Decide); the host's Ready through its row.
-            (Stage::Loadout, 54 | 66) if room.seat == 1 && !game.duel_magic => KEY_DECIDE,
-            (Stage::Loadout, 58 | 62) if room.seat == 1 && !game.duel_magic => KEY_DOWN,
+            (Stage::Loadout, 54 | 66) if room.seat == 1 && !game.ext.online().duel_magic => {
+                KEY_DECIDE
+            }
+            (Stage::Loadout, 58 | 62) if room.seat == 1 && !game.ext.online().duel_magic => {
+                KEY_DOWN
+            }
             (Stage::Loadout, 54 | 58) if room.seat == 0 => KEY_DOWN,
             (Stage::Loadout, 62) if room.seat == 0 => KEY_DECIDE,
             // The joiner readies with Start once its camp is back from the
@@ -1474,7 +1482,7 @@ fn script(room: &mut LobbyRoom, net: &mut DuelNet, camp: &mut CampRes, game: &mu
             intend(room, net, game, Intent::Ban(bans));
         }
         Stage::Loadout if room.stage_ticks == 52 && room.seat == 1 => {
-            let pick = if game.duel_magic {
+            let pick = if game.ext.online().duel_magic {
                 room.limits
                     .keyblades
                     .iter()
@@ -1495,12 +1503,12 @@ fn script(room: &mut LobbyRoom, net: &mut DuelNet, camp: &mut CampRes, game: &mu
         // The test vote to both players while the builds are made (a tie:
         // the coin flips; the lobby gives the camp to it meanwhile).
         Stage::Loadout if room.stage_ticks == 75 * slow && net.role == Role::Host => {
-            game.duel_test_vote = true;
+            game.ext.online_mut().duel_test_vote = true;
         }
         Stage::Loadout
             if room.stage_ticks >= (90 + 310 * room.seat as u64) * slow
                 && !seat.ready
-                && !game.duel_vote_up =>
+                && !game.ext.online().duel_vote_up =>
         {
             intend(room, net, game, Intent::Ready(true));
         }

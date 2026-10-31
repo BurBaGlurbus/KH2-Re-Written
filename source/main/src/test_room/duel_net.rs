@@ -48,7 +48,7 @@ const BANNER_CENTRE: f32 = 256.;
 
 /// Where the session stands, for the banner.
 #[derive(Clone, Debug, PartialEq)]
-pub(crate) enum Status {
+pub enum Status {
     /// Host: waiting for a player on this port.
     Waiting(u16),
     /// Joiner: knocking at the host.
@@ -60,7 +60,7 @@ pub(crate) enum Status {
 
 /// What `--host` / `--join` asked for.
 #[derive(Clone, Debug)]
-pub(crate) struct Setup {
+pub struct Setup {
     pub role: Role,
     /// The host's address to listen on (every local one by default).
     pub bind: std::net::Ipv4Addr,
@@ -72,7 +72,7 @@ pub(crate) struct Setup {
 }
 
 #[derive(Resource)]
-pub(crate) struct DuelNet {
+pub struct DuelNet {
     /// Until when silence is judged by `START_TIMEOUT`.
     slow_until: std::time::Instant,
     pub session: Session,
@@ -121,7 +121,7 @@ pub(crate) struct DuelNet {
     /// and those still closing, and the art's 2D sheets.
     notice_job: Option<std::thread::JoinHandle<Result<NoticeArt, String>>>,
     notice_art: Option<Result<NoticeArt, String>>,
-    pub(crate) notice_want: Option<String>,
+    pub notice_want: Option<String>,
     notice: Option<(String, visual::dialogue::TalkWindow)>,
     notices_closing: Vec<visual::dialogue::TalkWindow>,
     notice_sheets: Option<(usize, usize)>,
@@ -133,7 +133,7 @@ pub(crate) struct DuelNet {
 /// and wm.bar's window, the event font, 03system 'ftst' colour 5 of the
 /// world map) [duel choice: the session's status in the game's own message
 /// window].
-pub(crate) struct NoticeArt {
+pub struct NoticeArt {
     sheet: Sheet,
     font: SystemFont,
     colour: u32,
@@ -179,7 +179,7 @@ fn notice_text(s: &str) -> Vec<u8> {
 
 /// SHA-256 of the running executable: two instances play together only on
 /// the same build.
-pub(crate) fn build_identity() -> Result<[u8; 32], String> {
+pub fn build_identity() -> Result<[u8; 32], String> {
     use sha2::{Digest, Sha256};
     let exe = std::env::current_exe().map_err(|e| e.to_string())?;
     let bytes = std::fs::read(&exe).map_err(|e| format!("{}: {e}", exe.display()))?;
@@ -187,7 +187,7 @@ pub(crate) fn build_identity() -> Result<[u8; 32], String> {
 }
 
 /// The Windows user name, the default player name.
-pub(crate) fn default_name() -> String {
+pub fn default_name() -> String {
     std::env::var("USERNAME")
         .ok()
         .map(|n| n.trim().to_owned())
@@ -197,7 +197,7 @@ pub(crate) fn default_name() -> String {
 
 /// The F3 menu's link simulator presets: name and conditions (what this
 /// instance sends; choose the same on both for a round trip).
-pub(crate) const SIMULATED: [(&str, Conditions); 4] = [
+pub const SIMULATED: [(&str, Conditions); 4] = [
     (
         "Off",
         Conditions {
@@ -233,7 +233,7 @@ pub(crate) const SIMULATED: [(&str, Conditions); 4] = [
 ];
 
 /// `HOST[:PORT]` (the default port when none is given).
-pub(crate) fn parse_address(text: &str) -> Result<SocketAddr, String> {
+pub fn parse_address(text: &str) -> Result<SocketAddr, String> {
     use std::net::ToSocketAddrs;
     let text = text.trim();
     let with_port = if text.contains(':') {
@@ -249,7 +249,7 @@ pub(crate) fn parse_address(text: &str) -> Result<SocketAddr, String> {
 }
 
 /// `LATENCY,JITTER,LOSS` (milliseconds, milliseconds, percent).
-pub(crate) fn parse_conditions(text: &str) -> Result<Conditions, String> {
+pub fn parse_conditions(text: &str) -> Result<Conditions, String> {
     let parts: Vec<&str> = text.split(',').map(str::trim).collect();
     let [latency, jitter, loss] = parts.as_slice() else {
         return Err("expected LATENCY,JITTER,LOSS (ms, ms, percent)".into());
@@ -267,7 +267,7 @@ pub(crate) fn parse_conditions(text: &str) -> Result<Conditions, String> {
 }
 
 impl DuelNet {
-    pub(crate) fn start(setup: &Setup) -> Result<DuelNet, String> {
+    pub fn start(setup: &Setup) -> Result<DuelNet, String> {
         let build = build_identity()?;
         let config = SessionConfig {
             name: setup.name.clone(),
@@ -325,7 +325,7 @@ impl DuelNet {
         })
     }
 
-    pub(crate) fn playing(&self) -> bool {
+    pub fn playing(&self) -> bool {
         self.status == Status::Playing
     }
 
@@ -338,7 +338,7 @@ impl DuelNet {
 }
 
 /// The slot this instance's own Sora takes.
-pub(crate) fn local_slot(role: Role) -> u8 {
+pub fn local_slot(role: Role) -> u8 {
     match role {
         Role::Host => fighter_slots::HOST,
         Role::Join => fighter_slots::JOIN,
@@ -346,14 +346,14 @@ pub(crate) fn local_slot(role: Role) -> u8 {
 }
 
 /// The slot the other player's Sora takes.
-pub(crate) fn remote_slot(role: Role) -> u8 {
+pub fn remote_slot(role: Role) -> u8 {
     match role {
         Role::Host => fighter_slots::JOIN,
         Role::Join => fighter_slots::HOST,
     }
 }
 
-pub(crate) mod fighter_slots {
+pub mod fighter_slots {
     pub const HOST: u8 = 0;
     pub const JOIN: u8 = 1;
 }
@@ -362,7 +362,7 @@ pub(crate) mod fighter_slots {
 /// going.
 /// Whether an address is this PC's own (loopback, or one of its
 /// interfaces: binding to it works).
-pub(crate) fn is_local(ip: std::net::IpAddr) -> bool {
+pub fn is_local(ip: std::net::IpAddr) -> bool {
     ip.is_loopback() || std::net::UdpSocket::bind((ip, 0)).is_ok()
 }
 
@@ -384,7 +384,7 @@ fn assign_devices(controls: &mut visual::input::Controls, role: Role, peer: Sock
     changed
 }
 
-pub(crate) fn begin(
+pub fn begin(
     net: Option<ResMut<DuelNet>>,
     mut controls: ResMut<visual::input::Controls>,
     mut game: ResMut<Game>,
@@ -423,7 +423,7 @@ pub(crate) fn begin(
                 net.events.clear();
                 net.sent_rules = None;
                 let slot = remote_slot(net.role);
-                rival::spawn_remote(&mut game, slot);
+                rival_play::spawn_remote(&mut game, slot);
                 // The host's Drive rolls (Antiform) start from the clock, a
                 // different sequence each session; each Sora draws his own.
                 if net.role == Role::Host {
@@ -550,22 +550,22 @@ const BANNER_TICKS: u64 = 5 * 60;
 /// The joiner's session ended: its Sora is its own again (the field
 /// simulates him) and the room pauses as usual.
 fn leave_session(game: &mut Game, loadout: &mut duel_loadout::DuelLoadout) {
-    game.net_client = false;
-    game.net_pad = rival::RivalPad::default();
-    game.duel = false;
+    game.replica = false;
+    game.ext.online_mut().net_pad = rival::RivalPad::default();
+    game.versus = false;
     game.rivals.clear();
     duel_loadout::restore(game, loadout);
 }
 
 /// End of every fixed step: what this tick queued goes out.
-pub(crate) fn end(net: Option<ResMut<DuelNet>>) {
+pub fn end(net: Option<ResMut<DuelNet>>) {
     if let Some(mut net) = net {
         net.session.update();
     }
 }
 
 /// Leaves cleanly when the room closes (the other side hears Bye at once).
-pub(crate) fn close_on_exit(mut exits: MessageReader<AppExit>, net: Option<ResMut<DuelNet>>) {
+pub fn close_on_exit(mut exits: MessageReader<AppExit>, net: Option<ResMut<DuelNet>>) {
     if exits.read().next().is_some()
         && let Some(mut net) = net
     {
@@ -574,7 +574,7 @@ pub(crate) fn close_on_exit(mut exits: MessageReader<AppExit>, net: Option<ResMu
 }
 
 /// Rebuilds the overlay lines a few times a second.
-pub(crate) fn sample(net: Option<ResMut<DuelNet>>, mut game: ResMut<Game>) {
+pub fn sample(net: Option<ResMut<DuelNet>>, mut game: ResMut<Game>) {
     let Some(mut net) = net else { return };
     // The link's numbers in the log every 600 frames (the duel's
     // measurements).
@@ -589,11 +589,11 @@ pub(crate) fn sample(net: Option<ResMut<DuelNet>>, mut game: ResMut<Game>) {
             "recv_kbps":s.received_bytes_per_sec / 1024.}),
         );
     }
-    if net.overlay != game.net_overlay {
-        net.overlay = game.net_overlay;
+    if net.overlay != game.ext.online().net_overlay {
+        net.overlay = game.ext.online().net_overlay;
     }
     // F3 > Sora > Display > Simulated network.
-    if let Some(preset) = game.net_simulated
+    if let Some(preset) = game.ext.online().net_simulated
         && net.preset != Some(preset)
         && let Some(&(name, conditions)) = SIMULATED.get(preset)
     {
@@ -670,14 +670,14 @@ pub(crate) fn sample(net: Option<ResMut<DuelNet>>, mut game: ResMut<Game>) {
     let warnings: Vec<String> = net.warnings.iter().cloned().collect();
     lines.extend(warnings.into_iter().map(|w| (w, true)));
     lines.push((
-        if game.duel_rules.ruleset == duel_rules::Ruleset::Kh3 {
+        if game.ext.online().duel_rules.ruleset == duel_rules::Ruleset::Kh3 {
             format!("KH3's damage, level 99   tick {}", game.tick)
         } else {
             format!(
                 "Damage x{}  magic x{}  cap {}   tick {}",
-                game.duel_rules.damage,
-                game.duel_rules.magic,
-                cap_text(game.duel_rules.hit_cap),
+                game.ext.online().duel_rules.damage,
+                game.ext.online().duel_rules.magic,
+                cap_text(game.ext.online().duel_rules.hit_cap),
                 game.tick
             )
         },
@@ -689,7 +689,7 @@ pub(crate) fn sample(net: Option<ResMut<DuelNet>>, mut game: ResMut<Game>) {
 }
 
 /// Adds a late or skipped-step warning to the overlay.
-pub(crate) fn warn(net: &mut DuelNet, text: String) {
+pub fn warn(net: &mut DuelNet, text: String) {
     net.warn(text);
 }
 
@@ -778,7 +778,7 @@ fn faded_backing(
 }
 
 /// A hit cap as the lobby and the overlay show it.
-pub(crate) fn cap_text(cap: u8) -> String {
+pub fn cap_text(cap: u8) -> String {
     if cap >= 100 {
         "Off".into()
     } else {
@@ -789,7 +789,7 @@ pub(crate) fn cap_text(cap: u8) -> String {
 /// The overlay at the top right and the session banner in the middle, on
 /// the 2D layer.
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn present(
+pub fn present(
     net: Option<ResMut<DuelNet>>,
     vote: Option<Res<duel_vote::VoteRoom>>,
     duel_match: Option<Res<duel_match_room::MatchRoom>>,

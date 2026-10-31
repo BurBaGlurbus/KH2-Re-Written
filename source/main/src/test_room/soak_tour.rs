@@ -84,11 +84,7 @@ fn start_warp(area: &mut AreaRes, target: (u8, u8)) {
     });
 }
 
-pub(crate) fn soak_rooms(
-    mut soak: ResMut<SoakRooms>,
-    game: Res<Game>,
-    area: Option<ResMut<AreaRes>>,
-) {
+pub fn soak_rooms(mut soak: ResMut<SoakRooms>, game: Res<Game>, area: Option<ResMut<AreaRes>>) {
     let Some(mut area) = area else { return };
     if area.transition.is_some() || area.pending.is_some() || soak.rooms.is_empty() {
         return;
@@ -133,7 +129,7 @@ impl Survey {
 
 /// Frame time statistics in ms: count, median, p95, p99, the 1% low as a
 /// frame time (mean of the slowest 1%) and the worst.
-pub(crate) fn frame_summary(times: &mut [f64]) -> serde_json::Value {
+pub fn frame_summary(times: &mut [f64]) -> serde_json::Value {
     if times.is_empty() {
         return serde_json::json!({"frames":0});
     }
@@ -146,7 +142,7 @@ pub(crate) fn frame_summary(times: &mut [f64]) -> serde_json::Value {
 }
 
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn survey(
+pub fn survey(
     mut survey: ResMut<Survey>,
     mut game: ResMut<Game>,
     area: Option<ResMut<AreaRes>>,

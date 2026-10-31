@@ -20,7 +20,7 @@ use std::path::PathBuf;
 use std::thread::JoinHandle;
 
 /// The map units to the room's.
-pub(crate) const SCALE: f32 = 100.;
+pub const SCALE: f32 = 100.;
 /// The sky's: its domes (2-5 m) drawn around the camera well past the
 /// arena (about 4300 across) and inside the camera's far plane (200000).
 const SKY_SCALE: f32 = 15_000.;
@@ -31,7 +31,7 @@ const MAP_LIMIT: u32 = 16 << 20;
 
 /// Where this instance stands with the arena.
 #[derive(Clone, Debug, Default, PartialEq)]
-pub(crate) enum Avail {
+pub enum Avail {
     /// Not asked for yet, or still loading.
     #[default]
     Unknown,
@@ -53,21 +53,21 @@ struct Loaded {
 
 /// A mesh of the arena (shown while the duel is in it).
 #[derive(Component)]
-pub(crate) struct MirageMesh;
+pub struct MirageMesh;
 
 /// A sky mesh of the arena: it stays centred on the camera.
 #[derive(Component)]
-pub(crate) struct MirageSky;
+pub struct MirageSky;
 
 /// A material whose texture scrolls (U, V a tick).
 #[derive(Component)]
-pub(crate) struct MirageScroll {
+pub struct MirageScroll {
     material: Handle<FogMaterial>,
     speed: [f32; 2],
 }
 
 #[derive(Resource, Default)]
-pub(crate) struct MirageArena {
+pub struct MirageArena {
     /// The install root and the BBS manifest's path (beside the KH2 one).
     pub paths: Option<(PathBuf, PathBuf)>,
     job: Option<JoinHandle<Result<Loaded, String>>>,
@@ -83,7 +83,7 @@ pub(crate) struct MirageArena {
 impl MirageArena {
     /// The arena read from the install at `root`, its BBS manifest at
     /// `manifest`.
-    pub(crate) fn new(root: PathBuf, manifest: PathBuf) -> Self {
+    pub fn new(root: PathBuf, manifest: PathBuf) -> Self {
         Self {
             paths: Some((root, manifest)),
             ..default()
@@ -205,17 +205,17 @@ fn mip_image(chain: &bbs_map::MipChain, images: &mut Assets<Image>) -> Handle<Im
 }
 
 /// Starts the load once a duel session exists, and reports when it ends.
-pub(crate) fn tick(
+pub fn tick(
     mut arena: ResMut<MirageArena>,
     net: Option<Res<duel_net::DuelNet>>,
     mut game: ResMut<Game>,
 ) {
-    if net.is_none() || arena.loaded.is_some() || game.mirage != Avail::Unknown {
+    if net.is_none() || arena.loaded.is_some() || game.ext.online().mirage != Avail::Unknown {
         return;
     }
     if arena.job.is_none() {
         let Some((root, manifest)) = arena.paths.clone() else {
-            game.mirage = Avail::Missing("no install paths".into());
+            game.ext.online_mut().mirage = Avail::Missing("no install paths".into());
             return;
         };
         arena.job = Some(std::thread::spawn(move || load(root, manifest)));
@@ -240,11 +240,11 @@ pub(crate) fn tick(
                 "meshes":l.model.meshes.len(),"triangles":triangles,
                 "textures":l.model.textures.len(),"collision":l.collision.len()}));
             arena.loaded = Some(l);
-            game.mirage = Avail::Ready;
+            game.ext.online_mut().mirage = Avail::Ready;
         }
         Err(e) => {
             game.event(serde_json::json!({"event":"mirage_missing","tick":tick,"why":e}));
-            game.mirage = Avail::Missing(e);
+            game.ext.online_mut().mirage = Avail::Missing(e);
         }
     }
 }
@@ -252,7 +252,7 @@ pub(crate) fn tick(
 /// Shows the arena while the duel's rules choose it (and it loaded), and
 /// the room's own arena otherwise.
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn show(
+pub fn show(
     mut commands: Commands,
     mut arena: ResMut<MirageArena>,
     mut game: ResMut<Game>,
@@ -264,8 +264,8 @@ pub(crate) fn show(
     mut room_parts: Query<(Entity, &mut Visibility), RoomParts>,
     mirage_meshes: Query<Entity, With<MirageMesh>>,
 ) {
-    let want = game.duel
-        && usize::from(game.duel_rules.arena) == duel_arena::MIRAGE
+    let want = game.versus
+        && usize::from(game.ext.online().duel_rules.arena) == duel_arena::MIRAGE
         && arena.loaded.is_some();
     if want == arena.shown {
         return;
@@ -379,7 +379,7 @@ pub(crate) fn show(
         arena.saved = Some((old_world, old_camera));
         arena.hidden = hidden;
         arena.shown = true;
-        game.duel_arena = duel_arena::MIRAGE;
+        game.ext.online_mut().duel_arena = duel_arena::MIRAGE;
     } else {
         for e in &mirage_meshes {
             commands.entity(e).despawn();
@@ -394,13 +394,13 @@ pub(crate) fn show(
             rig.collision = camera;
         }
         arena.shown = false;
-        game.duel_arena = duel_arena::TEST_ROOM;
+        game.ext.online_mut().duel_arena = duel_arena::TEST_ROOM;
     }
     game.event(serde_json::json!({"event":"mirage_shown","tick":tick,"shown":arena.shown}));
 }
 
 /// Keeps the arena's sky centred on the camera.
-pub(crate) fn follow_sky(
+pub fn follow_sky(
     camera: Query<&GlobalTransform, CameraOnly>,
     mut sky: Query<&mut Transform, With<MirageSky>>,
 ) {
@@ -414,7 +414,7 @@ pub(crate) fn follow_sky(
 
 /// Scrolls the arena's moving textures by the tick (the same at any frame
 /// rate).
-pub(crate) fn scroll(
+pub fn scroll(
     game: Res<Game>,
     scrolls: Query<&MirageScroll>,
     mut materials: ResMut<Assets<FogMaterial>>,

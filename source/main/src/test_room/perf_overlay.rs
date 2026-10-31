@@ -66,7 +66,7 @@ fn latest(store: Option<&DiagnosticsStore>, path: &'static str) -> Option<f64> {
 }
 
 /// Samples the frame and, a few times a second, rebuilds the text.
-pub(super) fn sample(
+pub fn sample(
     mut game: ResMut<Game>,
     mut overlay: ResMut<PerfOverlay>,
     real: Res<Time<Real>>,
@@ -130,7 +130,7 @@ pub(super) fn sample(
 }
 
 /// Draws the text over everything (after the HUD and the menus).
-pub(super) fn present(
+pub fn present(
     mut overlay: ResMut<PerfOverlay>,
     hud: Option<Res<Hud>>,
     mut frame: ResMut<Ui2dFrame>,

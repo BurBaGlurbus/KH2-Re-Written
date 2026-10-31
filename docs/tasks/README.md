@@ -275,3 +275,4 @@ Records through T128 retain historical commands and paths. See [the folder guide
 | [T304](T304-motion-hook-tables.md) | Motion hook tables: the second forms of the Devastator, Trick Ghost, Creeper Plant and Gambler; `obj_is_air` | PARTIAL |
 | [T305](T305-made-init-boss-runs-part-colours.md) | A made object's OBJ_INIT waits for its first update; statics across fighters; boss-class objects run behind a switch; part colours | PARTIAL |
 | [T306](T306-fighters-init-first-update-last-natives.md) | Fighters' OBJ_INIT at the first update; the last untranslated natives; refusals gone | PARTIAL |
+| [T308](T308-room-hooks-for-connected.md) | The room opens up: a library, hooks and extra state for Kingdom Hearts: Connected | PASS: single player unchanged in the unattended runs; the duel code stays here until the new project runs alone. |

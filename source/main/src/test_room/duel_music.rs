@@ -18,7 +18,7 @@ use net::{RELIABLE, Role};
 use std::thread::JoinHandle;
 
 /// The duel's music voice.
-pub(crate) const KEY: u32 = 9_000_002;
+pub const KEY: u32 = 9_000_002;
 /// Fades in and out, in seconds.
 const FADE_IN: f32 = 1.;
 const FADE_OUT: f32 = 2.;
@@ -26,7 +26,7 @@ const FADE_OUT: f32 = 2.;
 type Track = (u32, u16);
 
 #[derive(Resource, Default)]
-pub(crate) struct DuelMusic {
+pub struct DuelMusic {
     pool_job: Option<JoinHandle<Result<Vec<u16>, String>>>,
     pool: Option<Vec<u16>>,
     /// This match's track: (match, track number); the host picks it, the
@@ -106,7 +106,7 @@ fn load_track(source: Arc<ProbeSource>, track: u16) -> Result<sound::Music, Stri
 /// One fixed step: the host's pick, the joiner's word of it, loading, and
 /// the music on or off with the duel's arena.
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn tick(
+pub fn tick(
     net: Option<ResMut<DuelNet>>,
     lobby: Option<Res<duel_lobby_room::LobbyRoom>>,
     duel_match: Option<Res<duel_match_room::MatchRoom>>,
@@ -206,7 +206,7 @@ pub(crate) fn tick(
             .as_ref()
             .and_then(|d| d.m)
             .is_some_and(|x| x.phase == Phase::Over);
-    let want = (playing_session && game.duel && !over)
+    let want = (playing_session && game.versus && !over)
         .then(|| m.loaded.as_ref().map(|l| l.0))
         .flatten()
         .filter(|c| Some(*c) == m.chosen);
@@ -238,7 +238,7 @@ pub(crate) fn tick(
         }
         m.playing = want;
     }
-    game.duel_music = m.room_paused;
+    game.music_held = m.room_paused;
     // The session over: the room's music comes back.
     if !playing_session && m.room_paused {
         if let Some(field) = room_music.as_ref().and_then(|r| r.clips[0].as_ref()) {
@@ -247,7 +247,7 @@ pub(crate) fn tick(
         m.room_paused = false;
         m.chosen = None;
         m.sent = None;
-        game.duel_music = false;
+        game.music_held = false;
     }
 }
 

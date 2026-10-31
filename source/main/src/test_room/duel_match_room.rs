@@ -78,7 +78,7 @@ const ENTRY_FORFEIT: u8 = pause_menu::CALLER_ENTRY + 3;
 const ENTRY_QUICK: u8 = pause_menu::CALLER_ENTRY + 4;
 
 #[derive(Resource, Default)]
-pub(crate) struct MatchRoom {
+pub struct MatchRoom {
     pub m: Option<Match>,
     /// Host: the match the joiner has.
     sent: Option<Match>,
@@ -114,7 +114,7 @@ pub(crate) struct MatchRoom {
 /// tournament): its timer sheet `ti_t` (dk::TIMER's readout and its 3, 2,
 /// 1, 0), its start `st_t` ("STRUGGLE!") and its end `ed_t` ("YOU WIN!" /
 /// "YOU LOSE" on their bar). Each is drawn as the game authored it.
-pub(crate) struct MatchArt {
+pub struct MatchArt {
     pub timer: Sheet,
     pub start: Sheet,
     pub end: Sheet,
@@ -146,7 +146,7 @@ fn load_art(source: &data::probe_source::ProbeSource) -> Result<MatchArt, String
 
 /// Which of the art's sheets a sprite draws from.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum ArtSheet {
+pub enum ArtSheet {
     Timer = 0,
     Start = 1,
     End = 2,
@@ -169,7 +169,7 @@ fn counted(elapsed: Option<f32>, i: usize) -> Option<f32> {
 
 impl MatchRoom {
     /// The result screen holds the pad.
-    pub(crate) fn menu_up(&self) -> bool {
+    pub fn menu_up(&self) -> bool {
         self.m.is_some_and(|m| m.phase == Phase::Over)
     }
 }
@@ -225,7 +225,7 @@ fn reset_round(game: &mut Game) {
 
 /// One fixed step of the match.
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn tick(
+pub fn tick(
     net: Option<ResMut<DuelNet>>,
     lobby: Option<ResMut<LobbyRoom>>,
     room: Option<ResMut<MatchRoom>>,
@@ -288,7 +288,7 @@ pub(crate) fn tick(
             bank_tried: room.bank_tried,
             ..MatchRoom::default()
         };
-        game.duel_match = false;
+        game.ext.online_mut().duel_match = false;
         return;
     }
     let host = net.role == Role::Host;
@@ -324,11 +324,11 @@ pub(crate) fn tick(
         // The match starts when the lobby's players are both ready.
         if playing && lobby.lobby.stage == Stage::Start && room.m.is_none() {
             room.m = Some(Match::new(now));
-            game.duel_dealt = [0; 2];
-            game.duel_landed = [0; 2];
+            game.ext.online_mut().duel_dealt = [0; 2];
+            game.ext.online_mut().duel_landed = [0; 2];
             reset_round(game);
             game.event(serde_json::json!({"event":"duel_match","tick":now,
-                "mode":game.duel_rules.info().name,"match":lobby.lobby.match_no}));
+                "mode":game.ext.online().duel_rules.info().name,"match":lobby.lobby.match_no}));
         }
         if let Some(m) = room.m.as_mut() {
             let rival = game.rivals.iter().find(|r| r.slot == fighter_slots::JOIN);
@@ -343,9 +343,9 @@ pub(crate) fn tick(
                 ],
                 here: [true, playing && rival.is_some()],
             };
-            m.dealt = game.duel_dealt;
-            m.hits = game.duel_landed;
-            let rules = game.duel_rules;
+            m.dealt = game.ext.online().duel_dealt;
+            m.hits = game.ext.online().duel_landed;
+            let rules = game.ext.online().duel_rules;
             for cue in m.step(now, &rules, &view) {
                 match cue {
                     duel_match::Cue::NextRound => {
@@ -401,8 +401,8 @@ pub(crate) fn tick(
         game.cleanups.push(scope);
     }
     room.swept = seen;
-    game.duel_match = room.m.is_some();
-    game.duel_frozen = lobby.up || room.m.is_some_and(|m| !m.fighting());
+    game.ext.online_mut().duel_match = room.m.is_some();
+    game.ext.online_mut().duel_frozen = lobby.up || room.m.is_some_and(|m| !m.fighting());
     sounds(room, seat, now, game);
     // [Test] `--duel-shots`: the countdown's names and numeral, and GO.
     if let Some(m) = room.m
@@ -414,7 +414,7 @@ pub(crate) fn tick(
         duel_camp::shot(game, (2, m.since, now.saturating_sub(m.since)));
     }
     let fov = rig.camera.vertical_fov();
-    game.duel_camera = shot(room.m.as_ref(), seat, now, game, fov);
+    game.ext.online_mut().duel_camera = shot(room.m.as_ref(), seat, now, game, fov);
     forfeit_menu(room, net, camp.as_deref_mut(), lobby.up, now, game);
     // The result screen: Rematch or Leave, in the game's pause menu when
     // its art is loaded (else on the labels, with the pad).
@@ -423,7 +423,9 @@ pub(crate) fn tick(
     if let Some(camp) = camp.as_deref_mut() {
         let want = room
             .m
-            .filter(|m| over && !game.duel_vote_up && now.saturating_sub(m.since) >= hold(m))
+            .filter(|m| {
+                over && !game.ext.online().duel_vote_up && now.saturating_sub(m.since) >= hold(m)
+            })
             .map(|m| m.began as u32);
         // The Results page opens with its numbers still to count.
         let text = room.m.map(|m| result_text(&m, seat, net, game, Some(0.)));
@@ -506,19 +508,19 @@ pub(crate) fn tick(
         // then the cursor goes down to Results and opens it, and that is
         // captured too.
         let t = now.saturating_sub(m.since);
-        let rematch_at = if game.duel_shots {
+        let rematch_at = if game.ext.online().duel_shots {
             240 + RESULT_HOLD
         } else {
             120
         };
         if playing && t >= rematch_at && !m.rematch[seat] {
-            pick = Some(if game.duel_quick {
+            pick = Some(if game.ext.online().duel_quick {
                 ENTRY_QUICK
             } else {
                 ENTRY_REMATCH
             });
         }
-        if game.duel_shots {
+        if game.ext.online().duel_shots {
             if t == 40 || t == 150 + RESULT_HOLD {
                 duel_camp::shot(game, (3, m.since, t));
             }
@@ -533,7 +535,7 @@ pub(crate) fn tick(
                 && t.is_multiple_of(6)
                 && o.state == pause_menu::State::Top
             {
-                game.duel_camp_press = if o.top_entry() == Some(7) { 0x4 } else { 0x20 };
+                game.camp_press = if o.top_entry() == Some(7) { 0x4 } else { 0x20 };
             }
         }
     } else if camp.is_none() {
@@ -594,7 +596,7 @@ fn forfeit_menu(
 ) {
     let playing = matches!(net.status, Status::Playing);
     let running = playing && !lobby_up && room.m.is_some_and(|m| m.phase != Phase::Over);
-    if std::mem::take(&mut game.duel_start) && running && !room.forfeit_menu {
+    if std::mem::take(&mut game.start_pressed) && running && !room.forfeit_menu {
         room.forfeit_menu = true;
         room.forfeit_armed = false;
     }
@@ -603,13 +605,13 @@ fn forfeit_menu(
     }
     // [Test] `--duel-forfeit`: START two seconds into the first fight, down
     // to Forfeit, and Forfeit twice.
-    if game.duel_forfeit
+    if game.ext.online().duel_forfeit
         && game.autoplay.is_some()
         && !room.forfeit_done
         && let Some(m) = room.m.filter(|m| m.phase == Phase::Fight)
     {
         let t = now.saturating_sub(m.since);
-        game.duel_camp_press = match t {
+        game.camp_press = match t {
             120 => 0x2,
             150 => 0x20,
             160 | 190 => 0x4,
@@ -628,7 +630,7 @@ fn forfeit_menu(
         .unwrap_or_else(|| "the other player".into());
     let want = room
         .m
-        .filter(|_| room.forfeit_menu && !game.duel_vote_up)
+        .filter(|_| room.forfeit_menu && !game.ext.online().duel_vote_up)
         .map(|m| m.began as u32);
     let menu = duel_camp::hold(camp, game, duel_camp::FORFEIT, want, || {
         duel_camp::Request {
@@ -684,7 +686,7 @@ fn forfeit_menu(
 /// knock-out (white), fading over a few frames by the host's clock; `frac`
 /// is the part of a tick since it, so it fades as smoothly at any frame
 /// rate.
-pub(crate) fn flash(room: &MatchRoom, net: &DuelNet, game: &Game, frac: f32) -> Option<[f32; 4]> {
+pub fn flash(room: &MatchRoom, net: &DuelNet, game: &Game, frac: f32) -> Option<[f32; 4]> {
     let m = room.m?;
     let t = now(net, game).saturating_sub(m.since) as f32 + frac;
     let (colour, peak, ticks) = match m.phase {
@@ -734,7 +736,7 @@ fn result_rows(
             format!("{} - {}", n(a), n(b))
         })
     };
-    if duel_match::wins_needed(&game.duel_rules) > 1 {
+    if duel_match::wins_needed(&game.ext.online().duel_rules) > 1 {
         let wins = [m.wins[seat], m.wins[1 - seat]].map(u32::from);
         rows.push(("Rounds", pair(rows.len(), wins)));
     }
@@ -820,7 +822,7 @@ fn sounds(room: &mut MatchRoom, seat: usize, now: u64, game: &mut Game) {
     if fresh && m.phase == Phase::Countdown && m.round == 1 {
         game.sound_queue.push((SE_START, "match"));
     }
-    let need = duel_match::wins_needed(&game.duel_rules);
+    let need = duel_match::wins_needed(&game.ext.online().duel_rules);
     let sound = match m.phase {
         Phase::Countdown => count.map(|_| SE_BEEP),
         Phase::Fight => fresh.then_some(SE_GO),
@@ -924,7 +926,7 @@ fn shot(
 }
 
 /// A line of the match's display: text, centre, size, colour.
-pub(crate) struct Label {
+pub struct Label {
     pub text: Vec<u8>,
     pub centre: [f32; 2],
     pub size: f32,
@@ -958,7 +960,7 @@ fn label(text: &str, centre: [f32; 2], size: f32, colour: [f32; 4]) -> Label {
 /// The game's sprites of the match this frame (worked out from the host's
 /// clock): the countdown's numerals, "STRUGGLE!" at the start, the clock of
 /// a timed fight, "YOU WIN!" / "YOU LOSE" at a round's end and the result.
-pub(crate) fn sprites(
+pub fn sprites(
     room: &MatchRoom,
     net: &DuelNet,
     game: &Game,
@@ -1045,7 +1047,7 @@ pub(crate) fn sprites(
 /// `in_camp`: the pause menu shows the result's choices and numbers.
 /// `art`: the game's sprites stand for the numerals, GO, the clock and the
 /// titles (`sprites`); the names, the rounds and why stay text.
-pub(crate) fn labels(
+pub fn labels(
     room: &MatchRoom,
     net: &DuelNet,
     game: &Game,
@@ -1061,7 +1063,7 @@ pub(crate) fn labels(
     let me = net.name.as_str();
     let them = net.peer.as_deref().unwrap_or("Opponent");
     let name = |s: usize| if s == seat { me } else { them };
-    let rules = game.duel_rules;
+    let rules = game.ext.online().duel_rules;
     let best_of = duel_match::wins_needed(&rules) > 1;
     let mut out = Vec::new();
     // The round and the score under the HP gauge (Best of 3).

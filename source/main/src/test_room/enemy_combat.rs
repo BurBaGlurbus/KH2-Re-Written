@@ -685,7 +685,7 @@ type CollisionShapes = (Vec<HitShape>, Vec<HitShape>, HashMap<u8, Vec<HitShape>>
 /// A model's ATTACK shapes by group, for an object whose other shapes this
 /// room does not use (a summon): spheres and cylinders on a bone of the
 /// skeleton or its origin; the others are left out.
-pub(super) fn attack_shapes(
+pub fn attack_shapes(
     entries: &[object_collision::Entry],
     bones: usize,
 ) -> HashMap<u8, Vec<HitShape>> {
@@ -739,7 +739,7 @@ pub fn hit_keys(windows: &[AttackWindow]) -> Vec<usize> {
 /// A motion's attack windows (frame trigger range 10: the ATKP id and the
 /// collision group) whose group has shapes. [I] Range 0x21 is not read for
 /// these.
-pub(super) fn motion_attack_windows(
+pub fn motion_attack_windows(
     motion: &SelectedMotion,
     attacks: &HashMap<u8, Vec<HitShape>>,
 ) -> Vec<AttackWindow> {

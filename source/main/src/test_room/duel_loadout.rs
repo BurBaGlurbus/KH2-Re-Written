@@ -11,7 +11,7 @@ use super::*;
 use std::collections::BTreeMap;
 
 /// The level both players fight at.
-pub(crate) const DUEL_LEVEL: u8 = 99;
+pub const DUEL_LEVEL: u8 = 99;
 /// The order the healing items fill Sora's item slots: Potion, Hi-Potion,
 /// Mega-Potion, Ether, Mega-Ether, Elixir, Megalixir [duel choice until
 /// the lobby lets each player choose]. Every consumable of the item table
@@ -25,7 +25,7 @@ const BASE_ITEM_SLOTS: usize = 2;
 const MAX_ITEM_SLOTS: usize = 8;
 
 /// What the duel changed, to be put back when it ends.
-pub(crate) struct Saved {
+pub struct Saved {
     player: Player,
     vitals: Vitals,
     ability_slots: Vec<u16>,
@@ -41,16 +41,13 @@ type ItemState = (Vec<u16>, Vec<u16>, BTreeMap<u16, u8>);
 
 /// The duel's loadout (match-scoped) and the room's own state it replaced.
 #[derive(Resource, Default)]
-pub(crate) struct DuelLoadout {
+pub struct DuelLoadout {
     saved: Option<Saved>,
 }
 
 /// Builds the baseline on the room Sora (the rivals copy him when they
 /// join). Returns what the event log records, or why it could not.
-pub(crate) fn apply(
-    game: &mut Game,
-    loadout: &mut DuelLoadout,
-) -> Result<serde_json::Value, String> {
+pub fn apply(game: &mut Game, loadout: &mut DuelLoadout) -> Result<serde_json::Value, String> {
     let tick = game.tick;
     let Some(rt) = game.enemy.as_mut() else {
         return Err("the duel needs the room's battle tables (a room `enemy`)".into());
@@ -230,7 +227,7 @@ fn learn(slots: &mut [u16], ability: u16) {
 }
 
 /// The duel ended on this instance: the room's own Sora comes back.
-pub(crate) fn restore(game: &mut Game, loadout: &mut DuelLoadout) {
+pub fn restore(game: &mut Game, loadout: &mut DuelLoadout) {
     let Some(saved) = loadout.saved.take() else {
         return;
     };

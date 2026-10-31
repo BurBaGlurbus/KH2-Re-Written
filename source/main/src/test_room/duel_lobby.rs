@@ -8,11 +8,11 @@ use net::wire::{Reader, Writer};
 use std::collections::BTreeMap;
 
 /// Abilities each player may ban per match.
-pub(crate) const MAX_BANS: usize = 2;
+pub const MAX_BANS: usize = 2;
 
 /// Where the lobby is.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum Stage {
+pub enum Stage {
     /// Each player picks up to two abilities to ban, or skips.
     Bans,
     /// Each player builds a loadout and readies up.
@@ -23,7 +23,7 @@ pub(crate) enum Stage {
 
 /// A player's build for the match.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub(crate) struct Loadout {
+pub struct Loadout {
     pub keyblade: u16,
     /// Ability slots as the camp writes them (item id, 0x8000 = equipped).
     pub abilities: Vec<u16>,
@@ -35,13 +35,13 @@ pub(crate) struct Loadout {
 }
 
 /// Where a player is in the lobby (the other player sees it).
-pub(crate) const SECTION_LIST: u8 = 0;
-pub(crate) const SECTION_BANS: u8 = 1;
-pub(crate) const SECTION_CAMP: u8 = 2;
+pub const SECTION_LIST: u8 = 0;
+pub const SECTION_BANS: u8 = 1;
+pub const SECTION_CAMP: u8 = 2;
 
 /// One player's place in the lobby.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub(crate) struct Seat {
+pub struct Seat {
     pub bans: Vec<u16>,
     pub bans_done: bool,
     pub loadout: Option<Loadout>,
@@ -52,7 +52,7 @@ pub(crate) struct Seat {
 
 /// What a player asks of the lobby.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) enum Intent {
+pub enum Intent {
     /// The player's bans for this match (none = skip); final.
     Ban(Vec<u16>),
     /// The player's build (it un-readies them).
@@ -70,7 +70,7 @@ pub(crate) enum Intent {
 
 /// What the duel allows, from the installed tables.
 #[derive(Clone, Debug, Default, PartialEq)]
-pub(crate) struct Limits {
+pub struct Limits {
     /// Every ability item Sora has in a duel, with repeats (as slots).
     pub abilities: Vec<u16>,
     /// Each ability's AP cost.
@@ -85,7 +85,7 @@ pub(crate) struct Limits {
 
 impl Limits {
     /// The abilities a player may ban: each one Sora has, once.
-    pub(crate) fn ban_pool(&self) -> Vec<u16> {
+    pub fn ban_pool(&self) -> Vec<u16> {
         let mut pool: Vec<u16> = self.abilities.iter().map(|a| a & 0x7fff).collect();
         pool.sort_unstable();
         pool.dedup();
@@ -94,7 +94,7 @@ impl Limits {
 
     /// The ability slots a player starts from: every ability not banned,
     /// none equipped.
-    pub(crate) fn slots_without(&self, banned: &[u16]) -> Vec<u16> {
+    pub fn slots_without(&self, banned: &[u16]) -> Vec<u16> {
         self.abilities
             .iter()
             .map(|a| a & 0x7fff)
@@ -103,7 +103,7 @@ impl Limits {
     }
 
     /// AP the build's equipped abilities use.
-    pub(crate) fn ap_used(&self, slots: &[u16]) -> i32 {
+    pub fn ap_used(&self, slots: &[u16]) -> i32 {
         slots
             .iter()
             .filter(|s| *s & 0x8000 != 0)
@@ -112,7 +112,7 @@ impl Limits {
     }
 
     /// Why a build breaks the duel's limits, if it does.
-    pub(crate) fn check(&self, l: &Loadout, banned: &[u16]) -> Result<(), String> {
+    pub fn check(&self, l: &Loadout, banned: &[u16]) -> Result<(), String> {
         if !self.keyblades.contains(&l.keyblade) {
             return Err("that Keyblade is not in the duel".into());
         }
@@ -163,7 +163,7 @@ impl Limits {
 
 /// The lobby (the host's; the joiner shows the copy it receives).
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct Lobby {
+pub struct Lobby {
     pub stage: Stage,
     /// Seat 0 the host, 1 the joiner.
     pub seats: [Seat; 2],
@@ -183,7 +183,7 @@ impl Default for Lobby {
 
 impl Lobby {
     /// Every ability banned this match (both players' bans).
-    pub(crate) fn banned(&self) -> Vec<u16> {
+    pub fn banned(&self) -> Vec<u16> {
         let mut out: Vec<u16> = self.seats.iter().flat_map(|s| s.bans.clone()).collect();
         out.sort_unstable();
         out.dedup();
@@ -192,12 +192,7 @@ impl Lobby {
 
     /// Host: a player's intent, checked; the lobby moves on when both are
     /// through a stage.
-    pub(crate) fn apply(
-        &mut self,
-        seat: usize,
-        intent: Intent,
-        limits: &Limits,
-    ) -> Result<(), String> {
+    pub fn apply(&mut self, seat: usize, intent: Intent, limits: &Limits) -> Result<(), String> {
         let banned = self.banned();
         let s = self.seats.get_mut(seat).ok_or("no such player")?;
         match intent {
@@ -258,7 +253,7 @@ impl Lobby {
 
     /// Host: the next match's lobby: new bans, the builds chosen again
     /// (each player's last build is where the camp starts).
-    pub(crate) fn next_match(&mut self) {
+    pub fn next_match(&mut self) {
         let n = self.match_no + 1;
         *self = Lobby {
             match_no: n,
@@ -267,7 +262,7 @@ impl Lobby {
     }
 
     /// Host: the rules changed; nobody stays ready on the old ones.
-    pub(crate) fn rules_changed(&mut self) {
+    pub fn rules_changed(&mut self) {
         if self.stage == Stage::Loadout {
             for s in &mut self.seats {
                 s.ready = false;
@@ -309,7 +304,7 @@ fn get_loadout(r: &mut Reader) -> Option<Loadout> {
 }
 
 /// The lobby as the host sends it.
-pub(crate) fn encode_lobby(kind: u8, lobby: &Lobby) -> Vec<u8> {
+pub fn encode_lobby(kind: u8, lobby: &Lobby) -> Vec<u8> {
     let mut w = Writer::default();
     w.u8(kind);
     w.u8(lobby.stage as u8);
@@ -329,7 +324,7 @@ pub(crate) fn encode_lobby(kind: u8, lobby: &Lobby) -> Vec<u8> {
     w.finish()
 }
 
-pub(crate) fn decode_lobby(kind: u8, bytes: &[u8]) -> Option<Lobby> {
+pub fn decode_lobby(kind: u8, bytes: &[u8]) -> Option<Lobby> {
     let mut r = Reader::new(bytes);
     if r.u8()? != kind {
         return None;
@@ -361,7 +356,7 @@ pub(crate) fn decode_lobby(kind: u8, bytes: &[u8]) -> Option<Lobby> {
 }
 
 /// A joiner's intent as it travels.
-pub(crate) fn encode_intent(kind: u8, intent: &Intent) -> Vec<u8> {
+pub fn encode_intent(kind: u8, intent: &Intent) -> Vec<u8> {
     let mut w = Writer::default();
     w.u8(kind);
     match intent {
@@ -396,7 +391,7 @@ pub(crate) fn encode_intent(kind: u8, intent: &Intent) -> Vec<u8> {
     w.finish()
 }
 
-pub(crate) fn decode_intent(kind: u8, bytes: &[u8]) -> Option<Intent> {
+pub fn decode_intent(kind: u8, bytes: &[u8]) -> Option<Intent> {
     let mut r = Reader::new(bytes);
     if r.u8()? != kind {
         return None;

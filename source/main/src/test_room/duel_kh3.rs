@@ -12,14 +12,14 @@ use super::*;
 use player::kh3::{self, Foe, Pad, Scene, look::Look, surface::Pole};
 
 /// Shotlock bolts' bullet keys: Wisdom's bullet range with this bit.
-pub(crate) const SHOT_BIT: u64 = 1 << 59;
+pub const SHOT_BIT: u64 = 1 << 59;
 const SHOT_KEYS: u64 = 1 << 60 | SHOT_BIT;
 /// Wisdom's MAGF bullet element, the bolts' look.
 const BOLT_ELEMENT: u16 = 20;
 /// Wisdom's ATKP sub-tables: King of Hearts' bolts take the plain shot's
 /// (power 20), Ragnarok's the volley's last (25) [duel choice].
 const KOH_SUB: u8 = 0;
-pub(crate) const RAGNAROK_SUB: u8 = 3;
+pub const RAGNAROK_SUB: u8 = 3;
 /// A grand magic keeps the caster's MP and doubles its spell's hits for
 /// this long (the cast and its volumes).
 const GRAND_TICKS: u32 = 150;
@@ -28,26 +28,26 @@ const GRAND_GUARD: f32 = 40.;
 
 /// The room collision's poles and its walls' XZ extent, kept with the
 /// collision's triangle counts (None for an area's map collision).
-pub(crate) type PoleCache = (Option<(usize, usize)>, Arc<Vec<Pole>>, Option<[f32; 4]>);
+pub type PoleCache = (Option<(usize, usize)>, Arc<Vec<Pole>>, Option<[f32; 4]>);
 
 /// KH3's Sora's world, with the poles' key.
-pub(crate) type GeometryCache = (Option<(usize, usize)>, Arc<kh3::core::Geometry>);
+pub type GeometryCache = (Option<(usize, usize)>, Arc<kh3::core::Geometry>);
 /// A hit a Sora landed this tick: his seat, the hit, where he stood and how he faced in KH3's space.
-pub(crate) type CoreHit = (u8, kh3_sora::host::HitRecord, kh3_sora::Vec3, f32);
+pub type CoreHit = (u8, kh3_sora::host::HitRecord, kh3_sora::Vec3, f32);
 
 /// The KH3 ruleset is on (a duel whose rules say so).
-pub(crate) fn on(game: &Game) -> bool {
-    game.duel && game.duel_rules.kh3()
+pub fn on(game: &Game) -> bool {
+    game.versus && game.ext.online().duel_rules.kh3()
 }
 
 /// The room collision's poles, found once per collision (kept by its
 /// triangle counts).
-pub(crate) fn poles(game: &mut Game) -> Arc<Vec<Pole>> {
+pub fn poles(game: &mut Game) -> Arc<Vec<Pole>> {
     let key = match &game.world {
         RoomWorld::Triangles(t) => Some(t.counts()),
         RoomWorld::Map(_) => None,
     };
-    if let Some((k, poles, _)) = &game.kh3_poles
+    if let Some((k, poles, _)) = &game.ext.online().kh3_poles
         && *k == key
     {
         return Arc::clone(poles);
@@ -78,18 +78,18 @@ pub(crate) fn poles(game: &mut Game) -> Arc<Vec<Pole>> {
         "bottom":p.bottom,"top":p.top})).collect::<Vec<_>>()}),
     );
     let poles = Arc::new(found);
-    game.kh3_poles = Some((key, Arc::clone(&poles), walls.map(|w| w.1)));
+    game.ext.online_mut().kh3_poles = Some((key, Arc::clone(&poles), walls.map(|w| w.1)));
     poles
 }
 
 /// KH3's own Sora's world (`player::kh3::core`), once KH3's data is read: the room's triangles and poles.
-pub(crate) fn geometry(game: &mut Game) -> Option<Arc<kh3::core::Geometry>> {
-    if game.kh3_book.is_none() || !kh3_sora::sheets::installed() {
+pub fn geometry(game: &mut Game) -> Option<Arc<kh3::core::Geometry>> {
+    if game.ext.online().kh3_book.is_none() || !kh3_sora::sheets::installed() {
         return None;
     }
     let poles = poles(game);
-    let key = game.kh3_poles.as_ref().and_then(|p| p.0);
-    if let Some((k, g)) = &game.kh3_geometry
+    let key = game.ext.online().kh3_poles.as_ref().and_then(|p| p.0);
+    if let Some((k, g)) = &game.ext.online().kh3_geometry
         && *k == key
     {
         return Some(Arc::clone(g));
@@ -103,8 +103,8 @@ pub(crate) fn geometry(game: &mut Game) -> Option<Arc<kh3::core::Geometry>> {
             .collect(),
     };
     // [duel choice] The walls' extent, as the layer's `contain` held him: a circle in the round Mirage Arena.
-    let bounds: Vec<[f32; 2]> = match game.kh3_poles.as_ref().and_then(|p| p.2) {
-        Some(e) if game.duel_arena == duel_arena::MIRAGE => {
+    let bounds: Vec<[f32; 2]> = match game.ext.online().kh3_poles.as_ref().and_then(|p| p.2) {
+        Some(e) if game.ext.online().duel_arena == duel_arena::MIRAGE => {
             let (c, r) = (
                 [(e[0] + e[2]) * 0.5, (e[1] + e[3]) * 0.5],
                 (e[2] - e[0]).min(e[3] - e[1]) * 0.5,
@@ -124,12 +124,12 @@ pub(crate) fn geometry(game: &mut Game) -> Option<Arc<kh3::core::Geometry>> {
         &poles,
         &bounds,
     ));
-    game.kh3_geometry = Some((key, Arc::clone(&g)));
+    game.ext.online_mut().kh3_geometry = Some((key, Arc::clone(&g)));
     Some(g)
 }
 
 /// The camera the player sees through, for a shotlock's reticle (the screen's 16:9).
-pub(crate) fn camera_view(eye: Vec3, look: Vec3, fov: f32) -> Option<kh3_sora::magic::View> {
+pub fn camera_view(eye: Vec3, look: Vec3, fov: f32) -> Option<kh3_sora::magic::View> {
     let from = kh3::core::to_core(eye.to_array());
     let along = (kh3::core::to_core(look.to_array()) - from).normalize_or_zero();
     if along == kh3_sora::Vec3::ZERO {
@@ -148,7 +148,7 @@ pub(crate) fn camera_view(eye: Vec3, look: Vec3, fov: f32) -> Option<kh3_sora::m
 }
 
 /// The view a shotlock's reticle tests against for a Sora with no screen here: from behind him, on the other.
-pub(crate) fn aim_view(at: [f32; 3], foe: Option<[f32; 3]>) -> Option<kh3_sora::magic::View> {
+pub fn aim_view(at: [f32; 3], foe: Option<[f32; 3]>) -> Option<kh3_sora::magic::View> {
     let (eye, target) = (kh3::core::to_core(at), kh3::core::to_core(foe?));
     let from = eye + kh3_sora::Vec3::Z * 100.;
     let along = (target - from).normalize_or_zero();
@@ -164,12 +164,12 @@ pub(crate) fn aim_view(at: [f32; 3], foe: Option<[f32; 3]>) -> Option<kh3_sora::
 }
 
 /// The other Sora as the layer sees him.
-pub(crate) fn foe(position: [f32; 3], centre: [f32; 3]) -> Foe {
+pub fn foe(position: [f32; 3], centre: [f32; 3]) -> Foe {
     Foe { position, centre }
 }
 
 /// The room Sora's foe: the first rival, else Test KH3 mode's dummy.
-pub(crate) fn room_foe(game: &Game) -> Option<Foe> {
+pub fn room_foe(game: &Game) -> Option<Foe> {
     if let Some(r) = game.rivals.first() {
         return (r.fighter.vitals.hp > 0)
             .then(|| foe(r.fighter.player.position, rival::rival_centre(r)));
@@ -177,7 +177,7 @@ pub(crate) fn room_foe(game: &Game) -> Option<Foe> {
     let rt = game
         .enemy
         .as_ref()
-        .filter(|rt| game.kh3_dummy && rt.enabled && rt.enemy.targetable())?;
+        .filter(|rt| game.ext.online().kh3_dummy && rt.enabled && rt.enemy.targetable())?;
     let at = rt.enemy.position;
     // Its target shape's centre (the lock-on's point), else its middle.
     let centre = enemy_targets(rt)
@@ -188,14 +188,14 @@ pub(crate) fn room_foe(game: &Game) -> Option<Foe> {
 
 /// What the room Sora's target is to KH3's Sora: the first rival's own Sora, else the test dummy, as KH3's rules
 /// read a body. The dummy has a level 99 Sora's numbers, so its damage reads as a duel's.
-pub(crate) fn room_foe_body(game: &Game) -> Option<kh3::core::FoeBody> {
+pub fn room_foe_body(game: &Game) -> Option<kh3::core::FoeBody> {
     if let Some(r) = game.rivals.first() {
-        return r.fighter.kh3.core_foe_body(&r.fighter.player);
+        return r.fighter.ext.fighter().kh3.core_foe_body(&r.fighter.player);
     }
     let rt = game
         .enemy
         .as_ref()
-        .filter(|rt| game.kh3_dummy && rt.enabled && rt.enemy.targetable())?;
+        .filter(|rt| game.ext.online().kh3_dummy && rt.enabled && rt.enemy.targetable())?;
     Some(kh3::core::dummy_body(rt.enemy.position, rt.enemy.yaw))
 }
 
@@ -206,8 +206,8 @@ const DUMMY_MIDDLE: f32 = 50.;
 
 /// [Test] Test KH3 mode: the room's Shadow stands as the training dummy in
 /// front of Sora, facing him.
-pub(crate) fn dummy_setup(mut game: ResMut<Game>) {
-    if !game.kh3_dummy {
+pub fn dummy_setup(mut game: ResMut<Game>) {
+    if !game.ext.online().kh3_dummy {
         return;
     }
     let p = game.sora.player.position;
@@ -235,15 +235,15 @@ fn dummy_hits(game: &mut Game) {
     let Some(n) = game
         .enemy
         .as_ref()
-        .filter(|rt| game.kh3_dummy && rt.enemy.dummy)
+        .filter(|rt| game.ext.online().kh3_dummy && rt.enemy.dummy)
         .map(|rt| rt.enemy.dummy_hits)
     else {
         return;
     };
-    let new = n.saturating_sub(game.kh3_dummy_seen);
-    game.kh3_dummy_seen = n;
+    let new = n.saturating_sub(game.ext.online().kh3_dummy_seen);
+    game.ext.online_mut().kh3_dummy_seen = n;
     for _ in 0..new.min(8) {
-        game.sora.kh3.landed(true);
+        game.sora.ext.fighter_mut().kh3.landed(true);
     }
     if new > 0
         && let Some(rt) = game.enemy.as_ref()
@@ -257,7 +257,7 @@ fn dummy_hits(game: &mut Game) {
 
 /// The KH3 buttons of the room Sora's own pad: R2 held (logical bit 32)
 /// and Triangle.
-pub(crate) fn room_pad(game: &mut Game) -> Pad {
+pub fn room_pad(game: &mut Game) -> Pad {
     Pad {
         shotlock: game.autoplay.is_none() && game.pad.held & 1 << 32 != 0,
         situation: std::mem::take(&mut game.flow_queued),
@@ -266,7 +266,7 @@ pub(crate) fn room_pad(game: &mut Game) -> Pad {
 }
 
 /// One tick of a Sora through the layer.
-pub(crate) fn step(
+pub fn step(
     fighter: &mut Fighter,
     input: &Input,
     pad: &Pad,
@@ -276,6 +276,8 @@ pub(crate) fn step(
     scene: &Scene,
 ) -> kh3::Outcome {
     fighter
+        .ext
+        .fighter_mut()
         .kh3
         .tick(&mut fighter.player, input, pad, params, clips, world, scene)
 }
@@ -284,7 +286,7 @@ pub(crate) fn step(
 /// everywhere (the Mirage Arena's ring is lower in places than a wall run
 /// climbs elsewhere): a Sora is kept inside the walls' extent, a circle
 /// for the round Mirage Arena, the square for the test room's.
-pub(crate) fn contain(at: [f32; 3], extent: [f32; 4], round: bool, radius: f32) -> [f32; 3] {
+pub fn contain(at: [f32; 3], extent: [f32; 4], round: bool, radius: f32) -> [f32; 3] {
     let centre = [(extent[0] + extent[2]) * 0.5, (extent[1] + extent[3]) * 0.5];
     let half = [
         ((extent[2] - extent[0]) * 0.5 - radius).max(0.),
@@ -308,11 +310,11 @@ pub(crate) fn contain(at: [f32; 3], extent: [f32; 4], round: bool, radius: f32) 
 /// What a tick asked of the room, for the Sora swapped in (`game.sora`,
 /// seat `slot`): the arena's bounds, the log, a grand magic, the grand
 /// window's MP.
-pub(crate) fn after(game: &mut Game, out: &kh3::Outcome, slot: u8) {
+pub fn after(game: &mut Game, out: &kh3::Outcome, slot: u8) {
     if slot == game.local_slot {
         dummy_hits(game);
     }
-    if game.sora.kh3.core_on() {
+    if game.sora.ext.fighter().kh3.core_on() {
         // The core's movement component stops at the walls itself. Its hits wait for both Soras' steps.
         let tick = game.tick;
         for (from, to) in &out.core.states {
@@ -325,7 +327,7 @@ pub(crate) fn after(game: &mut Game, out: &kh3::Outcome, slot: u8) {
         if tick.is_multiple_of(30) {
             let c = &out.core;
             game.event(serde_json::json!({"event":"kh3_core","tick":tick,"slot":slot,"at":c.position,
-                "v":c.velocity,"floor":c.on_floor,"row":c.row,"focus":game.sora.kh3.focus,"hp":game.sora.kh3.core_hp}));
+                "v":c.velocity,"floor":c.on_floor,"row":c.row,"focus":game.sora.ext.fighter().kh3.focus,"hp":game.sora.ext.fighter().kh3.core_hp}));
         }
         let s = &game.sora;
         let (at, yaw) = (
@@ -333,16 +335,19 @@ pub(crate) fn after(game: &mut Game, out: &kh3::Outcome, slot: u8) {
             kh3::core::yaw_to_core(s.player.yaw),
         );
         for &hit in &out.core.hits {
-            game.kh3_core_hits.push((slot, hit, at, yaw));
+            game.ext
+                .online_mut()
+                .kh3_core_hits
+                .push((slot, hit, at, yaw));
         }
-        if let Some(book) = game.kh3_book.clone() {
+        if let Some(book) = game.ext.online().kh3_book.clone() {
             let list = core_requests(&book, &out.core, slot);
-            game.sora.kh3.fx.extend(list);
+            game.sora.ext.fighter_mut().kh3.fx.extend(list);
         }
         return;
     }
-    if let Some((_, _, Some(extent))) = &game.kh3_poles {
-        let round = game.duel_arena == duel_arena::MIRAGE;
+    if let Some((_, _, Some(extent))) = &game.ext.online().kh3_poles {
+        let round = game.ext.online().duel_arena == duel_arena::MIRAGE;
         let p = game.sora.player.position;
         // At the walls' extent itself: a wall run's feet are on the wall.
         let kept = contain(p, *extent, round, 0.);
@@ -355,16 +360,16 @@ pub(crate) fn after(game: &mut Game, out: &kh3::Outcome, slot: u8) {
         let p = &game.sora.player;
         let record = serde_json::json!({"event":"kh3","tick":tick,"slot":slot,"move":name,
             "position":p.position,"action":format!("{:?}", p.action),
-            "focus":game.sora.kh3.focus.round()});
+            "focus":game.sora.ext.fighter().kh3.focus.round()});
         game.event(record);
     }
     for &name in out.began.iter().chain(&out.cues) {
         cues(game, name, slot, drive_fx::Anchor::Sora);
     }
-    if let Some((left, mp)) = game.sora.kh3_grand {
+    if let Some((left, mp)) = game.sora.ext.fighter().kh3_grand {
         // The grand magic costs nothing: the MP stays where it was.
         game.sora.player.mp.cur = mp;
-        game.sora.kh3_grand = (left > 1).then_some((left - 1, mp));
+        game.sora.ext.fighter_mut().kh3_grand = (left > 1).then_some((left - 1, mp));
     }
     if let Some(spell) = out.grand {
         let mp = game.sora.player.mp.cur;
@@ -372,8 +377,8 @@ pub(crate) fn after(game: &mut Game, out: &kh3::Outcome, slot: u8) {
         let ok = magic_room::request(game, spell, tick);
         game.sora.player.mp.cur = mp;
         if ok {
-            game.sora.kh3.grand_used();
-            game.sora.kh3_grand = Some((GRAND_TICKS, mp));
+            game.sora.ext.fighter_mut().kh3.grand_used();
+            game.sora.ext.fighter_mut().kh3_grand = Some((GRAND_TICKS, mp));
             game.sora.player.invulnerable = game.sora.player.invulnerable.max(GRAND_GUARD);
         }
         game.event(
@@ -386,8 +391,8 @@ pub(crate) fn after(game: &mut Game, out: &kh3::Outcome, slot: u8) {
 /// [KH3 mode] A spell from the KH2 command menu as KH3's command: the tier by
 /// the spell's level, Magnet's slot Aero and Reflect's slot Water, the two
 /// KH3 families KH2's menu lacks. Returns false without the book.
-pub(crate) fn kh3_cast(game: &mut Game, magic_type: u8) -> bool {
-    if game.kh3_book.is_none() {
+pub fn kh3_cast(game: &mut Game, magic_type: u8) -> bool {
+    if game.ext.online().kh3_book.is_none() {
         return false;
     }
     let level = game.magic.as_ref().map_or(1, |m| {
@@ -402,13 +407,13 @@ pub(crate) fn kh3_cast(game: &mut Game, magic_type: u8) -> bool {
         player::magic::MAGNET => 45,
         _ => 41,
     };
-    game.sora.kh3.request_cast(family + tier);
+    game.sora.ext.fighter_mut().kh3.request_cast(family + tier);
     true
 }
 
 /// The sound cause of the KH3 cues (duel_fx sends it to the joiner with
 /// the Soras' own sounds).
-pub(crate) const CUE_SOUND: &str = "kh3";
+pub const CUE_SOUND: &str = "kh3";
 
 /// What the core asked for, as the presenters' requests: asset names as they are; a name of a spell actor's class
 /// by what the seam's id says of that class (its body effect runs with the actor: `kh3_fx::actors_step`).
@@ -507,10 +512,10 @@ fn core_requests(
 /// swapped in (`game.sora`, seat `slot`, his own effect containers):
 /// sounds to the queue, looks onto him (or `anchor`), each in the log. A
 /// shotlock lock's look sits on the target.
-pub(crate) fn cues(game: &mut Game, event: &'static str, slot: u8, anchor: drive_fx::Anchor) {
+pub fn cues(game: &mut Game, event: &'static str, slot: u8, anchor: drive_fx::Anchor) {
     use kh3::cue::Cue;
     // With KH3's own files its clips carry the effects and sounds.
-    if game.kh3_book.is_some() {
+    if game.ext.online().kh3_book.is_some() {
         return;
     }
     let tick = game.tick;
@@ -523,7 +528,7 @@ pub(crate) fn cues(game: &mut Game, event: &'static str, slot: u8, anchor: drive
             Cue::Look(look) => {
                 let at = match anchor {
                     drive_fx::Anchor::World { at, yaw, .. } => Some((at.to_array(), yaw)),
-                    _ if look == Look::Lock => game.sora.kh3.foe.map(|f| (f, 0.)),
+                    _ if look == Look::Lock => game.sora.ext.fighter().kh3.foe.map(|f| (f, 0.)),
                     _ => None,
                 };
                 show(game, look, slot, at, 1.)
@@ -539,21 +544,15 @@ pub(crate) fn cues(game: &mut Game, event: &'static str, slot: u8, anchor: drive
 /// [KH3 ruleset] A look's size by a hit's weight (the knock's scale,
 /// 0.3 to 1.6): from 0.85 to 1.15 times its own, so a counter's burst stays
 /// about Sora's height.
-pub(crate) fn hit_size(strike: &kh3::hurt::Strike) -> f32 {
+pub fn hit_size(strike: &kh3::hurt::Strike) -> f32 {
     (0.8 + strike.scale * 0.2).clamp(0.85, 1.15)
 }
 
 /// Starts a look for the Sora swapped in (seat `slot`: on him, or at a
 /// place, turned by a yaw) and sends it to the joiner by its id. Whether
 /// any of its layers started.
-pub(crate) fn show(
-    game: &mut Game,
-    look: Look,
-    slot: u8,
-    at: Option<([f32; 3], f32)>,
-    size: f32,
-) -> bool {
-    if game.kh3_book.is_some() {
+pub fn show(game: &mut Game, look: Look, slot: u8, at: Option<([f32; 3], f32)>, size: f32) -> bool {
+    if game.ext.online().kh3_book.is_some() {
         return false;
     }
     let anchor = anchor_of(game, slot, at);
@@ -564,7 +563,7 @@ pub(crate) fn show(
     let (starts, missing) = look_starts(d, look, anchor, f32::from(size) / 10.);
     let started = !starts.is_empty();
     game.fx_styled.extend(starts);
-    game.duel_events.push(DuelEvent::Look {
+    game.ext.online_mut().duel_events.push(DuelEvent::Look {
         look: look.id(),
         slot,
         size,
@@ -604,7 +603,7 @@ fn log_look(game: &mut Game, look: Look, slot: u8, missing: Vec<String>) {
 /// A look's layers as styled starts from a Sora's effect containers (his
 /// Drive state), with the layers whose container or element is not there
 /// (a form kit still loading).
-pub(crate) fn look_starts(
+pub fn look_starts(
     d: &mut drive_room::DriveRt,
     look: Look,
     anchor: drive_fx::Anchor,
@@ -650,7 +649,7 @@ fn layer_starts(
 }
 
 /// A layer's style at a look's size.
-pub(crate) fn style_of(l: &kh3::look::Layer, size: f32) -> drive_fx::Style {
+pub fn style_of(l: &kh3::look::Layer, size: f32) -> drive_fx::Style {
     drive_fx::Style {
         scale: l.scale * size,
         tint: l.tint,
@@ -664,7 +663,7 @@ pub(crate) fn style_of(l: &kh3::look::Layer, size: f32) -> drive_fx::Style {
 
 /// Joiner: the host's look on this instance's Sora of that seat (or at
 /// its place), from that Sora's own containers.
-pub(crate) fn play_look(game: &mut Game, id: u8, slot: u8, size: u8, at: Option<([f32; 3], f32)>) {
+pub fn play_look(game: &mut Game, id: u8, slot: u8, size: u8, at: Option<([f32; 3], f32)>) {
     let Some(look) = Look::from_id(id) else {
         return;
     };
@@ -692,7 +691,7 @@ pub(crate) fn play_look(game: &mut Game, id: u8, slot: u8, size: u8, at: Option<
 /// of the list (`looks`, `look:<name>`, `sora:<id>`, `form<n>:<id>`,
 /// `system:<id>`, ids as `a-b` ranges too), seen from his side; three
 /// captures each. For checking the looks and choosing their elements.
-pub(crate) struct Preview {
+pub struct Preview {
     items: Vec<PreviewItem>,
 }
 
@@ -710,7 +709,7 @@ const PREVIEW_EVERY: u64 = 60;
 const PREVIEW_SHOTS: [u64; 3] = [3, 10, 24];
 
 impl Preview {
-    pub(crate) fn parse(spec: &str) -> Result<Preview, String> {
+    pub fn parse(spec: &str) -> Result<Preview, String> {
         use kh3::look::{ALL, Source};
         let mut items = Vec::new();
         for token in spec.split(',').map(str::trim).filter(|t| !t.is_empty()) {
@@ -752,20 +751,20 @@ impl Preview {
     }
 
     /// The run's captures, in the items' order.
-    pub(crate) fn captures(&self) -> Vec<u64> {
+    pub fn captures(&self) -> Vec<u64> {
         (0..self.items.len() as u64)
             .flat_map(|i| PREVIEW_SHOTS.map(|s| PREVIEW_START + i * PREVIEW_EVERY + s))
             .collect()
     }
 
-    pub(crate) fn end(&self) -> u64 {
+    pub fn end(&self) -> u64 {
         PREVIEW_START + self.items.len() as u64 * PREVIEW_EVERY + 2
     }
 }
 
 /// [Test] The preview's item of this tick, on the room Sora.
-pub(crate) fn preview_tick(game: &mut Game, tick: u64) {
-    let Some(item) = game.kh3_preview.as_ref().and_then(|p| {
+pub fn preview_tick(game: &mut Game, tick: u64) {
+    let Some(item) = game.ext.online().kh3_preview.as_ref().and_then(|p| {
         let i = tick.checked_sub(PREVIEW_START)?;
         i.is_multiple_of(PREVIEW_EVERY)
             .then(|| p.items.get((i / PREVIEW_EVERY) as usize).copied())
@@ -818,7 +817,7 @@ pub(crate) fn preview_tick(game: &mut Game, tick: u64) {
 /// [Test] The preview's camera: from Sora's right, a little ahead, level
 /// with his chest.
 fn preview_view(game: &Game, fov: f32) -> Option<boss::OverlayView> {
-    game.kh3_preview.as_ref()?;
+    game.ext.online().kh3_preview.as_ref()?;
     let yaw = game.sora.player.yaw;
     let (facing, right) = (
         Vec3::new(yaw.sin(), 0., yaw.cos()),
@@ -835,8 +834,8 @@ fn preview_view(game: &Game, fov: f32) -> Option<boss::OverlayView> {
 }
 
 /// A spell this Sora's grand magic cast is still out (its hits double).
-pub(crate) fn grand(fighter: &Fighter) -> bool {
-    fighter.kh3_grand.is_some()
+pub fn grand(fighter: &Fighter) -> bool {
+    fighter.ext.fighter().kh3_grand.is_some()
 }
 
 /// The bolts of the Sora swapped in onto his Drive state's bullets (before
@@ -844,9 +843,9 @@ pub(crate) fn grand(fighter: &Fighter) -> bool {
 /// hit takes its bolt with it; each bolt's bullet is made or put where the
 /// bolt is, moving its last step this tick; a bullet whose bolt is gone
 /// fades.
-pub(crate) fn bolts(game: &mut Game, slot: u8) {
+pub fn bolts(game: &mut Game, slot: u8) {
     // With KH3's own files the shots are KH3's (kh3_hits.rs, kh3_fx.rs).
-    if game.kh3_book.is_some() {
+    if game.ext.online().kh3_book.is_some() {
         return;
     }
     let Game {
@@ -864,11 +863,21 @@ pub(crate) fn bolts(game: &mut Game, slot: u8) {
     if let Some(m) = magic.as_ref() {
         for b in d.bullets.iter().filter(|b| b.key & SHOT_BIT != 0) {
             if m.last_hits.contains(&b.key) {
-                sora.kh3.bolt_hit((b.key & 0xffff_ffff) as u32);
+                sora.ext
+                    .fighter_mut()
+                    .kh3
+                    .bolt_hit((b.key & 0xffff_ffff) as u32);
             }
         }
     }
-    let live: Vec<u64> = sora.kh3.bolts.iter().map(|b| key_of(b.serial)).collect();
+    let live: Vec<u64> = sora
+        .ext
+        .fighter()
+        .kh3
+        .bolts
+        .iter()
+        .map(|b| key_of(b.serial))
+        .collect();
     let mut log = Vec::new();
     let ends = &mut d.bullet_ends;
     d.bullets.retain(|b| {
@@ -878,7 +887,7 @@ pub(crate) fn bolts(game: &mut Game, slot: u8) {
         }
         keep
     });
-    for bolt in &sora.kh3.bolts {
+    for bolt in &sora.ext.fighter().kh3.bolts {
         let key = key_of(bolt.serial);
         // Shot this tick: the bullet starts a step behind and steps to it.
         let from = std::array::from_fn(|k| bolt.pos[k] - bolt.dir[k] * bolt.speed);
@@ -926,7 +935,7 @@ pub(crate) fn bolts(game: &mut Game, slot: u8) {
 /// [duel choice] A bolt rides Wisdom's orb, cyan and a little smaller, so
 /// a volley never reads as Wisdom Form's own shots (both can be in one
 /// duel). Other bullets keep their look.
-pub(crate) fn bullet_style(key: u64) -> drive_fx::Style {
+pub fn bullet_style(key: u64) -> drive_fx::Style {
     if is_bolt(key) {
         drive_fx::Style {
             tint: kh3::look::colour::LOCK,
@@ -941,12 +950,12 @@ pub(crate) fn bullet_style(key: u64) -> drive_fx::Style {
 const BOLT_SCALE: f32 = 0.8;
 
 /// Whether a bullet key is a shotlock bolt's.
-pub(crate) fn is_bolt(key: u64) -> bool {
+pub fn is_bolt(key: u64) -> bool {
     key & SHOT_BIT != 0 && key & 1 << 60 != 0
 }
 
 /// The model's turn: the facing, then the layer's lean (pitch, roll).
-pub(crate) fn turn(yaw: f32, kh3: &kh3::Kh3) -> Quat {
+pub fn turn(yaw: f32, kh3: &kh3::Kh3) -> Quat {
     Quat::from_rotation_y(yaw)
         * Quat::from_rotation_x(kh3.lean[0])
         * Quat::from_rotation_z(kh3.lean[1])
@@ -959,14 +968,14 @@ const WALL_CAMERA_BACK: f32 = 700.;
 const WALL_CAMERA_UP: f32 = 120.;
 
 /// The wall camera, when it applies.
-pub(crate) fn flow_view(game: &Game, fov: f32) -> Option<boss::OverlayView> {
+pub fn flow_view(game: &Game, fov: f32) -> Option<boss::OverlayView> {
     if !on(game) {
         return None;
     }
     if let Some(v) = preview_view(game, fov) {
         return Some(v);
     }
-    let k = &game.sora.kh3;
+    let k = &game.sora.ext.fighter().kh3;
     let yaw = game.sora.player.yaw;
     let (facing, right) = (
         Vec3::new(yaw.sin(), 0., yaw.cos()),
@@ -999,8 +1008,8 @@ pub(crate) fn flow_view(game: &Game, fov: f32) -> Option<boss::OverlayView> {
 /// What the shotlock aims at while it aims or its volley flies (the aiming
 /// camera's target, kh3_camera.rs): the other Sora or the dummy, else a
 /// point ahead.
-pub(crate) fn aim_point(game: &Game) -> Option<Vec3> {
-    let k = &game.sora.kh3;
+pub fn aim_point(game: &Game) -> Option<Vec3> {
+    let k = &game.sora.ext.fighter().kh3;
     if k.aim.is_none() && !matches!(k.mode, kh3::Mode::Volley { .. }) {
         return None;
     }
@@ -1013,16 +1022,16 @@ pub(crate) fn aim_point(game: &Game) -> Option<Vec3> {
 
 /// [Test] The KH3 script's buttons for the room Sora of an unattended
 /// KH3 test (the rival runs the same script half a cycle later).
-pub(crate) fn scripted_room_pad(game: &Game, tick: u64) -> Option<(rival::RivalPad, Pad)> {
-    if game.autoplay.is_none() || !on(game) || game.net_client {
+pub fn scripted_room_pad(game: &Game, tick: u64) -> Option<(rival::RivalPad, Pad)> {
+    if game.autoplay.is_none() || !on(game) || game.replica {
         return None;
     }
     // [Test] Unattended Test KH3 mode: the script's acting half against the
     // dummy (its taking half stands, while kh3_menu's script runs).
-    if game.kh3_dummy {
+    if game.ext.online().kh3_dummy {
         let foe = room_foe(game)?;
-        let view = rival::Kh3View::default();
-        let pad = rival::kh3_pad(tick, 0, game.sora.player.position, foe.position, view);
+        let view = rival_play::Kh3View::default();
+        let pad = rival_play::kh3_pad(tick, 0, game.sora.player.position, foe.position, view);
         let kh3 = Pad {
             shotlock: pad.shotlock_held,
             situation: pad.flow,
@@ -1030,17 +1039,17 @@ pub(crate) fn scripted_room_pad(game: &Game, tick: u64) -> Option<(rival::RivalP
         };
         return Some((pad, kh3));
     }
-    if !game.rival_script {
+    if !game.ext.online().rival_script {
         return None;
     }
 
     // The preview stands him still.
-    if game.kh3_preview.is_some() {
+    if game.ext.online().kh3_preview.is_some() {
         return Some((rival::RivalPad::default(), Pad::default()));
     }
     let foe = game.rivals.first()?.fighter.player.position;
-    let view = rival::kh3_view(&game.sora, game.rivals.first().map(|r| &r.fighter));
-    let pad = rival::kh3_pad(tick, 0, game.sora.player.position, foe, view);
+    let view = rival_play::kh3_view(&game.sora, game.rivals.first().map(|r| &r.fighter));
+    let pad = rival_play::kh3_pad(tick, 0, game.sora.player.position, foe, view);
     let kh3 = Pad {
         shotlock: pad.shotlock_held,
         situation: pad.flow,
@@ -1051,7 +1060,7 @@ pub(crate) fn scripted_room_pad(game: &Game, tick: u64) -> Option<(rival::RivalP
 
 /// The HUD's sheets, made once.
 #[derive(Resource, Default)]
-pub(crate) struct Kh3Hud {
+pub struct Kh3Hud {
     sheets: Option<(usize, usize)>,
 }
 
@@ -1080,7 +1089,7 @@ fn rect(r: [f32; 4], c: [f32; 4]) -> data::sprite_sequence::Quad {
 /// The focus gauge (above the HP gauge), the shotlock's locks while aiming
 /// and the grand magic's offer, for this player's own Sora: plain text
 /// and a bar on the 2D layer.
-pub(crate) fn present(
+pub fn present(
     game: Res<Game>,
     hud: Option<Res<Hud>>,
     camp: Option<Res<CampRes>>,
@@ -1109,7 +1118,7 @@ pub(crate) fn present(
         widths: &font.widths,
         pad: 1,
     };
-    let k = &game.sora.kh3;
+    let k = &game.sora.ext.fighter().kh3;
     let share = (k.focus / kh3::tuning::FOCUS_MAX).clamp(0., 1.);
     let fill = [BAR[0], BAR[1], BAR[0] + (BAR[2] - BAR[0]) * share, BAR[3]];
     frame.draws.push((
@@ -1157,7 +1166,7 @@ pub(crate) fn present(
     }
     // [Test] Test KH3 mode: the dummy's damage (the last hit, the run of
     // hits now going) and the menu's button.
-    if game.kh3_dummy {
+    if game.ext.online().kh3_dummy {
         if let Some(e) = game.enemy.as_ref().map(|rt| &rt.enemy)
             && e.dummy_hits > 0
         {

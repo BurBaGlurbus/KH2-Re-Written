@@ -374,7 +374,7 @@ pub struct SpellFx {
 impl SpellFx {
     /// Ends every running spell effect: over `frames` event frames, or at
     /// once for 0. Returns how many.
-    pub(crate) fn end_all(&mut self, frames: f32) -> usize {
+    pub fn end_all(&mut self, frames: f32) -> usize {
         for r in &mut self.running {
             r.instance.release();
             r.instance.fade_out(frames);
@@ -394,7 +394,7 @@ impl SpellFx {
     }
 
     /// Drops what the caches keep for containers nothing else holds.
-    pub(crate) fn release_unused(&mut self) -> super::cleanup::Released {
+    pub fn release_unused(&mut self) -> super::cleanup::Released {
         let stale = super::cleanup::stale_dpds(&mut self.dpds);
         let mut out = super::cleanup::Released {
             dpds: stale.len(),
@@ -416,7 +416,7 @@ impl SpellFx {
     }
 
     /// How many of this presenter's things are alive (the census).
-    pub(crate) fn count(&self) -> super::cleanup::FxCount {
+    pub fn count(&self) -> super::cleanup::FxCount {
         super::cleanup::FxCount {
             running: self.running.len(),
             spawned: self.spawned.len(),

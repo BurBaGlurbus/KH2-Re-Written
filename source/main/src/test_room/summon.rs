@@ -440,7 +440,7 @@ fn capture_clip(row: usize, slot: i32) -> Option<u16> {
 /// (entries "0010"), 1 for the first weapon ("0011"), each in four variants
 /// chosen as a set's are (FUN_1403c7c50's table) [I: in battle with the
 /// Keyblade out]. The body's slot is made unique as the limits' are.
-pub(super) fn capture_parts(
+pub fn capture_parts(
     anb: &[u8],
     clip: u16,
 ) -> Option<(
@@ -1151,7 +1151,7 @@ fn prty_words(library: &mut data::path_lookup::Library, index: i32) -> Option<[u
 /// models are not drawn.
 /// The host side of `sysobj_appear` (FUN_1403df930): the object entry's
 /// model script, its class from the entry's type byte, and its HIT spheres.
-pub(super) struct Spawner {
+pub struct Spawner {
     source: Arc<data::probe_source::ProbeSource>,
     models: std::collections::HashMap<u32, (String, u8, u16)>,
     scripts: std::collections::HashMap<u32, Option<Vec<u8>>>,
@@ -1161,7 +1161,7 @@ pub(super) struct Spawner {
 }
 
 impl Spawner {
-    pub(super) fn new(
+    pub fn new(
         source: Arc<data::probe_source::ProbeSource>,
         objects: &[objentry::ObjectEntry],
     ) -> Self {

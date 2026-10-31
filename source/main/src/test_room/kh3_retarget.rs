@@ -99,15 +99,15 @@ fn quat(q: [f32; 4]) -> Quat {
 
 /// A pose of KH2's model and where KH3's effects find their bones on it.
 #[derive(Default)]
-pub(crate) struct Posed {
-    pub(crate) joints: Vec<World>,
+pub struct Posed {
+    pub joints: Vec<World>,
     /// The Keyblade's joint, KH2's model frame.
-    pub(crate) weapon: Transform,
+    pub weapon: Transform,
     /// KH3's bones at KH2's joints, in KH3's frame and centimetres.
-    pub(crate) bones: Vec<BonePose>,
+    pub bones: Vec<BonePose>,
 }
 
-pub(crate) struct Retarget {
+pub struct Retarget {
     parents: Vec<i32>,
     bind_q: Vec<Quat>,
     bind_t: Vec<Vec3>,
@@ -129,7 +129,7 @@ pub(crate) struct Retarget {
 
 impl Retarget {
     /// `bind`: KH2's bind joints; None when this is not the skeleton the links were read from, or KH3's lacks a bone.
-    pub(crate) fn new(
+    pub fn new(
         bind: &[[[f32; 4]; 4]],
         parents: &[i32],
         bones: &[Bone],
@@ -253,7 +253,7 @@ impl Retarget {
     }
 
     /// KH2's joints for KH3's pose; `idle`: this frame of KH2's own idle.
-    pub(crate) fn pose(&self, component: &[BonePose], idle: &[World], out: &mut Posed) {
+    pub fn pose(&self, component: &[BonePose], idle: &[World], out: &mut Posed) {
         let k = self.scale;
         let change = |bone: usize| model_q(component[bone].rotation) * self.rest_q[bone].inverse();
         let turned = |joint: usize| {

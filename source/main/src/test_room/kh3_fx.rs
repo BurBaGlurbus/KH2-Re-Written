@@ -34,34 +34,34 @@ const TRAIL: &str = "/Game/Effects/wep/w_so010/par/VW_SO010_LOC0";
 
 /// A material as the renderer draws it.
 #[derive(Clone, Debug)]
-pub(crate) struct FxMaterial {
-    pub(crate) texture: Option<String>,
-    pub(crate) opacity: Option<String>,
-    pub(crate) mono: bool,
-    pub(crate) blend: MatBlend,
-    pub(crate) tint: [f32; 3],
+pub struct FxMaterial {
+    pub texture: Option<String>,
+    pub opacity: Option<String>,
+    pub mono: bool,
+    pub blend: MatBlend,
+    pub tint: [f32; 3],
 }
 
 /// One row of an attach-effect notify.
 #[derive(Clone, Debug)]
-pub(crate) struct EffectRow {
-    pub(crate) effect: String,
-    pub(crate) socket: String,
-    pub(crate) on_weapon: bool,
-    pub(crate) attach: bool,
-    pub(crate) location: [f32; 3],
-    pub(crate) rotation: [f32; 3],
-    pub(crate) scale: [f32; 3],
-    pub(crate) fade_in: f32,
-    pub(crate) delay: f32,
-    pub(crate) color: [f32; 4],
+pub struct EffectRow {
+    pub effect: String,
+    pub socket: String,
+    pub on_weapon: bool,
+    pub attach: bool,
+    pub location: [f32; 3],
+    pub rotation: [f32; 3],
+    pub scale: [f32; 3],
+    pub fade_in: f32,
+    pub delay: f32,
+    pub color: [f32; 4],
     /// Stops when the animation changes (the usual `WhenChangeAnimationType`).
-    pub(crate) ends_with_clip: bool,
-    pub(crate) state: bool,
+    pub ends_with_clip: bool,
+    pub state: bool,
 }
 
 #[derive(Clone, Debug)]
-pub(crate) enum Cue {
+pub enum Cue {
     Effect(EffectRow),
     Trail,
     Sound {
@@ -94,13 +94,13 @@ pub(crate) enum Cue {
 
 /// `FsTable_Sora`: per surface the sounds of motion types 1 to 6, then the others from type 7.
 #[derive(Clone, Debug, Default)]
-pub(crate) struct AttachRows(pub(crate) HashMap<String, Vec<(i64, EffectRow)>>);
+pub struct AttachRows(pub HashMap<String, Vec<(i64, EffectRow)>>);
 
 #[derive(Clone, Debug, Default)]
-pub(crate) struct FootTable {
-    pub(crate) per_surface: Vec<[Option<String>; 6]>,
-    pub(crate) others: Vec<Option<String>>,
-    pub(crate) settings: kh3_autose::Settings,
+pub struct FootTable {
+    pub per_surface: Vec<[Option<String>; 6]>,
+    pub others: Vec<Option<String>>,
+    pub settings: kh3_autose::Settings,
 }
 
 impl FootTable {
@@ -161,50 +161,50 @@ impl FootTable {
 }
 
 #[derive(Clone, Debug)]
-pub(crate) struct Trigger {
-    pub(crate) start: f32,
-    pub(crate) end: f32,
-    pub(crate) cue: Cue,
+pub struct Trigger {
+    pub start: f32,
+    pub end: f32,
+    pub cue: Cue,
 }
 
 /// What the load thread hands over.
-pub(crate) struct FxData {
-    pub(crate) defs: Vec<EffectDef>,
-    pub(crate) materials: Vec<(String, FxMaterial)>,
-    pub(crate) meshes: Vec<(String, StaticMesh)>,
-    pub(crate) triggers: HashMap<String, Vec<Trigger>>,
-    pub(crate) textures: HashMap<String, Texture>,
-    pub(crate) sounds: SoundBook,
+pub struct FxData {
+    pub defs: Vec<EffectDef>,
+    pub materials: Vec<(String, FxMaterial)>,
+    pub meshes: Vec<(String, StaticMesh)>,
+    pub triggers: HashMap<String, Vec<Trigger>>,
+    pub textures: HashMap<String, Texture>,
+    pub sounds: SoundBook,
     /// Effect name to the sounds its SeAttach data plays.
-    pub(crate) effect_sounds: HashMap<String, Vec<String>>,
-    pub(crate) feet: FootTable,
+    pub effect_sounds: HashMap<String, Vec<String>>,
+    pub feet: FootTable,
     /// `ead_*` by name: each row's group and placement.
-    pub(crate) ead: AttachRows,
+    pub ead: AttachRows,
 }
 
 /// Decoded sounds by their asset.
 #[derive(Default)]
-pub(crate) struct SoundBook {
-    pub(crate) sounds: HashMap<String, Arc<Playable>>,
+pub struct SoundBook {
+    pub sounds: HashMap<String, Arc<Playable>>,
 }
 
 /// A resolved sound: its notes, with clips decoded.
-pub(crate) struct Playable {
-    pub(crate) kind: SoundKind,
-    pub(crate) volume: f32,
-    pub(crate) asset_volume: f32,
-    pub(crate) spatial: bool,
-    pub(crate) window: f32,
-    pub(crate) sequences: Vec<(u8, u8, Vec<PlayNote>)>,
-    pub(crate) cursor: AtomicUsize,
+pub struct Playable {
+    pub kind: SoundKind,
+    pub volume: f32,
+    pub asset_volume: f32,
+    pub spatial: bool,
+    pub window: f32,
+    pub sequences: Vec<(u8, u8, Vec<PlayNote>)>,
+    pub cursor: AtomicUsize,
 }
 
-pub(crate) struct PlayNote {
-    pub(crate) delay: f32,
-    pub(crate) clip: audio::Clip,
-    pub(crate) volume: f32,
-    pub(crate) volume_random: Option<(f32, f32, u8)>,
-    pub(crate) pitch_random: Option<(f32, f32, u8)>,
+pub struct PlayNote {
+    pub delay: f32,
+    pub clip: audio::Clip,
+    pub volume: f32,
+    pub volume_random: Option<(f32, f32, u8)>,
+    pub pitch_random: Option<(f32, f32, u8)>,
 }
 
 fn vector(p: &Props, k: &str, or: [f32; 3]) -> [f32; 3] {
@@ -505,7 +505,7 @@ fn fx_material(m: &MaterialParams) -> FxMaterial {
 }
 
 /// Reads the sounds, effects, materials and meshes the clips name.
-pub(crate) fn load(
+pub fn load(
     paks: &Paks,
     data: &SoraData,
     book: &player::kh3::attack::Book,
@@ -882,7 +882,7 @@ struct Pending {
 }
 
 #[derive(Resource, Default)]
-pub(crate) struct Kh3Fx {
+pub struct Kh3Fx {
     world: Option<World>,
     data: Option<Arc<FxData>>,
     materials: HashMap<u32, (Option<Handle<Image>>, MatBlend, [f32; 3], bool)>,
@@ -908,7 +908,7 @@ pub(crate) struct Kh3Fx {
     autose: [kh3_autose::AutoSe; 2],
     auto_clock: [f32; 2],
     /// The arena's surface in `FsTable_Sora`.
-    pub(crate) surface: usize,
+    pub surface: usize,
 }
 
 struct Batch {
@@ -917,7 +917,7 @@ struct Batch {
 }
 
 #[derive(Component)]
-pub(crate) struct Kh3FxPart;
+pub struct Kh3FxPart;
 
 /// A mono or masked texture as RGBA, whose alpha the shader can use.
 fn bc4_block(b: &[u8], out: &mut [u8; 16]) {
@@ -1272,7 +1272,7 @@ impl Kh3Fx {
 }
 
 /// `(x, y, z)` in the room to KH3's space (cm, Z up, left-handed).
-pub(crate) fn to_kh3(p: Vec3) -> glam::Vec3 {
+pub fn to_kh3(p: Vec3) -> glam::Vec3 {
     let k = 1. / player::kh3::tuning::length_of(1.);
     glam::Vec3::new(p.x * k, p.z * k, p.y * k)
 }
@@ -1288,11 +1288,11 @@ fn axis(v: Vec3) -> glam::Vec3 {
 
 /// The Sora's pose for sockets: his place and turn in KH3's space, and his
 /// bones in the mesh's.
-pub(crate) struct Body<'a> {
-    pub(crate) seat: u8,
-    pub(crate) at: glam::Vec3,
-    pub(crate) yaw: f32,
-    pub(crate) component: &'a [BonePose],
+pub struct Body<'a> {
+    pub seat: u8,
+    pub at: glam::Vec3,
+    pub yaw: f32,
+    pub component: &'a [BonePose],
 }
 
 fn quat_mat(q: [f32; 4]) -> glam::Mat3 {
@@ -1685,7 +1685,7 @@ fn replay(
 }
 
 /// A spell's or a shot's effect, by its package, for the room's magic.
-pub(crate) fn spawn_at(
+pub fn spawn_at(
     fx: &mut Kh3Fx,
     effect: &str,
     at: [f32; 3],
@@ -1713,7 +1713,7 @@ pub(crate) fn spawn_at(
     id
 }
 
-pub(crate) fn play_at(fx: &mut Kh3Fx, sound: &str, at: [f32; 3], camera: Vec3) {
+pub fn play_at(fx: &mut Kh3Fx, sound: &str, at: [f32; 3], camera: Vec3) {
     play_sound(
         fx,
         sound,
@@ -1789,7 +1789,7 @@ fn attached(
 }
 
 /// The requests a Sora's layer made this tick.
-pub(crate) fn requests(fx: &mut Kh3Fx, list: Vec<player::kh3::spell::FxRequest>, camera: Vec3) {
+pub fn requests(fx: &mut Kh3Fx, list: Vec<player::kh3::spell::FxRequest>, camera: Vec3) {
     for r in list {
         if let Some(a) = &r.attach {
             attached(fx, &r, a, camera);
@@ -1805,7 +1805,7 @@ pub(crate) fn requests(fx: &mut Kh3Fx, list: Vec<player::kh3::spell::FxRequest>,
 }
 
 /// The spell actors' body effects: one per live actor, following it.
-pub(crate) fn actors_step(
+pub fn actors_step(
     fx: &mut Kh3Fx,
     seat: u8,
     actors: &[player::kh3::spell::Actor],
@@ -1874,7 +1874,7 @@ pub(crate) fn actors_step(
 
 /// One Sora's step of the effects, from the model's update.
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn body_step(
+pub fn body_step(
     fx: &mut Kh3Fx,
     data: &SoraData,
     seat: u8,
@@ -1971,7 +1971,7 @@ fn footsteps(fx: &mut Kh3Fx, data: &SoraData, body: &Body, grounded: bool, camer
 
 /// Steps the evaluator at 60 Hz, starts sounds due and draws.
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn frame(
+pub fn frame(
     fx: &mut Kh3Fx,
     dt: f32,
     camera: Option<(Vec3, Vec3, Vec3, Vec3)>,
@@ -2206,6 +2206,6 @@ fn draw_list(
 }
 
 /// Hooks up what the load thread read.
-pub(crate) fn begin(fx: &mut Kh3Fx, data: Arc<FxData>, images: &mut Assets<Image>) {
+pub fn begin(fx: &mut Kh3Fx, data: Arc<FxData>, images: &mut Assets<Image>) {
     fx.start(data, images);
 }

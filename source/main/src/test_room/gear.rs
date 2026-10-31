@@ -6,7 +6,7 @@ use player::equipment_stats::{Row, Totals};
 
 /// The stat row of every weapon, armor and accessory item, keyed by item id
 /// (FUN_1403e3ef0 selects the table key by category).
-pub(super) fn rows(
+pub fn rows(
     table: &[data::item_table::Item],
     stats: &[data::item_table::Stats],
 ) -> HashMap<u16, Row> {
@@ -34,7 +34,7 @@ pub(super) fn rows(
 /// none), minus the Kingdom Key, which the room starts with in the member's
 /// weapon and each owned form's weapon slot [test-room choice, not campaign
 /// progression].
-pub(super) fn owned(table: &[data::item_table::Item]) -> Vec<u16> {
+pub fn owned(table: &[data::item_table::Item]) -> Vec<u16> {
     table
         .iter()
         .filter(|i| matches!(i.kind, 2..=4 | 14 | 15) && i.picture != 0 && i.id != KINGDOM_KEY)
@@ -43,7 +43,7 @@ pub(super) fn owned(table: &[data::item_table::Item]) -> Vec<u16> {
 }
 
 /// The room's stock with the owned equipment added.
-pub(super) fn with_owned_equipment(
+pub fn with_owned_equipment(
     mut stock: std::collections::BTreeMap<u16, u8>,
     owned: &[u16],
 ) -> std::collections::BTreeMap<u16, u8> {
@@ -55,7 +55,7 @@ pub(super) fn with_owned_equipment(
 
 /// FUN_1403c1d90's item pass over a zeroed start: what the equipment adds to
 /// Strength, Magic, Defense and AP, and the resists it leaves.
-pub(super) fn totals(
+pub fn totals(
     rows: &HashMap<u16, Row>,
     equipment: &pause_menu::items::Equipment,
     form_weapon: Option<u16>,
@@ -73,7 +73,7 @@ pub(super) fn totals(
 
 impl Game {
     /// The Drive form's own weapon while a form is active (stats +0x254).
-    pub(super) fn form_weapon(&self) -> Option<u16> {
+    pub fn form_weapon(&self) -> Option<u16> {
         self.drive
             .as_ref()
             .filter(|d| d.active)
@@ -83,7 +83,7 @@ impl Game {
 
     /// FUN_1402fc760 → FUN_1403c2100: rebuilds the equipment's share of the
     /// status totals and moves the combat numbers by what changed.
-    pub(super) fn refresh_gear(&mut self) {
+    pub fn refresh_gear(&mut self) {
         let new = self
             .ability_source
             .gear(&self.equipment, self.form_weapon());

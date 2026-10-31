@@ -273,7 +273,7 @@ pub struct DriveFx {
 
 impl DriveFx {
     /// How many of this presenter's things are alive (the census).
-    pub(crate) fn count(&self) -> super::cleanup::FxCount {
+    pub fn count(&self) -> super::cleanup::FxCount {
         super::cleanup::FxCount {
             running: self.running.len(),
             spawned: self.spawned.len(),
@@ -301,7 +301,7 @@ impl DriveFx {
     /// over `frames` event frames, or at once for 0. Returns how many.
     /// `kept_form`: the elements of that kit bound to the room Sora stay too
     /// (a form going through a door).
-    pub(crate) fn end_fighters(
+    pub fn end_fighters(
         &mut self,
         frames: f32,
         sound_stops: &mut Vec<u32>,
@@ -328,7 +328,7 @@ impl DriveFx {
 
     /// The sounds of the elements still going: the map's and the save
     /// point's loops, and a form's that went through a door.
-    pub(crate) fn held_sounds(&self) -> Vec<u32> {
+    pub fn held_sounds(&self) -> Vec<u32> {
         self.running
             .iter()
             .filter(|r| !r.instance.is_released())
@@ -356,7 +356,7 @@ impl DriveFx {
     }
 
     /// Drops what the caches keep for containers nothing else holds.
-    pub(crate) fn release_unused(&mut self) -> super::cleanup::Released {
+    pub fn release_unused(&mut self) -> super::cleanup::Released {
         let stale = super::cleanup::stale_dpds(&mut self.dpds);
         let mut out = super::cleanup::Released {
             dpds: stale.len(),
@@ -378,7 +378,7 @@ impl DriveFx {
     }
 
     /// The running elements by owner kit (0xff the system's).
-    pub(crate) fn owners(&self) -> std::collections::BTreeMap<u8, usize> {
+    pub fn owners(&self) -> std::collections::BTreeMap<u8, usize> {
         let mut out = std::collections::BTreeMap::new();
         for r in &self.running {
             *out.entry(r.owner).or_default() += 1;
@@ -405,7 +405,7 @@ impl DriveFx {
 /// along it (FUN_1403d7600 → FUN_1403b5d40: the bone of the weapon's first
 /// enabled shape of kind 15, bone 2, returning that shape's x), or `None`
 /// without the weapon's own motion.
-pub(super) fn slot_pose(cp: &ClipPoses, frame: usize, slot: usize) -> Option<(Mat4, f32)> {
+pub fn slot_pose(cp: &ClipPoses, frame: usize, slot: usize) -> Option<(Mat4, f32)> {
     let (hands, blades) = if slot == 0 {
         (&cp.weapon, &cp.blade)
     } else {
@@ -419,7 +419,7 @@ pub(super) fn slot_pose(cp: &ClipPoses, frame: usize, slot: usize) -> Option<(Ma
 /// Sora this frame: his scene-space object matrix, the bone matrices, each
 /// weapon slot's blade bone and reach (model space), the hand holding slot 0
 /// and his current motion.
-pub(super) struct SoraPose {
+pub struct SoraPose {
     root: Mat4,
     bones: Option<HashMap<usize, Mat4>>,
     slots: [Option<(Mat4, f32)>; 2],
@@ -444,7 +444,7 @@ fn rival_poses(game: &mut Game) -> Vec<(u8, SoraPose)> {
     out
 }
 
-pub(super) fn sora_pose(game: &Game) -> SoraPose {
+pub fn sora_pose(game: &Game) -> SoraPose {
     let p = game.sora.player.position;
     let root = Mat4::from_rotation_translation(
         Quat::from_rotation_y(game.sora.player.yaw),
@@ -490,7 +490,7 @@ pub(super) fn sora_pose(game: &Game) -> SoraPose {
 /// 0x4000 and 0x4002 stay on the object.
 /// A weapon code's matrix: the blade bone's axes at the reach (0x4003 /
 /// 0x4004), half of it (0x4007 / 0x4008) or at the bone (0x4005 / 0x4006).
-pub(super) fn slot_matrix(bone: Mat4, reach: f32, code: i16) -> Mat4 {
+pub fn slot_matrix(bone: Mat4, reach: f32, code: i16) -> Mat4 {
     let along = match code {
         0x4003 | 0x4004 => reach,
         0x4007 | 0x4008 => reach * 0.5,
@@ -533,7 +533,7 @@ impl SoraPose {
 
     /// `local` on a bone code (`trap_obj_apply_bone_matrix`, 1:83), both in
     /// the room's frame.
-    pub(super) fn point(&self, bone: i16, local: [f32; 3]) -> [f32; 3] {
+    pub fn point(&self, bone: i16, local: [f32; 3]) -> [f32; 3] {
         self.matrix(bone)
             .transform_point3(Vec3::from_array(local))
             .to_array()
@@ -541,7 +541,7 @@ impl SoraPose {
 
     /// Where the object he carries in his hand stands (FUN_1403b5b40 reads an
     /// attached object's world matrix, +0x70).
-    pub(super) fn hand_point(&self) -> Option<[f32; 3]> {
+    pub fn hand_point(&self) -> Option<[f32; 3]> {
         let hand = self.hand?;
         Some(
             self.root

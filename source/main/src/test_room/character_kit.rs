@@ -14,7 +14,7 @@ use player::{Action, AttackStep, Clip, Clips, Params};
 use std::{collections::HashMap, sync::Arc};
 
 /// What a kit is built from.
-pub(super) struct KitInputs<'a> {
+pub struct KitInputs<'a> {
     /// The form (obj+0xde0) this kit plays: 0 for base Sora.
     pub form: u8,
     pub actor: model_inspection::InspectionModel,
@@ -67,11 +67,11 @@ pub(super) struct KitInputs<'a> {
 }
 
 /// A Keyblade's attack spheres by collision group: offset, radius.
-pub(super) type Blade = HashMap<u8, Vec<(Vec3, f32)>>;
+pub type Blade = HashMap<u8, Vec<(Vec3, f32)>>;
 
 /// The ATTACK spheres of a weapon object's collision table (kind 6, the
 /// Keyblade bone 2) from its mdlx archive.
-pub(super) fn blade_spheres(archive: &[u8]) -> Blade {
+pub fn blade_spheres(archive: &[u8]) -> Blade {
     let table = data::bar::read_bar(archive).ok();
     let collision = table
         .as_ref()
@@ -101,13 +101,13 @@ pub(super) fn blade_spheres(archive: &[u8]) -> Blade {
 }
 
 /// The Kingdom Key's reach, for a kit that reads no Keyblade of its own.
-pub(super) const KINGDOM_KEY_REACH: f32 = -78.;
+pub const KINGDOM_KEY_REACH: f32 = -78.;
 
 /// The Keyblade's reach along its blade bone: the x of the first shape of
 /// kind 15 in its collision table. FUN_1403b5d40 (weapon slot matrix) returns
 /// this for FUN_1403b50f0's codes 0x4003..0x4008, so 0x4003 / 0x4004 sit at
 /// (reach, 0, 0) on the bone and 0x4007 / 0x4008 at half of it.
-pub(super) fn blade_reach(archive: &[u8]) -> f32 {
+pub fn blade_reach(archive: &[u8]) -> f32 {
     let table = data::bar::read_bar(archive).ok();
     table
         .as_ref()
@@ -123,7 +123,7 @@ pub(super) fn blade_reach(archive: &[u8]) -> f32 {
 }
 
 /// A built kit.
-pub(super) struct Kit {
+pub struct Kit {
     pub params: Params,
     pub clips: Clips,
     pub actions: Vec<((Action, bool), usize)>,
@@ -224,10 +224,7 @@ fn evaluate_matrices(
 /// expressions, unsupported constraints).
 type BuiltClip = std::io::Result<(ClipPoses, [usize; 4])>;
 
-pub(super) fn load_kit(
-    source: &ProbeSource,
-    k: KitInputs,
-) -> Result<Kit, Box<dyn std::error::Error>> {
+pub fn load_kit(source: &ProbeSource, k: KitInputs) -> Result<Kit, Box<dyn std::error::Error>> {
     let KitInputs {
         form,
         actor,

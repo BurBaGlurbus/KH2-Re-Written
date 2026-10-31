@@ -10,19 +10,19 @@ use data::kh3::sora::{self, Animator, SoraData};
 use data::motion_eval::World;
 
 /// The loaded KH3 assets of a session.
-pub(crate) struct Loaded {
-    pub(crate) sora: SoraData,
-    pub(crate) book: Arc<player::kh3::attack::Book>,
-    pub(crate) fx: Arc<kh3_fx::FxData>,
+pub struct Loaded {
+    pub sora: SoraData,
+    pub book: Arc<player::kh3::attack::Book>,
+    pub fx: Arc<kh3_fx::FxData>,
 }
 
 type Job = std::thread::JoinHandle<Result<Loaded, String>>;
 
 #[derive(Resource, Default)]
-pub(crate) struct Kh3Model {
+pub struct Kh3Model {
     job: Option<Job>,
-    pub(crate) loaded: Option<Arc<Loaded>>,
-    pub(crate) error: Option<String>,
+    pub loaded: Option<Arc<Loaded>>,
+    pub error: Option<String>,
     retarget: Option<kh3_retarget::Retarget>,
     rigs: [Rig; 2],
 }
@@ -65,10 +65,10 @@ fn scale() -> f32 {
 
 /// Starts reading KH3 once a KH3 duel may happen.
 fn start_load(model: &mut Kh3Model, game: &Game) {
-    if model.job.is_some() || model.loaded.is_some() || model.error.is_some() || !game.duel {
+    if model.job.is_some() || model.loaded.is_some() || model.error.is_some() || !game.versus {
         return;
     }
-    let Some(install) = game.kh3_install.clone() else {
+    let Some(install) = game.ext.online().kh3_install.clone() else {
         return;
     };
     let hint = crate::launcher::kh3_folder().1;
@@ -107,13 +107,13 @@ fn fighter_of(game: &Game, seat: u8) -> Option<&Fighter> {
 }
 
 /// KH3's animation is what KH2's Sora shows: KH2's own presenters leave him alone.
-pub(crate) fn shows_kh3(game: &Game) -> bool {
-    duel_kh3::on(game) && game.kh3_book.is_some()
+pub fn shows_kh3(game: &Game) -> bool {
+    duel_kh3::on(game) && game.ext.online().kh3_book.is_some()
 }
 
 /// The room's Sora and the rivals, for the frame's writes.
 #[derive(bevy::ecs::system::SystemParam)]
-pub(crate) struct Models<'w, 's> {
+pub struct Models<'w, 's> {
     transforms: Query<'w, 's, &'static mut Transform>,
     visibilities: Query<'w, 's, &'static mut Visibility>,
     meshes: ResMut<'w, Assets<Mesh>>,
@@ -121,10 +121,10 @@ pub(crate) struct Models<'w, 's> {
     room_hand: Query<'w, 's, Entity, With<WeaponRoot>>,
     room_parts: Query<'w, 's, (&'static SoraPart, &'static Mesh3d)>,
     room_blades: Query<'w, 's, (&'static WeaponPart, &'static Mesh3d)>,
-    rival_roots: Query<'w, 's, (Entity, &'static rival::RivalRoot)>,
-    rival_hands: Query<'w, 's, (Entity, &'static rival::RivalHand)>,
-    rival_parts: Query<'w, 's, (&'static rival::RivalPart, &'static Mesh3d)>,
-    rival_blades: Query<'w, 's, (&'static rival::RivalWeaponPart, &'static Mesh3d)>,
+    rival_roots: Query<'w, 's, (Entity, &'static rival_play::RivalRoot)>,
+    rival_hands: Query<'w, 's, (Entity, &'static rival_play::RivalHand)>,
+    rival_parts: Query<'w, 's, (&'static rival_play::RivalPart, &'static Mesh3d)>,
+    rival_blades: Query<'w, 's, (&'static rival_play::RivalWeaponPart, &'static Mesh3d)>,
 }
 
 impl Models<'_, '_> {
@@ -229,7 +229,7 @@ impl Models<'_, '_> {
 
 /// One frame of KH3's animation on KH2's Sora.
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn update(
+pub fn update(
     mut commands: Commands,
     mut model: ResMut<Kh3Model>,
     mut game: ResMut<Game>,
@@ -247,7 +247,7 @@ pub(crate) fn update(
     let model = &mut *model;
     start_load(model, &game);
     // Reading KH3 takes some seconds: the duel waits for it.
-    game.kh3_loading = model.job.is_some() && duel_kh3::on(&game);
+    game.ext.online_mut().kh3_loading = model.job.is_some() && duel_kh3::on(&game);
     if model.job.as_ref().is_some_and(|j| j.is_finished())
         && let Some(job) = model.job.take()
     {
@@ -258,7 +258,7 @@ pub(crate) fn update(
                     loaded.sora.anims.rows.len(),
                     loaded.sora.anims.clips.len()
                 );
-                game.kh3_book = Some(Arc::clone(&loaded.book));
+                game.ext.online_mut().kh3_book = Some(Arc::clone(&loaded.book));
                 kh3_fx::begin(&mut fx, Arc::clone(&loaded.fx), &mut images);
                 game.event(serde_json::json!({"event":"kh3_assets",
                     "clips":loaded.book.clips.len(),"rows":loaded.book.rows.len(),
@@ -276,7 +276,7 @@ pub(crate) fn update(
     }
     // The layers' requests (a joiner gets them through the wire).
     let mut requests = Vec::new();
-    requests.append(&mut game.kh3_fx_remote);
+    requests.append(&mut game.ext.online_mut().kh3_fx_remote);
     let game = &*game;
     let Some(loaded) = model.loaded.clone().filter(|_| duel_kh3::on(game)) else {
         return;
@@ -343,12 +343,12 @@ pub(crate) fn update(
         kh3_fx::actors_step(
             &mut fx,
             seat,
-            &fighter.kh3.actors,
-            &fighter.kh3.bolts,
+            &fighter.ext.fighter().kh3.actors,
+            &fighter.ext.fighter().kh3.bolts,
             &loaded.book,
         );
-        let local = fighter.kh3.visual;
-        let remote = fighter.kh3.remote_visual;
+        let local = fighter.ext.fighter().kh3.visual;
+        let remote = fighter.ext.fighter().kh3.remote_visual;
         let v = &match remote {
             Some(r) => player::kh3::visual::Visual {
                 row: "",
@@ -386,7 +386,7 @@ pub(crate) fn update(
         );
         sora::to_component(&data.mesh.bones, &rig.animator.saved, &mut rig.component);
         retarget.pose(&rig.component, idle_joints, &mut rig.posed);
-        fx.surface = kh3_autose::surface_of_arena(game.duel_arena);
+        fx.surface = kh3_autose::surface_of_arena(game.ext.online().duel_arena);
         kh3_fx::body_step(
             &mut fx,
             data,
@@ -410,7 +410,7 @@ pub(crate) fn update(
             .collect();
         let place = Transform {
             translation: Vec3::from_array(p.position),
-            rotation: duel_kh3::turn(p.yaw, &fighter.kh3),
+            rotation: duel_kh3::turn(p.yaw, &fighter.ext.fighter().kh3),
             scale: Vec3::ONE,
         };
         let drawn = rig.blade.drawn(p.armed, &data.blade_times, dt);

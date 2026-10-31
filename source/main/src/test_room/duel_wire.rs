@@ -16,25 +16,25 @@ const EVENTS: u8 = 3;
 const RULES: u8 = 4;
 /// The lobby (host to joiner), a joiner's lobby intent, and the host's
 /// refusal of one (duel_lobby.rs).
-pub(crate) const LOBBY: u8 = 5;
-pub(crate) const INTENT: u8 = 6;
-pub(crate) const REFUSED: u8 = 7;
+pub const LOBBY: u8 = 5;
+pub const INTENT: u8 = 6;
+pub const REFUSED: u8 = 7;
 /// A vote (host to joiner) and a joiner's ballot (duel_vote.rs).
-pub(crate) const VOTE: u8 = 8;
-pub(crate) const BALLOT: u8 = 9;
+pub const VOTE: u8 = 8;
+pub const BALLOT: u8 = 9;
 /// The match (host to joiner) and a joiner's rematch choice
 /// (duel_match_room.rs).
-pub(crate) const MATCH: u8 = 10;
-pub(crate) const REMATCH: u8 = 11;
+pub const MATCH: u8 = 10;
+pub const REMATCH: u8 = 11;
 /// The host's pick of the match's music (duel_music.rs).
-pub(crate) const MUSIC: u8 = 12;
+pub const MUSIC: u8 = 12;
 /// A joiner's forfeit (duel_match_room.rs).
-pub(crate) const FORFEIT: u8 = 13;
+pub const FORFEIT: u8 = 13;
 
 /// Ticks of buttons each input message repeats.
-pub(crate) const INPUT_REDUNDANCY: usize = 6;
+pub const INPUT_REDUNDANCY: usize = 6;
 
-pub(crate) fn action_code(action: Action) -> (u8, u16) {
+pub fn action_code(action: Action) -> (u8, u16) {
     let arg = |i: usize| u16::try_from(i).unwrap_or(u16::MAX);
     match action {
         Action::Idle => (0, 0),
@@ -60,7 +60,7 @@ pub(crate) fn action_code(action: Action) -> (u8, u16) {
     }
 }
 
-pub(crate) fn action_from(code: u8, arg: u16) -> Option<Action> {
+pub fn action_from(code: u8, arg: u16) -> Option<Action> {
     let i = arg as usize;
     Some(match code {
         0 => Action::Idle,
@@ -144,7 +144,7 @@ fn get_pad(r: &mut Reader) -> Option<RivalPad> {
 /// The joiner's buttons of its newest ticks, oldest first: (joiner tick,
 /// pad). The first tick is whole, each next one its step from the last (the
 /// newest run whose steps fit a byte).
-pub(crate) fn encode_input(recent: &[(u32, RivalPad)]) -> Vec<u8> {
+pub fn encode_input(recent: &[(u32, RivalPad)]) -> Vec<u8> {
     let mut w = Writer::default();
     w.u8(INPUT);
     let mut recent = &recent[recent.len().saturating_sub(INPUT_REDUNDANCY)..];
@@ -167,7 +167,7 @@ pub(crate) fn encode_input(recent: &[(u32, RivalPad)]) -> Vec<u8> {
     w.finish()
 }
 
-pub(crate) fn decode_input(bytes: &[u8]) -> Option<Vec<(u32, RivalPad)>> {
+pub fn decode_input(bytes: &[u8]) -> Option<Vec<(u32, RivalPad)>> {
     let mut r = Reader::new(bytes);
     if r.u8()? != INPUT {
         return None;
@@ -189,7 +189,7 @@ pub(crate) fn decode_input(bytes: &[u8]) -> Option<Vec<(u32, RivalPad)>> {
 
 /// One Sora as the other instance draws him.
 #[derive(Clone, Debug, PartialEq)]
-pub(crate) struct FighterState {
+pub struct FighterState {
     pub slot: u8,
     pub position: [f32; 3],
     pub yaw: f32,
@@ -216,10 +216,10 @@ pub(crate) struct FighterState {
 }
 
 /// The most bullets a snapshot carries per fighter.
-pub(crate) const MAX_BULLETS: usize = 32;
+pub const MAX_BULLETS: usize = 32;
 
 /// The most item slots a snapshot carries.
-pub(crate) const MAX_ITEM_SLOTS: usize = 8;
+pub const MAX_ITEM_SLOTS: usize = 8;
 
 /// Snapshot numbers in fewer bytes [duel choice, T249]: positions stay
 /// f32 (they move the Soras); the yaw is a turn in 65536 steps, the blend
@@ -263,12 +263,12 @@ fn small_of(bits: u16) -> i32 {
 
 /// The host's picture of one tick.
 #[derive(Clone, Debug, PartialEq)]
-pub(crate) struct Snapshot {
+pub struct Snapshot {
     pub tick: u64,
     pub fighters: Vec<FighterState>,
 }
 
-pub(crate) fn encode_snapshot(s: &Snapshot) -> Vec<u8> {
+pub fn encode_snapshot(s: &Snapshot) -> Vec<u8> {
     let mut w = Writer::default();
     w.u8(SNAPSHOT);
     w.u64(s.tick);
@@ -345,7 +345,7 @@ pub(crate) fn encode_snapshot(s: &Snapshot) -> Vec<u8> {
     w.finish()
 }
 
-pub(crate) fn decode_snapshot(bytes: &[u8]) -> Option<Snapshot> {
+pub fn decode_snapshot(bytes: &[u8]) -> Option<Snapshot> {
     let mut r = Reader::new(bytes);
     if r.u8()? != SNAPSHOT {
         return None;
@@ -464,7 +464,7 @@ pub(crate) fn decode_snapshot(bytes: &[u8]) -> Option<Snapshot> {
 }
 
 /// The host's match rules (reliable, on connecting and on every change).
-pub(crate) fn encode_rules(rules: &MatchRules) -> Vec<u8> {
+pub fn encode_rules(rules: &MatchRules) -> Vec<u8> {
     let mut w = Writer::default();
     w.u8(RULES);
     w.u8(rules.mode_code());
@@ -477,7 +477,7 @@ pub(crate) fn encode_rules(rules: &MatchRules) -> Vec<u8> {
     w.finish()
 }
 
-pub(crate) fn decode_rules(bytes: &[u8]) -> Option<MatchRules> {
+pub fn decode_rules(bytes: &[u8]) -> Option<MatchRules> {
     let mut r = Reader::new(bytes);
     if r.u8()? != RULES {
         return None;
@@ -497,7 +497,7 @@ pub(crate) fn decode_rules(bytes: &[u8]) -> Option<MatchRules> {
 /// What the joiner shows of a host-side moment: sounds and sparks are
 /// played and drawn locally from these, never replicated as such.
 #[derive(Clone, Debug, PartialEq)]
-pub(crate) enum DuelEvent {
+pub enum DuelEvent {
     /// A sound by id (bank·1000 + sound).
     Sound(u32),
     /// A hit spark: effect, random count, contact point, direction, and
@@ -553,19 +553,19 @@ pub(crate) enum DuelEvent {
 
 /// [KH3 mode] An effect on a Sora, `bone` by the book's names.
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub(crate) struct Kh3Attach {
-    pub(crate) seat: u8,
-    pub(crate) bone: u16,
-    pub(crate) offset: [f32; 3],
-    pub(crate) handle: u32,
-    pub(crate) group: u32,
+pub struct Kh3Attach {
+    pub seat: u8,
+    pub bone: u16,
+    pub offset: [f32; 3],
+    pub handle: u32,
+    pub group: u32,
     /// 0 starts; 1 stops; 2 stops at once.
-    pub(crate) stop: u8,
+    pub stop: u8,
 }
 
 /// Where a forwarded Drive effect starts.
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub(crate) enum FxAnchor {
+pub enum FxAnchor {
     Slot(u8),
     World { at: [f32; 3], pitch: f32, yaw: f32 },
 }
@@ -660,7 +660,7 @@ fn get_fx(r: &mut Reader) -> Option<player::magic::Fx> {
     })
 }
 
-pub(crate) fn encode_events(tick: u64, events: &[DuelEvent]) -> Vec<u8> {
+pub fn encode_events(tick: u64, events: &[DuelEvent]) -> Vec<u8> {
     let mut w = Writer::default();
     w.u8(EVENTS);
     w.u64(tick);
@@ -778,7 +778,7 @@ pub(crate) fn encode_events(tick: u64, events: &[DuelEvent]) -> Vec<u8> {
     w.finish()
 }
 
-pub(crate) fn decode_events(bytes: &[u8]) -> Option<(u64, Vec<DuelEvent>)> {
+pub fn decode_events(bytes: &[u8]) -> Option<(u64, Vec<DuelEvent>)> {
     let mut r = Reader::new(bytes);
     if r.u8()? != EVENTS {
         return None;

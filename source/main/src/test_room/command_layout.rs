@@ -36,7 +36,7 @@ fn install(game: &mut Game, m: &mut MenuState, name: String, sheet: Result<Sheet
     m.layout = Some(name);
 }
 
-pub(super) fn follow(
+pub fn follow(
     mut game: ResMut<Game>,
     area: Option<Res<AreaRes>>,
     hud: Option<ResMut<Hud>>,

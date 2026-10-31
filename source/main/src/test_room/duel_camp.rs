@@ -7,37 +7,22 @@
 //! one is open).
 
 use super::*;
-use visual::pause_menu::{Camp, DuelPages, Entry};
+use visual::pause_menu::{Camp, Entry};
 
 /// The screens that ask for the camp.
-pub(crate) const LOBBY: u8 = 1;
-pub(crate) const VOTE: u8 = 2;
-pub(crate) const RESULT: u8 = 3;
-pub(crate) const FORFEIT: u8 = 4;
+pub const LOBBY: u8 = 1;
+pub const VOTE: u8 = 2;
+pub const RESULT: u8 = 3;
+pub const FORFEIT: u8 = 4;
 
-/// A top-level entry: one of the camp's own (by id: its label and help
-/// are the game's) or the screen's.
-#[derive(Clone, Debug)]
-pub(crate) enum Item {
-    Own(u8),
-    New(Entry),
-}
-
-/// What a screen asks the camp for.
-#[derive(Clone, Debug)]
-pub(crate) struct Request {
-    pub entries: Vec<Item>,
-    /// Opens on the Config screen (the pages), not the top level.
-    pub on_config: bool,
-    pub pages: DuelPages,
-}
+pub use super::extension::{CampItem as Item, CampRequest as Request};
 
 /// Characters on one line of the camp's help box.
 const HELP_LINE: usize = 48;
 
 /// A help line in game text, broken between words to fit the help box
 /// (0x02, the text's new line).
-pub(crate) fn help_text(s: &str) -> Vec<u8> {
+pub fn help_text(s: &str) -> Vec<u8> {
     let mut lines: Vec<String> = vec![String::new()];
     for word in s.split(' ') {
         let line = lines.last_mut().expect("one line");
@@ -61,7 +46,7 @@ pub(crate) fn help_text(s: &str) -> Vec<u8> {
 }
 
 /// A screen's entry of its own (the camp hands its pick back).
-pub(crate) fn entry(id: u8, label: &str, help: &str) -> Item {
+pub fn entry(id: u8, label: &str, help: &str) -> Item {
     Item::New(Entry {
         id,
         label: pause_menu::encode_text(label),
@@ -71,7 +56,7 @@ pub(crate) fn entry(id: u8, label: &str, help: &str) -> Item {
 
 /// Keeps the camp on screen `who`, version `want` (None: this screen wants
 /// none). Returns the open camp when it is this screen's.
-pub(crate) fn hold<'a>(
+pub fn hold<'a>(
     camp: &'a mut CampRes,
     game: &mut Game,
     who: u8,
@@ -97,12 +82,12 @@ pub(crate) fn hold<'a>(
         Some(_) => return None,
         None => {}
     }
-    let pending = game.duel_camp.as_ref().map(|r| r.pages.owner);
+    let pending = game.camp_request.as_ref().map(|r| r.pages.owner);
     match mine {
         None => {
             if pending.is_some_and(|p| p.0 == who) {
-                game.duel_camp = None;
-                game.duel_open_camp = false;
+                game.camp_request = None;
+                game.camp_open_request = false;
             }
         }
         Some(m) => {
@@ -111,8 +96,8 @@ pub(crate) fn hold<'a>(
                 let mut r = make();
                 r.pages.owner = m;
                 r.pages.keep_open = true;
-                game.duel_camp = Some(r);
-                game.duel_open_camp = true;
+                game.camp_request = Some(r);
+                game.camp_open_request = true;
             }
         }
     }
@@ -122,8 +107,11 @@ pub(crate) fn hold<'a>(
 /// [Test] `--duel-shots`: a capture now (the screens ask for theirs at the
 /// moments worth a look), once per `key`: a capture holds the clock, and
 /// a joiner's view of the host's clock can stand still meanwhile.
-pub(crate) fn shot(game: &mut Game, key: (u8, u64, u64)) {
-    if !game.duel_shots || game.autoplay.is_none() || !game.duel_shot_keys.insert(key) {
+pub fn shot(game: &mut Game, key: (u8, u64, u64)) {
+    if !game.ext.online_mut().duel_shots
+        || game.autoplay.is_none()
+        || !game.ext.online_mut().duel_shot_keys.insert(key)
+    {
         return;
     }
     let at = game.tick;
@@ -136,7 +124,7 @@ pub(crate) fn shot(game: &mut Game, key: (u8, u64, u64)) {
 /// camp's glyph family: keyboard, Xbox, PlayStation, other) [duel choice;
 /// the keyboard's are the room's default bindings, visual::input].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct Prompts {
+pub struct Prompts {
     pub start: &'static str,
     /// Left and right on the D-pad.
     pub left: &'static str,
@@ -153,7 +141,7 @@ impl Default for Prompts {
     }
 }
 
-pub(crate) fn prompts(camp: &CampRes) -> Prompts {
+pub fn prompts(camp: &CampRes) -> Prompts {
     let pad = |start| Prompts {
         start,
         left: "Left",
@@ -169,12 +157,12 @@ pub(crate) fn prompts(camp: &CampRes) -> Prompts {
 }
 
 /// The caller's pick on the camp's top level, taken.
-pub(crate) fn picked(menu: &mut Camp) -> Option<u8> {
+pub fn picked(menu: &mut Camp) -> Option<u8> {
     menu.data.duel.as_mut().and_then(|d| d.picked.take())
 }
 
 /// A shown-only row: a label and its value.
-pub(crate) fn info_row(label: &str, value: &str, help: &str) -> pause_menu::DuelRow {
+pub fn info_row(label: &str, value: &str, help: &str) -> pause_menu::DuelRow {
     pause_menu::DuelRow {
         label: pause_menu::encode_text(label),
         choices: vec![pause_menu::encode_text(value)],
@@ -185,7 +173,7 @@ pub(crate) fn info_row(label: &str, value: &str, help: &str) -> pause_menu::Duel
 }
 
 /// Sets entry `id`'s help line (the camp shows a change at once).
-pub(crate) fn set_help(menu: &mut Camp, id: u8, help: &str) {
+pub fn set_help(menu: &mut Camp, id: u8, help: &str) {
     let bytes = help_text(help);
     if let Some(e) = menu.data.entries.iter_mut().find(|e| e.id == id)
         && e.help != bytes

@@ -33,6 +33,7 @@ use visual::overlay::{Ui2dFrame, Ui2dPlugin};
 
 pub use install::{
     data_dir, field_args, field_start, landing_room_config, play_args, save_start, saved_start,
+    set_data_dir,
 };
 
 // Palette.

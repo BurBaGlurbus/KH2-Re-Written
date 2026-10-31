@@ -12,7 +12,7 @@ use super::*;
 use serde_json::{Value, json};
 
 #[derive(Resource, Default)]
-pub(crate) struct DuelPrefs {
+pub struct DuelPrefs {
     /// None: not kept (an unattended run).
     path: Option<PathBuf>,
     pub rules: Option<MatchRules>,
@@ -21,7 +21,7 @@ pub(crate) struct DuelPrefs {
 
 impl DuelPrefs {
     /// The file beside `manifest`, read if it is there.
-    pub(crate) fn load(manifest: &Path, unattended: bool) -> Self {
+    pub fn load(manifest: &Path, unattended: bool) -> Self {
         if unattended {
             return Self::default();
         }
@@ -37,14 +37,14 @@ impl DuelPrefs {
         }
     }
 
-    pub(crate) fn save_rules(&mut self, rules: MatchRules) {
+    pub fn save_rules(&mut self, rules: MatchRules) {
         if self.rules != Some(rules) {
             self.rules = Some(rules);
             self.write();
         }
     }
 
-    pub(crate) fn save_build(&mut self, build: &Loadout) {
+    pub fn save_build(&mut self, build: &Loadout) {
         if self.build.as_ref() != Some(build) {
             self.build = Some(build.clone());
             self.write();
@@ -150,7 +150,7 @@ fn build_from(v: &Value) -> Option<Loadout> {
 /// A kept build made to fit this duel: a Keyblade it has (else `current`),
 /// its abilities in their saved order and state as far as the duel has them
 /// (the rest after, unequipped), items it allows in its slots.
-pub(crate) fn fit(saved: &Loadout, limits: &Limits, current: &Loadout) -> Loadout {
+pub fn fit(saved: &Loadout, limits: &Limits, current: &Loadout) -> Loadout {
     let keyblade = if limits.keyblades.contains(&saved.keyblade) {
         saved.keyblade
     } else {

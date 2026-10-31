@@ -233,7 +233,7 @@ impl Blend {
 
 /// Both cameras, kept between ticks.
 #[derive(Clone, Debug, Default)]
-pub(crate) struct Kh3Camera {
+pub struct Kh3Camera {
     lock: Option<Lock>,
     lock_blend: Blend,
     aim: Option<Aim>,
@@ -242,7 +242,7 @@ pub(crate) struct Kh3Camera {
 }
 
 /// What one tick reads.
-pub(crate) struct Frame {
+pub struct Frame {
     /// Sora's feet and facing, the locked target's point, the aim's.
     pub feet: Vec3,
     pub yaw: f32,
@@ -538,7 +538,7 @@ fn mix(a: &boss::OverlayView, b: &boss::OverlayView, w: f32) -> boss::OverlayVie
 
 impl Kh3Camera {
     /// One fixed tick: the view to show, or None for the follow camera's.
-    pub(crate) fn tick(&mut self, f: &Frame) -> Option<boss::OverlayView> {
+    pub fn tick(&mut self, f: &Frame) -> Option<boss::OverlayView> {
         let dt = STEP;
         let velocity = self.previous.map_or(Vec3::ZERO, |p| (f.feet - p) / dt);
         self.previous = Some(f.feet);

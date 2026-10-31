@@ -105,7 +105,7 @@ impl GalleryActor {
         self.timeline
     }
 
-    pub(super) fn battle_pose(
+    pub fn battle_pose(
         &mut self,
         choice: usize,
         key: f32,
@@ -283,7 +283,7 @@ pub struct EnemyGallery {
     /// Skeleton and model visibility for every actor.
     pub overlays: PreviewOverlays,
     /// Only the plain bone chain poses the model (no IK or constraints).
-    pub(super) forward_kinematics_only: bool,
+    pub forward_kinematics_only: bool,
     next_id: u64,
     pending: Vec<Request>,
     garbage: Vec<(u64, Entity)>,
@@ -293,7 +293,7 @@ pub struct EnemyGallery {
 impl EnemyGallery {
     /// Actors removed whose entities still wait for their despawn (the
     /// census).
-    pub(crate) fn garbage_len(&self) -> usize {
+    pub fn garbage_len(&self) -> usize {
         self.garbage.len()
     }
 
@@ -907,8 +907,8 @@ fn load_motion(gallery: &mut EnemyGallery, id: u64, choice: usize) -> Result<(),
 }
 
 /// One evaluated pose: the model's vertices and where each bone's joint is.
-pub(super) struct Sampled {
-    pub(super) points: Vec<Vec3>,
+pub struct Sampled {
+    pub points: Vec<Vec3>,
     joints: Vec<Vec3>,
 }
 
@@ -1011,7 +1011,7 @@ fn skin_joints(kind: &Kind, joints: &[motion_eval::World]) -> Result<Sampled, St
     finish(kind, &pose, Vec3::ZERO)
 }
 
-pub(super) fn sample(
+pub fn sample(
     kind: &Kind,
     motion: &motion::SelectedMotion,
     frame: f32,

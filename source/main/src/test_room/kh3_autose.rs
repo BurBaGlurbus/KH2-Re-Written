@@ -8,7 +8,7 @@ use glam::Vec3;
 
 /// `ESQEXSEADAutoSeMotionSoundType`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub(crate) enum Motion {
+pub enum Motion {
     Walk = 1,
     Run = 2,
     Jump = 3,
@@ -22,7 +22,7 @@ pub(crate) enum Motion {
 }
 
 impl Motion {
-    pub(crate) fn named(name: &str) -> Option<Motion> {
+    pub fn named(name: &str) -> Option<Motion> {
         Some(match name.rsplit("::").next().unwrap_or(name) {
             "Walk" => Motion::Walk,
             "Run" => Motion::Run,
@@ -41,13 +41,13 @@ impl Motion {
 
 /// Which side a sound of a foot or an arm is at (`L_ashi1` / `R_ashi1`, `L_ude1` / `R_ude1`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum Part {
+pub enum Part {
     Foot(usize),
     Arm(usize),
 }
 
 impl Part {
-    pub(crate) fn bone(self) -> &'static str {
+    pub fn bone(self) -> &'static str {
         match self {
             Part::Foot(0) => "L_ashi1",
             Part::Foot(_) => "R_ashi1",
@@ -58,25 +58,25 @@ impl Part {
 }
 
 /// `BoneSet_Sora1`'s bones, in the order `Frame::of` takes them.
-pub(crate) const BONES: [&str; 14] = [
+pub const BONES: [&str; 14] = [
     "Trans", "koshi", "L_momo", "L_sune", "L_ashi1", "L_ashi2", "R_momo", "R_sune", "R_ashi1",
     "R_ashi2", "L_ude1", "L_ude2", "R_ude1", "R_ude2",
 ];
 
 /// One frame's input: world positions, cm, Z up.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
-pub(crate) struct Frame {
-    pub(crate) base: Vec3,
-    pub(crate) waist: Vec3,
+pub struct Frame {
+    pub base: Vec3,
+    pub waist: Vec3,
     /// Femur, tibia, foot per side.
-    pub(crate) legs: [[Vec3; 3]; 2],
-    pub(crate) elbows: [Vec3; 2],
+    pub legs: [[Vec3; 3]; 2],
+    pub elbows: [Vec3; 2],
     /// The movement mode is walking.
-    pub(crate) grounded: bool,
+    pub grounded: bool,
 }
 
 impl Frame {
-    pub(crate) fn of(p: &[Vec3; 14], grounded: bool) -> Frame {
+    pub fn of(p: &[Vec3; 14], grounded: bool) -> Frame {
         Frame {
             base: p[0],
             waist: p[1],
@@ -88,17 +88,17 @@ impl Frame {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub(crate) struct Event {
-    pub(crate) motion: Motion,
-    pub(crate) part: Part,
-    pub(crate) volume: f32,
+pub struct Event {
+    pub motion: Motion,
+    pub part: Part,
+    pub volume: f32,
 }
 
 /// The two numbers `DetectioinSetting_Sora` overrides (native defaults 0.5 and 2.0, 0x14597FE40).
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub(crate) struct Settings {
-    pub(crate) shuffle_body_velocity: f32,
-    pub(crate) shuffle_foot_accel: f32,
+pub struct Settings {
+    pub shuffle_body_velocity: f32,
+    pub shuffle_foot_accel: f32,
 }
 
 impl Default for Settings {
@@ -155,7 +155,7 @@ struct Analysis {
 
 /// The detector's state.
 #[derive(Clone, Debug)]
-pub(crate) struct AutoSe {
+pub struct AutoSe {
     previous: Option<Analysis>,
     warmup: i32,
     cooldown_foot: [f32; 2],
@@ -184,7 +184,7 @@ fn map(v: f32, range: [f32; 2]) -> f32 {
 impl AutoSe {
     /// One frame; at most `EVENTS_PER_FRAME` events, in the detectors' order. `enabled`: the
     /// `ChangeAutoSeEnable` windows. `listener`: metres to the listener.
-    pub(crate) fn step(
+    pub fn step(
         &mut self,
         dt: f32,
         frame: &Frame,
@@ -377,7 +377,7 @@ impl AutoSe {
 /// The physical surface an arena's floor would have in KH3 (`EPhysicalSurface`, `FsTable_Sora`'s index) [duel
 /// choice: KH2's rooms have no physical materials]: the Mirage Arena's polished checker is marble, the test room's
 /// rock (surface 0 uses rock's bank).
-pub(crate) fn surface_of_arena(arena: usize) -> usize {
+pub fn surface_of_arena(arena: usize) -> usize {
     if arena == super::duel_arena::MIRAGE {
         11
     } else {

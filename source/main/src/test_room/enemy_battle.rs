@@ -374,7 +374,7 @@ impl Brain {
 }
 
 #[derive(Clone)]
-pub(super) struct Clip {
+pub struct Clip {
     choice: usize,
     motion: Arc<SelectedMotion>,
     duration: u32,
@@ -428,7 +428,7 @@ impl Clip {
 }
 /// A motion set's clips, and for each hook table the set as that table leaves
 /// it: FUN_1403c8cd0 looks in the table first, then in the set.
-pub(super) struct Clips(HashMap<usize, Clip>, HashMap<i32, Clips>);
+pub struct Clips(HashMap<usize, Clip>, HashMap<i32, Clips>);
 impl Clips {
     pub fn hook(&self, hook: i32) -> Option<&Clips> {
         self.1.get(&hook)
@@ -438,7 +438,7 @@ impl Clips {
     /// [`BattleActor::tick`] poses it.
     /// The attack windows of slot `slot`'s clip (none while blending) and
     /// its event clock at `elapsed`.
-    pub(super) fn windows_at(
+    pub fn windows_at(
         &self,
         slot: usize,
         elapsed: u32,
@@ -449,7 +449,7 @@ impl Clips {
         Some((windows, c.clock(elapsed) as f32))
     }
 
-    pub(super) fn pose_key(
+    pub fn pose_key(
         &self,
         slot: usize,
         elapsed: u32,
@@ -823,7 +823,7 @@ pub fn lock_range(source: &ProbeSource) -> Result<f32, String> {
 /// motions. It lives in its maker's script world; the gallery draws it. Each
 /// entry is read once and kept for the session, so a borrowed environment can
 /// hand its clips out. [I] Its motions' attack windows are not read.
-pub(super) struct MadeKind {
+pub struct MadeKind {
     pub clips: Arc<Clips>,
 }
 
@@ -834,13 +834,13 @@ fn made_kinds() -> &'static std::sync::Mutex<HashMap<u32, &'static MadeKind>> {
 }
 
 /// The kind of a made enemy already read.
-pub(super) fn made_kind(entry: u32) -> Option<&'static MadeKind> {
+pub fn made_kind(entry: u32) -> Option<&'static MadeKind> {
     made_kinds().lock().ok()?.get(&entry).copied()
 }
 
 /// A fighter's motions under its entry: other fighters' scripts can reach its
 /// object, and a script can make one of its entry.
-pub(super) fn register_fighter_kind(entry: u32, clips: &Arc<Clips>) {
+pub fn register_fighter_kind(entry: u32, clips: &Arc<Clips>) {
     if let Ok(mut kinds) = made_kinds().lock() {
         kinds.entry(entry).or_insert_with(|| {
             Box::leak(Box::new(MadeKind {
@@ -851,7 +851,7 @@ pub(super) fn register_fighter_kind(entry: u32, clips: &Arc<Clips>) {
 }
 
 /// Reads a made enemy's motions the first time its entry is made.
-pub(super) fn load_made_kind(source: &ProbeSource, object: &data::objentry::ObjectEntry) {
+pub fn load_made_kind(source: &ProbeSource, object: &data::objentry::ObjectEntry) {
     if made_kind(object.object_id).is_some() {
         return;
     }
@@ -876,7 +876,7 @@ pub(super) fn load_made_kind(source: &ProbeSource, object: &data::objentry::Obje
 
 /// The clips of a kind's motion set: native clock, root motion, the attack
 /// windows `windows` gives and the trigger tables the engine reads.
-pub(super) fn build_clips(
+pub fn build_clips(
     kind: &Kind,
     mut windows: impl FnMut(&SelectedMotion) -> Result<Vec<AttackWindow>, String>,
 ) -> Result<Clips, String> {

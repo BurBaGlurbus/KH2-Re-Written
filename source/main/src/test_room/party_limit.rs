@@ -752,7 +752,7 @@ fn room_body(game: &Game) -> player::Body {
     }
 }
 
-pub(super) fn room_enemy_radius(game: &Game) -> Option<f32> {
+pub fn room_enemy_radius(game: &Game) -> Option<f32> {
     game.enemy
         .as_ref()
         .and_then(|rt| rt.targets.first())
@@ -825,7 +825,7 @@ fn sora_lift(game: &Game) -> f32 {
         .map_or(0., |c| c[1] - game.sora.player.position[1])
 }
 
-pub(super) fn room_enemy(game: &Game) -> Option<V3> {
+pub fn room_enemy(game: &Game) -> Option<V3> {
     game.enemy
         .as_ref()
         .filter(|rt| rt.enabled && rt.enemy.targetable())

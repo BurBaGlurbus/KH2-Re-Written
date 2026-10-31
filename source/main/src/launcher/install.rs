@@ -11,6 +11,7 @@ use serde::{Deserialize, Serialize};
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 use std::sync::atomic::AtomicU64;
 use std::time::UNIX_EPOCH;
 use validation::{KH2_EXECUTABLE, SourceManifest};
@@ -21,10 +22,20 @@ const SETTINGS: &str = "launcher.json";
 const MANIFEST_LIMIT: u64 = 8 << 20;
 const CONFIG_LIMIT: u64 = 1 << 20;
 
+static DATA_DIR: OnceLock<PathBuf> = OnceLock::new();
+
+/// A program built on this engine keeps its files in a folder of its own.
+pub fn set_data_dir(dir: PathBuf) {
+    let _ = DATA_DIR.set(dir);
+}
+
 /// The private folder for launch files, configs, manifests and the
 /// launcher's settings: `.local/test-room` beside the checkout the
 /// executable was built in, else `%LOCALAPPDATA%\KH2FinalRewrite`.
 pub fn data_dir() -> PathBuf {
+    if let Some(dir) = DATA_DIR.get() {
+        return dir.clone();
+    }
     if let Ok(exe) = std::env::current_exe() {
         for up in exe.ancestors().skip(1).take(4) {
             let dir = up.join(".local/test-room");

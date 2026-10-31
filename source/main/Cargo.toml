@@ -35,9 +35,17 @@ fontdue = { version = "=0.9.4", default-features = false, features = ["std"] }
 image = { version = "=0.25.10", default-features = false, features = ["png"] }
 bevy = { version = "=0.19.1", default-features = false, features = ["std", "async_executor", "multi_threaded", "bevy_log", "bevy_asset", "bevy_window", "bevy_winit", "bevy_render", "bevy_camera", "bevy_image", "bevy_sprite", "bevy_sprite_render", "bevy_core_pipeline", "bevy_pbr", "bmp", "bevy_gilrs"] }
 
+# The engine: everything but the launcher's entry point. Kingdom Hearts: Online
+# builds its room on this library.
+[lib]
+name = "kh2rw"
+path = "src/lib.rs"
+
 [[bin]]
 name = "KH2RW"
 path = "src/main.rs"
+test = false
+bench = false
 
 # These tools have no unit tests; the launcher (with the viewers inside it)
 # keeps its own.

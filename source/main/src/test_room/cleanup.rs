@@ -11,7 +11,7 @@ const CENSUS_EVERY: f64 = 5.;
 
 /// How many of one effect presenter's things are alive.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub(crate) struct FxCount {
+pub struct FxCount {
     pub running: usize,
     pub spawned: usize,
     pub models: usize,
@@ -32,7 +32,7 @@ impl FxCount {
 
 /// The resources the census reads.
 #[derive(SystemParam)]
-pub(crate) struct Census<'w> {
+pub struct Census<'w> {
     meshes: Res<'w, Assets<Mesh>>,
     images: Res<'w, Assets<Image>>,
     fog: Res<'w, Assets<FogMaterial>>,
@@ -44,7 +44,6 @@ pub(crate) struct Census<'w> {
     audio: Res<'w, Audio>,
     gallery: Res<'w, enemy_gallery::EnemyGallery>,
     area: Option<Res<'w, AreaRes>>,
-    net: Option<Res<'w, duel_net::DuelNet>>,
 }
 
 /// One Sora's Drive state, for the census.
@@ -58,7 +57,7 @@ fn sora_line(slot: u8, drive: Option<&drive_room::DriveRt>) -> serde_json::Value
 }
 
 /// Writes a `census` line every few seconds of real time.
-pub(crate) fn census(
+pub fn census(
     census: Census,
     entities: &Entities,
     real: Res<Time<Real>>,
@@ -82,10 +81,7 @@ pub(crate) fn census(
             .iter()
             .map(|r| sora_line(r.slot, r.own.drive.as_ref())),
     );
-    let net = census.net.as_deref().map(|n| {
-        serde_json::json!({"snapshots":n.snapshots.len(),"events":n.events.len(),
-            "inputs":n.inputs.len(),"inbox":n.inbox.len(),"warnings":n.warnings.len()})
-    });
+    let net = (hooks().census)(&game);
     let assets = serde_json::json!({"meshes":census.meshes.len(),"images":census.images.len(),
         "fog_materials":census.fog.len(),"effect_materials":census.effect_materials.len(),
         "standard_materials":census.standard.len()});
@@ -113,7 +109,7 @@ pub(crate) fn census(
         "sound_stops":game.sound_stops.len(),"fx":game.fx_queue.len(),
         "styled":game.fx_styled.len(),"calls":game.fx_calls.len(),
         "release":game.fx_release.len(),"effects":game.effect_queue.len(),
-        "duel_events":game.duel_events.len(),"party_items":game.party_items.len()});
+        "party_items":game.party_items.len()});
     let line = serde_json::json!({"event":"census","tick":game.tick,"seconds":now,
         "entities":entities.count_spawned(),"assets":assets,"effects":effects,"sound":sound,
         "place":place,"maps":maps,"queues":queues,"soras":soras,"net":net});
@@ -122,7 +118,7 @@ pub(crate) fn census(
 
 /// What a cleanup is for.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum Scope {
+pub enum Scope {
     /// A duel round was decided: the result holds on screen.
     RoundEnd,
     /// The next round's (or the next match's) countdown begins.
@@ -191,11 +187,11 @@ const FIGHTER_FADE: f32 = 8.;
 const LOOP_FADE: f32 = 0.25;
 /// The ceiling on one presenter's running elements (the unattended soaks
 /// peak near 20) and on the meshes it draws them with (they peak near 15).
-pub(crate) const MAX_RUNNING: usize = 512;
-pub(crate) const MAX_EFFECT_ENTITIES: usize = 256;
+pub const MAX_RUNNING: usize = 512;
+pub const MAX_EFFECT_ENTITIES: usize = 256;
 /// The ceiling on a request queue that is emptied every tick the field runs;
 /// past it (a field held for long) the oldest requests go.
-const MAX_QUEUE: usize = 1024;
+pub const MAX_QUEUE: usize = 1024;
 /// Per-actor and per-attack maps are forgotten past this many entries.
 const MAX_MAP: usize = 4096;
 /// Decoded sounds kept past a cleanup (the soaks reach about 40 MiB).
@@ -203,7 +199,7 @@ const MAX_CLIP_BYTES: usize = 256 << 20;
 
 /// What a presenter's caches let go of.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub(crate) struct Released {
+pub struct Released {
     pub dpds: usize,
     pub pages: usize,
     pub materials: usize,
@@ -212,7 +208,7 @@ pub(crate) struct Released {
 
 /// Takes the DPDs only this list still holds out of it; returns their
 /// addresses, the caches' keys.
-pub(crate) fn stale_dpds(dpds: &mut Vec<Arc<data::object_effect::Dpd>>) -> Vec<usize> {
+pub fn stale_dpds(dpds: &mut Vec<Arc<data::object_effect::Dpd>>) -> Vec<usize> {
     let mut stale = Vec::new();
     dpds.retain(|d| {
         let only = Arc::strong_count(d) == 1;
@@ -225,14 +221,14 @@ pub(crate) fn stale_dpds(dpds: &mut Vec<Arc<data::object_effect::Dpd>>) -> Vec<u
 }
 
 /// Past `max` the oldest entries go; returns how many.
-fn cap<T>(queue: &mut Vec<T>, max: usize) -> usize {
+pub fn cap<T>(queue: &mut Vec<T>, max: usize) -> usize {
     let over = queue.len().saturating_sub(max);
     queue.drain(..over);
     over
 }
 
 /// Runs `f` on each Sora in turn, his state swapped in.
-pub(crate) fn each_sora(game: &mut Game, mut f: impl FnMut(&mut Game)) {
+pub fn each_sora(game: &mut Game, mut f: impl FnMut(&mut Game)) {
     f(game);
     let mut rivals = std::mem::take(&mut game.rivals);
     for r in &mut rivals {
@@ -244,8 +240,8 @@ pub(crate) fn each_sora(game: &mut Game, mut f: impl FnMut(&mut Game)) {
 }
 
 /// The queues' ceilings, every frame; returns how many requests went.
-fn cap_queues(game: &mut Game, net: Option<&mut duel_net::DuelNet>) -> usize {
-    let mut over = cap(&mut game.sound_queue, MAX_QUEUE)
+fn cap_queues(game: &mut Game) -> usize {
+    let over = cap(&mut game.sound_queue, MAX_QUEUE)
         + cap(&mut game.sound_stops, MAX_QUEUE)
         + cap(&mut game.fx_queue, MAX_QUEUE)
         + cap(&mut game.fx_styled, MAX_QUEUE)
@@ -253,22 +249,7 @@ fn cap_queues(game: &mut Game, net: Option<&mut duel_net::DuelNet>) -> usize {
         + cap(&mut game.fx_release, MAX_QUEUE)
         + cap(&mut game.fx_clear_map, MAX_QUEUE)
         + cap(&mut game.effect_queue, MAX_QUEUE)
-        + cap(&mut game.duel_events, MAX_QUEUE)
         + cap(&mut game.party_items, MAX_QUEUE);
-    if let Some(net) = net {
-        while net.events.len() > MAX_QUEUE {
-            net.events.pop_front();
-            over += 1;
-        }
-        while net.warnings.len() > MAX_QUEUE {
-            net.warnings.pop_front();
-            over += 1;
-        }
-        while net.inputs.len() > MAX_QUEUE {
-            net.inputs.pop_first();
-            over += 1;
-        }
-    }
     if let Some(rt) = game.enemy.as_mut()
         && rt.previous.len() + rt.claw_previous.len() > MAX_MAP
     {
@@ -284,17 +265,16 @@ fn cap_queues(game: &mut Game, net: Option<&mut duel_net::DuelNet>) -> usize {
 /// The central pass: the ceilings every frame, then the cleanups asked for,
 /// one `cleanup` line each.
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn run(
+pub fn run(
     mut game: ResMut<Game>,
     mut drive: ResMut<drive_fx::DriveFx>,
     mut spell: ResMut<spell_fx::SpellFx>,
     mut legacy: ResMut<Effects>,
     mut audio: ResMut<Audio>,
-    mut net: Option<ResMut<duel_net::DuelNet>>,
     mut evicted: Local<usize>,
 ) {
     let game = &mut *game;
-    *evicted += cap_queues(game, net.as_deref_mut());
+    *evicted += cap_queues(game);
     *evicted += cap(&mut legacy.running, MAX_RUNNING);
     if game.cleanups.is_empty() {
         return;
@@ -303,7 +283,7 @@ pub(crate) fn run(
         let started = std::time::Instant::now();
         let plan = policy(scope);
         let mut forms = 0;
-        if !game.net_client {
+        if !game.replica {
             each_sora(game, |g| {
                 if plan.forms {
                     forms +=
@@ -335,7 +315,7 @@ pub(crate) fn run(
             o.mixer.lock().map_or(0, |mut m| {
                 m.stop_loops(LOOP_FADE, |key| {
                     MUSIC_KEYS.contains(&key)
-                        || key == duel_music::KEY
+                        || (hooks().keeps_loop)(key)
                         || key & AMBIENT_KEY != 0
                         || key == SE_LOW_HP
                         || held.contains(&key)
@@ -390,7 +370,7 @@ pub(crate) fn run(
 }
 
 #[cfg(test)]
-pub(crate) mod tests {
+pub mod tests {
     use super::*;
     use data::object_effect::{Dpd, read_dpd};
 
@@ -400,7 +380,7 @@ pub(crate) mod tests {
 
     /// A synthetic container: one PDATA whose instance runs for ages unless
     /// something ends it.
-    pub(crate) fn effect_dpd() -> Arc<Dpd> {
+    pub fn effect_dpd() -> Arc<Dpd> {
         let mut b = vec![0u8; 0x300];
         put(&mut b, 0, 0x96);
         put(&mut b, 4, 1);

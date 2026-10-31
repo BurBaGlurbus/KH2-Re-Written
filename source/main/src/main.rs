@@ -11,28 +11,9 @@
 //! launcher; output still reaches a pipe or redirect (the launcher reads
 //! its tests' output that way).
 #![cfg_attr(windows, windows_subsystem = "windows")]
-mod area;
-mod cutscene;
-mod early_renderer;
-mod image_inspector;
-mod keyblade_board;
-mod launcher;
-mod load_timer;
-mod model_inspector;
-mod npcs;
-mod pc_controls;
-#[cfg(feature = "perf-diag")]
-mod perf;
-mod save_files;
-mod sephiroth;
-mod skate;
-#[cfg(feature = "skate3")]
-mod skate_hud;
-mod skate_rig;
-mod test_room;
-mod title;
-mod world_map;
-
+use kh2rw::{
+    cutscene, image_inspector, launcher, model_inspector, sephiroth, test_room, title, world_map,
+};
 use std::path::PathBuf;
 use std::process::ExitCode;
 

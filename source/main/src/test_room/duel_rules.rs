@@ -5,7 +5,7 @@
 
 /// How a match is won.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum Mode {
+pub enum Mode {
     /// The first knock-out wins.
     Stock,
     /// Rounds, each to a knock-out; the first to win two takes the match.
@@ -16,7 +16,7 @@ pub(crate) enum Mode {
 }
 
 /// One row of the mode table.
-pub(crate) struct ModeInfo {
+pub struct ModeInfo {
     pub mode: Mode,
     /// The lobby's name for it.
     pub name: &'static str,
@@ -25,7 +25,7 @@ pub(crate) struct ModeInfo {
 }
 
 /// The modes, in the order the host's lobby cycles them.
-pub(crate) const MODES: [ModeInfo; 3] = [
+pub const MODES: [ModeInfo; 3] = [
     ModeInfo {
         mode: Mode::Stock,
         name: "One KO",
@@ -44,7 +44,7 @@ pub(crate) const MODES: [ModeInfo; 3] = [
 ];
 
 /// A mode by its command-line name (`--duel-mode`).
-pub(crate) fn mode_named(name: &str) -> Option<Mode> {
+pub fn mode_named(name: &str) -> Option<Mode> {
     match name {
         "stock" => Some(Mode::Stock),
         "best3" => Some(Mode::BestOf3),
@@ -57,7 +57,7 @@ pub(crate) fn mode_named(name: &str) -> Option<Mode> {
 /// own controller, or the KH3 layer over it (`player::kh3`: KH3 movement,
 /// flowmotion, focus and shotlock, on KH2's motions and effects).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub(crate) enum Ruleset {
+pub enum Ruleset {
     #[default]
     Kh2,
     Kh3,
@@ -65,16 +65,16 @@ pub(crate) enum Ruleset {
 
 /// The rulesets in the lobby's order: (ruleset, lobby name, command-line
 /// name).
-pub(crate) const RULESETS: [(Ruleset, &str, &str); 2] =
+pub const RULESETS: [(Ruleset, &str, &str); 2] =
     [(Ruleset::Kh2, "KH2", "kh2"), (Ruleset::Kh3, "KH3", "kh3")];
 
 /// A ruleset by its command-line name (`--duel-ruleset`).
-pub(crate) fn ruleset_named(name: &str) -> Option<Ruleset> {
+pub fn ruleset_named(name: &str) -> Option<Ruleset> {
     RULESETS.iter().find(|r| r.2 == name).map(|r| r.0)
 }
 
 /// The time limits the host can pick, in seconds.
-pub(crate) const TIME_LIMITS: [u16; 5] = [60, 90, 120, 180, 300];
+pub const TIME_LIMITS: [u16; 5] = [60, 90, 120, 180, 300];
 const DEFAULT_TIME: u16 = 180;
 
 /// The default damage rule [duel choice]. Measured with the scripted rival
@@ -82,23 +82,23 @@ const DEFAULT_TIME: u16 = 180;
 /// T241): 0.46 hits landed a second at 2 damage, so 170 HP lasts about
 /// 185 s at x1. x3 makes that about a minute, and 30-45 s for players who
 /// land more of their combos.
-pub(crate) const DEFAULT_DAMAGE: f32 = 3.;
+pub const DEFAULT_DAMAGE: f32 = 3.;
 /// The default magic damage rule [duel choice; T245's benchmark]: hits
 /// whose power is the attacker's Magic (spells, Reflect's counter, form
 /// magic) take this instead of the attacks' multiplier.
-pub(crate) const DEFAULT_MAGIC: f32 = 1.5;
+pub const DEFAULT_MAGIC: f32 = 1.5;
 /// The lobby's and F3 menu's step and the range they allow (both
 /// multipliers).
-pub(crate) const DAMAGE_STEP: f32 = 0.5;
-pub(crate) const DAMAGE_RANGE: (f32, f32) = (0.5, 10.);
+pub const DAMAGE_STEP: f32 = 0.5;
+pub const DAMAGE_RANGE: (f32, f32) = (0.5, 10.);
 /// The per-hit caps the host can pick, in percent of the target's max HP
 /// (100: no cap).
-pub(crate) const HIT_CAPS: [u8; 9] = [20, 25, 30, 35, 40, 50, 60, 75, 100];
+pub const HIT_CAPS: [u8; 9] = [20, 25, 30, 35, 40, 50, 60, 75, 100];
 const DEFAULT_HIT_CAP: u8 = 40;
 
 /// The duel's rules (the host's; the joiner shows them).
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub(crate) struct MatchRules {
+pub struct MatchRules {
     pub mode: Mode,
     /// What a Sora-against-Sora hit's damage is multiplied by, after the
     /// game's own formula: hits on Strength (attacks) ...
@@ -135,7 +135,7 @@ impl MatchRules {
     /// attacks' or the magic multiplier (`magic`: the hit's power is the
     /// attacker's Magic), rounded, then no more than the cap's share of
     /// `max_hp`; a hit that did damage still does at least 1.
-    pub(crate) fn damage(&self, formula: i32, magic: bool, max_hp: i32) -> i32 {
+    pub fn damage(&self, formula: i32, magic: bool, max_hp: i32) -> i32 {
         if formula <= 0 {
             return formula;
         }
@@ -149,7 +149,7 @@ impl MatchRules {
     }
 
     /// The mode's row.
-    pub(crate) fn info(&self) -> &'static ModeInfo {
+    pub fn info(&self) -> &'static ModeInfo {
         MODES
             .iter()
             .find(|m| m.mode == self.mode)
@@ -157,25 +157,25 @@ impl MatchRules {
     }
 
     /// The next (or previous) mode in the table.
-    pub(crate) fn cycle_mode(&mut self, step: i32) {
+    pub fn cycle_mode(&mut self, step: i32) {
         let at = MODES.iter().position(|m| m.mode == self.mode).unwrap_or(0) as i32;
         let n = MODES.len() as i32;
         self.mode = MODES[(at + step).rem_euclid(n) as usize].mode;
     }
 
     /// The damage multiplier one step up or down, kept in range.
-    pub(crate) fn step_damage(&mut self, step: i32) {
+    pub fn step_damage(&mut self, step: i32) {
         self.damage =
             (self.damage + DAMAGE_STEP * step as f32).clamp(DAMAGE_RANGE.0, DAMAGE_RANGE.1);
     }
 
     /// The magic multiplier one step up or down, kept in range.
-    pub(crate) fn step_magic(&mut self, step: i32) {
+    pub fn step_magic(&mut self, step: i32) {
         self.magic = (self.magic + DAMAGE_STEP * step as f32).clamp(DAMAGE_RANGE.0, DAMAGE_RANGE.1);
     }
 
     /// The next (or previous) hit cap in the table.
-    pub(crate) fn cycle_cap(&mut self, step: i32) {
+    pub fn cycle_cap(&mut self, step: i32) {
         let at = HIT_CAPS
             .iter()
             .position(|&c| c == self.hit_cap)
@@ -185,42 +185,42 @@ impl MatchRules {
     }
 
     /// The next (or previous) arena.
-    pub(crate) fn cycle_arena(&mut self, step: i32) {
+    pub fn cycle_arena(&mut self, step: i32) {
         let n = super::duel_arena::ARENAS.len() as i32;
         self.arena = (i32::from(self.arena) + step).rem_euclid(n) as u8;
     }
 
     /// The other ruleset.
-    pub(crate) fn cycle_ruleset(&mut self, step: i32) {
+    pub fn cycle_ruleset(&mut self, step: i32) {
         let at = self.ruleset_code() as i32;
         let n = RULESETS.len() as i32;
         self.ruleset = RULESETS[(at + step).rem_euclid(n) as usize].0;
     }
 
     /// The ruleset's wire code and back.
-    pub(crate) fn ruleset_code(&self) -> u8 {
+    pub fn ruleset_code(&self) -> u8 {
         RULESETS
             .iter()
             .position(|r| r.0 == self.ruleset)
             .unwrap_or(0) as u8
     }
 
-    pub(crate) fn ruleset_from(code: u8) -> Option<Ruleset> {
+    pub fn ruleset_from(code: u8) -> Option<Ruleset> {
         RULESETS.get(code as usize).map(|r| r.0)
     }
 
     /// The ruleset's lobby name.
-    pub(crate) fn ruleset_name(&self) -> &'static str {
+    pub fn ruleset_name(&self) -> &'static str {
         RULESETS[self.ruleset_code() as usize].1
     }
 
     /// KH3's moves are on.
-    pub(crate) fn kh3(&self) -> bool {
+    pub fn kh3(&self) -> bool {
         self.ruleset == Ruleset::Kh3
     }
 
     /// The next (or previous) time limit in the table.
-    pub(crate) fn cycle_time(&mut self, step: i32) {
+    pub fn cycle_time(&mut self, step: i32) {
         let at = TIME_LIMITS
             .iter()
             .position(|&t| t == self.time_limit)
@@ -231,7 +231,7 @@ impl MatchRules {
 
     /// Whether every field is one the lobby can choose (the joiner's check
     /// of what arrives).
-    pub(crate) fn valid(&self) -> bool {
+    pub fn valid(&self) -> bool {
         let in_range = |k: f32| k.is_finite() && (DAMAGE_RANGE.0..=DAMAGE_RANGE.1).contains(&k);
         in_range(self.damage)
             && in_range(self.magic)
@@ -241,17 +241,17 @@ impl MatchRules {
     }
 
     /// The mode's wire code and back.
-    pub(crate) fn mode_code(&self) -> u8 {
+    pub fn mode_code(&self) -> u8 {
         MODES.iter().position(|m| m.mode == self.mode).unwrap_or(0) as u8
     }
 
-    pub(crate) fn mode_from(code: u8) -> Option<Mode> {
+    pub fn mode_from(code: u8) -> Option<Mode> {
         MODES.get(code as usize).map(|m| m.mode)
     }
 }
 
 /// `m:ss` for a count of ticks (60 a second), rounded up to the second.
-pub(crate) fn clock(ticks: u32) -> String {
+pub fn clock(ticks: u32) -> String {
     let s = ticks.div_ceil(60);
     format!("{}:{:02}", s / 60, s % 60)
 }

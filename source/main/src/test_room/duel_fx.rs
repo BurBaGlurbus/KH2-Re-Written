@@ -123,7 +123,7 @@ fn resolve(game: &Game, name: &str) -> Option<Arc<Pax>> {
 
 /// Host, before the effects start: this tick's effect starts and calls,
 /// for the joiner.
-pub(crate) fn host_effects(net: Option<Res<duel_net::DuelNet>>, mut game: ResMut<Game>) {
+pub fn host_effects(net: Option<Res<duel_net::DuelNet>>, mut game: ResMut<Game>) {
     let Some(net) = net else { return };
     if net.role != net::Role::Host || !net.playing() {
         return;
@@ -185,12 +185,12 @@ pub(crate) fn host_effects(net: Option<Res<duel_net::DuelNet>>, mut game: ResMut
             });
         }
     }
-    game.duel_events.extend(events);
+    game.ext.online_mut().duel_events.extend(events);
 }
 
 /// Host, before the sounds play: the Soras' own sounds this tick, for the
 /// joiner.
-pub(crate) fn host_sounds(net: Option<Res<duel_net::DuelNet>>, mut game: ResMut<Game>) {
+pub fn host_sounds(net: Option<Res<duel_net::DuelNet>>, mut game: ResMut<Game>) {
     let Some(net) = net else { return };
     if net.role != net::Role::Host || !net.playing() {
         return;
@@ -202,11 +202,11 @@ pub(crate) fn host_sounds(net: Option<Res<duel_net::DuelNet>>, mut game: ResMut<
         .filter(|(_, cause)| SORA_SOUNDS.contains(cause))
         .map(|&(id, _)| DuelEvent::Sound(id))
         .collect();
-    game.duel_events.extend(sounds);
+    game.ext.online_mut().duel_events.extend(sounds);
 }
 
 /// Joiner: one of the host's effect events, on this instance's Soras.
-pub(crate) fn play(game: &mut Game, event: &DuelEvent) {
+pub fn play(game: &mut Game, event: &DuelEvent) {
     let local = game.local_slot;
     match event {
         DuelEvent::Spell { pax, fx } => {

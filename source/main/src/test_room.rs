@@ -7,9 +7,9 @@
 //! controller (`player`) is a test-room profile: data-backed where a
 //! public lead exists, explicit choices elsewhere. It is not a measured
 //! reproduction of the installed game's movement or combat rules.
-use crate::area::{self, AreaSource, LoadedArea, MapWorld};
-use crate::load_timer::LoadTimer;
-use bevy::{
+pub use crate::area::{self, AreaSource, LoadedArea, MapWorld};
+pub use crate::load_timer::LoadTimer;
+pub use bevy::{
     app::AppExit,
     asset::RenderAssetUsages,
     camera::visibility::RenderLayers,
@@ -24,18 +24,18 @@ use bevy::{
         screenshot::{Screenshot, ScreenshotCaptured},
     },
 };
-use data::{
+pub use data::{
     bar, model_inspection, motion, object_collision, object_effect, objentry, original_payload,
     party_records, probe_source::ProbeSource, ptya, sklt, sprite_sequence,
 };
-use player::shadow::{self, ScriptRandom, Shadow};
-use player::{
+pub use player::shadow::{self, ScriptRandom, Shadow};
+pub use player::{
     Action, Clip, Clips, Input, Params, Player, TriangleWorld, World,
     follow_camera::{self, CameraInput, FollowCamera},
 };
-use player::{abilities, actor_physics, combat, magic};
-use serde::Deserialize;
-use std::{
+pub use player::{abilities, actor_physics, combat, magic};
+pub use serde::Deserialize;
+pub use std::{
     collections::HashMap,
     fs::{File, OpenOptions},
     io::{Read, Write},
@@ -43,208 +43,213 @@ use std::{
     sync::Arc,
     time::Instant,
 };
-use visual::area_fog::{AddFogged, FogMaterial, FogPlugin};
-use visual::controller::{self, Pad};
-use visual::enemy_gauge::EnemyGauge;
-use visual::fade::{self, Fade};
-use visual::field_command_menu::{self, CommandMenu, Decision, Item};
-use visual::gauge::{Canvas, Draw, FriendGauge, FriendStats, Gauge, GaugeStats, Texture};
-use visual::hud::{self, Sheet, SystemFont};
-use visual::input;
-use visual::menu_screen::{self, Menu2ld};
-use visual::overlay::{Ui2dFrame, Ui2dPlugin};
-use visual::pause_menu::journal::{self, Curtain, Journal};
-use visual::pause_menu::{self, Camp};
-use visual::room::{CollisionTriangle, LoadedRoom, load_rooms, mesh, rgba_image};
-use visual::sound::{self, Banks};
+pub use visual::area_fog::{AddFogged, FogMaterial, FogPlugin};
+pub use visual::controller::{self, Pad};
+pub use visual::enemy_gauge::EnemyGauge;
+pub use visual::fade::{self, Fade};
+pub use visual::field_command_menu::{self, CommandMenu, Decision, Item};
+pub use visual::gauge::{Canvas, Draw, FriendGauge, FriendStats, Gauge, GaugeStats, Texture};
+pub use visual::hud::{self, Sheet, SystemFont};
+pub use visual::input;
+pub use visual::menu_screen::{self, Menu2ld};
+pub use visual::overlay::{Ui2dFrame, Ui2dPlugin};
+pub use visual::pause_menu::journal::{self, Curtain, Journal};
+pub use visual::pause_menu::{self, Camp};
+pub use visual::room::{CollisionTriangle, LoadedRoom, load_rooms, mesh, rgba_image};
+pub use visual::sound::{self, Banks};
 
 #[derive(Clone, Deserialize)]
-struct Locator {
-    index: String,
-    ordinal: usize,
-    name_hash: [u8; 16],
+pub struct Locator {
+    pub index: String,
+    pub ordinal: usize,
+    pub name_hash: [u8; 16],
 }
-mod ability_inventory;
-mod actor_push;
-mod boss;
-mod character_kit;
-mod cleanup;
-mod command_layout;
-mod debug_menu;
-pub(crate) use debug_menu::DebugMenu;
-mod area_enemies;
-mod deck_tour;
-mod drive_fx;
-mod drive_room;
-mod duel_arena;
-mod duel_camp;
-mod duel_fx;
-mod duel_hits;
-mod duel_kh3;
-mod duel_loadout;
-mod duel_lobby;
-mod duel_lobby_room;
-mod duel_match;
-mod duel_match_room;
-mod duel_music;
-mod duel_net;
-mod duel_prefs;
-mod duel_rules;
-mod duel_sync;
-mod duel_vote;
-mod duel_wire;
-mod enemy_assets;
-mod enemy_battle;
-mod enemy_battle_hits;
-mod enemy_battle_tour;
-mod enemy_catalog;
-mod enemy_combat;
-mod enemy_gallery;
-mod enemy_motion_fx;
-mod enemy_script;
-mod enemy_target;
-mod enemy_tour;
-mod fighter;
-mod kh3_autose;
-mod kh3_book;
-mod kh3_camera;
-mod kh3_core;
-mod kh3_fx;
-mod kh3_hits;
-mod kh3_menu;
-mod kh3_model;
-mod kh3_retarget;
-mod mirage_arena;
+pub mod ability_inventory;
+pub mod actor_push;
+pub mod boss;
+pub mod character_kit;
+pub mod cleanup;
+pub mod command_layout;
+pub mod debug_menu;
+pub use debug_menu::DebugMenu;
+pub mod area_enemies;
+pub mod deck_tour;
+pub mod drive_fx;
+pub mod drive_room;
+pub mod duel_arena;
+pub mod duel_camp;
+pub mod duel_fx;
+pub mod duel_hits;
+pub mod duel_kh3;
+pub mod duel_loadout;
+pub mod duel_lobby;
+pub mod duel_lobby_room;
+pub mod duel_match;
+pub mod duel_match_room;
+pub mod duel_music;
+pub mod duel_net;
+pub mod duel_prefs;
+pub mod duel_rules;
+pub mod duel_sync;
+pub mod duel_vote;
+pub mod duel_wire;
+pub mod enemy_assets;
+pub mod enemy_battle;
+pub mod enemy_battle_hits;
+pub mod enemy_battle_tour;
+pub mod enemy_catalog;
+pub mod enemy_combat;
+pub mod enemy_gallery;
+pub mod enemy_motion_fx;
+pub mod enemy_script;
+pub mod enemy_target;
+pub mod enemy_tour;
+pub mod extension;
+pub use extension::{RoomExtension, RoomHooks, RoomSet, hooks};
+pub use online::Slot;
+pub mod fighter;
+pub mod kh3_autose;
+pub mod kh3_book;
+pub mod kh3_camera;
+pub mod kh3_core;
+pub mod kh3_fx;
+pub mod kh3_hits;
+pub mod kh3_menu;
+pub mod kh3_model;
+pub mod kh3_retarget;
+pub mod mirage_arena;
 /// The executable's identity, which the launcher's LAN search compares.
-pub(crate) use duel_net::build_identity;
-use fighter::{Fighter, Vitals};
-mod game_over;
-mod gear;
-mod gear_tour;
-mod item_drop_view;
-mod item_room;
-mod journal_tour;
-mod level_growth;
-mod limit_form_tour;
-mod limit_tour;
-mod magic_room;
-mod magic_tour;
-mod menu_friend;
-mod party_anim_tour;
-mod party_blade;
-mod party_camp_tour;
-mod party_hit_tour;
-mod party_items_tour;
-mod party_limit;
-mod party_room;
-mod perf_overlay;
-mod prize_room;
-mod reaction_command;
-mod rival;
-mod second_deck;
-mod sephiroth;
-mod settings_room;
-mod soak_tour;
-mod spell_fx;
-mod summon;
-mod summon_tour;
-mod victim_hit;
-mod wall_hit;
-mod weapon_trail;
-pub(crate) mod world_map_camp;
+pub use duel_net::build_identity;
+pub use fighter::{Fighter, Vitals};
+pub mod game_over;
+pub mod gear;
+pub mod gear_tour;
+pub mod item_drop_view;
+pub mod item_room;
+pub mod journal_tour;
+pub mod level_growth;
+pub mod limit_form_tour;
+pub mod limit_tour;
+pub mod magic_room;
+pub mod magic_tour;
+pub mod menu_friend;
+pub mod online;
+pub mod party_anim_tour;
+pub mod party_blade;
+pub mod party_camp_tour;
+pub mod party_hit_tour;
+pub mod party_items_tour;
+pub mod party_limit;
+pub mod party_room;
+pub mod perf_overlay;
+pub mod prize_room;
+pub mod reaction_command;
+pub mod rival;
+pub mod rival_play;
+pub mod second_deck;
+pub mod sephiroth;
+pub mod settings_room;
+pub mod soak_tour;
+pub mod spell_fx;
+pub mod summon;
+pub mod summon_tour;
+pub mod victim_hit;
+pub mod wall_hit;
+pub mod weapon_trail;
+pub mod world_map_camp;
 
-fn player_object_default() -> String {
+pub fn player_object_default() -> String {
     "P_EX100".into()
 }
 
 #[derive(Deserialize)]
-struct Config {
-    schema_version: u32,
-    source_content_identity: String,
+pub struct Config {
+    pub schema_version: u32,
+    pub source_content_identity: String,
     /// Paths relative to this configuration file.
     /// A game room (map) selection; omitted when `arena` is used.
     #[serde(default)]
-    room_selection: Option<PathBuf>,
+    pub room_selection: Option<PathBuf>,
     /// A generated test arena instead of a game room.
     #[serde(default)]
-    arena: Option<ArenaConfig>,
+    pub arena: Option<ArenaConfig>,
     /// A field area loaded by name the way the game loads it.
     #[serde(default)]
-    area: Option<AreaConfig>,
-    actor_selection: PathBuf,
-    motion_set: Locator,
-    battle_mode: bool,
-    has_weapon: bool,
-    battle: Locator,
-    ptya_pointer: usize,
+    pub area: Option<AreaConfig>,
+    pub actor_selection: PathBuf,
+    pub motion_set: Locator,
+    pub battle_mode: bool,
+    pub has_weapon: bool,
+    pub battle: Locator,
+    pub ptya_pointer: usize,
     /// Superseded: the attack is chosen from the whole PTYA set
     /// (player::ptya); kept only to read older configurations.
     #[serde(default)]
-    ground_combo_ids: Vec<u8>,
+    pub ground_combo_ids: Vec<u8>,
     #[serde(default)]
-    air_combo_ids: Vec<u8>,
-    system: Locator,
+    pub air_combo_ids: Vec<u8>,
+    pub system: Locator,
     /// The player's own 00objentry model name; its +0x4e PRTY index selects
     /// the movement record (FUN_1403da940 → FUN_14040a480).
     #[serde(default = "player_object_default")]
-    player_object_name: String,
+    pub player_object_name: String,
     /// 00objentry locator and the object model name whose WeaponJoint byte
     /// names the actor joint carrying the weapon. Weapon-type entries carry
     /// a hand-like joint while player entries carry 1; that reading is a
     /// test-room inference from installed records, not observed routing.
-    objentry: Locator,
-    object_model_name: String,
-    weapon_selection: PathBuf,
+    pub objentry: Locator,
+    pub object_model_name: String,
+    pub weapon_selection: PathBuf,
     /// The weapon's own motion set (W_EX010.mset); its clips share Sora's
     /// slot numbers and pose the weapon in the hand joint's space.
     #[serde(default)]
-    weapon_motion_set: Option<Locator>,
+    pub weapon_motion_set: Option<Locator>,
     /// Character id (public dictionary: 1 = Sora) whose SKLT primary bone
     /// in the system archive carries the weapon. Without it the objentry
     /// byte above is used.
     #[serde(default)]
-    sklt_character_id: Option<u32>,
+    pub sklt_character_id: Option<u32>,
     /// Field 2D sequence archive holding the 'gaug' HUD sequence
     /// (field2d/<lang>/<world>0field.2dd).
     #[serde(default)]
-    hud: Option<Locator>,
+    pub hud: Option<Locator>,
     /// Character archive holding the 'face' sequence (obj/P_EX100.a.<lang>).
     #[serde(default)]
-    face: Option<Locator>,
+    pub face: Option<Locator>,
     /// Command menu sources.
     #[serde(default)]
-    menu: Option<MenuSources>,
+    pub menu: Option<MenuSources>,
     /// Target enemy (test-room choice of placement).
     #[serde(default)]
-    enemy: Option<EnemyConfig>,
+    pub enemy: Option<EnemyConfig>,
     /// Optional spawn (x, probe height, z) in scene coordinates.
     #[serde(default)]
-    spawn: Option<[f32; 3]>,
+    pub spawn: Option<[f32; 3]>,
     /// Facing at that spawn (scene yaw); areas default to the entrance's.
     #[serde(default)]
-    spawn_yaw: Option<f32>,
+    pub spawn_yaw: Option<f32>,
     /// Sound banks: `se/seNNN.win32.scd` entries, or object archives with
     /// the name of their `se/obj/seNNN` replacement asset.
     #[serde(default)]
-    sounds: Vec<BankSource>,
+    pub sounds: Vec<BankSource>,
     /// Effect sources: object archives holding the Keyblade's and the
     /// enemy's PAX, and `effect/texcommon.dpd` (the common atlas).
     #[serde(default)]
-    effects: Option<EffectConfig>,
+    pub effects: Option<EffectConfig>,
     /// A field NPC to talk to (needs `menu` for the reaction label and
     /// `system` for the text colour).
     #[serde(default)]
-    npc: Option<NpcConfig>,
+    pub npc: Option<NpcConfig>,
     /// The camp (pause) menu: menu/<lang>/camp.2ld (needs `menu`).
     #[serde(default)]
-    camp: Option<Locator>,
+    pub camp: Option<Locator>,
     /// Jiminy's Journal (needs `camp`).
     #[serde(default)]
-    journal: Option<JournalConfig>,
+    pub journal: Option<JournalConfig>,
     /// The room's field and battle music (03system 'arif': tt08 set 0 =
     /// bgm/music118 and music119).
     #[serde(default)]
-    music: Option<RoomMusic>,
+    pub music: Option<RoomMusic>,
 }
 
 /// The journal's files: menu/<lang>/jmemo.2ld (the book), jiminy.bar (the
@@ -252,57 +257,57 @@ struct Config {
 /// world icons), menu/jm_top_<code>.2ld by code and the menu-chain curtain
 /// menu/<lang>/pause.2ld.
 #[derive(Clone, Deserialize)]
-struct JournalConfig {
-    book: Locator,
-    tables: Locator,
-    messages: Locator,
-    worlds: Locator,
-    tops: std::collections::BTreeMap<String, Locator>,
-    curtain: Locator,
+pub struct JournalConfig {
+    pub book: Locator,
+    pub tables: Locator,
+    pub messages: Locator,
+    pub worlds: Locator,
+    pub tops: std::collections::BTreeMap<String, Locator>,
+    pub curtain: Locator,
     /// Story flags set in the save [test-room value]; 0x4837 is the exe's
     /// "show everything" flag.
     #[serde(default)]
-    flags: Vec<u16>,
+    pub flags: Vec<u16>,
     /// Opened-chest bits (save+0x23ac) and owned map items [test-room
     /// values].
     #[serde(default)]
-    opened_bits: Vec<u16>,
+    pub opened_bits: Vec<u16>,
     #[serde(default)]
-    owned_items: Vec<u16>,
+    pub owned_items: Vec<u16>,
 }
 
 /// The area to start in and the story point that fixes its programs.
 #[derive(Deserialize)]
-struct AreaConfig {
+pub struct AreaConfig {
     /// World code (`tt`).
-    world: String,
-    area: u8,
-    entrance: u8,
+    pub world: String,
+    pub area: u8,
+    pub entrance: u8,
     /// Progress flag ranges set in ascending order before loading.
-    story: Vec<[u32; 2]>,
+    pub story: Vec<[u32; 2]>,
     /// Unattended runs stand still instead of walking to an exit.
     #[serde(default)]
-    stay: bool,
+    pub stay: bool,
     /// Program overrides [map, btl, evt] for the first load (−1 = story).
     #[serde(default = "no_programs")]
-    programs: [i16; 3],
+    pub programs: [i16; 3],
     /// The arrival presentation of the jump that opened this area
     /// (FUN_1401561b0 by the jump's mode, DAT_140abad88): 1, a world change
     /// such as the world map's landing (FUN_1403946d0 → FUN_140152990 mode
     /// 1), fades in from black over n = 15 (FUN_140156c90). 0 starts at
     /// once.
     #[serde(default)]
-    arrival: u8,
+    pub arrival: u8,
 }
 
-fn no_programs() -> [i16; 3] {
+pub fn no_programs() -> [i16; 3] {
     [-1; 3]
 }
 
 #[derive(Clone, Deserialize)]
-struct RoomMusic {
-    field: Locator,
-    battle: Locator,
+pub struct RoomMusic {
+    pub field: Locator,
+    pub battle: Locator,
 }
 
 /// Field-talk test NPC. In vanilla no field talk has Axel speaking, so
@@ -311,69 +316,69 @@ struct RoomMusic {
 /// shape of `target_model`) and the script (`script`, libretto op 1 per
 /// message id).
 #[derive(Deserialize)]
-struct NpcConfig {
+pub struct NpcConfig {
     /// Model selection (relative to this configuration): obj/B_EX110_RTN.mdlx.
-    model_selection: PathBuf,
+    pub model_selection: PathBuf,
     /// Its motion set (direct slots; slot 0 is the idle 'R00A').
-    motion_set: Locator,
+    pub motion_set: Locator,
     /// Archive whose object collision has the TARGET shape used for the
     /// camera (obj/B_EX110.mdlx shares the skeleton).
-    target_model: Locator,
+    pub target_model: Locator,
     /// Placement relative to Sora's spawn (scene units) and facing (rad).
-    offset: [f32; 3],
-    yaw: f32,
+    pub offset: [f32; 3],
+    pub yaw: f32,
     /// Message archive with the script's lines (msg/us/hb.bar for Axel).
-    messages: Locator,
-    script: Vec<u32>,
+    pub messages: Locator,
+    pub script: Vec<u32>,
     /// msg/<lang>/fontinfo.bar, fontimage.bar and the world message bar.
-    font_info: Locator,
-    font_image: Locator,
-    world_messages: Locator,
+    pub font_info: Locator,
+    pub font_image: Locator,
+    pub world_messages: Locator,
     /// World index into the ftst colour table (tt = 2).
-    world: usize,
+    pub world: usize,
     /// Composed talk-camera shape (the type-19 role) used instead of the
     /// TARGET fallback: the towns-person dimensions on the head bone.
     #[serde(default)]
-    camera_shape: Option<ShapeConfig>,
+    pub camera_shape: Option<ShapeConfig>,
 }
 
 #[derive(Deserialize)]
-struct ShapeConfig {
-    bone: usize,
-    offset: [f32; 3],
-    pos_h: f32,
-    radius: f32,
-    height: f32,
+pub struct ShapeConfig {
+    pub bone: usize,
+    pub offset: [f32; 3],
+    pub pos_h: f32,
+    pub radius: f32,
+    pub height: f32,
 }
 
 #[derive(Clone, Deserialize)]
-struct EffectConfig {
-    weapon: Locator,
+pub struct EffectConfig {
+    pub weapon: Locator,
     #[serde(default)]
-    enemy: Option<Locator>,
-    atlas: Locator,
+    pub enemy: Option<Locator>,
+    pub atlas: Locator,
     /// 00effect.bar (the system PAX: guard and clash sparks).
     #[serde(default)]
-    system: Option<Locator>,
+    pub system: Option<Locator>,
 }
 
-struct EffectSources {
-    weapon: object_effect::Pax,
-    enemy: Option<object_effect::Pax>,
+pub struct EffectSources {
+    pub weapon: object_effect::Pax,
+    pub enemy: Option<object_effect::Pax>,
     /// The other battle enemies' object effects by objentry id.
-    enemy_paxes: Vec<(u32, object_effect::Pax)>,
+    pub enemy_paxes: Vec<(u32, object_effect::Pax)>,
     /// The sound bank number each enemy object carries (objentry id, 0 for
     /// the room's own enemy), read from the bank's header like the exe.
-    enemy_banks: HashMap<u32, u16>,
+    pub enemy_banks: HashMap<u32, u16>,
     /// The voice bank number each battle enemy object carries (its
     /// `voice/...` asset), by objentry id.
-    enemy_voices: HashMap<u32, u16>,
-    system: Option<object_effect::Pax>,
-    atlas: visual::effects::Atlas,
+    pub enemy_voices: HashMap<u32, u16>,
+    pub system: Option<object_effect::Pax>,
+    pub atlas: visual::effects::Atlas,
 }
 
 /// Effects raised by combat this tick.
-enum EffectRequest {
+pub enum EffectRequest {
     /// Keyblade hit spark (FUN_1403d1b40): ATKP hit effect and random
     /// count, contact point and hit direction in scene coordinates. `own`:
     /// the window is in Sora's own motion set, so the container is his
@@ -421,13 +426,13 @@ enum EffectRequest {
     },
 }
 
-struct RunningEffect {
-    instance: ::effect::Instance,
-    label: &'static str,
+pub struct RunningEffect {
+    pub instance: ::effect::Instance,
+    pub label: &'static str,
     /// Element transform kept for effects bound to the enemy.
-    bound: Option<object_effect::Element>,
+    pub bound: Option<object_effect::Element>,
     /// The serial it holds in the hit-effect ring (0 = none).
-    spark: u64,
+    pub spark: u64,
 }
 
 /// The executable's ring of the eight most recent hit effects
@@ -437,18 +442,18 @@ struct RunningEffect {
 /// (`FUN_1402be6a0(handle, 4.0)`). Instances are named by serial, so a slot
 /// whose effect has ended fades nothing (the sweep `FUN_1403d9c40`).
 #[derive(Default, Resource)]
-struct SparkRing {
-    slots: [u64; 8],
-    next: usize,
-    serial: u64,
+pub struct SparkRing {
+    pub slots: [u64; 8],
+    pub next: usize,
+    pub serial: u64,
     /// Serials to fade, for the legacy effect list and for `drive_fx`.
-    fade_legacy: Vec<u64>,
-    fade_fx: Vec<u64>,
+    pub fade_legacy: Vec<u64>,
+    pub fade_fx: Vec<u64>,
 }
 
 impl SparkRing {
     /// FUN_1403d9be0: registers a new effect and returns its serial.
-    fn register(&mut self) -> u64 {
+    pub fn register(&mut self) -> u64 {
         self.serial += 1;
         let old = std::mem::replace(&mut self.slots[self.next], self.serial);
         if old != 0 {
@@ -461,58 +466,58 @@ impl SparkRing {
 }
 
 /// Frames a displaced hit effect takes to fade out (`DAT_140623b90`).
-const SPARK_FADE: f32 = 4.;
+pub const SPARK_FADE: f32 = 4.;
 /// The effect owner id of an enemy attack's hit spark.
-const ENEMY_HIT_OWNER: u8 = 0xf9;
+pub const ENEMY_HIT_OWNER: u8 = 0xf9;
 /// Sora's key in the object sound banks (the PLAYER objentry id 0x236) and
 /// in the victim hit counters.
-const PLAYER_OBJECT: u32 = 0x236;
-const PLAYER_VICTIM: u64 = u64::MAX;
+pub const PLAYER_OBJECT: u32 = 0x236;
+pub const PLAYER_VICTIM: u64 = u64::MAX;
 
 /// Running effect instances and the quads they drew this tick.
 #[derive(Resource)]
-struct Effects {
-    weapon: Option<Arc<object_effect::Pax>>,
+pub struct Effects {
+    pub weapon: Option<Arc<object_effect::Pax>>,
     /// The room Keyblade's PAX as loaded (a duel rival's trail until his
     /// own Keyblade's kit replaces it).
-    room_weapon: Option<Arc<object_effect::Pax>>,
-    enemy: Option<Arc<object_effect::Pax>>,
-    enemy_paxes: HashMap<u32, Arc<object_effect::Pax>>,
-    enemy_banks: HashMap<u32, u16>,
-    system: Option<Arc<object_effect::Pax>>,
-    running: Vec<RunningEffect>,
-    rng: ::effect::Rng,
-    quads: Vec<::effect::Quad>,
+    pub room_weapon: Option<Arc<object_effect::Pax>>,
+    pub enemy: Option<Arc<object_effect::Pax>>,
+    pub enemy_paxes: HashMap<u32, Arc<object_effect::Pax>>,
+    pub enemy_banks: HashMap<u32, u16>,
+    pub system: Option<Arc<object_effect::Pax>>,
+    pub running: Vec<RunningEffect>,
+    pub rng: ::effect::Rng,
+    pub quads: Vec<::effect::Quad>,
     /// The view matrix the quads were drawn with, and its inverse.
-    view_inverse: Mat4,
-    uv_scale: [f32; 2],
-    reported: Vec<u32>,
+    pub view_inverse: Mat4,
+    pub uv_scale: [f32; 2],
+    pub reported: Vec<u32>,
 }
 
 #[derive(Component)]
-struct EffectMesh {
-    additive: bool,
+pub struct EffectMesh {
+    pub additive: bool,
 }
 
 #[derive(Deserialize)]
-struct BankSource {
+pub struct BankSource {
     #[serde(flatten)]
-    locator: Locator,
+    pub locator: Locator,
     #[serde(default)]
-    replacement: Option<String>,
+    pub replacement: Option<String>,
 }
 
 #[derive(Deserialize)]
-struct ArenaConfig {
-    half_size: f32,
-    wall_height: f32,
-    tile: f32,
+pub struct ArenaConfig {
+    pub half_size: f32,
+    pub wall_height: f32,
+    pub tile: f32,
 }
 
 impl ArenaConfig {
     /// Development arena dimensions; these do not describe a KH2 room.
     /// Expand saved configurations too, without overwriting the user's file.
-    fn expanded(&self) -> Result<Self, &'static str> {
+    pub fn expanded(&self) -> Result<Self, &'static str> {
         if !self.half_size.is_finite()
             || !self.wall_height.is_finite()
             || !self.tile.is_finite()
@@ -530,62 +535,62 @@ impl ArenaConfig {
     }
 }
 
-fn standard_difficulty() -> u8 {
+pub fn standard_difficulty() -> u8 {
     1
 }
 
 #[derive(Deserialize)]
-struct EnemyConfig {
+pub struct EnemyConfig {
     /// DAT_1409abd48: 0 Beginner, 1 Standard (default), 2 Proud, 3 Critical.
     #[serde(default = "standard_difficulty")]
-    difficulty: u8,
+    pub difficulty: u8,
     /// Model selection (relative to this configuration), e.g. M_EX020.mdlx.
-    model_selection: PathBuf,
+    pub model_selection: PathBuf,
     /// The same mdlx as a locator, for its object-collision table.
-    model: Locator,
+    pub model: Locator,
     /// Its motion set (direct slot = motion id).
-    motion_set: Locator,
+    pub motion_set: Locator,
     /// Weapon mdlx (W_EX010) for the Keyblade's attack spheres.
-    weapon_model: Locator,
+    pub weapon_model: Locator,
     /// Sora's mdlx (P_EX100) for his HIT spheres.
-    actor_model: Locator,
-    enmp_id: u16,
+    pub actor_model: Locator,
+    pub enmp_id: u16,
     /// World battle level used when the ENMP level is 0 (test-room choice).
-    battle_level: u16,
+    pub battle_level: u16,
     /// Placement relative to Sora's spawn, in scene units.
-    offset: [f32; 3],
+    pub offset: [f32; 3],
 }
 
 #[derive(Clone, Deserialize)]
-struct MenuSources {
+pub struct MenuSources {
     /// field2d/<lang>/<world><n>command.2dd ('comw' sequence).
-    command: Locator,
+    pub command: Locator,
     /// msg/<lang>/fontimage.bar and msg/<lang>/fontinfo.bar.
-    font_image: Locator,
-    font_info: Locator,
+    pub font_image: Locator,
+    pub font_info: Locator,
     /// msg/<lang>/sys.bar (command labels).
-    messages: Locator,
+    pub messages: Locator,
 }
 
 /// HUD sources loaded with the session.
-struct HudSource {
-    sheets: Vec<Sheet>,
+pub struct HudSource {
+    pub sheets: Vec<Sheet>,
     /// The sheet index of Donald's and Goofy's own face sequences.
-    friend_faces: [Option<usize>; 2],
+    pub friend_faces: [Option<usize>; 2],
     /// The field 2D archive's 'fiel' sheet: the lock-on reticle.
-    field: Sheet,
+    pub field: Sheet,
     /// The field 2D archive's 'mapj' area-change iris (areas only).
-    iris: Option<Sheet>,
-    stats: (i32, i32),
-    menu: Option<(Sheet, SystemFont, SystemFont, Vec<Vec<u8>>)>,
+    pub iris: Option<Sheet>,
+    pub stats: (i32, i32),
+    pub menu: Option<(Sheet, SystemFont, SystemFont, Vec<Vec<u8>>)>,
 }
 
 /// Top-menu labels: Attack, Magic, Items, Drive (03system 'cmd' message ids).
-const MENU_MESSAGES: [u32; 4] = [0x81e0, 0x81e1, 0x81e2, 0x81e3];
+pub const MENU_MESSAGES: [u32; 4] = [0x81e0, 0x81e1, 0x81e2, 0x81e3];
 
 /// Sora's damage motions (10..19, Aerial Recovery 40, DEAD 54), in
 /// `Clips::hurt` order, then the item-use motion (9).
-const SORA_HURT: [u16; 13] = {
+pub const SORA_HURT: [u16; 13] = {
     let mut m = [9u16; 13];
     let mut i = 0;
     while i < 12 {
@@ -595,12 +600,12 @@ const SORA_HURT: [u16; 13] = {
     m
 };
 /// How many of `SORA_HURT` are damage motions.
-const HURT_COUNT: usize = 12;
+pub const HURT_COUNT: usize = 12;
 
 /// Sora's item slots in a fresh room [test-room values]: a Potion and an
 /// Ether, taken out of the stock.
-const ROOM_ITEM_SLOTS: [u16; 2] = [1, 3];
-fn room_stock() -> std::collections::BTreeMap<u16, u8> {
+pub const ROOM_ITEM_SLOTS: [u16; 2] = [1, 3];
+pub fn room_stock() -> std::collections::BTreeMap<u16, u8> {
     let mut s: std::collections::BTreeMap<u16, u8> = ROOM_STOCK.into_iter().collect();
     for id in ROOM_ITEM_SLOTS {
         if let Some(n) = s.get_mut(&id) {
@@ -612,10 +617,10 @@ fn room_stock() -> std::collections::BTreeMap<u16, u8> {
 
 /// Guard (PTYA 0x0b), its success recoil (guard-01) and the recoil of a
 /// swing that met the map (FUN_1403d4650).
-const SORA_GUARD: [u16; 3] = [173, 42, player::WALL_RECOIL_GROUND];
+pub const SORA_GUARD: [u16; 3] = [173, 42, player::WALL_RECOIL_GROUND];
 
 /// Public MotionSet names for the locomotion IDs used here.
-const LOCOMOTION: [(&str, u16); 6] = [
+pub const LOCOMOTION: [(&str, u16); 6] = [
     ("IDLE", 0),
     ("WALK", 1),
     ("RUN", 2),
@@ -624,81 +629,81 @@ const LOCOMOTION: [(&str, u16); 6] = [
     ("LAND", 5),
 ];
 /// Test-room choices, recorded in the startup log.
-const STEP_HEIGHT: f32 = 24.;
+pub const STEP_HEIGHT: f32 = 24.;
 /// Run at stick magnitude 0.8 (DAT_140585c7c).
-const WALK_THRESHOLD: f32 = actor_physics::RUN_MAGNITUDE;
-const BODY_RADIUS: f32 = 30.;
-const BODY_HEIGHT: f32 = 140.;
-const FLOOR_MIN_NORMAL_Y: f32 = 0.5;
+pub const WALK_THRESHOLD: f32 = actor_physics::RUN_MAGNITUDE;
+pub const BODY_RADIUS: f32 = 30.;
+pub const BODY_HEIGHT: f32 = 140.;
+pub const FLOOR_MIN_NORMAL_Y: f32 = 0.5;
 /// Test-room choice: put the weapon away after 6 s without attacking.
-const DISARM_TICKS: u32 = 360;
-const PARTY_STAND: u32 = 1 << 0;
-const PARTY_COLLIDE: u32 = 1 << 4;
+pub const DISARM_TICKS: u32 = 360;
+pub const PARTY_STAND: u32 = 1 << 0;
+pub const PARTY_COLLIDE: u32 = 1 << 4;
 
 /// What a joint-space blend of two shown poses needs: the actor's skinning
 /// and parents, and the joint carrying the Keyblade.
-struct Skin {
-    skinning: data::model_pose::Skinning,
-    parents: Vec<i32>,
-    weapon_joint: usize,
+pub struct Skin {
+    pub skinning: data::model_pose::Skinning,
+    pub parents: Vec<i32>,
+    pub weapon_joint: usize,
 }
 
 /// Precomputed skinned positions for every frame of one clip.
-struct ClipPoses {
+pub struct ClipPoses {
     /// Vertex positions per frame (root motion removed), kept only for
     /// motions without evaluated joints (raw matrices, basic FK); the others
     /// are skinned from `joints` when shown (`frame`), which keeps a few
     /// hundred megabytes of vertices out of memory.
-    frames: Vec<Vec<Vec3>>,
+    pub frames: Vec<Vec<Vec3>>,
     /// The evaluated joints of each frame, root motion included (empty for
     /// basic FK and raw matrices); `rootless_joints` gives them as blended
     /// joint by joint when a motion switch cross-fades.
-    joints: Vec<Vec<data::motion_eval::World>>,
-    skin: Option<Arc<Skin>>,
+    pub joints: Vec<Vec<data::motion_eval::World>>,
+    pub skin: Option<Arc<Skin>>,
     /// Model-space matrix of the objentry weapon joint for each frame.
-    weapon: Vec<Mat4>,
+    pub weapon: Vec<Mat4>,
     /// The same for weapon slot 1's joint (forms with two Keyblades).
-    weapon2: Vec<Mat4>,
+    pub weapon2: Vec<Mat4>,
     /// Weapon vertices in hand-joint space per frame, from the weapon's own
     /// motion at the same slot and key time (empty when it has none).
-    weapon_frames: Vec<Vec<Vec3>>,
+    pub weapon_frames: Vec<Vec<Vec3>>,
     /// The same for weapon slot 1's Keyblade.
-    weapon2_frames: Vec<Vec<Vec3>>,
+    pub weapon2_frames: Vec<Vec<Vec3>>,
     /// Root-position curve translation for each frame (model space).
-    root: Vec<Vec3>,
+    pub root: Vec<Vec3>,
     /// Keyblade bone 2 matrix in hand-joint space per frame (attack spheres).
-    blade: Vec<Mat4>,
-    blade2: Vec<Mat4>,
+    pub blade: Vec<Mat4>,
+    pub blade2: Vec<Mat4>,
     /// Each slot's blade bone length (FUN_1401a7af0) and reach
     /// ([`character_kit::blade_reach`]).
-    blade_length: [f32; 2],
-    blade_reach: [f32; 2],
+    pub blade_length: [f32; 2],
+    pub blade_reach: [f32; 2],
     /// Attack windows from the weapon motion's range trigger 10:
     /// (start, end, ATKP id, collision group), in clip ticks; then slot 1's.
-    hits: Vec<(u32, u32, u16, u8)>,
-    hits2: Vec<(u32, u32, u16, u8)>,
+    pub hits: Vec<(u32, u32, u16, u8)>,
+    pub hits2: Vec<(u32, u32, u16, u8)>,
     /// Trail windows (the weapon motion's range trigger 12), in clip ticks;
     /// then slot 1's.
-    trails: Vec<(u32, u32)>,
-    trails2: Vec<(u32, u32)>,
+    pub trails: Vec<(u32, u32)>,
+    pub trails2: Vec<(u32, u32)>,
     /// The actor motion's own range-10 windows (the drive motions' ATKP
     /// 124 / 125), on the object's attack shapes.
-    actor_hits: Vec<(u32, u32, u16, u8)>,
+    pub actor_hits: Vec<(u32, u32, u16, u8)>,
     /// Sora's HIT-bone matrices per frame (model space, root removed).
-    body: Vec<HashMap<usize, Mat4>>,
+    pub body: Vec<HashMap<usize, Mat4>>,
     /// Weapon motion frame trigger 8 ("play SE"): (clip tick, sound id).
-    sounds: Vec<(u32, u32)>,
+    pub sounds: Vec<(u32, u32)>,
 }
 
 impl ClipPoses {
     /// The clip's frame count.
-    fn len(&self) -> usize {
+    pub fn len(&self) -> usize {
         self.root.len()
     }
 
     /// Frame `f`'s joints with the root motion removed (clamped to the
     /// clip; None without evaluated joints).
-    fn rootless_joints(&self, f: usize) -> Option<Vec<data::motion_eval::World>> {
+    pub fn rootless_joints(&self, f: usize) -> Option<Vec<data::motion_eval::World>> {
         let f = f.min(self.joints.len().checked_sub(1)?);
         let r = self.root[f.min(self.root.len() - 1)].to_array();
         Some(
@@ -719,7 +724,7 @@ impl ClipPoses {
     /// to the clip): the kept ones, or the evaluated joints skinned the way
     /// the frames were once precomputed (the same matrices, then the root
     /// taken off each position).
-    fn frame(&self, f: usize) -> Vec<Vec3> {
+    pub fn frame(&self, f: usize) -> Vec<Vec3> {
         if !self.frames.is_empty() {
             return self.frames[f.min(self.frames.len() - 1)].clone();
         }
@@ -742,7 +747,7 @@ impl ClipPoses {
 
 /// Frame trigger 8 (FUN_14040dd70): id = p0·1000 + p1; with more than
 /// three parameters and p3 set, only when p0 is the equipped weapon's bank.
-fn sound_triggers(selected: &motion::SelectedMotion, weapon_bank: i16) -> Vec<(u32, u32)> {
+pub fn sound_triggers(selected: &motion::SelectedMotion, weapon_bank: i16) -> Vec<(u32, u32)> {
     selected
         .triggers
         .iter()
@@ -763,7 +768,7 @@ fn sound_triggers(selected: &motion::SelectedMotion, weapon_bank: i16) -> Vec<(u
 
 /// Sora's footstep bank in a room: the 12soundinfo row of the room's own
 /// world, None for any other world or a room without a row.
-fn step_room_bank(
+pub fn step_room_bank(
     info: &Option<(u8, visual::footsteps::WorldInfo)>,
     world: u8,
     area: u8,
@@ -774,7 +779,7 @@ fn step_room_bank(
 }
 
 /// The room's ambient bed (a looped sound) from the same row.
-fn room_ambient(
+pub fn room_ambient(
     info: &Option<(u8, visual::footsteps::WorldInfo)>,
     world: u8,
     area: u8,
@@ -785,31 +790,31 @@ fn room_ambient(
 }
 
 /// Kingdom Key sound bank (its SEB stub's bank number, sound-01 §1.1).
-const WEAPON_BANK: i16 = 500;
+pub const WEAPON_BANK: i16 = 500;
 /// Largest sound bank read whole (the ambient banks exceed the 32 MiB
 /// default).
-const SOUND_BANK_LIMIT: u32 = 256 * 1024 * 1024;
+pub const SOUND_BANK_LIMIT: u32 = 256 * 1024 * 1024;
 /// Mixer key flag of the room's ambient bed, so that its stop and fade never
 /// reach a sound request that has the same id.
-const AMBIENT_KEY: u32 = 0x4000_0000;
+pub const AMBIENT_KEY: u32 = 0x4000_0000;
 /// The mixer key flag of an object's voice line (its slot stops it by key).
-const VOICE_KEY: u32 = 0x2000_0000;
+pub const VOICE_KEY: u32 = 0x2000_0000;
 /// System bank (se000, engine slot 2) sounds: cursor move, sub-menu open,
 /// close, low-HP alarm (magicsfx-01 §5).
-const SE_CURSOR: u32 = 1;
-const SE_OPEN: u32 = 3;
-const SE_CLOSE: u32 = 4;
+pub const SE_CURSOR: u32 = 1;
+pub const SE_OPEN: u32 = 3;
+pub const SE_CLOSE: u32 = 4;
 /// The command deck swap (FUN_1403f2470).
-const SE_DECK: u32 = 0x14;
-const SE_LOW_HP: u32 = 9;
+pub const SE_DECK: u32 = 0x14;
+pub const SE_LOW_HP: u32 = 9;
 /// Manual lock engaged, and released by the toggle (FUN_1401dd170(7) / (8) in
 /// the lock manager, FUN_1403dd650 / FUN_1403dcd70).
-const SE_LOCK: u32 = 7;
-const SE_UNLOCK: u32 = 8;
+pub const SE_LOCK: u32 = 7;
+pub const SE_UNLOCK: u32 = 8;
 
 /// The room collision the controller and the enemy read: the generated
 /// arena's triangles, or a game map's COCT through the exe's routines.
-enum RoomWorld {
+pub enum RoomWorld {
     Triangles(TriangleWorld),
     Map(MapWorld),
 }
@@ -870,69 +875,69 @@ impl World for RoomWorld {
 }
 
 /// Window art, font, text colour and the Talk label for field talks.
-struct AreaTalk {
-    sheet: Sheet,
-    font: SystemFont,
-    colour: u32,
-    label: Vec<u8>,
+pub struct AreaTalk {
+    pub sheet: Sheet,
+    pub font: SystemFont,
+    pub colour: u32,
+    pub label: Vec<u8>,
 }
 
 /// The current area and the files to load the next one.
 #[derive(Resource)]
-struct AreaRes {
-    source: AreaSource,
-    current: LoadedArea,
+pub struct AreaRes {
+    pub source: AreaSource,
+    pub current: LoadedArea,
     /// The area before this one (unattended runs avoid going back).
-    previous: Option<u8>,
+    pub previous: Option<u8>,
     /// A jump requested by an exit: world, area, entrance.
-    pending: Option<(u8, u8, u8)>,
+    pub pending: Option<(u8, u8, u8)>,
     /// The area-change presentation in progress.
-    transition: Option<Transition>,
+    pub transition: Option<Transition>,
     /// Unattended runs walk toward an exit (false = stand still).
-    explore: bool,
+    pub explore: bool,
     /// NPC slots that already have meshes.
-    rendered: usize,
+    pub rendered: usize,
     /// The live background group mask (ARD scripts plus zone switches).
-    bg_mask: u64,
+    pub bg_mask: u64,
     /// Music to switch at the next tick (taken by `area_music`).
-    music: Option<area::MusicChange>,
+    pub music: Option<area::MusicChange>,
     /// The place name banner (text, frames left) shown on entering an
     /// area (BILLBOARD_PLACE_M: 120 frames).
-    banner: Option<(Vec<u8>, u32)>,
+    pub banner: Option<(Vec<u8>, u32)>,
     /// The exit's destination name while facing a guide zone.
-    guide: Option<Vec<u8>>,
+    pub guide: Option<Vec<u8>>,
     /// Ticks left of a story-block disable reason.
-    guide_hold: u32,
+    pub guide_hold: u32,
     /// Areas (world, area) Sora has stood in (their names show instead
     /// of "???").
-    visited: std::collections::HashSet<(u8, u8)>,
+    pub visited: std::collections::HashSet<(u8, u8)>,
     /// The townsperson the talk resource currently points at.
-    talk_npc: Option<usize>,
-    was_talking: bool,
+    pub talk_npc: Option<usize>,
+    pub was_talking: bool,
     /// Group points (object indexes) whose zone Sora stood in this tick,
     /// for `area_enemies` to spawn (FUN_1403fe6f0).
-    groups: Vec<usize>,
+    pub groups: Vec<usize>,
 }
 
 /// Same-world area change (FUN_140156520 mode 0 / FUN_1401561b0): the
 /// 'mapj' iris closes (group 1, 71 frames), a 2-frame fade to black
 /// (FUN_140156ce0(fade, 1)), the next area loads, then a fade in
 /// (128, 128, 64, 0) while the iris opens (group 0) [exit-01 §4].
-struct Transition {
-    stage: Stage,
-    iris: Option<sprite_sequence::Player>,
-    fade: Fade,
-    target: (u8, u8, u8),
+pub struct Transition {
+    pub stage: Stage,
+    pub iris: Option<sprite_sequence::Player>,
+    pub fade: Fade,
+    pub target: (u8, u8, u8),
     /// The next area, decoded on a worker thread while the iris closes
     /// (the screen holds black until it is done).
-    job: Option<std::thread::JoinHandle<AreaJob>>,
+    pub job: Option<std::thread::JoinHandle<AreaJob>>,
 }
 
 /// The decoded area, the fork that decoded it and the decode time (ms).
-type AreaJob = Result<(LoadedRoom, LoadedArea, AreaSource, f64), String>;
+pub type AreaJob = Result<(LoadedRoom, LoadedArea, AreaSource, f64), String>;
 
 /// Starts decoding an area on a worker thread with a fork of the source.
-fn start_area_job(
+pub fn start_area_job(
     source: &AreaSource,
     (world, area, entrance): (u8, u8, u8),
 ) -> Option<std::thread::JoinHandle<AreaJob>> {
@@ -956,7 +961,7 @@ fn start_area_job(
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-enum Stage {
+pub enum Stage {
     Closing,
     Black,
     Loading,
@@ -965,19 +970,19 @@ enum Stage {
 
 /// The scene root every room part hangs under.
 #[derive(Resource)]
-struct SceneRoot(Entity);
+pub struct SceneRoot(pub Entity);
 
 #[derive(Component)]
-pub(crate) struct RoomPart;
+pub struct RoomPart;
 
 /// The generated test arena's floor and walls (hidden while the duel is in
 /// the Mirage Arena).
 #[derive(Component)]
-pub(crate) struct ArenaFloor;
+pub struct ArenaFloor;
 
 /// A scrolling chunk's UV animation (UVSC record, draw-01 §7).
 #[derive(Component)]
-pub(crate) struct UvScroll {
+pub struct UvScroll {
     material: Handle<FogMaterial>,
     speed: [f32; 2],
     ratio: [f32; 2],
@@ -987,21 +992,21 @@ pub(crate) struct UvScroll {
 /// TEXA workers of the current area (draw-02 section 1): frame scripts
 /// that swap sprites into an environment's texture.
 #[derive(Resource)]
-pub(crate) struct TexaWorkers {
+pub struct TexaWorkers {
     list: Vec<TexaWorker>,
     last_tick: u64,
 }
 
-struct TexaWorker {
-    image: Handle<Image>,
-    texa: visual::room::Texa,
+pub struct TexaWorker {
+    pub image: Handle<Image>,
+    pub texa: visual::room::Texa,
     /// Crop origin of the environment's cropped copy.
-    origin: [u32; 2],
-    player: visual::room::TexaPlayer,
-    shown: Option<usize>,
+    pub origin: [u32; 2],
+    pub player: visual::room::TexaPlayer,
+    pub shown: Option<usize>,
 }
 
-fn texa_tick(
+pub fn texa_tick(
     game: Res<Game>,
     workers: Option<ResMut<TexaWorkers>>,
     mut images: ResMut<Assets<Image>>,
@@ -1012,7 +1017,7 @@ fn texa_tick(
 
 /// Runs every TEXA worker up to `tick` (at most four 60 Hz ticks per call)
 /// and uploads the sprites that changed.
-pub(crate) fn texa_advance(workers: &mut TexaWorkers, tick: u64, images: &mut Assets<Image>) {
+pub fn texa_advance(workers: &mut TexaWorkers, tick: u64, images: &mut Assets<Image>) {
     let ticks = if workers.last_tick == u64::MAX {
         1
     } else {
@@ -1046,7 +1051,7 @@ pub(crate) fn texa_advance(workers: &mut TexaWorkers, tick: u64, images: &mut As
 
 /// UV scroll of the map's chunks: counts accumulate per tick as
 /// `(int)speed`, the offset is `((ratio * acc) >> 16 & 0xfff) / 4096`.
-fn uv_scroll_tick(
+pub fn uv_scroll_tick(
     game: Res<Game>,
     scrolls: Query<&UvScroll>,
     mut materials: ResMut<Assets<FogMaterial>>,
@@ -1055,7 +1060,7 @@ fn uv_scroll_tick(
 }
 
 /// Sets every scrolling chunk's UV offset for `tick`.
-pub(crate) fn uv_scroll_apply<'a>(
+pub fn uv_scroll_apply<'a>(
     tick: i64,
     scrolls: impl Iterator<Item = &'a UvScroll>,
     materials: &mut Assets<FogMaterial>,
@@ -1081,545 +1086,464 @@ pub(crate) fn uv_scroll_apply<'a>(
 
 /// A map chunk's background group bit (`NO_GROUP` = always drawn).
 #[derive(Component)]
-pub(crate) struct BgChunk(pub(crate) u8);
+pub struct BgChunk(pub u8);
 
 #[derive(Resource)]
-struct Game {
-    params: Params,
+pub struct Game {
+    pub params: Params,
     /// Builds the player's ability record from equipped slots.
-    ability_source: AbilitySource,
+    pub ability_source: AbilitySource,
     /// Current equipment feeding the battle ability rebuild, separate from decoded data.
-    equipment: pause_menu::items::Equipment,
+    pub equipment: pause_menu::items::Equipment,
     /// What that equipment adds to Sora's Strength, Magic, Defense, AP and
     /// resists (FUN_1403c1d90); the level and record numbers excluded.
-    gear: player::equipment_stats::Totals,
+    pub gear: player::equipment_stats::Totals,
     /// The member's 80 ability slots persist even when no camp UI is loaded.
-    ability_slots: Vec<u16>,
-    ability_tour: Option<ability_inventory::Tour>,
-    enemy_tour: bool,
-    enemy_battle_tour: bool,
+    pub ability_slots: Vec<u16>,
+    pub ability_tour: Option<ability_inventory::Tour>,
+    pub enemy_tour: bool,
+    pub enemy_battle_tour: bool,
     /// The Sephiroth fight (`--sephiroth`): the room's own Shadow is off and
     /// the boss is summoned from the area's placement.
-    sephiroth: bool,
+    pub sephiroth: bool,
     /// `--sephiroth-result <file>`: written with `won` after the boss dies, then
     /// the room closes (the chained run goes on to the outro).
-    sephiroth_result: Option<PathBuf>,
+    pub sephiroth_result: Option<PathBuf>,
     /// `--sephiroth-tour <dir>`: the fight played unattended (sephiroth.rs).
-    sephiroth_tour: bool,
+    pub sephiroth_tour: bool,
     /// `--magic-tour`: the scripted spell and combo run (magic_tour.rs).
-    magic_tour: bool,
+    pub magic_tour: bool,
     /// `--soak`: the magic tour's first part again and again, with Drive
     /// forms (soak_tour.rs); `--room-survey`: Sora stands, the view turns.
-    soak: bool,
-    room_survey: bool,
+    pub soak: bool,
+    pub room_survey: bool,
     /// The Drive form the tour casts in (`--magic-form`, 0 = none) and the
     /// ticks its change takes before the first cast.
-    magic_form: u8,
-    magic_shift: u64,
+    pub magic_form: u8,
+    pub magic_shift: u64,
     /// The unattended `--growth-tour` (level-up and bonus panels).
-    growth_tour: bool,
+    pub growth_tour: bool,
     /// The unattended `--prize-tour` (prize sprites and the heal effect).
-    prize_tour: bool,
+    pub prize_tour: bool,
     /// The unattended `--npc-tour` (Sora walks into a townsperson).
-    npc_tour: bool,
+    pub npc_tour: bool,
     /// The unattended `--save-point-tour` (Sora stands on the area's save
     /// point with his MP spent).
-    save_point_tour: bool,
+    pub save_point_tour: bool,
     /// The unattended `--journal-tour` (the journal's Limits pages).
-    journal_tour: bool,
+    pub journal_tour: bool,
     /// The unattended `--badge-tour` (an item pickup, then the camp's NEW! badges).
-    badge_tour: bool,
-    hero_hit_tick: Option<u64>,
-    enemy_incoming_hits: u64,
-    enemy_outgoing_hits: u64,
-    lock_queued: bool,
-    cycle_queued: bool,
-    selected_target: Option<[f32; 3]>,
-    target_locked: bool,
-    player_target_shape: Option<object_collision::Entry>,
+    pub badge_tour: bool,
+    pub hero_hit_tick: Option<u64>,
+    pub enemy_incoming_hits: u64,
+    pub enemy_outgoing_hits: u64,
+    pub lock_queued: bool,
+    pub cycle_queued: bool,
+    pub selected_target: Option<[f32; 3]>,
+    pub target_locked: bool,
+    pub player_target_shape: Option<object_collision::Entry>,
     /// Sora's push shapes (object collision kind 4).
-    player_push_shapes: Vec<object_collision::Entry>,
+    pub player_push_shapes: Vec<object_collision::Entry>,
     /// Sora's body shapes (kind 1, the shown kit's): what battle objects
     /// push each other with (FUN_14040ad70).
-    sora_obj_shapes: Vec<object_collision::Entry>,
-    clips: Clips,
-    world: RoomWorld,
+    pub sora_obj_shapes: Vec<object_collision::Entry>,
+    pub clips: Clips,
+    pub world: RoomWorld,
     /// The room's own Sora.
-    sora: fighter::Fighter,
-    /// The duel's other Soras (none outside a duel or its test script),
-    /// in slot order, and the kit they move and are drawn with.
-    rivals: Vec<rival::Rival>,
-    rival_kit: Option<Arc<rival::RivalKit>>,
-    /// `--rival-script`: a scripted rival from the first tick.
-    rival_script: bool,
-    /// [Test] `--duel-bench`: both duel Soras close in and swing inside each
-    /// combo window (the combo measurement), the joiner's through its
-    /// buttons, the host's own Sora through its input.
-    duel_bench: bool,
-    /// [Test] `--duel-magic`: both duel Soras cast every spell in turn at
-    /// the other.
-    duel_magic: bool,
-    /// [Test] `--duel-idle`: this player's Sora stands still (the other
-    /// side of a bench).
-    duel_idle: bool,
-    /// Where the room starts Sora (position, yaw): the duel arena's centre.
-    room_start: ([f32; 3], f32),
-    /// The duel's arena (a row of `duel_arena::ARENAS`).
-    duel_arena: usize,
-    /// The duel's rules (`--duel-damage`, F3 on the host; the host's reach
-    /// the joiner).
-    duel_rules: duel_rules::MatchRules,
-    /// A duel runs (a LAN session or `--rival-script`): the pause menu,
-    /// the debug menu and game over no longer stop the field.
-    duel: bool,
-    /// The room Sora's slot (0 the host's, 1 the joiner's).
-    local_slot: u8,
-    /// The LAN duel's joiner: the host simulates; this instance sends its
-    /// buttons (`net_pad`, this tick's) and shows the host's snapshots.
-    net_client: bool,
-    net_pad: rival::RivalPad,
-    /// What the host's tick did that the joiner shows itself: sounds,
-    /// sparks, knock-outs (sent and cleared by duel_sync).
-    duel_events: Vec<duel_wire::DuelEvent>,
-    /// The network overlay (F3 > Sora > Display, `--net-overlay`) and the
-    /// link simulator preset the debug menu chose (duel_net::SIMULATED).
-    net_overlay: bool,
-    net_simulated: Option<usize>,
-    /// The duel's lobby (or countdown) holds both Soras still.
-    duel_frozen: bool,
-    /// F3 asked the host for a test vote.
-    duel_test_vote: bool,
-    /// A duel screen asks the camp to open (duel_camp.rs), with its
-    /// entries and pages.
-    duel_open_camp: bool,
-    duel_camp: Option<duel_camp::Request>,
-    /// START in a duel with no screen holding the camp (the match's
-    /// Forfeit menu takes it).
-    duel_start: bool,
-    /// A vote is open: the other duel screens give it the camp.
-    duel_vote_up: bool,
-    /// Whether this install can show the duel's Mirage Arena.
-    mirage: mirage_arena::Avail,
-    /// The duel's music holds the music voices (the room's waits).
-    duel_music: bool,
-    /// [Test] The duel's unattended script: menu keys (mode 7) for the
-    /// camp this tick.
-    duel_camp_press: u64,
-    /// [Test] `--duel-shots`: the duel's screens add captures of
-    /// themselves, once per moment.
-    duel_shots: bool,
-    /// [Test] `--duel-forfeit`: this player forfeits two seconds into the
-    /// first fight, through the menu.
-    duel_forfeit: bool,
-    /// [Test] `--duel-quick`: the unattended result picks Quick rematch.
-    duel_quick: bool,
-    /// [Test] `--duel-wisdom` (joiner): Wisdom Form now and then, and the
-    /// bench's swings (its shots).
-    duel_wisdom: bool,
-    duel_shot_keys: std::collections::HashSet<(u8, u64, u64)>,
-    /// [KH3 ruleset] The room collision's poles, kept by its triangle
-    /// counts (duel_kh3.rs).
-    kh3_poles: Option<duel_kh3::PoleCache>,
-    /// KH3's Sora's world, with the poles' key; the hits the Soras landed this tick: (seat, hit, where and
-    /// how he faced, in KH3's space).
-    kh3_geometry: Option<duel_kh3::GeometryCache>,
-    kh3_core_hits: Vec<duel_kh3::CoreHit>,
-    /// [Test] `--kh3-preview`: the looks or elements shown one by one.
-    kh3_preview: Option<duel_kh3::Preview>,
-    /// The player's KH3 install, checked this session; the KH3 ruleset reads
-    /// it and is not offered without it.
-    kh3_install: Option<data::kh3::Install>,
-    /// KH3's data for the simulation, once it is read (kh3_book.rs).
-    kh3_book: Option<Arc<player::kh3::attack::Book>>,
-    /// [KH3 mode] Effects and sounds from the host, by name (a joiner's).
-    kh3_fx_remote: Vec<player::kh3::spell::FxRequest>,
-    /// [KH3 mode] The player's KH3 files are being read: the duel waits.
-    kh3_loading: bool,
-    /// [KH3 ruleset] The camera last shown, for the shotlock's reticle.
-    kh3_aim_view: Option<kh3_sora::magic::View>,
-    /// The launcher's Test KH3 mode (`--kh3-test` without
-    /// `--rival-script`): the KH3 ruleset against the training dummy (the
-    /// room's Shadow, standing), with the KH3 ability menu on START.
-    kh3_dummy: bool,
-    /// The dummy's hits already counted for focus (duel_kh3.rs).
-    kh3_dummy_seen: u32,
-    /// [KH3 ruleset] Test KH3 mode's ability menu is open (kh3_menu.rs).
-    kh3_menu: Option<u32>,
-    /// A match is running: a knocked-out Sora stays down for the round.
-    duel_match: bool,
-    /// Damage dealt and hits landed this match, by the attacker's slot.
-    duel_dealt: [u32; 2],
-    duel_landed: [u16; 2],
-    poses: HashMap<(Action, bool), usize>,
-    clip_poses: Arc<Vec<ClipPoses>>,
-    part_indices: Vec<Vec<u32>>,
-    tick: u64,
-    log: Option<File>,
-    limit: Option<u64>,
-    autoplay: Option<PathBuf>,
-    captures_taken: usize,
-    capture_pending: bool,
+    pub sora: fighter::Fighter,
+    /// Other Soras in the room (none in the single-player game), in slot
+    /// order, and the kit they move and are drawn with.
+    pub rivals: Vec<rival::Rival>,
+    pub rival_kit: Option<Arc<rival::RivalKit>>,
+    /// An extension's own state (`extension.rs`).
+    pub ext: extension::Extension,
+    /// Where the room starts Sora (position, yaw); an arena may move it.
+    pub room_start: ([f32; 3], f32),
+    /// Another player shares the room: it never pauses, no exit or talk
+    /// takes Sora away, and a knock-out is not the end.
+    pub versus: bool,
+    /// This player's slot among the room's Soras.
+    pub local_slot: u8,
+    /// Another instance simulates: this one sends its input and shows what
+    /// it is sent.
+    pub replica: bool,
+    /// A screen asks the camp to open, with its entries and pages.
+    pub camp_open_request: bool,
+    pub camp_request: Option<extension::CampRequest>,
+    /// START with no screen holding the camp while another player shares
+    /// the room.
+    pub start_pressed: bool,
+    /// A screen outside the camp has the menu keys.
+    pub menu_held: bool,
+    /// Something else holds the music voices (the room's waits).
+    pub music_held: bool,
+    /// [Test] Menu keys an unattended screen presses in the camp.
+    pub camp_press: u64,
+    pub poses: HashMap<(Action, bool), usize>,
+    pub clip_poses: Arc<Vec<ClipPoses>>,
+    pub part_indices: Vec<Vec<u32>>,
+    pub tick: u64,
+    pub log: Option<File>,
+    pub limit: Option<u64>,
+    pub autoplay: Option<PathBuf>,
+    pub captures_taken: usize,
+    pub capture_pending: bool,
     /// The room's pad record (logical bits, pad mode 1 in the field) and
     /// this tick's PADDATA (stick bytes).
-    pad: Pad,
-    pad_data: controller::PadData,
-    jump_queued: bool,
-    attack_queued: bool,
-    guard_queued: bool,
+    pub pad: Pad,
+    pub pad_data: controller::PadData,
+    pub jump_queued: bool,
+    pub attack_queued: bool,
+    pub guard_queued: bool,
     /// Face buttons pressed (logical bits 24..27) for a list-mode deck.
-    face_queued: u8,
+    pub face_queued: u8,
     /// L1-held shortcut presses of this tick (bit k = slot k) and the
     /// shortcut command ids (camp Customize).
-    shortcut_queued: u8,
-    shortcuts: [u16; 4],
+    pub shortcut_queued: u8,
+    pub shortcuts: [u16; 4],
     /// The back button (Circle, logical bit 3) pressed this tick.
-    back_queued: bool,
+    pub back_queued: bool,
     /// Test-room aid (F4): a blow-reaction hit with no damage, to try the
     /// blow, Aerial Recovery and Retaliating Slash without a blowing enemy.
-    debug_blow: bool,
+    pub debug_blow: bool,
     /// What the debug menu (F3) left switched on.
-    cheats: debug_menu::Cheats,
+    pub cheats: debug_menu::Cheats,
     /// Sora's magic: owned spells, running casts and their volumes.
-    magic: Option<magic_room::MagicRt>,
+    pub magic: Option<magic_room::MagicRt>,
     /// The spell scripts' effect calls of this tick and the effects' state
     /// after the last effect update (`spell_fx`).
-    fx_calls: Vec<spell_fx::Call>,
+    pub fx_calls: Vec<spell_fx::Call>,
     /// The party's AI may cast (Donald's spells).
-    party_spells: bool,
+    pub party_spells: bool,
     /// The battle flag (`DAT_142a11404`) with its switching delay.
-    party_battle: party_room::BattleMode,
+    pub party_battle: party_room::BattleMode,
     /// The second command deck (Summon, Party, Limit) and its lists.
-    second_deck: Option<second_deck::SecondDeck>,
+    pub second_deck: Option<second_deck::SecondDeck>,
     /// The party limits' files, the limit running and the one the menu
     /// asked for.
-    party_limits: Arc<party_limit::LimitSource>,
+    pub party_limits: Arc<party_limit::LimitSource>,
     /// What the members' kinds are rebuilt from (a weapon change).
-    party_reload: Option<Arc<party_room::ReloadSource>>,
-    party_limit: Option<party_limit::Running>,
-    limit_request: Option<u16>,
+    pub party_reload: Option<Arc<party_room::ReloadSource>>,
+    pub party_limit: Option<party_limit::Running>,
+    pub limit_request: Option<u16>,
     /// The summons' tables, the summon out, and what the menu asked for.
-    summons: Option<summon::Source>,
-    summon: Option<summon::Summoned>,
-    summon_request: Option<u16>,
-    summon_dismiss: bool,
-    summon_serial: u64,
+    pub summons: Option<summon::Source>,
+    pub summon: Option<summon::Summoned>,
+    pub summon_request: Option<u16>,
+    pub summon_dismiss: bool,
+    pub summon_serial: u64,
     /// FUN_1403f3fa0's direction counter (DAT_142ae5d78).
-    summon_octant: u32,
+    pub summon_octant: u32,
     /// The save's config bits (+0x41a4) as the camp's Config last left
     /// them, and the summons whose `appear` event has played
     /// (DAT_142a24ed8).
-    config_flags: u32,
-    summons_seen: u32,
+    pub config_flags: u32,
+    pub summons_seen: u32,
     /// DAT_1409acdd7: Genie's form number (1 Valor, 2 Wisdom, 4 Master,
     /// 5 Final), kept between summons.
-    summon_form: u8,
+    pub summon_form: u8,
     /// A Genie form command picked from the deck (trigger 11 on Genie).
-    genie_command: Option<u16>,
+    pub genie_command: Option<u16>,
     /// The stick's request the summon's script reads (`player_get_movement`).
-    summon_stick: [f32; 3],
+    pub summon_stick: [f32; 3],
     /// The top deck's rows while a limit has the menu.
-    deck_saved: Option<(Vec<Item>, Vec<Option<usize>>)>,
+    pub deck_saved: Option<(Vec<Item>, Vec<Option<usize>>)>,
     /// Decide on a row a limit's command took this tick: its override
     /// record (0 the Attack row, 2 the Limit row).
-    limit_decide: Option<usize>,
+    pub limit_decide: Option<usize>,
     /// The unattended `--command-deck-tour` (deck_tour.rs).
-    deck_tour: bool,
+    pub deck_tour: bool,
     /// The unattended `--party-limit-tour` (limit_tour.rs).
-    limit_tour: bool,
+    pub limit_tour: bool,
     /// The unattended `--limit-form-tour` (limit_form_tour.rs).
-    limit_form_tour: bool,
+    pub limit_form_tour: bool,
     /// The unattended `--party-items-tour` (party_items_tour.rs).
-    party_items_tour: bool,
+    pub party_items_tour: bool,
     /// The unattended `--party-camp-tour` (party_camp_tour.rs).
-    party_camp_tour: bool,
+    pub party_camp_tour: bool,
     /// The unattended `--summon-tour` (summon_tour.rs).
-    summon_tour: bool,
+    pub summon_tour: bool,
     /// The deck swap (left, logical 0x10000) and open (right, 0x10000000)
     /// pressed since the last tick.
-    deck_queued: bool,
-    open_queued: bool,
+    pub deck_queued: bool,
+    pub open_queued: bool,
     /// The party-hit tour (`--party-hit-tour`).
-    party_hit_tour: bool,
-    party_hit_state: party_hit_tour::State,
+    pub party_hit_tour: bool,
+    pub party_hit_state: party_hit_tour::State,
     /// The party-animation tour (`--party-anim-tour`).
-    party_anim_tour: bool,
-    party_anim_state: party_anim_tour::State,
+    pub party_anim_tour: bool,
+    pub party_anim_state: party_anim_tour::State,
     /// The Type 3 guard spheres of the enemies' attacks this tick (centre,
     /// radius): what a party member's Type 1 shot clashes with.
-    enemy_guards: Vec<(Vec3, f32)>,
+    pub enemy_guards: Vec<(Vec3, f32)>,
     /// The party's attack volumes of the last tick and the gallery enemies
     /// a member may aim at (party_room, enemy_battle_hits).
-    party_volumes: Vec<party_room::OutVolume>,
-    gallery_targets: Vec<party_room::GalleryTarget>,
+    pub party_volumes: Vec<party_room::OutVolume>,
+    pub gallery_targets: Vec<party_room::GalleryTarget>,
     /// A target the party tour hangs in the air (an enemy that stays put).
-    party_fixed_target: Option<party_room::GalleryTarget>,
+    pub party_fixed_target: Option<party_room::GalleryTarget>,
     /// Items the party used that have not healed yet.
-    party_items: Vec<party_room::PendingItem>,
+    pub party_items: Vec<party_room::PendingItem>,
     /// Volumes of a member's Bash that landed on a gallery enemy this tick:
     /// the member and the volume's key.
-    party_struck: Vec<(usize, u64)>,
-    fx_live: HashMap<u64, magic::FxLive>,
+    pub party_struck: Vec<(usize, u64)>,
+    pub fx_live: HashMap<u64, magic::FxLive>,
     /// The party slot the Magic menu's Cure target list picked (0 Sora)
     /// and the Magic row Cure was chosen from, while that list is open.
-    cure_target: usize,
-    cure_pick: Option<usize>,
+    pub cure_target: usize,
+    pub cure_pick: Option<usize>,
     /// Donald and Goofy, following Sora.
-    party: Vec<party_room::MemberRt>,
-    items: Option<item_room::ItemRt>,
+    pub party: Vec<party_room::MemberRt>,
+    pub items: Option<item_room::ItemRt>,
     /// Drive forms (None when the form tables could not be read).
-    drive: Option<drive_room::DriveRt>,
+    pub drive: Option<drive_room::DriveRt>,
     /// Sora's battle voices: 00battle `vtbl`, the voice bank and the scan.
-    voices: Option<drive_room::Voices>,
+    pub voices: Option<drive_room::Voices>,
     /// Footsteps (frame trigger 2): the world's 12soundinfo, the current
     /// room's Sora bank, the step counter and the clip scan.
-    step_info: Option<(u8, visual::footsteps::WorldInfo)>,
-    step_bank: Option<i16>,
+    pub step_info: Option<(u8, visual::footsteps::WorldInfo)>,
+    pub step_bank: Option<i16>,
     /// The room's ambient bed request id (12soundinfo bank and number).
-    ambient: Option<u32>,
-    steps: visual::footsteps::Steps,
-    step_scan: Option<(u64, Action, u32)>,
+    pub ambient: Option<u32>,
+    pub steps: visual::footsteps::Steps,
+    pub step_scan: Option<(u64, Action, u32)>,
     /// The map's own effects, whose category elements are the ground dust.
-    map_pax: Option<Arc<object_effect::Pax>>,
-    dust_scan: Option<(u64, Action, u32)>,
+    pub map_pax: Option<Arc<object_effect::Pax>>,
+    pub dust_scan: Option<(u64, Action, u32)>,
     /// The scan of the actor's own frame-8 sounds.
-    move_se_scan: Option<(u64, Action, u32)>,
+    pub move_se_scan: Option<(u64, Action, u32)>,
     /// Vibration: the waves, the running one, this tick's motor bytes (set
     /// once per simulation tick, sent to the pad by `rumble_output`) and the
     /// frame trigger 31 scan.
-    vibration: Option<player::vibration::Library>,
-    rumble: player::vibration::Playback,
-    motors: [u8; 2],
-    motors_fresh: bool,
-    vibration_scan: Option<(u64, Action, u32)>,
+    pub vibration: Option<player::vibration::Library>,
+    pub rumble: player::vibration::Playback,
+    pub motors: [u8; 2],
+    pub motors_fresh: bool,
+    pub vibration_scan: Option<(u64, Action, u32)>,
     /// The shown kit's attack shapes by collision group (bone, offset,
     /// radius).
-    sora_attack: HashMap<u8, Vec<(usize, Vec3, f32)>>,
+    pub sora_attack: HashMap<u8, Vec<(usize, Vec3, f32)>>,
     /// The Keyblade swings' environment test (wall_hit.rs).
-    wall: wall_hit::WallHit,
+    pub wall: wall_hit::WallHit,
     /// Hits each victim has taken, for the alternating hit sound.
-    victim_hits: HashMap<u64, u8>,
-    menu_up_queued: bool,
-    menu_down_queued: bool,
-    enemy: Option<EnemyRuntime>,
-    display: Vec<Vec3>,
+    pub victim_hits: HashMap<u64, u8>,
+    pub menu_up_queued: bool,
+    pub menu_down_queued: bool,
+    pub enemy: Option<EnemyRuntime>,
+    pub display: Vec<Vec3>,
     /// The clip frame the shown pose came from (research logging).
-    display_frame: usize,
+    pub display_frame: usize,
     /// Pose, Keyblade transform and start tick of the active crossfade.
-    blend_from: Option<(Vec<Vec3>, Transform, u64)>,
+    pub blend_from: Option<(Vec<Vec3>, Transform, u64)>,
     /// The joints behind `display` and behind `blend_from`'s pose (empty
     /// when the shown clip has none), for joint-space blends.
-    display_joints: Vec<data::motion_eval::World>,
-    blend_from_joints: Vec<data::motion_eval::World>,
-    display_hand: Transform,
-    weapon_indices: Vec<Vec<u32>>,
+    pub display_joints: Vec<data::motion_eval::World>,
+    pub blend_from_joints: Vec<data::motion_eval::World>,
+    pub display_hand: Transform,
+    pub weapon_indices: Vec<Vec<u32>>,
     /// The same for slot 1's Keyblade (the form's own).
-    weapon2_indices: Vec<Vec<u32>>,
+    pub weapon2_indices: Vec<Vec<u32>>,
     /// The equipped Keyblade's own effects once a kit was built for it (None:
     /// the room's default), and whether the effect sources must take it.
-    weapon_pax: Option<Arc<object_effect::Pax>>,
-    weapon_pax_changed: bool,
-    weapon_display: Vec<Vec3>,
-    shown_action: Option<(Action, u64)>,
-    action_started: u64,
-    exit_code: Option<u8>,
-    show_collision: bool,
+    pub weapon_pax: Option<Arc<object_effect::Pax>>,
+    pub weapon_pax_changed: bool,
+    pub weapon_display: Vec<Vec3>,
+    pub shown_action: Option<(Action, u64)>,
+    pub action_started: u64,
+    pub exit_code: Option<u8>,
+    pub show_collision: bool,
     /// The debug menu's performance overlay (`perf_overlay`).
-    perf_overlay: bool,
-    rendered_frames: u64,
-    autoplay_failed: bool,
+    pub perf_overlay: bool,
+    pub rendered_frames: u64,
+    pub autoplay_failed: bool,
     /// Sound requests raised this tick: (id, cause).
-    sound_queue: Vec<(u32, &'static str)>,
+    pub sound_queue: Vec<(u32, &'static str)>,
     /// Action start tick and clip tick already scanned for sound triggers.
-    sound_frame: Option<(u64, u32)>,
-    effect_queue: Vec<EffectRequest>,
+    pub sound_frame: Option<(u64, u32)>,
+    pub effect_queue: Vec<EffectRequest>,
     /// Cleanups asked for (cleanup.rs).
-    cleanups: Vec<cleanup::Scope>,
+    pub cleanups: Vec<cleanup::Scope>,
     /// Elements to start next tick at a place other than Sora's own.
-    fx_queue: Vec<drive_fx::Placed>,
+    pub fx_queue: Vec<drive_fx::Placed>,
     /// [KH3 ruleset] Elements of a composite look, each with its style
     /// (duel_kh3.rs); a look reaches the joiner by its id, not by these.
-    fx_styled: Vec<(drive_fx::Placed, drive_fx::Style)>,
+    pub fx_styled: Vec<(drive_fx::Placed, drive_fx::Style)>,
     /// Battle actors' scene position and yaw this tick, and the motion
     /// serial and frame their triggers were last scanned at.
-    actor_poses: HashMap<u64, (Vec3, f32)>,
+    pub actor_poses: HashMap<u64, (Vec3, f32)>,
     /// The battle actors' bones of this tick (effects bound to them).
-    actor_bones: HashMap<u64, enemy_combat::ActorBones>,
-    actor_scan: HashMap<u64, (u64, f32)>,
+    pub actor_bones: HashMap<u64, enemy_combat::ActorBones>,
+    pub actor_scan: HashMap<u64, (u64, f32)>,
     /// Weapon trail: whether its effect is alive (the exe's handle at
     /// `obj+0xc00`, FUN_1403effa0), and the calibrated bone length.
     /// Each weapon slot's trail: live, and the blade length it measured.
-    trail_live: [bool; 2],
-    trail_length: [Option<f32>; 2],
+    pub trail_live: [bool; 2],
+    pub trail_length: [Option<f32>; 2],
     /// Slot 1's Keyblade effects (its own `obj/<model>.a.us`).
-    weapon2_pax: Option<Arc<object_effect::Pax>>,
+    pub weapon2_pax: Option<Arc<object_effect::Pax>>,
     /// Effect owners whose running instances are to be released.
-    fx_release: Vec<u8>,
+    pub fx_release: Vec<u8>,
     /// Map effect groups to end (None = all of them).
-    fx_clear_map: Vec<Option<u8>>,
+    pub fx_clear_map: Vec<Option<u8>>,
     /// The area's map effects still to be started (a new area).
-    map_fx_pending: bool,
+    pub map_fx_pending: bool,
     /// Looping sound requests to stop (a map effect that ended).
-    sound_stops: Vec<u32>,
+    pub sound_stops: Vec<u32>,
     /// Each battle actor's voice slot (enemy_battle::VoiceSlot).
-    enemy_voice_slots: HashMap<u64, enemy_battle::VoiceSlot>,
+    pub enemy_voice_slots: HashMap<u64, enemy_battle::VoiceSlot>,
     /// The vacuums' pull on each party member this tick (boss::requests).
-    party_push: Vec<[f32; 3]>,
+    pub party_push: Vec<[f32; 3]>,
     /// Field talk: control locked, and this tick's reaction / advance
     /// presses (Triangle; decide, back or Triangle).
-    talking: bool,
-    rc_queued: bool,
+    pub talking: bool,
+    pub rc_queued: bool,
     /// [KH3 ruleset] Triangle for flowmotion (duel_kh3.rs): pressed since
     /// the last tick.
-    flow_queued: bool,
+    pub flow_queued: bool,
     /// A save point's Save was chosen: the camp opens the file menu.
-    save_menu_wanted: bool,
+    pub save_menu_wanted: bool,
     /// Files the save point's menu wrote this run, and the world and area
     /// of the save point last used.
-    files_saved: u32,
-    save_place: Option<(u8, u8)>,
-    advance_queued: bool,
+    pub files_saved: u32,
+    pub save_place: Option<(u8, u8)>,
+    pub advance_queued: bool,
     /// The reaction-command search's records and the command manager's
     /// reaction state: the slot, the held command, this tick's press
     /// (reaction_command.rs).
-    reaction_commands: Option<reaction_command::Commands>,
-    reaction: reaction_command::State,
+    pub reaction_commands: Option<reaction_command::Commands>,
+    pub reaction: reaction_command::State,
     /// Offers the search made so far (the tours alternate on it).
-    offers_seen: u32,
+    pub offers_seen: u32,
     /// DAT_142a11400 bit 1: a mission's boss was beaten (commands locked,
     /// Sora cannot be hurt).
-    battle_won: bool,
+    pub battle_won: bool,
     /// Camera mode 3 (`camera_watch`) and the global screen fade dk::Fade
     /// scripts drive (boss.rs).
-    camera_watch: Option<boss::Watch>,
-    screen_fade: Fade,
+    pub camera_watch: Option<boss::Watch>,
+    pub screen_fade: Fade,
     /// A running mission overlay's camera (scene transform, field of view)
     /// and its `SeqBlur` weight with the event frame it belongs to.
-    overlay_camera: Option<boss::OverlayView>,
-    /// The duel match's shots (the intro, the result), when no mission
-    /// overlay holds the view.
-    duel_camera: Option<boss::OverlayView>,
-    overlay_blur: Option<(f32, i32)>,
+    pub overlay_camera: Option<boss::OverlayView>,
+    pub overlay_blur: Option<(f32, i32)>,
     /// The voice bank of each battle enemy object (objentry id).
-    enemy_voice_banks: HashMap<u32, u16>,
+    pub enemy_voice_banks: HashMap<u32, u16>,
     /// Sora's objentry weight (vacuums).
-    sora_weight: f32,
+    pub sora_weight: f32,
     /// The scripts' lights' scene tint (0x80 = 1.0, FUN_1403f7040).
-    scene_tint: [u8; 3],
+    pub scene_tint: [u8; 3],
     /// The area's mission (boss.rs), whether its load was tried, the event
     /// signals posted for it, and whether its clear has finished.
-    mission: Option<boss::Mission>,
-    mission_tried: bool,
-    mission_signals: Vec<(i32, i32)>,
-    mission_cleared: bool,
+    pub mission: Option<boss::Mission>,
+    pub mission_tried: bool,
+    pub mission_signals: Vec<(i32, i32)>,
+    pub mission_cleared: bool,
     /// The game speed (DAT_140717424) a running overlay set, the share of a
     /// field step it has accumulated, and whether the field steps now.
-    game_speed: f32,
-    speed_carry: f32,
-    field_step: bool,
+    pub game_speed: f32,
+    pub speed_carry: f32,
+    pub field_step: bool,
     /// DAT_142a11404: the battle style (2: a mission's boss style, forced
     /// for the whole mission by its record's flag bit 0, FUN_1403ab690).
-    battle_style: u8,
+    pub battle_style: u8,
     /// Unattended capture ticks and end for this room.
-    captures: Vec<u64>,
-    autoplay_end: u64,
+    pub captures: Vec<u64>,
+    pub autoplay_end: u64,
 }
 
 /// Sound output and banks; requests resolve by id (bank·1000 + sound).
 #[derive(Resource)]
-struct Audio {
-    output: Option<audio::Output>,
-    banks: Banks,
-    alarm: bool,
+pub struct Audio {
+    pub output: Option<audio::Output>,
+    pub banks: Banks,
+    pub alarm: bool,
     /// The ambient bed that is playing (its request id).
-    ambient: Option<u32>,
+    pub ambient: Option<u32>,
 }
 
-struct MenuState {
-    menu: CommandMenu,
-    sheet: Sheet,
-    font: SystemFont,
+pub struct MenuState {
+    pub menu: CommandMenu,
+    pub sheet: Sheet,
+    pub font: SystemFont,
     /// The font image's icon plane (0x09 icons: the list rows' buttons).
-    icons: SystemFont,
+    pub icons: SystemFont,
     /// The layout file loaded for the current world (None: the configured
     /// one) and the language its world layouts are read in.
-    layout: Option<String>,
-    language: String,
+    pub layout: Option<String>,
+    pub language: String,
 }
 
 /// Sora's field gauge: the translated GAUGE_PLAYER logic, drawn into a
 /// software canvas shown as a full-window overlay.
 #[derive(Resource)]
-struct Hud {
+pub struct Hud {
     /// Gauge sheet, then the face sheet when configured.
-    sheets: Vec<Sheet>,
+    pub sheets: Vec<Sheet>,
     /// The area-change iris layout.
-    iris: Option<Sheet>,
-    menu: Option<MenuState>,
-    gauge: Gauge,
+    pub iris: Option<Sheet>,
+    pub menu: Option<MenuState>,
+    pub gauge: Gauge,
     /// Donald's and Goofy's gauges (GAUGE_FRIEND), made when the member
     /// exists, and the sheets of their faces.
-    friends: [Option<FriendGauge>; 2],
-    friend_faces: [Option<usize>; 2],
+    pub friends: [Option<FriendGauge>; 2],
+    pub friend_faces: [Option<usize>; 2],
     /// The Scan target gauge (GAUGE_ENEMY, layer 6) and what it shows.
-    enemy_gauge: EnemyGauge,
-    scan: enemy_target::ScanTracker,
+    pub enemy_gauge: EnemyGauge,
+    pub scan: enemy_target::ScanTracker,
     /// The HUD slot-height table that popups register in (the Scan gauge stacks
     /// on it).
-    slots: visual::hud_slots::HudSlots,
+    pub slots: visual::hud_slots::HudSlots,
     /// The `fiel` sheet and the lock-on reticle drawn from it.
-    field: Sheet,
-    reticle: visual::lock_on::Reticle,
-    reticle_draw: Option<Draw>,
+    pub field: Sheet,
+    pub reticle: visual::lock_on::Reticle,
+    pub reticle_draw: Option<Draw>,
     /// The reaction command's target marker (FUN_140408520 → FUN_14017c570).
-    reaction_marker: visual::lock_on::Marker,
+    pub reaction_marker: visual::lock_on::Marker,
     /// Chicken Little's limit reticle (FUN_14017c570 with 3, or 0x19 on a
     /// target), bound to his aim point.
-    limit_reticle: Option<visual::lock_on::LockOn>,
-    stats: GaugeStats,
-    canvas: visual::gauge::CanvasWorker,
-    image: Handle<Image>,
-    updated: bool,
+    pub limit_reticle: Option<visual::lock_on::LockOn>,
+    pub stats: GaugeStats,
+    pub canvas: visual::gauge::CanvasWorker,
+    pub image: Handle<Image>,
+    pub updated: bool,
     /// The form level-up panels (sprite priority 9000, after the gauge).
-    panels: visual::level_up::Panels,
+    pub panels: visual::level_up::Panels,
     /// A party limit's gauge and combo counter while it runs.
-    limit_hud: Option<party_limit::LimitHud>,
+    pub limit_hud: Option<party_limit::LimitHud>,
     /// The limit whose `comd` sheet the command menu wears while its
     /// special deck is up (FUN_14015de90).
-    menu_skin: Option<(Arc<party_limit::LimitSource>, usize)>,
+    pub menu_skin: Option<(Arc<party_limit::LimitSource>, usize)>,
 }
 
 /// The original's default follow camera, ticked with the simulation in the
 /// game's own world space (Y down: scene (x, -y, -z)).
 #[derive(Resource)]
-struct CameraRig {
-    camera: FollowCamera,
-    previous_position: [f32; 3],
+pub struct CameraRig {
+    pub camera: FollowCamera,
+    pub previous_position: [f32; 3],
     /// Mouse motion (counts) not yet taken by a tick, and the stick's
     /// multiplier for it (input::mouse_look).
-    mouse_counts: Vec2,
-    mouse_gain: f32,
-    recenter_queued: bool,
+    pub mouse_counts: Vec2,
+    pub mouse_gain: f32,
+    pub recenter_queued: bool,
     /// First person last tick, and Sora's fade ramp (`actor+0xa10`: value and
     /// step, FUN_1403b7810) with its end.
-    was_first_person: bool,
-    fade: FadeRamp,
+    pub was_first_person: bool,
+    pub fade: FadeRamp,
     /// Camera mode 9 (Chicken Little's limit) last tick.
-    was_aiming: bool,
+    pub was_aiming: bool,
     /// The map's camera collision in game world space.
-    collision: CameraCollision,
-    collision_hits: u64,
-    /// [KH3 ruleset] KH3's lock-on and aiming cameras, and the view they
-    /// give this tick (kh3_camera.rs).
-    kh3: kh3_camera::Kh3Camera,
-    kh3_view: Option<boss::OverlayView>,
+    pub collision: CameraCollision,
+    pub collision_hits: u64,
+    /// An extension's camera over the follow camera, this tick.
+    pub extra_view: Option<boss::OverlayView>,
 }
 
 /// FUN_1403b7810's ramp: a value and its per-frame step toward `end`.
 #[derive(Clone, Copy, Debug, PartialEq)]
-struct FadeRamp {
-    value: f32,
-    step: f32,
-    end: f32,
+pub struct FadeRamp {
+    pub value: f32,
+    pub step: f32,
+    pub end: f32,
 }
 
 impl FadeRamp {
@@ -1630,7 +1554,7 @@ impl FadeRamp {
     };
 
     /// `FUN_1403b7810(ramp, start, end, 30)`.
-    fn start(start: f32, end: f32) -> Self {
+    pub fn start(start: f32, end: f32) -> Self {
         FadeRamp {
             value: start,
             step: (end - start) / follow_camera::FIRST_PERSON_FADE_FRAMES,
@@ -1638,7 +1562,7 @@ impl FadeRamp {
         }
     }
 
-    fn tick(&mut self) {
+    pub fn tick(&mut self) {
         self.value += self.step;
         if (self.step > 0. && self.value >= self.end) || (self.step < 0. && self.value <= self.end)
         {
@@ -1651,13 +1575,13 @@ impl FadeRamp {
 /// The camera's collision: a map's COCT worlds queried like the executable's
 /// camera ray (planes, surface nibbles), or plain triangles for the generated
 /// arena.
-struct CameraCollision {
-    worlds: Vec<::collision::World>,
-    triangles: Vec<[[f32; 3]; 3]>,
+pub struct CameraCollision {
+    pub worlds: Vec<::collision::World>,
+    pub triangles: Vec<[[f32; 3]; 3]>,
 }
 
 impl CameraCollision {
-    fn new(room: &visual::room::LoadedRoom) -> Self {
+    pub fn new(room: &visual::room::LoadedRoom) -> Self {
         Self {
             // The COCT vertices already are game world coordinates.
             worlds: room
@@ -1674,18 +1598,18 @@ impl CameraCollision {
     }
 
     /// Plain triangles in game world coordinates (another game's map).
-    fn from_triangles(triangles: Vec<[[f32; 3]; 3]>) -> Self {
+    pub fn from_triangles(triangles: Vec<[[f32; 3]; 3]>) -> Self {
         Self {
             worlds: Vec::new(),
             triangles,
         }
     }
 
-    fn polygons(&self) -> usize {
+    pub fn polygons(&self) -> usize {
         self.triangles.len()
     }
 
-    fn cast(&self, from: [f32; 3], to: [f32; 3]) -> Option<follow_camera::RayHit> {
+    pub fn cast(&self, from: [f32; 3], to: [f32; 3]) -> Option<follow_camera::RayHit> {
         if self.worlds.is_empty() {
             return follow_camera::triangle_hit(&self.triangles, from, to);
         }
@@ -1704,16 +1628,21 @@ impl CameraCollision {
 
 /// Scene (Y up) to game world (Y down) and back; the map is converted with
 /// (x, -y, -z).
-fn to_world(p: [f32; 3]) -> [f32; 3] {
+pub fn to_world(p: [f32; 3]) -> [f32; 3] {
     [p[0], -p[1], -p[2]]
 }
-fn from_world(p: [f32; 3]) -> Vec3 {
+pub fn from_world(p: [f32; 3]) -> Vec3 {
     Vec3::new(p[0], -p[1], -p[2])
 }
 
 /// Starts the map elements of every background group set in `mask`, in
 /// bit order and then table order (FUN_1402c7010 per set bit).
-fn start_map_effects(game: &mut Game, pax: &Arc<object_effect::Pax>, mask: u64, only: Option<u8>) {
+pub fn start_map_effects(
+    game: &mut Game,
+    pax: &Arc<object_effect::Pax>,
+    mask: u64,
+    only: Option<u8>,
+) {
     for bit in 0..64u8 {
         if mask >> bit & 1 == 0 || only.is_some_and(|o| o != bit) {
             continue;
@@ -1739,7 +1668,7 @@ fn start_map_effects(game: &mut Game, pax: &Arc<object_effect::Pax>, mask: u64, 
 /// Bit 14 is the riding state (`obj+0x2b0`, the ridden object, replaces the
 /// actor in `FUN_14040d810` / `FUN_14040e4e0` when it is set); no rideable
 /// object exists in the room, so it is always clear here.
-fn first_person_allowed(player: &Player, clips: &Clips) -> bool {
+pub fn first_person_allowed(player: &Player, clips: &Clips) -> bool {
     use player::growth::motion::{GLIDE, GLIDE_STAND, QUICK_RUN, QUICK_RUN_END};
     !player.dead()
         && !player.first_person_blocked(clips)
@@ -1747,7 +1676,7 @@ fn first_person_allowed(player: &Player, clips: &Clips) -> bool {
             if (QUICK_RUN..=QUICK_RUN_END).contains(&m) || (GLIDE..=GLIDE_STAND).contains(&m))
 }
 
-fn camera_input(player: &Player, previous: [f32; 3], speed: f32) -> CameraInput {
+pub fn camera_input(player: &Player, previous: [f32; 3], speed: f32) -> CameraInput {
     let [s, c] = [player.yaw.sin(), player.yaw.cos()];
     CameraInput {
         player_position: to_world(player.position),
@@ -1759,23 +1688,23 @@ fn camera_input(player: &Player, previous: [f32; 3], speed: f32) -> CameraInput 
 }
 
 #[derive(Component)]
-struct SoraRoot;
+pub struct SoraRoot;
 #[derive(Component)]
-struct SoraPart(usize);
+pub struct SoraPart(pub usize);
 #[derive(Component)]
-struct WeaponPart(usize);
+pub struct WeaponPart(pub usize);
 #[derive(Component)]
-struct WeaponRoot;
+pub struct WeaponRoot;
 #[derive(Component)]
-struct CollisionOverlay;
+pub struct CollisionOverlay;
 
 impl Game {
     /// The game-over tour's scripted knock-out tick.
-    fn tour_defeat_due(&self) -> bool {
+    pub fn tour_defeat_due(&self) -> bool {
         self.tick == game_over::TOUR_DEFEAT
     }
 
-    fn event(&mut self, value: serde_json::Value) {
+    pub fn event(&mut self, value: serde_json::Value) {
         if let Some(log) = &mut self.log {
             serde_json::to_writer(&mut *log, &value).expect("test room log write");
             writeln!(log).expect("test room log newline");
@@ -1784,7 +1713,7 @@ impl Game {
     }
 }
 
-fn read_limited(path: &Path) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+pub fn read_limited(path: &Path) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
     let mut bytes = Vec::new();
     File::open(path)?.take(1_048_577).read_to_end(&mut bytes)?;
     if bytes.len() > 1_048_576 {
@@ -1793,7 +1722,7 @@ fn read_limited(path: &Path) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
     Ok(bytes)
 }
 
-fn read_archive(
+pub fn read_archive(
     source: &ProbeSource,
     locator: &Locator,
 ) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
@@ -1810,7 +1739,7 @@ fn read_archive(
 }
 
 /// A file of an index found by its path's name hash (None: not there).
-fn read_named(
+pub fn read_named(
     source: &ProbeSource,
     index: &str,
     path: &str,
@@ -1830,7 +1759,10 @@ fn read_named(
     Ok(Some(bytes))
 }
 
-fn bar_entry<'a>(bytes: &'a [u8], name: &[u8; 4]) -> Result<&'a [u8], Box<dyn std::error::Error>> {
+pub fn bar_entry<'a>(
+    bytes: &'a [u8],
+    name: &[u8; 4],
+) -> Result<&'a [u8], Box<dyn std::error::Error>> {
     let table = bar::read_bar(bytes)?;
     let matches: Vec<_> = table
         .entries
@@ -1849,7 +1781,7 @@ fn bar_entry<'a>(bytes: &'a [u8], name: &[u8; 4]) -> Result<&'a [u8], Box<dyn st
 /// Clip timing relative to FrameStart, plus the key time of FrameStart.
 /// Loads the ATKP rows of `id` in sub-table `sub` into the runtime (and the
 /// id's base row and hit sound for the clash rules) on first use.
-fn ensure_attack_rows(rt: &mut EnemyRuntime, id: u16, sub: u8) -> bool {
+pub fn ensure_attack_rows(rt: &mut EnemyRuntime, id: u16, sub: u8) -> bool {
     if rt.steps.contains_key(&(id, sub)) {
         return true;
     }
@@ -1866,7 +1798,7 @@ fn ensure_attack_rows(rt: &mut EnemyRuntime, id: u16, sub: u8) -> bool {
 }
 
 /// The damage routine's view of an ATKP row.
-fn params_of(a: &data::battle_tables::Attack) -> combat::AttackParams {
+pub fn params_of(a: &data::battle_tables::Attack) -> combat::AttackParams {
     combat::AttackParams {
         power: a.power,
         stat: a.stat,
@@ -1880,7 +1812,7 @@ fn params_of(a: &data::battle_tables::Attack) -> combat::AttackParams {
 }
 
 /// A PTYA record for the attack chooser (the 0x44 bytes as read).
-fn ptya_record(e: &ptya::PtyaEntry) -> player::ptya::Record {
+pub fn ptya_record(e: &ptya::PtyaEntry) -> player::ptya::Record {
     let f = |k: usize| f32::from_bits(e.float_bits[k]);
     player::ptya::Record {
         id: e.id,
@@ -1908,7 +1840,9 @@ fn ptya_record(e: &ptya::PtyaEntry) -> player::ptya::Record {
     }
 }
 
-fn clip_for(selected: &motion::SelectedMotion) -> Result<(Clip, u32), Box<dyn std::error::Error>> {
+pub fn clip_for(
+    selected: &motion::SelectedMotion,
+) -> Result<(Clip, u32), Box<dyn std::error::Error>> {
     let (frame_start, frame_end, fps, frame_return) = selected.motion.frame_window()?;
     // Some limit motions start before their first key (-1) or name a return
     // frame past their end: sampled from 0, the return held to the window.
@@ -2048,22 +1982,22 @@ fn clip_for(selected: &motion::SelectedMotion) -> Result<(Clip, u32), Box<dyn st
 /// What builds the battle ability record (stats +0x1d0): the SSTM adders,
 /// each ability item's bit (+4) and action/growth class (+6 non-zero), and the
 /// equipment items' granted abilities.
-struct AbilitySource {
-    rates: abilities::Rates,
-    items: HashMap<u16, (u16, bool)>,
-    equipment_abilities: HashMap<u16, u16>,
+pub struct AbilitySource {
+    pub rates: abilities::Rates,
+    pub items: HashMap<u16, (u16, bool)>,
+    pub equipment_abilities: HashMap<u16, u16>,
     /// Each equipment item's stat row (FUN_1403e3ef0) by item id.
-    rows: HashMap<u16, player::equipment_stats::Row>,
+    pub rows: HashMap<u16, player::equipment_stats::Row>,
     /// The Keyblades, armor and accessories the development room owns.
-    owned: Vec<u16>,
-    inventory: ability_inventory::Inventory,
+    pub owned: Vec<u16>,
+    pub inventory: ability_inventory::Inventory,
 }
 
 impl AbilitySource {
     /// FUN_1403c1d90's ability part: reset (FUN_1404016b0), the weapon's
     /// stat-row ability (FUN_1403c1190), then the equipped slots
     /// (FUN_1404014a0).
-    fn build(
+    pub fn build(
         &self,
         slots: &[u16],
         equipment: &pause_menu::items::Equipment,
@@ -2073,7 +2007,7 @@ impl AbilitySource {
 
     /// The same with an active Drive form's record linked (stats+0x254):
     /// Sora's growth abilities give way to the form's slots.
-    fn build_with_form(
+    pub fn build_with_form(
         &self,
         slots: &[u16],
         equipment: &pause_menu::items::Equipment,
@@ -2107,7 +2041,7 @@ impl AbilitySource {
     /// What the equipment adds to the status totals (FUN_1403c1d90 through
     /// FUN_1403c1190): the member weapons, the linked form weapon, armor and
     /// accessories, in that order.
-    fn gear(
+    pub fn gear(
         &self,
         equipment: &pause_menu::items::Equipment,
         form_weapon: Option<u16>,
@@ -2261,104 +2195,104 @@ mod ability_source_tests {
     }
 }
 
-struct Loaded {
-    room: LoadedRoom,
+pub struct Loaded {
+    pub room: LoadedRoom,
     /// Keyblade items' models (the skateboard), and the room's own weapon.
-    keyblades: crate::keyblade_board::Keyblades,
-    weapon_model: String,
-    board_motion: Option<motion::SelectedMotion>,
-    arena_mesh: Option<visual::room::ArenaMesh>,
-    params: Params,
+    pub keyblades: crate::keyblade_board::Keyblades,
+    pub weapon_model: String,
+    pub board_motion: Option<motion::SelectedMotion>,
+    pub arena_mesh: Option<visual::room::ArenaMesh>,
+    pub params: Params,
     /// SSTM battle parameters (blow, hit-back, fall max).
-    sstm: actor_physics::Sstm,
+    pub sstm: actor_physics::Sstm,
     /// The 00battle ATKP table and the room Keyblade's attack spheres, for
     /// the swings' environment test (wall_hit.rs).
-    atkp: Vec<u8>,
-    wall_blade: character_kit::Blade,
+    pub atkp: Vec<u8>,
+    pub wall_blade: character_kit::Blade,
     /// The vibration waves of the battle archive's `vbrt` block.
-    vibration: Option<player::vibration::Library>,
-    abilities: AbilitySource,
-    magic: Option<magic_room::MagicSource>,
+    pub vibration: Option<player::vibration::Library>,
+    pub abilities: AbilitySource,
+    pub magic: Option<magic_room::MagicSource>,
     /// The second command deck's tables and labels.
-    second_deck: Option<second_deck::SecondDeck>,
-    summons: Option<summon::Source>,
+    pub second_deck: Option<second_deck::SecondDeck>,
+    pub summons: Option<summon::Source>,
     /// The party limits' files.
-    party_limits: party_limit::LimitSource,
-    items: Option<item_room::ItemSource>,
+    pub party_limits: party_limit::LimitSource,
+    pub items: Option<item_room::ItemSource>,
     /// Base Sora's kit, and what builds the Drive forms' kits.
-    kit: character_kit::Kit,
-    forms: Option<drive_room::FormSources>,
+    pub kit: character_kit::Kit,
+    pub forms: Option<drive_room::FormSources>,
     /// 03system `cmd` with the names of the commands offered in battle.
-    reaction_commands: Option<reaction_command::Commands>,
+    pub reaction_commands: Option<reaction_command::Commands>,
     /// Sora's objentry weight (+0x50).
-    sora_weight: f32,
-    enemy_character: u16,
+    pub sora_weight: f32,
+    pub enemy_character: u16,
     /// The room enemy's objentry weight (+0x50, FUN_1403b5e00).
-    enemy_weight: f32,
-    fmab: player::growth::Fmab,
-    voices: Option<drive_room::Voices>,
+    pub enemy_weight: f32,
+    pub fmab: player::growth::Fmab,
+    pub voices: Option<drive_room::Voices>,
     /// The world's 12soundinfo rows (Sora's footstep bank by room).
-    step_info: Option<(u8, visual::footsteps::WorldInfo)>,
+    pub step_info: Option<(u8, visual::footsteps::WorldInfo)>,
     /// Donald and Goofy's models and motions (empty when not installed).
-    party: Vec<std::sync::Arc<party_room::PartyKind>>,
+    pub party: Vec<std::sync::Arc<party_room::PartyKind>>,
     /// Each member's camp model (MENU_FRIEND_n), in `party` order.
-    menu_friends: Vec<Option<menu_friend::MenuFriend>>,
-    party_reload: Option<party_room::ReloadSource>,
-    spawn: Vec3,
+    pub menu_friends: Vec<Option<menu_friend::MenuFriend>>,
+    pub party_reload: Option<party_room::ReloadSource>,
+    pub spawn: Vec3,
     /// Sora's facing at the spawn (scene yaw).
-    yaw: f32,
-    world: RoomWorld,
+    pub yaw: f32,
+    pub world: RoomWorld,
     /// The field area, when the room is a game area.
-    area: Option<(AreaSource, LoadedArea)>,
+    pub area: Option<(AreaSource, LoadedArea)>,
     /// Message window art, font and labels for townspeople talk.
-    area_talk: Option<AreaTalk>,
-    stay: bool,
+    pub area_talk: Option<AreaTalk>,
+    pub stay: bool,
     /// The config's arrival mode (AreaConfig::arrival).
-    arrival: u8,
-    summary: serde_json::Value,
-    hud: Option<HudSource>,
-    enemy: Option<EnemySource>,
-    banks: Banks,
-    effects: Option<EffectSources>,
-    npc: Option<NpcSource>,
-    camp: Option<CampSource>,
-    journal: Option<JournalSource>,
+    pub arrival: u8,
+    pub summary: serde_json::Value,
+    pub hud: Option<HudSource>,
+    pub enemy: Option<EnemySource>,
+    pub banks: Banks,
+    pub effects: Option<EffectSources>,
+    pub npc: Option<NpcSource>,
+    pub camp: Option<CampSource>,
+    pub journal: Option<JournalSource>,
     /// The game-over sequence's files (absent when the install lacks any).
-    game_over: Option<game_over::Source>,
+    pub game_over: Option<game_over::Source>,
     /// The menus' configured files, for a text language change.
-    language: Option<settings_room::LanguageSources>,
+    pub language: Option<settings_room::LanguageSources>,
     /// Field and battle music SCD bytes.
-    music: Option<[Vec<u8>; 2]>,
+    pub music: Option<[Vec<u8>; 2]>,
 }
 
 /// The journal's art, tables and messages.
-struct JournalSource {
-    book: Menu2ld,
-    curtain: Menu2ld,
-    world_icons: Vec<menu_screen::Texture>,
-    tops: Vec<(String, Vec<menu_screen::Texture>)>,
-    worlds: Vec<data::journal_table::World>,
-    stories: Vec<data::journal_table::Story>,
-    texts: HashMap<u16, Vec<u8>>,
-    flags: Vec<u16>,
-    reports: Vec<data::journal_table::Report>,
-    limits: Vec<data::journal_table::Limit>,
-    quests: Vec<data::journal_table::Quest>,
-    minigames: Vec<data::journal_table::Minigame>,
-    moogle_names: Vec<Vec<u8>>,
-    puzzles: Vec<data::journal_table::Puzzle>,
-    pieces: Vec<data::journal_table::Piece>,
-    ipic: Option<data::sprite_sequence::Sequence>,
-    treasures: Vec<data::journal_table::Treasure>,
-    item_names: HashMap<u16, journal::TreasureItem>,
-    opened_bits: Vec<u16>,
-    owned_items: Vec<u16>,
-    chars: Vec<data::journal_table::Char>,
-    diag: Vec<data::journal_table::Diag>,
-    albums: Vec<data::journal_table::Album>,
+pub struct JournalSource {
+    pub book: Menu2ld,
+    pub curtain: Menu2ld,
+    pub world_icons: Vec<menu_screen::Texture>,
+    pub tops: Vec<(String, Vec<menu_screen::Texture>)>,
+    pub worlds: Vec<data::journal_table::World>,
+    pub stories: Vec<data::journal_table::Story>,
+    pub texts: HashMap<u16, Vec<u8>>,
+    pub flags: Vec<u16>,
+    pub reports: Vec<data::journal_table::Report>,
+    pub limits: Vec<data::journal_table::Limit>,
+    pub quests: Vec<data::journal_table::Quest>,
+    pub minigames: Vec<data::journal_table::Minigame>,
+    pub moogle_names: Vec<Vec<u8>>,
+    pub puzzles: Vec<data::journal_table::Puzzle>,
+    pub pieces: Vec<data::journal_table::Piece>,
+    pub ipic: Option<data::sprite_sequence::Sequence>,
+    pub treasures: Vec<data::journal_table::Treasure>,
+    pub item_names: HashMap<u16, journal::TreasureItem>,
+    pub opened_bits: Vec<u16>,
+    pub owned_items: Vec<u16>,
+    pub chars: Vec<data::journal_table::Char>,
+    pub diag: Vec<data::journal_table::Diag>,
+    pub albums: Vec<data::journal_table::Album>,
 }
 
-fn load_journal(
+pub fn load_journal(
     source: &ProbeSource,
     j: &JournalConfig,
     sys: &Locator,
@@ -2542,71 +2476,71 @@ fn load_journal(
 
 /// Camp (pause) menu sources: camp.2ld, the entries' labels and help
 /// lines (sys.bar), and the system font.
-struct CampSource {
-    menu: Menu2ld,
+pub struct CampSource {
+    pub menu: Menu2ld,
     /// msg/<lang>/sys.bar (the file menu's texts).
-    sys: Locator,
-    entries: Vec<pause_menu::Entry>,
-    font: SystemFont,
+    pub sys: Locator,
+    pub entries: Vec<pause_menu::Entry>,
+    pub font: SystemFont,
     /// "LV", "HP", "MP" and Sora's name (0xb9fc..0xb9fe, 0x851f).
-    labels: [Vec<u8>; 3],
-    name: Vec<u8>,
+    pub labels: [Vec<u8>; 3],
+    pub name: Vec<u8>,
     /// Sora's Status help line and the 0x18 banner.
-    help: Vec<u8>,
-    banner: Vec<u8>,
+    pub help: Vec<u8>,
+    pub banner: Vec<u8>,
     /// Status stats: bit, label, help, style.
-    stats: Vec<(usize, Vec<u8>, Vec<u8>, usize)>,
-    config: Vec<pause_menu::ConfigRow>,
-    numbers: SoraNumbers,
+    pub stats: Vec<(usize, Vec<u8>, Vec<u8>, usize)>,
+    pub config: Vec<pause_menu::ConfigRow>,
+    pub numbers: SoraNumbers,
     /// The item table with its texts and the Items screens' messages.
-    items: pause_menu::items::ItemsData,
+    pub items: pause_menu::items::ItemsData,
     /// The Abilities screens' messages and the Kingdom Key's ability.
-    abilities: pause_menu::abilities::AbilityTexts,
-    weapon_ability: u16,
-    party_help: [Vec<u8>; 3],
-    customize: pause_menu::customize::CustomizeTexts,
-    equip_texts: pause_menu::equip::EquipTexts,
-    equip_stats: Vec<pause_menu::equip::ItemStats>,
+    pub abilities: pause_menu::abilities::AbilityTexts,
+    pub weapon_ability: u16,
+    pub party_help: [Vec<u8>; 3],
+    pub customize: pause_menu::customize::CustomizeTexts,
+    pub equip_texts: pause_menu::equip::EquipTexts,
+    pub equip_stats: Vec<pause_menu::equip::ItemStats>,
     /// Donald and Goofy: names, Status help and level-1 rows.
-    party: Vec<PartyCampSource>,
+    pub party: Vec<PartyCampSource>,
     /// The font image's icon plane (0x09 icons).
-    icons: SystemFont,
+    pub icons: SystemFont,
     /// 03system.bin `ipic`: the item pictures' sequence.
-    picture_sequence: Option<data::sprite_sequence::Sequence>,
+    pub picture_sequence: Option<data::sprite_sequence::Sequence>,
     /// The tutorial notices' headings, "PAGE " and callouts.
-    notice_headings: [Vec<u8>; 4],
-    notice_page: Vec<u8>,
-    notice_callouts: Vec<(String, Vec<pause_menu::notice::Callout>)>,
+    pub notice_headings: [Vec<u8>; 4],
+    pub notice_page: Vec<u8>,
+    pub notice_callouts: Vec<(String, Vec<pause_menu::notice::Callout>)>,
 }
 
 /// A party member's camp texts and level row: character id, name (table
 /// 0x1405c8f60: 0x8520 Donald, 0x8521 Goofy), the Status help 0xc5ae with
 /// the name, and the level-1 `lvup` row (party-camp spec §2.4).
-struct PartyCampSource {
-    character: u8,
-    name: Vec<u8>,
-    help: Vec<u8>,
-    level: data::battle_tables::PlayerLevel,
+pub struct PartyCampSource {
+    pub character: u8,
+    pub name: Vec<u8>,
+    pub help: Vec<u8>,
+    pub level: data::battle_tables::PlayerLevel,
 }
 
 /// A party member as the camp opens: character id, HP, MP and its
 /// character record.
 #[derive(Clone)]
-struct CampMember {
-    character: u8,
-    hp: i32,
-    max_hp: i32,
-    mp: i32,
-    max_mp: i32,
-    save: player::party_members::Save,
+pub struct CampMember {
+    pub character: u8,
+    pub hp: i32,
+    pub max_hp: i32,
+    pub mp: i32,
+    pub max_mp: i32,
+    pub save: player::party_members::Save,
 }
 
 /// The Status rows a party member shows (FUN_140352350 for bits 7..9:
 /// mask 0x1fc3f).
-const PARTY_STATS: u32 = 0x1fc3f;
+pub const PARTY_STATS: u32 = 0x1fc3f;
 
 /// Items screen messages (camp-05 §9).
-const ITEM_MESSAGES: [u32; 19] = [
+pub const ITEM_MESSAGES: [u32; 19] = [
     0x8455, 0x845a, 0x8456, 0x8457, 0x8448, 0xb943, 0xb944, 0xbb86, 0xbb87, 0xb90c, 0xb90f, 0xb90d,
     0xb90e, 0xb910, 0xb94f, 0xbb90, 0x9fcf, 0x9fd0, 0x9fd1,
 ];
@@ -2614,7 +2548,7 @@ const ITEM_MESSAGES: [u32; 19] = [
 /// The room's stock and Sora's equipment [test-room values: a new save's
 /// inventory is not decoded]: 3 Potions, a Hi-Potion, 2 Ethers; the
 /// Kingdom Key with one empty armor, accessory and two item slots.
-const ROOM_STOCK: [(u16, u8); 9] = [
+pub const ROOM_STOCK: [(u16, u8); 9] = [
     (1, 3),
     (2, 1),
     (3, 2),
@@ -2632,9 +2566,9 @@ const ROOM_STOCK: [(u16, u8); 9] = [
 /// Armor and accessory slots of the development room [test-room values: the
 /// slots a new save gains are not decoded; four of each lets armor and
 /// accessories stack].
-const ROOM_GEAR_SLOTS: usize = 4;
+pub const ROOM_GEAR_SLOTS: usize = 4;
 
-fn room_equipment() -> pause_menu::items::Equipment {
+pub fn room_equipment() -> pause_menu::items::Equipment {
     pause_menu::items::Equipment {
         weapon: KINGDOM_KEY,
         armor: vec![0; ROOM_GEAR_SLOTS],
@@ -2647,14 +2581,14 @@ fn room_equipment() -> pause_menu::items::Equipment {
 
 /// The element items by magic type (Fire, Blizzard, Thunder, Cure,
 /// Magnet, Reflect).
-const ELEMENT_ITEMS: [u16; 6] = [0x15, 0x16, 0x17, 0x18, 0x57, 0x58];
+pub const ELEMENT_ITEMS: [u16; 6] = [0x15, 0x16, 0x17, 0x18, 0x57, 0x58];
 /// Shortcut slots of a fresh room [test-room values]: Fire, Blizzard,
 /// Thunder and Cure by their level-1 command ids; Customize changes them.
-const ROOM_SHORTCUTS: [u16; 4] = [0x31, 0x33, 0x32, 0x34];
+pub const ROOM_SHORTCUTS: [u16; 4] = [0x31, 0x33, 0x32, 0x34];
 
 /// Equip messages (camp-09 §10): sections, None, no items, unequip help,
 /// the two boxes, the info labels.
-const EQUIP_MESSAGES: [u32; 22] = [
+pub const EQUIP_MESSAGES: [u32; 22] = [
     0x845b, 0x845d, 0x8463, 0x8465, 0x8467, 0x8449, 0x844a, 0xcb8d, 0xcb8e, 0x8469, 0x846a, 0xc22e,
     0xc648, 0xc649, 0xc64a, 0xc64b, 0xc651, 0xc652, 0xc653, 0xc654, 0xc64c, 0,
 ];
@@ -2663,7 +2597,7 @@ const EQUIP_MESSAGES: [u32; 22] = [
 /// shortcut headings, remove help, MP Charge and Auto-Reload choices and
 /// help, the Auto-Reload warning, the battle styles and their help, the
 /// ability and item frequencies and their help.
-const CUSTOMIZE_MESSAGES: [u32; 43] = [
+pub const CUSTOMIZE_MESSAGES: [u32; 43] = [
     0xbb89, 0xbb8a, 0x847d, 0x8481, 0x8482, 0x8483, 0x8484, 0x847d, 0x847e, 0x847f, 0x8480, 0x9df7,
     0x9df9, 0x9df8, 0x9dfb, 0x9dfa, 0x9dfd, 0x9dfc, 0x9dff, 0x9dfe, 0x846a, 0x8486, 0x8487, 0x8488,
     0x8489, 0x848a, 0x848b, 0x9e55, 0x9e56, 0x9e57, 0x9e58, 0x9e59, 0x9e5a, 0x9e4e, 0x9e4f, 0x9e50,
@@ -2671,18 +2605,18 @@ const CUSTOMIZE_MESSAGES: [u32; 43] = [
 ];
 
 /// Abilities screen messages (camp-06 §7).
-const ABILITY_MESSAGES: [u32; 15] = [
+pub const ABILITY_MESSAGES: [u32; 15] = [
     0xbb8b, 0xbb8c, 0xb2ee, 0xb2ef, 0xb2f0, 0xb2ed, 0xb372, 0xb629, 0xb627, 0xb62a, 0xb628, 0xb373,
     0xb619, 0xb61a, 0x8454,
 ];
 
 /// [test-room value] AP added to Sora's level-1 AP so the room's abilities
 /// fit (the Critical start record's 50 plus Aerial Recovery's 2).
-const ROOM_EXTRA_AP: i32 = 50;
+pub const ROOM_EXTRA_AP: i32 = 50;
 /// The Kingdom Key (its stat record gives the weapon ability).
-const KINGDOM_KEY: u16 = 0x29;
+pub const KINGDOM_KEY: u16 = 0x29;
 
-fn load_camp_abilities(
+pub fn load_camp_abilities(
     system: &[u8],
     msg: impl Fn(&[u32]) -> Result<Vec<Option<Vec<u8>>>, Box<dyn std::error::Error>>,
 ) -> Result<(pause_menu::abilities::AbilityTexts, u16), Box<dyn std::error::Error>> {
@@ -2716,7 +2650,7 @@ fn load_camp_abilities(
 }
 
 /// 03system `item` with names and descriptions, and the screens' texts.
-fn load_camp_items(
+pub fn load_camp_items(
     system: &[u8],
     msg: impl Fn(&[u32]) -> Result<Vec<Option<Vec<u8>>>, Box<dyn std::error::Error>>,
 ) -> Result<pause_menu::items::ItemsData, Box<dyn std::error::Error>> {
@@ -2802,18 +2736,18 @@ fn load_camp_items(
 
 /// Sora's Status numbers the room does not track elsewhere.
 #[derive(Clone, Copy)]
-struct SoraNumbers {
-    level: u8,
-    next_exp: u32,
-    ap: i32,
-    strength: i32,
-    magic: i32,
-    defense: i32,
+pub struct SoraNumbers {
+    pub level: u8,
+    pub next_exp: u32,
+    pub ap: i32,
+    pub strength: i32,
+    pub magic: i32,
+    pub defense: i32,
 }
 
 /// Status stats Sora shows with nothing obtained (camp-04 §2.4): bit,
 /// label id, help id, style.
-const CAMP_STATS: [(usize, u32, u32, usize); 14] = [
+pub const CAMP_STATS: [(usize, u32, u32, usize); 14] = [
     (0, 0xc559, 0xc56e, 0),
     (1, 0xc55a, 0xc56f, 0),
     (2, 0xc55b, 0xc570, 0),
@@ -2831,7 +2765,7 @@ const CAMP_STATS: [(usize, u32, u32, usize); 14] = [
 ];
 
 /// Config rows (table 0x1405bc340): label, choice labels, help per choice.
-const CAMP_CONFIG: [(u32, &[u32], &[u32]); 8] = [
+pub const CAMP_CONFIG: [(u32, &[u32], &[u32]); 8] = [
     (0xb717, &[0xb71e, 0xb71f], &[0xb720, 0xb721]),
     (0xc2f5, &[0xc2f8, 0xc2f9], &[0xc2fa, 0xc2fb]),
     (0xc2f6, &[0xc2fc, 0xc2fd], &[0xc2fe, 0xc2ff]),
@@ -2849,7 +2783,7 @@ const CAMP_CONFIG: [(u32, &[u32], &[u32]); 8] = [
 /// Camp entries (table 0x1405badb0): id, label and help ids. The test
 /// room offers Items, Abilities, Customize, Party, Status, Jiminy's
 /// Journal and Config [test-room choice: the menu flags come from a save].
-const CAMP_ENTRIES: [(u8, u32, u32); 7] = [
+pub const CAMP_ENTRIES: [(u8, u32, u32); 7] = [
     (0, 0x844b, 0xb70d),
     (1, 0x844d, 0xb70f),
     (2, 0x8451, 0xb713),
@@ -2861,18 +2795,18 @@ const CAMP_ENTRIES: [(u8, u32, u32); 7] = [
 
 /// One enemy clip: skinned positions, HIT-bone matrices and root
 /// translation per tick, plus its loop start.
-struct EnemyClip {
-    frames: Vec<Vec<Vec3>>,
-    bones: Vec<HashMap<usize, Mat4>>,
-    root: Vec<Vec3>,
-    loop_start: u32,
+pub struct EnemyClip {
+    pub frames: Vec<Vec<Vec3>>,
+    pub bones: Vec<HashMap<usize, Mat4>>,
+    pub root: Vec<Vec3>,
+    pub loop_start: u32,
     /// Attack windows (range trigger 10): start, end, ATKP id, group.
-    windows: Vec<(u32, u32, u16, u8)>,
+    pub windows: Vec<(u32, u32, u16, u8)>,
     /// Frame trigger 8 sounds: (tick, sound id).
-    sounds: Vec<(u32, u32)>,
+    pub sounds: Vec<(u32, u32)>,
 }
 
-struct EnemyClips(HashMap<usize, EnemyClip>);
+pub struct EnemyClips(pub HashMap<usize, EnemyClip>);
 impl shadow::Clips for EnemyClips {
     fn length(&self, slot: usize) -> u32 {
         self.0.get(&slot).map_or(1, |c| c.frames.len() as u32)
@@ -2888,7 +2822,7 @@ impl shadow::Clips for EnemyClips {
     }
 }
 
-struct RoomFloor<'a>(&'a RoomWorld);
+pub struct RoomFloor<'a>(&'a RoomWorld);
 impl shadow::Env for RoomFloor<'_> {
     fn floor(&self, x: f32, z: f32, top: f32) -> Option<f32> {
         self.0.floor(x, z, top)
@@ -2896,93 +2830,93 @@ impl shadow::Env for RoomFloor<'_> {
 }
 
 /// Live enemy state for the session.
-struct EnemyRuntime {
-    sora_target_radius: f32,
-    enabled: bool,
-    battle_level: u16,
-    clips: EnemyClips,
-    body: Vec<(usize, Vec3, f32, bool)>,
-    targets: Vec<(usize, Vec3, f32, f32)>,
+pub struct EnemyRuntime {
+    pub sora_target_radius: f32,
+    pub enabled: bool,
+    pub battle_level: u16,
+    pub clips: EnemyClips,
+    pub body: Vec<(usize, Vec3, f32, bool)>,
+    pub targets: Vec<(usize, Vec3, f32, f32)>,
     /// Each hand's Keyblade attack spheres by collision group: offset,
     /// radius.
-    blade: [character_kit::Blade; 2],
+    pub blade: [character_kit::Blade; 2],
     /// Every ATKP step row by (id, sub-table); FUN_1403eb230 picks one per
     /// hit count. Spell rows are added when a spell first hits.
-    steps: HashMap<(u16, u8), Vec<data::battle_tables::Attack>>,
+    pub steps: HashMap<(u16, u8), Vec<data::battle_tables::Attack>>,
     /// The ATKP table, for spell rows by sub-table.
-    atkp: Vec<u8>,
-    enemy: Shadow,
-    rng: ScriptRandom,
-    claws: HashMap<u8, Vec<(usize, Vec3, f32)>>,
-    shadow_attacker: combat::AttackerStats,
-    sora_body: Vec<(usize, Vec3, f32, bool)>,
+    pub atkp: Vec<u8>,
+    pub enemy: Shadow,
+    pub rng: ScriptRandom,
+    pub claws: HashMap<u8, Vec<(usize, Vec3, f32)>>,
+    pub shadow_attacker: combat::AttackerStats,
+    pub sora_body: Vec<(usize, Vec3, f32, bool)>,
     /// Summed TARGET radii for aerial hops (FUN_1403d7520).
-    target_reach: f32,
+    pub target_reach: f32,
     /// Attack ids and combo groups of live attack instances.
-    ids: combat::AttackIds,
-    instance_ids: HashMap<u64, (u8, i32)>,
-    instance_seen: HashMap<u64, u64>,
-    next_group: i32,
-    difficulty: combat::Difficulty,
-    claw_previous: HashMap<(u64, usize), Vec3>,
+    pub ids: combat::AttackIds,
+    pub instance_ids: HashMap<u64, (u8, i32)>,
+    pub instance_seen: HashMap<u64, u64>,
+    pub next_group: i32,
+    pub difficulty: combat::Difficulty,
+    pub claw_previous: HashMap<(u64, usize), Vec3>,
     /// The kill's EXP inputs, przt record and Sora's LVUP rows.
-    exp_rule: (u16, u16),
-    prize: data::battle_tables::Prize,
-    sora_levels: Vec<data::battle_tables::PlayerLevel>,
+    pub exp_rule: (u16, u16),
+    pub prize: data::battle_tables::Prize,
+    pub sora_levels: Vec<data::battle_tables::PlayerLevel>,
     /// Sora's EXP, munny, the prizes in the world, and whether the enemy
     /// was dead last tick (his level is `Game::sora.vitals`).
-    exp_total: u32,
-    munny: u32,
-    orbs: Vec<player::enemy_prizes::Orb>,
+    pub exp_total: u32,
+    pub munny: u32,
+    pub orbs: Vec<player::enemy_prizes::Orb>,
     /// Treasure boxes of dropped items waiting on the ground.
-    drops: Vec<player::enemy_prizes::ItemDrop>,
-    next_drop: u32,
-    was_dead: bool,
+    pub drops: Vec<player::enemy_prizes::ItemDrop>,
+    pub next_drop: u32,
+    pub was_dead: bool,
     /// Ability items learned by level-ups, waiting for the camp.
-    learned: Vec<u16>,
+    pub learned: Vec<u16>,
     /// Status numbers changed (level-up): the camp refreshes them.
-    numbers_dirty: bool,
+    pub numbers_dirty: bool,
     /// Level-up and bonus panels waiting for the HUD, whether the level-up
     /// effect is due, and the bonus levels taken.
-    panels: Vec<level_growth::Panel>,
-    level_effect: bool,
+    pub panels: Vec<level_growth::Panel>,
+    pub level_effect: bool,
     /// Ticks left of the heal effect on Sora (FUN_1403d7bd0: +0xd40).
-    heal_ticks: f32,
-    bonus_taken: Vec<u8>,
+    pub heal_ticks: f32,
+    pub bonus_taken: Vec<u8>,
     /// Last frame's attack sphere centres by (window instance, sphere).
-    previous: HashMap<(u64, usize), Vec3>,
-    indices: Vec<Vec<u32>>,
+    pub previous: HashMap<(u64, usize), Vec3>,
+    pub indices: Vec<Vec<u32>>,
     /// ATKP HitSound by id (Keyblade, then claws).
-    hit_sounds: HashMap<u16, i32>,
+    pub hit_sounds: HashMap<u16, i32>,
     /// ATKP hit effect and its random count by id (Keyblade).
-    hit_effects: HashMap<u16, (u8, u8)>,
+    pub hit_effects: HashMap<u16, (u8, u8)>,
     /// Full ATKP rows (Keyblade, guard and claws) for the clash rules.
-    rows: HashMap<u16, data::battle_tables::Attack>,
+    pub rows: HashMap<u16, data::battle_tables::Attack>,
     /// Motion serial and tick already scanned for sound triggers.
-    sound_tick: Option<(u32, u32)>,
+    pub sound_tick: Option<(u32, u32)>,
     /// The claw spheres of this tick, for the party members' hit tests
     /// (party_room): the Shadow's attack windows swept from last tick.
-    claws_now: Vec<party_room::ClawSample>,
+    pub claws_now: Vec<party_room::ClawSample>,
     /// The last player-side attacker of the Shadow (obj+0xd40,
     /// FUN_140411300): the revenge target.
-    last_attacker: party_room::Attacker,
+    pub last_attacker: party_room::Attacker,
     /// Hits that landed on it (Sora's, the members', a limit scene's): a
     /// party limit's combo counter counts them.
-    hits_landed: u32,
+    pub hits_landed: u32,
     /// Body shapes and objentry weight (+0x50): Sora and it push each
     /// other apart (FUN_14040ad70).
-    obj_shapes: Vec<object_collision::Entry>,
-    weight: f32,
+    pub obj_shapes: Vec<object_collision::Entry>,
+    pub weight: f32,
 }
 
 /// A placeholder for a spell's hit volume: the spell effects (the `.mag`
 /// PAX containers) are not drawn yet, so each live ATTACK_MAGIC volume shows
 /// as a translucent shape tinted by its element.
 #[derive(Component)]
-struct SpellVolume(usize);
+pub struct SpellVolume(pub usize);
 
 /// Tints by ATKP id: fire, blizzard, thunder, cure, magnet, reflect.
-fn spell_tint(atkp: u16) -> [f32; 4] {
+pub fn spell_tint(atkp: u16) -> [f32; 4] {
     match atkp {
         502 => [1., 0.45, 0.1, 0.35],
         248 => [0.5, 0.85, 1., 0.45],
@@ -2996,49 +2930,49 @@ fn spell_tint(atkp: u16) -> [f32; 4] {
 }
 
 #[derive(Component)]
-struct EnemyRoot;
+pub struct EnemyRoot;
 #[derive(Component)]
-struct EnemyPart(usize);
+pub struct EnemyPart(pub usize);
 
-struct EnemySource {
-    sora_target_radius: f32,
-    battle_level: u16,
-    model: model_inspection::InspectionModel,
-    clips: EnemyClips,
+pub struct EnemySource {
+    pub sora_target_radius: f32,
+    pub battle_level: u16,
+    pub model: model_inspection::InspectionModel,
+    pub clips: EnemyClips,
     /// HIT spheres: bone, offset, radius, high-flinch argument.
-    body: Vec<(usize, Vec3, f32, bool)>,
+    pub body: Vec<(usize, Vec3, f32, bool)>,
     /// TARGET shapes (type 3, enabled): bone, offset, radius, height.
-    targets: Vec<(usize, Vec3, f32, f32)>,
+    pub targets: Vec<(usize, Vec3, f32, f32)>,
     /// Keyblade attack spheres by collision group: offset, radius.
-    blade: HashMap<u8, Vec<(Vec3, f32)>>,
-    steps: HashMap<(u16, u8), Vec<data::battle_tables::Attack>>,
-    atkp: Vec<u8>,
-    difficulty: combat::Difficulty,
-    sora: combat::AttackerStats,
-    stats: combat::TargetStats,
-    offset: Vec3,
-    claws: HashMap<u8, Vec<(usize, Vec3, f32)>>,
-    shadow_attacker: combat::AttackerStats,
-    sora_target: combat::TargetStats,
-    sora_body: Vec<(usize, Vec3, f32, bool)>,
+    pub blade: HashMap<u8, Vec<(Vec3, f32)>>,
+    pub steps: HashMap<(u16, u8), Vec<data::battle_tables::Attack>>,
+    pub atkp: Vec<u8>,
+    pub difficulty: combat::Difficulty,
+    pub sora: combat::AttackerStats,
+    pub stats: combat::TargetStats,
+    pub offset: Vec3,
+    pub claws: HashMap<u8, Vec<(usize, Vec3, f32)>>,
+    pub shadow_attacker: combat::AttackerStats,
+    pub sora_target: combat::TargetStats,
+    pub sora_body: Vec<(usize, Vec3, f32, bool)>,
     /// Summed TARGET radii for aerial hops (FUN_1403d7520).
-    target_reach: f32,
-    hit_sounds: HashMap<u16, i32>,
-    hit_effects: HashMap<u16, (u8, u8)>,
-    rows: HashMap<u16, data::battle_tables::Attack>,
+    pub target_reach: f32,
+    pub hit_sounds: HashMap<u16, i32>,
+    pub hit_effects: HashMap<u16, (u8, u8)>,
+    pub rows: HashMap<u16, data::battle_tables::Attack>,
     /// The kill's EXP (enmp +0x56 x the level row's EXP) and the przt
     /// record its death scatters.
-    exp: (u16, u16),
-    prize: data::battle_tables::Prize,
+    pub exp: (u16, u16),
+    pub prize: data::battle_tables::Prize,
     /// Sora's LVUP rows, levels 1..=99.
-    sora_levels: Vec<data::battle_tables::PlayerLevel>,
+    pub sora_levels: Vec<data::battle_tables::PlayerLevel>,
     /// Body shapes (kind 1, groups on by default; FUN_14040ad70).
-    obj_shapes: Vec<object_collision::Entry>,
+    pub obj_shapes: Vec<object_collision::Entry>,
 }
 
 /// Walkable collision levels (8-unit height bins) by XZ area, largest first,
 /// each with the centroid of its largest triangle.
-fn floor_levels(triangles: &[CollisionTriangle]) -> Vec<(f32, [f32; 3])> {
+pub fn floor_levels(triangles: &[CollisionTriangle]) -> Vec<(f32, [f32; 3])> {
     let mut bins: HashMap<i32, (f32, f32, [f32; 3])> = HashMap::new();
     for [a, b, c] in triangles
         .iter()
@@ -3067,7 +3001,7 @@ fn floor_levels(triangles: &[CollisionTriangle]) -> Vec<(f32, [f32; 3])> {
 
 /// The camp menu's layout, texts and tables (menu/<lang>/camp.2ld and
 /// msg/<lang>/sys.bar with the system font); again on a language change.
-fn load_camp_source(
+pub fn load_camp_source(
     source: &ProbeSource,
     l: &Locator,
     m: &MenuSources,
@@ -3349,7 +3283,7 @@ fn load_camp_source(
 /// FUN_14040a440 defaults with SSTM FallMax, then FUN_14040a480 copies the
 /// PRTY record named by its objentry +0x4e (FUN_1403e9590 lookup) when it
 /// is nonzero. Returns the parameters, the PRTY index and its offset.
-fn player_params(
+pub fn player_params(
     objects: &[objentry::ObjectEntry],
     name: &str,
     pref: &[u8],
@@ -3396,11 +3330,11 @@ fn player_params(
 /// The effect sources with their enemy bank maps still empty, and each enemy
 /// object's sound and voice bank bytes (objentry id, 0 for the room's own
 /// enemy) to register.
-type ReadEffects = (EffectSources, Vec<(u32, Option<Vec<u8>>, Option<Vec<u8>>)>);
+pub type ReadEffects = (EffectSources, Vec<(u32, Option<Vec<u8>>, Option<Vec<u8>>)>);
 
 /// The configured effect containers (with their remaster pages) and the
 /// battle enemies' object effects and sound banks.
-fn read_effect_sources(
+pub fn read_effect_sources(
     source: &ProbeSource,
     e: &EffectConfig,
     player: &str,
@@ -3460,7 +3394,7 @@ fn read_effect_sources(
 }
 
 /// A world, its footstep table and its step banks' bytes by bank number.
-type Footsteps = (
+pub type Footsteps = (
     u8,
     visual::footsteps::WorldInfo,
     Vec<(u16, Result<Vec<u8>, String>)>,
@@ -3468,7 +3402,7 @@ type Footsteps = (
 
 /// A world's footstep table (its 12soundinfo row) and every Sora step and
 /// ambient bank it names (se<bank>.win32.scd), read but not registered.
-fn read_footsteps(source: &ProbeSource, world: u8) -> Option<Footsteps> {
+pub fn read_footsteps(source: &ProbeSource, world: u8) -> Option<Footsteps> {
     let code = ::area::progress::WORLDS.get(world as usize)?;
     let mut library = data::path_lookup::Library::open(source).ok()?;
     let bytes = library.read("12soundinfo.bar").ok()?;
@@ -3496,7 +3430,7 @@ fn read_footsteps(source: &ProbeSource, world: u8) -> Option<Footsteps> {
     Some((world, info, read))
 }
 
-fn load(
+pub fn load(
     source: &Arc<ProbeSource>,
     config_path: &Path,
     basic_fk: bool,
@@ -4639,7 +4573,7 @@ fn load(
 /// Shadow (or another enemy) for the test room: model, direct-slot clips,
 /// HIT spheres, the Keyblade's attack spheres and the ATKP/ENMP/LVPM/LVUP
 /// rows the damage routine reads.
-fn load_enemy(
+pub fn load_enemy(
     source: &ProbeSource,
     base: &Path,
     config: &EnemyConfig,
@@ -4925,7 +4859,7 @@ fn load_enemy(
 }
 
 /// The single BAR entry of a type.
-fn bar_entry_typed(bytes: &[u8], kind: u16) -> Result<&[u8], Box<dyn std::error::Error>> {
+pub fn bar_entry_typed(bytes: &[u8], kind: u16) -> Result<&[u8], Box<dyn std::error::Error>> {
     let table = bar::read_bar(bytes)?;
     let e = table
         .entries
@@ -4938,31 +4872,31 @@ fn bar_entry_typed(bytes: &[u8], kind: u16) -> Result<&[u8], Box<dyn std::error:
 }
 
 #[derive(Resource)]
-struct Startup {
-    room: Option<LoadedRoom>,
-    arena_mesh: Option<visual::room::ArenaMesh>,
-    actor: Option<model_inspection::InspectionModel>,
-    weapon: Option<model_inspection::InspectionModel>,
-    hud: Option<HudSource>,
-    enemy_model: Option<model_inspection::InspectionModel>,
-    effect_atlas: Option<visual::effects::Atlas>,
-    npc_model: Option<model_inspection::InspectionModel>,
-    menu_friends: Vec<Option<menu_friend::MenuFriend>>,
+pub struct Startup {
+    pub room: Option<LoadedRoom>,
+    pub arena_mesh: Option<visual::room::ArenaMesh>,
+    pub actor: Option<model_inspection::InspectionModel>,
+    pub weapon: Option<model_inspection::InspectionModel>,
+    pub hud: Option<HudSource>,
+    pub enemy_model: Option<model_inspection::InspectionModel>,
+    pub effect_atlas: Option<visual::effects::Atlas>,
+    pub npc_model: Option<model_inspection::InspectionModel>,
+    pub menu_friends: Vec<Option<menu_friend::MenuFriend>>,
 }
 
 /// Spawns one textured mesh per model part under `parent`, in part order.
 /// Model textures uploaded once per (texture set, image) and shared by every
 /// part and every spawn of the model. `Weak` keeps a dropped set's address
 /// from being taken for a new set's.
-type ModelTextureCache = Vec<(
+pub type ModelTextureCache = Vec<(
     std::sync::Weak<data::model_inspection_textures::InspectionTextures>,
     usize,
     Handle<Image>,
 )>;
-static MODEL_TEXTURES: std::sync::Mutex<ModelTextureCache> = std::sync::Mutex::new(Vec::new());
+pub static MODEL_TEXTURES: std::sync::Mutex<ModelTextureCache> = std::sync::Mutex::new(Vec::new());
 
 /// The GPU texture of `set`'s image `image` (uploaded on first use).
-fn model_texture(
+pub fn model_texture(
     set: &Arc<data::model_inspection_textures::InspectionTextures>,
     image: usize,
     images: &mut Assets<Image>,
@@ -4986,7 +4920,7 @@ fn model_texture(
     handle
 }
 
-pub(crate) fn spawn_model(
+pub fn spawn_model(
     commands: &mut Commands,
     model: &model_inspection::InspectionModel,
     pose: &[Vec3],
@@ -5055,7 +4989,7 @@ pub(crate) fn spawn_model(
 #[allow(clippy::too_many_arguments)]
 /// The room's glow, read at each map load in the exe (FUN_140157bb0 →
 /// FUN_140169180 → FUN_1403a5a80).
-fn area_glow(area: Option<Res<AreaRes>>, mut cameras: Query<&mut visual::glow::Glow>) {
+pub fn area_glow(area: Option<Res<AreaRes>>, mut cameras: Query<&mut visual::glow::Glow>) {
     let Some(area) = area else {
         return;
     };
@@ -5069,7 +5003,7 @@ fn area_glow(area: Option<Res<AreaRes>>, mut cameras: Query<&mut visual::glow::G
 
 /// Advances the area-change presentation one tick (FUN_14015f690 /
 /// FUN_14015f5f0 with the fade task FUN_140156f10).
-fn area_tick(area: Option<ResMut<AreaRes>>, hud: Option<ResMut<Hud>>) {
+pub fn area_tick(area: Option<ResMut<AreaRes>>, hud: Option<ResMut<Hud>>) {
     let Some(mut area) = area else { return };
     // The place name banner lives 120 frames (BILLBOARD_PLACE_M).
     if area.transition.is_none()
@@ -5137,7 +5071,7 @@ fn area_tick(area: Option<ResMut<AreaRes>>, hud: Option<ResMut<Hud>>) {
 /// While an area change loads and fades in, a slow frame advances the
 /// simulation by at most two ticks instead of catching up in one jump
 /// (the iris and fade would skip frames otherwise).
-fn transition_time(area: Option<Res<AreaRes>>, mut time: ResMut<Time<Virtual>>) {
+pub fn transition_time(area: Option<Res<AreaRes>>, mut time: ResMut<Time<Virtual>>) {
     let loading = area.is_some_and(|a| {
         a.transition
             .as_ref()
@@ -5156,18 +5090,18 @@ fn transition_time(area: Option<Res<AreaRes>>, mut time: ResMut<Time<Virtual>>) 
 /// Frame pacing for the run log: one record per 600 frames (mean, worst
 /// and frames over 20 ms) and one per frame slower than 50 ms.
 #[derive(Resource)]
-struct FrameStats {
-    started: Instant,
-    first_frame: bool,
-    frames: u32,
-    sum: f64,
-    worst: f64,
-    slow: u32,
+pub struct FrameStats {
+    pub started: Instant,
+    pub first_frame: bool,
+    pub frames: u32,
+    pub sum: f64,
+    pub worst: f64,
+    pub slow: u32,
     /// This window's frame times (ms), for its 1% low and 99th percentile.
-    times: Vec<f64>,
+    pub times: Vec<f64>,
 }
 
-fn frame_stats(
+pub fn frame_stats(
     time: Res<Time<Real>>,
     mut stats: ResMut<FrameStats>,
     mut game: ResMut<Game>,
@@ -5219,7 +5153,7 @@ fn frame_stats(
 /// effects anchor at its top (`spell_fx::Frames`). It was kept by `present`,
 /// so at frame rates under 60 a tick could read a pose two or more ticks
 /// old; kept here, every tick reads its predecessor's, as at 60 FPS.
-fn keep_weapon_pose(mut game: ResMut<Game>) {
+pub fn keep_weapon_pose(mut game: ResMut<Game>) {
     let Some(&clip) = game
         .poses
         .get(&(game.sora.player.action, game.sora.player.armed))
@@ -5239,7 +5173,7 @@ fn keep_weapon_pose(mut game: ResMut<Game>) {
 /// camera collision and Sora's placement (FUN_140152a90 → FUN_140152be0 →
 /// FUN_140152680; the iris presentation is not drawn yet).
 #[allow(clippy::too_many_arguments)]
-fn area_transition(
+pub fn area_transition(
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<FogMaterial>>,
@@ -5384,16 +5318,16 @@ fn area_transition(
 
 /// A placed map object and its mesh parts.
 #[derive(Component)]
-struct BobRoot;
+pub struct BobRoot;
 #[derive(Component)]
-pub(crate) struct BobPart {
-    pub(crate) placement: usize,
-    pub(crate) ordinal: usize,
+pub struct BobPart {
+    pub placement: usize,
+    pub ordinal: usize,
 }
 
 /// Creates the meshes of an area's map objects (those whose group bit is
 /// set draw; the others are hidden and switch with the mask).
-pub(crate) fn spawn_bobs(
+pub fn spawn_bobs(
     commands: &mut Commands,
     meshes: &mut Assets<Mesh>,
     materials: &mut Assets<FogMaterial>,
@@ -5445,7 +5379,7 @@ pub(crate) fn spawn_bobs(
 
 /// Plays the map objects' looping motions (one tick per tick, start offset
 /// from the record).
-fn bob_present(
+pub fn bob_present(
     game: Res<Game>,
     area: Option<Res<AreaRes>>,
     parts: Query<(&BobPart, &Mesh3d, &InheritedVisibility)>,
@@ -5485,17 +5419,17 @@ fn bob_present(
 
 /// Component marking a townsperson's root and its mesh parts.
 #[derive(Component)]
-struct FieldNpcRoot(usize);
+pub struct FieldNpcRoot(pub usize);
 #[derive(Component)]
-struct FieldNpcPart {
-    npc: usize,
-    ordinal: usize,
+pub struct FieldNpcPart {
+    pub npc: usize,
+    pub ordinal: usize,
 }
 
 /// Creates the meshes of an area's townspeople under `parent` (tagged
 /// `RoomPart` so an area change removes them).
 #[allow(clippy::too_many_arguments)]
-fn spawn_field_npcs(
+pub fn spawn_field_npcs(
     commands: &mut Commands,
     meshes: &mut Assets<Mesh>,
     materials: &mut Assets<FogMaterial>,
@@ -5536,14 +5470,14 @@ fn spawn_field_npcs(
 }
 
 /// The `--npc-tour`'s capture ticks and end.
-const NPC_TOUR_CAPTURES: [u64; 3] = [25, 45, 90];
-const NPC_TOUR_END: u64 = 120;
+pub const NPC_TOUR_CAPTURES: [u64; 3] = [25, 45, 90];
+pub const NPC_TOUR_END: u64 = 120;
 
 /// One tick of every townsperson, and the choice of whom Talk addresses:
 /// the nearest with a script whose reaction sphere holds Sora
 /// (FUN_140407de0). Talking NPCs stand still; after a talk they face Sora
 /// and wait 60 ticks (rtn after_talk, npc-01 §2.4).
-fn field_npc_tick(
+pub fn field_npc_tick(
     mut game: ResMut<Game>,
     area: Option<ResMut<AreaRes>>,
     talk: Option<ResMut<Talk>>,
@@ -5760,7 +5694,11 @@ fn field_npc_tick(
 
 /// Applies an area's music change: slots whose track changed fade out over
 /// one second and the new track decodes in the background.
-fn area_music(area: Option<ResMut<AreaRes>>, music: Option<ResMut<MusicRes>>, audio: Res<Audio>) {
+pub fn area_music(
+    area: Option<ResMut<AreaRes>>,
+    music: Option<ResMut<MusicRes>>,
+    audio: Res<Audio>,
+) {
     let (Some(mut area), Some(mut m)) = (area, music) else {
         return;
     };
@@ -5784,7 +5722,7 @@ fn area_music(area: Option<ResMut<AreaRes>>, music: Option<ResMut<MusicRes>>, au
 }
 
 /// Shows and hides map chunks when the background group mask changes.
-fn bg_visibility(
+pub fn bg_visibility(
     area: Option<Res<AreaRes>>,
     mut last: Local<Option<u64>>,
     mut chunks: Query<(&BgChunk, &mut Visibility)>,
@@ -5805,7 +5743,7 @@ fn bg_visibility(
 }
 
 /// Creates meshes for townspeople that appeared since the last frame.
-fn field_npc_spawn_new(
+pub fn field_npc_spawn_new(
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<FogMaterial>>,
@@ -5834,7 +5772,7 @@ fn field_npc_spawn_new(
 
 /// Places and poses the townspeople.
 #[allow(clippy::too_many_arguments)]
-fn field_npc_present(
+pub fn field_npc_present(
     game: Res<Game>,
     area: Option<Res<AreaRes>>,
     mut roots: Query<(&FieldNpcRoot, &mut Transform, &mut Visibility)>,
@@ -5894,19 +5832,19 @@ fn field_npc_present(
 /// tagged so an area change can remove them.
 #[allow(clippy::too_many_arguments)]
 /// One mesh of a room: the map chunks merged into it, in chunk order.
-struct MergedChunk {
+pub struct MergedChunk {
     /// Texture slot, blend, background group and UV scroll record (0: none).
-    key: (Option<usize>, u8, u8, u32),
-    bit: u8,
-    positions: Vec<[f32; 3]>,
-    uvs: Vec<[f32; 2]>,
-    colors: Vec<[f32; 4]>,
-    material: Handle<FogMaterial>,
-    scroll: Option<UvScroll>,
+    pub key: (Option<usize>, u8, u8, u32),
+    pub bit: u8,
+    pub positions: Vec<[f32; 3]>,
+    pub uvs: Vec<[f32; 2]>,
+    pub colors: Vec<[f32; 4]>,
+    pub material: Handle<FogMaterial>,
+    pub scroll: Option<UvScroll>,
 }
 
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn spawn_room(
+pub fn spawn_room(
     commands: &mut Commands,
     meshes: &mut Assets<Mesh>,
     materials: &mut Assets<FogMaterial>,
@@ -6227,7 +6165,7 @@ pub(crate) fn spawn_room(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn setup(
+pub fn setup(
     mut commands: Commands,
     mut startup: ResMut<Startup>,
     mut game: ResMut<Game>,
@@ -6846,45 +6784,45 @@ fn setup(
 }
 
 /// The camp menu's member model (Tz::MenuObj) and its off-screen target.
-const MENU_LAYER: usize = 3;
-const MENU_TARGET: [u32; 2] = [1280, 720];
+pub const MENU_LAYER: usize = 3;
+pub const MENU_TARGET: [u32; 2] = [1280, 720];
 
 #[derive(Component)]
-struct MenuModelRoot;
+pub struct MenuModelRoot;
 #[derive(Component)]
-struct MenuModelPart {
+pub struct MenuModelPart {
     /// The camp member (0 = Sora).
-    member: usize,
-    ordinal: usize,
+    pub member: usize,
+    pub ordinal: usize,
 }
 /// The camp member a menu camera renders.
 #[derive(Component)]
-struct MenuCamera(usize);
+pub struct MenuCamera(pub usize);
 
 #[derive(Resource)]
-struct MenuModel {
-    sheet: usize,
-    clip: usize,
-    indices: Vec<Vec<u32>>,
+pub struct MenuModel {
+    pub sheet: usize,
+    pub clip: usize,
+    pub indices: Vec<Vec<u32>>,
     /// Members 1.. (`None`: not rendered).
-    friends: Vec<Option<MenuFriendView>>,
+    pub friends: Vec<Option<MenuFriendView>>,
     /// Sora's walk time when last presented, and the camp updates since
     /// the members were added (their walks have their own lengths).
-    last_time: Option<f32>,
-    steps: u32,
+    pub last_time: Option<f32>,
+    pub steps: u32,
 }
 
-struct MenuFriendView {
-    sheet: usize,
-    indices: Vec<Vec<u32>>,
-    frames: Vec<Vec<Vec3>>,
-    length: f32,
+pub struct MenuFriendView {
+    pub sheet: usize,
+    pub indices: Vec<Vec<u32>>,
+    pub frames: Vec<Vec<Vec3>>,
+    pub length: f32,
 }
 
 /// While the camp shows its members, render Sora's walk at the menu time
 /// (root motion kept, camp-03 §3).
 #[allow(clippy::too_many_arguments)]
-fn menu_model_present(
+pub fn menu_model_present(
     camp: Option<Res<CampRes>>,
     model: Option<ResMut<MenuModel>>,
     game_over: Option<Res<game_over::GameOverRes>>,
@@ -6972,32 +6910,32 @@ fn menu_model_present(
 /// The 2D composition's sheets: the rendered scene, the dissolve snapshot
 /// and the HUD canvas.
 #[derive(Resource)]
-struct Compose {
-    scene: Handle<Image>,
-    scene_sheet: usize,
-    snapshot_sheet: Option<usize>,
-    hud_sheet: Option<usize>,
+pub struct Compose {
+    pub scene: Handle<Image>,
+    pub scene_sheet: usize,
+    pub snapshot_sheet: Option<usize>,
+    pub hud_sheet: Option<usize>,
     /// The area-change iris layout and a white sheet for the fade, drawn
     /// over the HUD by the 2D layer.
-    iris_sheet: Option<usize>,
-    white_sheet: Option<usize>,
+    pub iris_sheet: Option<usize>,
+    pub white_sheet: Option<usize>,
     /// Frames since the scene image last changed size (unattended
     /// captures wait for a settled target).
-    stable_frames: u64,
+    pub stable_frames: u64,
 }
 
 /// An attack window this frame: key, ATKP and its spheres.
-type ActiveVolume = (u64, u16, Vec<(Vec3, f32)>);
+pub type ActiveVolume = (u64, u16, Vec<(Vec3, f32)>);
 
 /// The afterimage's feedback cameras and whether they ran last frame.
 #[derive(Resource)]
-struct Afterimage {
-    blur: crate::cutscene::blur::Blur,
-    on: bool,
+pub struct Afterimage {
+    pub blur: crate::cutscene::blur::Blur,
+    pub on: bool,
     /// The previous picture's zoom in use and the last overlay event frame
     /// fed.
-    zoom: [f32; 2],
-    step: Option<i32>,
+    pub zoom: [f32; 2],
+    pub step: Option<i32>,
 }
 
 /// FUN_14015f030 (priority 75000, after the 3D passes, before the 2D
@@ -7005,7 +6943,7 @@ struct Afterimage {
 /// picture is drawn over the scene at alpha/128 (0x70 → 0.875 [O]). The
 /// first frame on has no history yet and shows the plain scene [I]; the
 /// history lacks the HUD the exe's prevFrameTex holds [I].
-fn afterimage(
+pub fn afterimage(
     mut after: ResMut<Afterimage>,
     clock: Res<visual::smoothing::TickClock>,
     game: Res<Game>,
@@ -7050,7 +6988,7 @@ fn afterimage(
 }
 
 /// The scene image (and the afterimage's pictures) follow the window's size.
-fn resize_scene(
+pub fn resize_scene(
     compose: Option<ResMut<Compose>>,
     after: Option<Res<Afterimage>>,
     windows: Query<&Window>,
@@ -7091,7 +7029,7 @@ fn resize_scene(
 /// The scene, then the dissolve snapshot fading out over it, then the HUD
 /// (hidden while the camp is open [inferred]); the camp draws after.
 #[allow(clippy::too_many_arguments)]
-fn compose_2d(
+pub fn compose_2d(
     compose: Option<Res<Compose>>,
     talk: Option<Res<Talk>>,
     camp: Option<Res<CampRes>>,
@@ -7166,16 +7104,13 @@ fn compose_2d(
 /// guard 0x200 (Square), reaction 0x400 (Triangle), talk advance 0x40c and
 /// the command menu's up/down 0x4000/0x8000.
 #[allow(clippy::too_many_arguments)]
-fn read_pad(
+pub fn read_pad(
     keys: Res<ButtonInput<KeyCode>>,
     mouse: Res<ButtonInput<MouseButton>>,
     pads: Query<(&Gamepad, Option<&Name>)>,
     camp: Option<Res<CampRes>>,
     debug: Res<debug_menu::DebugMenu>,
     game_over: Option<Res<game_over::GameOverRes>>,
-    lobby: Option<Res<duel_lobby_room::LobbyRoom>>,
-    vote: Option<Res<duel_vote::VoteRoom>>,
-    duel_match: Option<Res<duel_match_room::MatchRoom>>,
     controls: Res<input::Controls>,
     mut game: ResMut<Game>,
     mut targeting: ResMut<enemy_target::Targeting>,
@@ -7186,9 +7121,7 @@ fn read_pad(
     let (data, _, _) = input::read_devices(&keys, &mouse, 0., &pads, &controls);
     let menu = camp.is_some_and(|c| c.menu_up())
         || game_over.is_some_and(|g| g.menu_up())
-        || lobby.is_some_and(|l| l.menu_up())
-        || vote.is_some_and(|v| v.menu_up(usize::from(game.net_client)))
-        || duel_match.is_some_and(|m| m.menu_up());
+        || game.menu_held;
     let mode = if menu {
         controller::MODE_TITLE
     } else {
@@ -7231,7 +7164,7 @@ fn read_pad(
 }
 /// The party's members by model name: `KH2RW_PARTY` (a comma list of
 /// objentry models, e.g. `P_HE000,P_EX020`), Donald and Goofy by default.
-fn party_names() -> Vec<&'static str> {
+pub fn party_names() -> Vec<&'static str> {
     match std::env::var("KH2RW_PARTY") {
         Ok(list) => list
             .split(',')
@@ -7245,7 +7178,7 @@ fn party_names() -> Vec<&'static str> {
 }
 
 /// Scripted input for unattended verification runs.
-fn autoplay_input(tick: u64) -> (Vec2, bool, bool) {
+pub fn autoplay_input(tick: u64) -> (Vec2, bool, bool) {
     let stick = match tick {
         60..150 => Vec2::new(0., 1.),
         150..240 => Vec2::new(0., 0.35),
@@ -7258,7 +7191,7 @@ fn autoplay_input(tick: u64) -> (Vec2, bool, bool) {
     let attack = matches!(tick, 400 | 410 | 440 | 470 | 500 | 575 | 590 | 610 | 630);
     (stick, jump, attack)
 }
-const AUTOPLAY_CAPTURES: &[u64] = &[
+pub const AUTOPLAY_CAPTURES: &[u64] = &[
     90, 110, 200, 255, 312, 330, 352, 405, 450, 495, 585, 615, 760, 1010, 1100, 1198, 1300, 1500,
     1512, 1530, 1700, 1712, 1730, 1830, 1900, 1930, 1990, 2030, 2050, 2070, 2110, 2230, 2310, 2330,
     2390, 2420, 2450, 2520, 2690, 2715, 2760, 2780, 2840, 2880, 2915, 2920, 2950, 2970, 3000, 3080,
@@ -7272,26 +7205,26 @@ const AUTOPLAY_CAPTURES: &[u64] = &[
 ];
 /// The talk room: Talk at tick 60, one advance once the text is up, and
 /// captures through the prompt, dissolve, window, close and return.
-const AUTOPLAY_TALK: [u64; 1] = [60];
-const AUTOPLAY_ADVANCE: [u64; 1] = [150];
-const AUTOPLAY_TALK_CAPTURES: [u64; 10] = [40, 61, 68, 84, 100, 140, 156, 164, 172, 200];
-const AUTOPLAY_TALK_END: u64 = 260;
+pub const AUTOPLAY_TALK: [u64; 1] = [60];
+pub const AUTOPLAY_ADVANCE: [u64; 1] = [150];
+pub const AUTOPLAY_TALK_CAPTURES: [u64; 10] = [40, 61, 68, 84, 100, 140, 156, 164, 172, 200];
+pub const AUTOPLAY_TALK_END: u64 = 260;
 /// Debug blow hits of the unattended run (see `Game::debug_blow`).
-const AUTOPLAY_BLOWS: [u64; 2] = [1500, 1700];
+pub const AUTOPLAY_BLOWS: [u64; 2] = [1500, 1700];
 /// Guard presses ahead of the Shadow's claws seen at ticks 1194 and 1361
 /// in earlier unattended runs, and Square for Retaliating Slash out of the
 /// blow struck at 1700.
-const AUTOPLAY_GUARDS: [u64; 3] = [1170, 1340, 1720];
+pub const AUTOPLAY_GUARDS: [u64; 3] = [1170, 1340, 1720];
 /// The last stretch leaves Sora standing so an enemy can attack him.
 /// The index that holds the item pictures.
-const PICTURE_INDEX: &str = "Image/dt/kh2_fifth.hed";
-const AUTOPLAY_END: u64 = 9400;
+pub const PICTURE_INDEX: &str = "Image/dt/kh2_fifth.hed";
+pub const AUTOPLAY_END: u64 = 9400;
 /// A shown-pose change above this many units in one frame is logged.
-const POSE_JUMP_LOG: f32 = 6.;
-const AUTOPLAY_WARMUP_FRAMES: u64 = 30;
+pub const POSE_JUMP_LOG: f32 = 6.;
+pub const AUTOPLAY_WARMUP_FRAMES: u64 = 30;
 
 #[allow(clippy::too_many_arguments)]
-fn simulate(
+pub fn simulate(
     mut rig: ResMut<CameraRig>,
     mut game: ResMut<Game>,
     hud: Option<ResMut<Hud>>,
@@ -8047,32 +7980,18 @@ fn simulate(
     for (slot, t) in nearby.iter_mut().zip(&shapes) {
         *slot = Some(*t);
     }
-    // [Duel] Between matches (the lobby, the countdown) neither Sora moves.
-    // [Test] `--duel-idle`: nor does this player's.
-    let frozen = game.duel_frozen || game.duel_idle || game.kh3_loading;
-    // [Test] `--duel-bench` on the host: its Sora closes in and swings as
-    // the bench pad says.
-    let bench =
-        ((game.duel_bench || game.duel_magic) && !game.net_client && game.autoplay.is_some())
-            .then(|| {
-                let foe = game.rivals.first()?.fighter.player.position;
-                let me = game.sora.player.position;
-                Some(if game.duel_magic {
-                    rival::magic_pad(tick, 0, me, foe)
-                } else {
-                    rival::bench_pad(tick, me, foe)
-                })
-            })
-            .flatten();
+    // An outside driver: a hold, a bench, a script, two more buttons.
+    let room_hooks = hooks();
+    let frozen = (room_hooks.frozen)(&game);
+    let drive = (room_hooks.drive)(&mut game, tick);
+    let bench = drive.bench;
     let (direction, attack, jump, guard) = match bench {
         Some(p) => (Vec2::from_array(p.direction), p.attack, false, false),
         None => (direction, attack, jump, guard),
     };
-    // [Test] The unattended KH3 test: the room Sora runs the KH3 script
-    // (duel_kh3.rs); otherwise R2 and Triangle are the KH3 buttons.
-    let kh3_script = duel_kh3::scripted_room_pad(&game, tick);
-    let (direction, attack, jump, guard, jump_up) = match kh3_script {
-        Some((p, _)) => (
+    let script = drive.script;
+    let (direction, attack, jump, guard, jump_up) = match script {
+        Some(p) => (
             Vec2::from_array(p.direction),
             p.attack,
             p.jump,
@@ -8081,14 +8000,9 @@ fn simulate(
         ),
         None => (direction, attack, jump, guard, jump_up),
     };
-    let kh3_pad = match kh3_script {
-        Some((_, k)) => k,
-        None => duel_kh3::room_pad(&mut game),
-    };
-    let kh3_pad = player::kh3::Pad {
-        shotlock: kh3_pad.shotlock && !frozen,
-        situation: kh3_pad.situation && !frozen,
-        ..player::kh3::Pad::default()
+    let buttons = extension::ExtraButtons {
+        shotlock: drive.buttons.shotlock && !frozen,
+        flow: drive.buttons.flow && !frozen,
     };
     let input = Input {
         direction: if frozen {
@@ -8103,7 +8017,7 @@ fn simulate(
         // Square held (logical 0x200).
         guard_held: !frozen
             && (game.autoplay.is_none() && game.pad.held & 0x200 != 0
-                || kh3_script.is_some_and(|(p, _)| p.guard_held)
+                || script.is_some_and(|p| p.guard_held)
                 || game.magic_tour && magic_tour::guard(tick, game.magic_shift).1),
         target: target.map(|t| [t[0], t[2]]),
         hop_vector,
@@ -8176,7 +8090,7 @@ fn simulate(
         && !game.magic_tour
         && game.ability_tour.is_none()
         && game.autoplay_end != AUTOPLAY_TALK_END
-        && !duel_kh3::on(&game)
+        && !(room_hooks.layer_on)(&game)
     {
         cast = match tick {
             700 => Some(magic::FIRE),
@@ -8194,7 +8108,7 @@ fn simulate(
         && !game.magic_tour
         && game.ability_tour.is_none()
         && game.autoplay_end != AUTOPLAY_TALK_END
-        && !duel_kh3::on(&game)
+        && !(room_hooks.layer_on)(&game)
     {
         // The unattended run uses the Potion and the Ether.
         menu_item = match tick {
@@ -8222,9 +8136,9 @@ fn simulate(
         }
         menu_item = party_items_tour::use_slot(tick).or(menu_item);
     }
-    // [Test] `--duel-magic` on the host: the bench's spells, item and
-    // Drive, and no others (the unattended script's would take their turns).
-    let (cast, menu_item) = if game.duel_magic {
+    // The bench's spells, item and Drive, and no others (the unattended
+    // script's would take their turns).
+    let (cast, menu_item) = if drive.commands_only {
         match bench.map(|p| p.command) {
             Some(rival::Command::Cast(t)) => (Some(t), None),
             Some(rival::Command::Item(slot)) => (None, Some(slot as usize)),
@@ -8285,43 +8199,29 @@ fn simulate(
             "params":gallery.target_params.is_some(),
             "enemy":enemy_state}));
     }
-    // [Test] The KH3 script's spells.
-    let cast = cast.or(match kh3_script {
-        Some((p, _)) if !frozen => match p.command {
+    // A driver's script's spells.
+    let cast = cast.or(match script {
+        Some(p) if !frozen => match p.command {
             rival::Command::Cast(t) => Some(t),
             _ => None,
         },
         _ => None,
     });
-    // The joiner's commands go to the host with his buttons.
-    let mut net_command = rival::Command::None;
-    if game.net_client {
+    // A replica's commands go with its input.
+    let mut replica_command = rival::Command::None;
+    if game.replica {
         if let Some(t) = cast.filter(|_| !talking) {
-            net_command = rival::Command::Cast(t);
+            replica_command = rival::Command::Cast(t);
         } else if let Some(slot) = menu_item.filter(|_| !talking) {
-            net_command = rival::Command::Item(slot as u8);
+            replica_command = rival::Command::Item(slot as u8);
         } else if let Some(form) = game.drive.as_mut().and_then(|d| d.request.take()) {
-            net_command = rival::Command::Drive(form);
+            replica_command = rival::Command::Drive(form);
         }
     } else {
         if let Some(t) = cast
             && !talking
         {
-            let mp = game.sora.player.mp.cur;
-            let ok = if duel_kh3::on(&game) && game.kh3_book.is_some() {
-                duel_kh3::kh3_cast(&mut game, t)
-            } else {
-                magic_room::request(&mut game, t, tick)
-            };
-            if ok && duel_kh3::on(&game) {
-                game.sora.kh3.spell_released(t);
-            }
-            if game.duel {
-                let (slot, after) = (game.local_slot, game.sora.player.mp.cur);
-                let levels = game.magic.as_ref().map(|m| m.levels);
-                game.event(serde_json::json!({"event":"duel_cast","tick":tick,
-                    "slot":slot,"magic":t,"ok":ok,"mp":[mp, after],"levels":levels}));
-            }
+            (room_hooks.cast)(&mut game, t, tick);
         }
         if let Some(slot) = menu_item
             && !talking
@@ -8375,92 +8275,21 @@ fn simulate(
         summon::decide(&mut game, tick, if rc { Some(1) } else { decide });
         if summon::sora_in_limit(&mut game) {
             player::Step::default()
-        } else if game.net_client {
-            // The joiner's Sora is the host's to move: his buttons go to
-            // the host (duel_sync), and the host's snapshots place him.
-            game.net_pad = rival::RivalPad::of(&input);
-            game.net_pad.command = net_command;
-            game.net_pad.shotlock_held = kh3_pad.shotlock;
-            game.net_pad.flow = kh3_pad.situation;
-            // [Test] `--rival-script` on a joiner: the rival's test script
-            // presses his buttons, against the host's Sora.
-            if (game.rival_script || game.duel_bench || game.duel_magic || game.duel_wisdom)
-                && !frozen
-                && let Some(foe) = game.rivals.first().map(|r| r.fighter.player.position)
-            {
-                let me = game.sora.player.position;
-                game.net_pad = if game.duel_rules.kh3() {
-                    rival::kh3_pad(
-                        tick,
-                        rival::KH3_SECOND,
-                        me,
-                        foe,
-                        rival::kh3_view(&game.sora, game.rivals.first().map(|r| &r.fighter)),
-                    )
-                } else if game.duel_magic {
-                    rival::magic_pad(tick, 100, me, foe)
-                } else if game.duel_wisdom {
-                    let mut p = rival::bench_pad(tick, me, foe);
-                    if tick.is_multiple_of(600) {
-                        p.command = rival::Command::Drive(player::forms::WISDOM);
-                    }
-                    p
-                } else if game.duel_bench {
-                    rival::bench_pad(tick, me, foe)
-                } else {
-                    rival::script_pad(tick, me, foe)
-                };
-            }
+        } else if game.replica {
+            // Another instance moves this Sora; it gets the input.
+            (room_hooks.replica_input)(&mut game, &input, replica_command, buttons, frozen, tick);
             player::Step::default()
+        } else if let Some(step) = (room_hooks.sora_step)(&mut game, &input, buttons, tick) {
+            step
         } else {
-            if duel_kh3::on(&game) {
-                // [KH3 ruleset] The layer over the KH2 controller.
-                let poles = duel_kh3::poles(&mut game);
-                let foe = duel_kh3::room_foe(&game);
-                let pad = kh3_pad;
-                let book = game.kh3_book.clone();
-                let geometry = duel_kh3::geometry(&mut game);
-                let foe_body = geometry
-                    .as_ref()
-                    .and_then(|_| duel_kh3::room_foe_body(&game));
-                let view = game.kh3_aim_view.or_else(|| {
-                    duel_kh3::aim_view(
-                        game.sora.player.position,
-                        foe.map(|f: player::kh3::Foe| f.position),
-                    )
-                });
-                let out = {
-                    let Game {
-                        sora,
-                        params,
-                        clips,
-                        world,
-                        ..
-                    } = &mut *game;
-                    let scene = player::kh3::Scene {
-                        foe,
-                        poles: &poles,
-                        book: book.as_deref(),
-                        geometry: geometry.as_deref(),
-                        foe_body,
-                        view,
-                    };
-                    duel_kh3::step(sora, &input, &pad, params, clips, &*world, &scene)
-                };
-                let slot = game.local_slot;
-                duel_kh3::after(&mut game, &out, slot);
-                duel_kh3::preview_tick(&mut game, tick);
-                out.step
-            } else {
-                let Game {
-                    sora,
-                    params,
-                    clips,
-                    world,
-                    ..
-                } = &mut *game;
-                sora.player.tick(&input, params, clips, world)
-            }
+            let Game {
+                sora,
+                params,
+                clips,
+                world,
+                ..
+            } = &mut *game;
+            sora.player.tick(&input, params, clips, world)
         }
     };
     if game.magic_tour && magic_tour::probing(tick, game.magic_shift) {
@@ -8482,13 +8311,9 @@ fn simulate(
         }
     }
     // The joiner simulates nothing: the host's snapshots carry it all.
-    if !game.net_client {
+    if !game.replica {
         magic_room::tick(&mut game, tick);
-        // [KH3 ruleset] The shotlock bolts onto their bullets.
-        if duel_kh3::on(&game) {
-            let slot = game.local_slot;
-            duel_kh3::bolts(&mut game, slot);
-        }
+        (room_hooks.after_magic)(&mut game);
         // Wisdom's shots join the spell volumes before the hits are tested.
         drive_room::shots(&mut game);
         item_room::tick(&mut game, tick);
@@ -8540,7 +8365,7 @@ fn simulate(
                     game.event(serde_json::json!({"event":"exit","tick":tick,"world":world,
                     "area":area,"entrance":entrance}));
                     // A duel stays in its arena.
-                    if a.transition.is_none() && !game.duel {
+                    if a.transition.is_none() && !game.versus {
                         a.transition = Some(Transition {
                             stage: Stage::Closing,
                             iris: None,
@@ -8733,40 +8558,17 @@ fn simulate(
         &spheres,
     );
     *collision_hits += hits.get();
-    // [KH3 ruleset] KH3's lock-on and aiming cameras over the follow camera.
-    rig.kh3_view = if duel_kh3::on(&game) {
-        let frame = kh3_camera::Frame {
-            feet: Vec3::from_array(game.sora.player.position),
-            yaw: game.sora.player.yaw,
-            locked: game
-                .target_locked
-                .then_some(game.selected_target)
-                .flatten()
-                .map(Vec3::from_array),
-            aim: duel_kh3::aim_point(&game),
+    // An extension's camera over the follow camera.
+    rig.extra_view = (room_hooks.camera_tick)(
+        &mut game,
+        &extension::CameraFrame {
             turn,
             height: zoom,
             eye: from_world(rig.camera.eye),
             look: from_world(rig.camera.look_at),
             fov: rig.camera.vertical_fov(),
-        };
-        rig.kh3.tick(&frame)
-    } else {
-        rig.kh3 = kh3_camera::Kh3Camera::default();
-        None
-    };
-    game.kh3_aim_view = if duel_kh3::on(&game) {
-        match &rig.kh3_view {
-            Some(v) => duel_kh3::camera_view(v.eye, v.target, v.fov),
-            None => duel_kh3::camera_view(
-                from_world(rig.camera.eye),
-                from_world(rig.camera.look_at),
-                rig.camera.vertical_fov(),
-            ),
-        }
-    } else {
-        None
-    };
+        },
+    );
     // Sora fades out as first person starts and back in as it ends (the ramp
     // restarts from its far end each time, as FUN_1403b7810 does).
     if rig.camera.first_person != rig.was_first_person {
@@ -8823,7 +8625,7 @@ fn simulate(
         );
     }
     // The joiner's Sora sounds and raises dust on the host, which sends both.
-    if !game.net_client {
+    if !game.replica {
         sora_sounds(&mut game);
         sora_dust(&mut game);
     }
@@ -8855,7 +8657,7 @@ fn simulate(
 
 /// The camera's view matrix in game world space (Y down), in the effect
 /// VM's convention: view x right, y down, z forward.
-fn game_view(eye: [f32; 3], look_at: [f32; 3]) -> ::effect::math::Mat {
+pub fn game_view(eye: [f32; 3], look_at: [f32; 3]) -> ::effect::math::Mat {
     let e = Vec3::from_array(eye);
     let f = (Vec3::from_array(look_at) - e).normalize_or(Vec3::Z);
     let down = (Vec3::Y - f * Vec3::Y.dot(f)).normalize_or(Vec3::Y);
@@ -8870,7 +8672,7 @@ fn game_view(eye: [f32; 3], look_at: [f32; 3]) -> ::effect::math::Mat {
 
 /// The enemy's object matrix in game world space (scene yaw θ is a game
 /// rotation of −θ about Y) composed with a bound element's transform.
-fn bound_world(
+pub fn bound_world(
     position: [f32; 3],
     yaw: f32,
     element: &object_effect::Element,
@@ -8882,7 +8684,7 @@ fn bound_world(
 
 /// Starts requested effects, steps every running instance one game frame
 /// and keeps the quads they drew.
-fn effects_tick(
+pub fn effects_tick(
     mut game: ResMut<Game>,
     rig: Res<CameraRig>,
     mut fx: ResMut<Effects>,
@@ -9188,7 +8990,7 @@ fn effects_tick(
 /// Rebuilds the effect meshes from the last tick's quads: view space back
 /// to game world through the inverse view, then to scene coordinates.
 /// Colours are PS2 gamma-space multipliers, converted to linear.
-fn present_effects(
+pub fn present_effects(
     fx: Res<Effects>,
     targets: Query<(&EffectMesh, &Mesh3d)>,
     mut meshes: ResMut<Assets<Mesh>>,
@@ -9233,86 +9035,86 @@ fn present_effects(
 /// A collision shape for the talk camera: bone, offset, height offset,
 /// radius and height (model space, Y up).
 #[derive(Clone, Copy, Debug)]
-struct Shape {
-    bone: usize,
-    offset: Vec3,
-    pos_h: f32,
-    radius: f32,
-    height: f32,
+pub struct Shape {
+    pub bone: usize,
+    pub offset: Vec3,
+    pub pos_h: f32,
+    pub radius: f32,
+    pub height: f32,
 }
 
-struct NpcSource {
-    model: model_inspection::InspectionModel,
-    frames: Vec<Vec<Vec3>>,
-    bones: Vec<HashMap<usize, Mat4>>,
-    loop_start: u32,
-    target: Shape,
-    sheet: Sheet,
-    font: SystemFont,
-    lines: HashMap<u32, Vec<u8>>,
-    colour: u32,
-    label: Vec<u8>,
-    offset: Vec3,
-    yaw: f32,
-    script: Vec<visual::dialogue::Op>,
+pub struct NpcSource {
+    pub model: model_inspection::InspectionModel,
+    pub frames: Vec<Vec<Vec3>>,
+    pub bones: Vec<HashMap<usize, Mat4>>,
+    pub loop_start: u32,
+    pub target: Shape,
+    pub sheet: Sheet,
+    pub font: SystemFont,
+    pub lines: HashMap<u32, Vec<u8>>,
+    pub colour: u32,
+    pub label: Vec<u8>,
+    pub offset: Vec3,
+    pub yaw: f32,
+    pub script: Vec<visual::dialogue::Op>,
 }
 
 /// Sora's OBJ ellipsoid (P_EX100 type 23 entry 1): radius, height and its
 /// centre above the root; the towns-person reaction sphere (composed for
 /// Axel): centre 200 up, radius 200, height 200 (dialogue-01 §2.2).
-const SORA_OBJ: [f32; 3] = [35., 55., 85.];
-const REACTION_SPHERE: [f32; 3] = [200., 200., 200.];
+pub const SORA_OBJ: [f32; 3] = [35., 55., 85.];
+pub const REACTION_SPHERE: [f32; 3] = [200., 200., 200.];
 /// cmd 31 "Talk": message 0x81ea.
-const TALK_LABEL: u32 = 0x81ea;
+pub const TALK_LABEL: u32 = 0x81ea;
 /// Screen cross-dissolve length (FUN_140163040(8.0, 1): 2 × 8 frames) and
 /// the talk camera's field of view (0x14071a290, 60°).
-const DISSOLVE_FRAMES: u32 = 16;
-const TALK_FOV: f32 = std::f32::consts::FRAC_PI_3;
+pub const DISSOLVE_FRAMES: u32 = 16;
+pub const TALK_FOV: f32 = std::f32::consts::FRAC_PI_3;
 
 /// The field-talk state: the NPC, the window art and font, the running
 /// script and the talk camera (FUN_140401410 / FUN_140400f90).
 #[derive(Resource)]
-struct Talk {
+pub struct Talk {
     /// The NPC's REACTION entry and its spawn record's command (+0x2c).
-    reaction_shape: Option<data::object_collision::Entry>,
-    spawn_command: u16,
-    position: Vec3,
-    yaw: f32,
-    home_yaw: f32,
-    tick: u32,
-    frames: Vec<Vec<Vec3>>,
-    bones: Vec<HashMap<usize, Mat4>>,
-    loop_start: u32,
-    target: Shape,
-    indices: Vec<Vec<u32>>,
-    sheet: Sheet,
-    font: SystemFont,
-    lines: HashMap<u32, Vec<u8>>,
-    colour: u32,
+    pub reaction_shape: Option<data::object_collision::Entry>,
+    pub spawn_command: u16,
+    pub position: Vec3,
+    pub yaw: f32,
+    pub home_yaw: f32,
+    pub tick: u32,
+    pub frames: Vec<Vec<Vec3>>,
+    pub bones: Vec<HashMap<usize, Mat4>>,
+    pub loop_start: u32,
+    pub target: Shape,
+    pub indices: Vec<Vec<u32>>,
+    pub sheet: Sheet,
+    pub font: SystemFont,
+    pub lines: HashMap<u32, Vec<u8>>,
+    pub colour: u32,
     /// The Talk label (message 0x81ea), for the slot when the command
     /// table's names lack it.
-    label: Vec<u8>,
-    script: Vec<visual::dialogue::Op>,
+    pub label: Vec<u8>,
+    pub script: Vec<visual::dialogue::Op>,
     /// Script position while talking.
-    active: Option<usize>,
-    current: Option<visual::dialogue::TalkWindow>,
-    closing: Vec<visual::dialogue::TalkWindow>,
-    wait: f32,
+    pub active: Option<usize>,
+    pub current: Option<visual::dialogue::TalkWindow>,
+    pub closing: Vec<visual::dialogue::TalkWindow>,
+    pub wait: f32,
     /// Talk camera eye and target (scene coordinates).
-    camera: Option<(Vec3, Vec3)>,
+    pub camera: Option<(Vec3, Vec3)>,
     /// Remaining cross-dissolve frames, and a snapshot to take this frame.
-    dissolve: u32,
-    snapshot: bool,
+    pub dissolve: u32,
+    pub snapshot: bool,
 }
 
 #[derive(Component)]
-struct NpcRoot;
+pub struct NpcRoot;
 #[derive(Component)]
-struct NpcPart(usize);
+pub struct NpcPart(pub usize);
 #[derive(Component)]
-struct SnapshotCamera;
+pub struct SnapshotCamera;
 
-fn load_npc(
+pub fn load_npc(
     source: &ProbeSource,
     base: &Path,
     config: &Config,
@@ -9432,7 +9234,7 @@ fn load_npc(
 
 /// FUN_140175e50 (flag 1): the target is the shape centre; the eye sits
 /// `radius` from it toward the player, raised by `height`.
-fn talk_camera(talk: &Talk, player: Vec3) -> (Vec3, Vec3) {
+pub fn talk_camera(talk: &Talk, player: Vec3) -> (Vec3, Vec3) {
     let s = talk.target;
     let m = talk.bones[(talk.tick as usize).min(talk.bones.len() - 1)]
         .get(&s.bone)
@@ -9447,7 +9249,7 @@ fn talk_camera(talk: &Talk, player: Vec3) -> (Vec3, Vec3) {
 /// One frame of field talk: the NPC's idle, the reaction-command test
 /// (FUN_140407de0 / FUN_1404088f0), and while talking the script
 /// (FUN_1403ecb60), its windows and Sora turning toward the NPC.
-fn talk_tick(mut game: ResMut<Game>, talk: Option<ResMut<Talk>>) {
+pub fn talk_tick(mut game: ResMut<Game>, talk: Option<ResMut<Talk>>) {
     use visual::dialogue::{Op, TalkWindow};
     let Some(mut talk) = talk else { return };
     let tick = game.tick;
@@ -9464,7 +9266,7 @@ fn talk_tick(mut game: ResMut<Game>, talk: Option<ResMut<Talk>>) {
     }
     talk.dissolve = talk.dissolve.saturating_sub(1);
     let sora = Vec3::from_array(game.sora.player.position);
-    if talk.active.is_none() && rc && !game.duel {
+    if talk.active.is_none() && rc && !game.versus {
         // FUN_140401410 → FUN_140400f90: lock Sora, snap the NPC to face
         // him, cross-dissolve to the talk camera.
         talk.active = Some(0);
@@ -9553,7 +9355,7 @@ fn talk_tick(mut game: ResMut<Game>, talk: Option<ResMut<Talk>>) {
     }
 }
 
-fn present_npc(
+pub fn present_npc(
     talk: Option<Res<Talk>>,
     mut roots: Query<&mut Transform, With<NpcRoot>>,
     parts: Query<(&NpcPart, &Mesh3d)>,
@@ -9578,7 +9380,7 @@ fn present_npc(
 /// frames. The snapshot renders the old view with a second camera before
 /// `camera_control` moves the main one.
 #[allow(clippy::type_complexity)]
-fn dissolve_present(
+pub fn dissolve_present(
     talk: Option<ResMut<Talk>>,
     main: Query<(&Transform, &Projection), CameraOnly>,
     mut snapshot: Query<
@@ -9604,7 +9406,7 @@ fn dissolve_present(
 /// reached since the last scan; a new action or a loop rescans from 0.
 /// The battle archive's vibration waves: the `vbrt` block's `vibr` table and
 /// its type 47 entries in order.
-fn vibration_library(battle: &[u8]) -> Option<player::vibration::Library> {
+pub fn vibration_library(battle: &[u8]) -> Option<player::vibration::Library> {
     let table = bar::read_bar(battle).ok()?;
     let block = table.entries.iter().find(|e| e.name_bytes == *b"vbrt")?;
     let start = block.offset.max(0) as usize;
@@ -9626,7 +9428,7 @@ fn vibration_library(battle: &[u8]) -> Option<player::vibration::Library> {
 
 /// Frame trigger 31 on Sora's motion starts a wave, and the callback
 /// (FUN_14019b1d0) turns the running one into this tick's motor bytes.
-fn sora_vibration(game: &mut Game) {
+pub fn sora_vibration(game: &mut Game) {
     let key = (game.action_started, game.sora.player.action);
     let frame = game.sora.player.motion_frame(&game.clips);
     let from = match game.vibration_scan {
@@ -9657,7 +9459,7 @@ fn sora_vibration(game: &mut Game) {
 /// The pad's motors (FUN_14039bbe0 → XInputSetState): sent once per
 /// simulation tick for one tick's length. The room has no Config page, so the
 /// vibration bit (default on) is taken as set.
-fn rumble_output(
+pub fn rumble_output(
     mut game: ResMut<Game>,
     pads: Query<Entity, With<Gamepad>>,
     mut requests: MessageWriter<GamepadRumbleRequest>,
@@ -9682,7 +9484,7 @@ fn rumble_output(
     }
 }
 
-fn sora_sounds(game: &mut Game) {
+pub fn sora_sounds(game: &mut Game) {
     let clip = game.poses[&(game.sora.player.action, game.sora.player.armed)];
     let frame = game.sora.player.motion_frame(&game.clips);
     let started = game.action_started;
@@ -9758,7 +9560,7 @@ fn sora_sounds(game: &mut Game) {
 
 /// The map-effect category bit of a ground attribute (the table at
 /// 0x1405d4ff0, 0 = no dust).
-fn dust_ground_bit(ground: u8) -> u8 {
+pub fn dust_ground_bit(ground: u8) -> u8 {
     const TABLE: [u8; 28] = [
         0, 1, 0, 2, 3, 4, 5, 0, 0, 0, 6, 7, 8, 9, 10, 11, 0, 0, 0, 0, 0, 0, 12, 0, 0, 0, 0, 13,
     ];
@@ -9767,7 +9569,7 @@ fn dust_ground_bit(ground: u8) -> u8 {
 
 /// Frame trigger 19 (FUN_140424c60): the map's category element for this
 /// ground and foot starts at the foot, turned along Sora's heading.
-fn sora_dust(game: &mut Game) {
+pub fn sora_dust(game: &mut Game) {
     let key = (game.action_started, game.sora.player.action);
     let looped = game.sora.player.motion_frame(&game.clips);
     let from = match game.dust_scan {
@@ -9810,7 +9612,7 @@ fn sora_dust(game: &mut Game) {
 /// Plays this tick's requests and keeps the low-HP alarm (system sound 9,
 /// looped) in step with the gauge's low-HP state: started when HP <= max/4
 /// and stopped when HP recovers or Sora is KO (FUN_14017f050).
-fn play_sounds(mut game: ResMut<Game>, mut audio: ResMut<Audio>, hud: Option<Res<Hud>>) {
+pub fn play_sounds(mut game: ResMut<Game>, mut audio: ResMut<Audio>, hud: Option<Res<Hud>>) {
     let tick = game.tick;
     let mut requests = std::mem::take(&mut game.sound_queue);
     // A map effect that ended fades its sound over half a second
@@ -9898,7 +9700,7 @@ fn play_sounds(mut game: ResMut<Game>, mut audio: ResMut<Audio>, hud: Option<Res
 
 /// HUD frame: test-room debug keys (F4 blow hit, F5/F6 HP -/+2, F7/F8 MP -/+10, F9 drive +10)
 /// or the unattended script change stats, then the gauge logic runs.
-fn hud_tick(
+pub fn hud_tick(
     keys: Res<ButtonInput<KeyCode>>,
     mut game: ResMut<Game>,
     hud: Option<ResMut<Hud>>,
@@ -10158,7 +9960,7 @@ fn hud_tick(
 }
 
 /// The command menu's sheet: a limit's `comd` while it wears one.
-fn menu_sheet<'a>(
+pub fn menu_sheet<'a>(
     own: &'a Sheet,
     skin: &'a Option<(Arc<party_limit::LimitSource>, usize)>,
 ) -> &'a Sheet {
@@ -10168,7 +9970,7 @@ fn menu_sheet<'a>(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn hud_present(
+pub fn hud_present(
     hud: Option<ResMut<Hud>>,
     talk: Option<Res<Talk>>,
     area: Option<Res<AreaRes>>,
@@ -10398,7 +10200,7 @@ fn hud_present(
 /// collision group, placed through Sora's hand and swept from last frame;
 /// target spheres: the enemy's HIT entries on its animated bones.
 /// The enemy's TARGET shapes this tick, in simulation space.
-fn enemy_targets(rt: &EnemyRuntime) -> Vec<player::ptya::Target> {
+pub fn enemy_targets(rt: &EnemyRuntime) -> Vec<player::ptya::Target> {
     if !rt.enabled {
         return Vec::new();
     }
@@ -10427,7 +10229,7 @@ fn enemy_targets(rt: &EnemyRuntime) -> Vec<player::ptya::Target> {
         .collect()
 }
 
-fn combat_tick(game: &mut Game, tick: u64) {
+pub fn combat_tick(game: &mut Game, tick: u64) {
     let Game {
         sora: Fighter { player, vitals, .. },
         sora_obj_shapes,
@@ -10456,18 +10258,18 @@ fn combat_tick(game: &mut Game, tick: u64) {
         magic_shift,
         wall,
         party,
-        duel,
+        versus,
         ..
     } = game;
     let Some(rt) = enemy.as_mut() else { return };
-    // The unattended run's test blows (not in a duel: the other Sora's
-    // hits are the test there).
+    // The unattended run's test blows (not with another player: that
+    // Sora's hits are the test there).
     let debug_blow = std::mem::take(debug_blow)
         || (autoplay.is_some()
             && !*enemy_battle_tour
             && !*sephiroth_tour
             && !*magic_tour
-            && !*duel
+            && !*versus
             && AUTOPLAY_BLOWS.contains(&tick));
     let act_at_start = rt.enemy.current_act();
     let place = if *magic_tour {
@@ -11239,7 +11041,7 @@ fn combat_tick(game: &mut Game, tick: u64) {
 }
 
 /// Places the spell-volume placeholders on this tick's volumes.
-fn present_spells(
+pub fn present_spells(
     game: Res<Game>,
     mut volumes: Query<(
         &SpellVolume,
@@ -11272,7 +11074,7 @@ fn present_spells(
     }
 }
 
-fn present_enemy(
+pub fn present_enemy(
     game: Res<Game>,
     mut roots: Query<(&mut Transform, &mut Visibility), With<EnemyRoot>>,
     parts: Query<(&EnemyPart, &Mesh3d)>,
@@ -11302,9 +11104,9 @@ fn present_enemy(
 }
 
 /// The weapon root, distinct from Sora's root transform.
-type WeaponOnly = (With<WeaponRoot>, Without<SoraRoot>);
+pub type WeaponOnly = (With<WeaponRoot>, Without<SoraRoot>);
 /// The camera never shares a transform with Sora's hierarchy.
-type CameraOnly = (
+pub type CameraOnly = (
     With<Camera3d>,
     Without<SoraRoot>,
     Without<WeaponRoot>,
@@ -11313,12 +11115,12 @@ type CameraOnly = (
 );
 
 /// Sora's body parts and the Keyblade's.
-type SoraOrWeapon = Or<(With<SoraPart>, With<WeaponPart>)>;
+pub type SoraOrWeapon = Or<(With<SoraPart>, With<WeaponPart>)>;
 
 /// First person hides Sora (the ramp at `actor+0xa10`): his body and the
 /// Keyblade he carries fade with it [I: the weapon follows the owner's flag,
 /// FUN_1403d9fe0, not a measured capture].
-fn first_person_fade(
+pub fn first_person_fade(
     rig: Res<CameraRig>,
     mut materials: ResMut<Assets<FogMaterial>>,
     parts: Query<&MeshMaterial3d<FogMaterial>, SoraOrWeapon>,
@@ -11343,7 +11145,7 @@ fn first_person_fade(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn camera_control(
+pub fn camera_control(
     motion: Res<AccumulatedMouseMotion>,
     windows: Query<&Window, With<bevy::window::PrimaryWindow>>,
     controls: Res<input::Controls>,
@@ -11396,11 +11198,10 @@ fn camera_control(
     // as the follow camera's is (FUN_140164940 from the target). [I] The
     // camera system's own test for event cameras (FUN_1401780d0) is taken
     // to be that one.
-    // [KH3 ruleset] The wall camera, else KH3's lock-on and aiming cameras
-    // (the fixed tick's).
-    let kh3_view = duel_kh3::flow_view(&game, fov).or(rig.kh3_view);
+    // An extension's cameras, under a mission's.
+    let extra_view = (hooks().camera_view)(&game, fov).or(rig.extra_view);
 
-    let (pose, fov) = match game.overlay_camera.or(game.duel_camera).or(kh3_view) {
+    let (pose, fov) = match game.overlay_camera.or(extra_view) {
         Some(v) => {
             let mut eye = v.eye;
             if v.collision {
@@ -11433,7 +11234,7 @@ fn camera_control(
 
 /// The devices this instance reads in its window's title, when they are
 /// not all of them (two windows on one PC).
-fn show_devices(
+pub fn show_devices(
     controls: Res<input::Controls>,
     mut windows: Query<&mut Window, With<bevy::window::PrimaryWindow>>,
     mut base: Local<Option<String>>,
@@ -11453,7 +11254,7 @@ fn show_devices(
 
 /// The skateboard's fixed step: start a ride on the room's collision, step
 /// the Skate 3 skater and put Sora where it is. An area change ends the ride.
-fn skate_tick(
+pub fn skate_tick(
     mut skate: ResMut<crate::skate::Skate>,
     mut game: ResMut<Game>,
     area: Option<Res<AreaRes>>,
@@ -11484,7 +11285,7 @@ fn skate_tick(
 }
 
 /// Riding uses Skate 3's own gameplay camera in place of the follow camera.
-fn skate_camera(
+pub fn skate_camera(
     mut skate: ResMut<crate::skate::Skate>,
     mut camera: Query<(&mut Transform, &mut Projection), CameraOnly>,
 ) {
@@ -11501,10 +11302,10 @@ fn skate_camera(
 }
 
 #[derive(Component)]
-struct SkateBoard;
+pub struct SkateBoard;
 
 /// The optional skateboard's presentation (the Skate 3 score HUD).
-struct SkatePlugins;
+pub struct SkatePlugins;
 
 impl Plugin for SkatePlugins {
     fn build(&self, _app: &mut App) {
@@ -11513,49 +11314,49 @@ impl Plugin for SkatePlugins {
     }
 }
 
-type BoardOnly = (With<SkateBoard>, Without<SoraRoot>);
+pub type BoardOnly = (With<SkateBoard>, Without<SoraRoot>);
 
 /// Sora's skinning and the rider retarget built on his bind pose.
 #[derive(Resource)]
-struct SoraRig {
-    skinning: data::model_pose::Skinning,
-    rig: Option<crate::skate_rig::Rig>,
+pub struct SoraRig {
+    pub skinning: data::model_pose::Skinning,
+    pub rig: Option<crate::skate_rig::Rig>,
 }
 
 /// The skateboard's models: the equipped Keyblade's, read from the install
 /// the first time it is ridden.
 #[derive(Resource)]
-struct BoardModels {
-    keyblades: crate::keyblade_board::Keyblades,
+pub struct BoardModels {
+    pub keyblades: crate::keyblade_board::Keyblades,
     /// The room's own weapon model (the hand Keyblade's meshes serve it).
-    hand: String,
-    source: Arc<ProbeSource>,
+    pub hand: String,
+    pub source: Arc<ProbeSource>,
     /// The Keyblades' shared idle motion (W_EX010.mset motion 0: every
     /// Keyblade model on the install uses that motion set), which swings the
     /// keychain.
-    motion: Option<motion::SelectedMotion>,
+    pub motion: Option<motion::SelectedMotion>,
     /// Model name -> the board model (None: unreadable).
-    models: HashMap<String, Option<BoardModel>>,
+    pub models: HashMap<String, Option<BoardModel>>,
     /// The model the spawned board shows.
-    shown: Option<String>,
+    pub shown: Option<String>,
 }
 
 /// A Keyblade as the board: its model and its vertices for each 60 Hz frame
 /// of the idle motion (one bind-pose frame without a usable motion).
-struct BoardModel {
-    model: model_inspection::InspectionModel,
-    frames: Vec<Vec<Vec3>>,
-    loop_start: usize,
+pub struct BoardModel {
+    pub model: model_inspection::InspectionModel,
+    pub frames: Vec<Vec<Vec3>>,
+    pub loop_start: usize,
     /// Its placement on the board frame and how far that raised it.
-    placement: Transform,
-    lift: f32,
+    pub placement: Transform,
+    pub lift: f32,
 }
 
 /// The rider bone the board is drawn on (skate-sim's skeleton order).
-const BOARD_BONE: usize = 25;
+pub const BOARD_BONE: usize = 25;
 
 impl BoardModel {
-    fn frame(&self, tick: u64) -> &[Vec3] {
+    pub fn frame(&self, tick: u64) -> &[Vec3] {
         let n = self.frames.len() as u64;
         let i = if tick < n {
             tick
@@ -11569,11 +11370,11 @@ impl BoardModel {
 
 /// One mesh of the board's Keyblade (its model part ordinal).
 #[derive(Component)]
-struct BoardPart(usize);
+pub struct BoardPart(pub usize);
 
 /// `obj/<name>.mdlx` from whichever index holds it, with its vertices in
 /// its root joint's space (as the hand Keyblade's bind pose).
-fn read_board_model(
+pub fn read_board_model(
     source: &ProbeSource,
     name: &str,
     idle: Option<&motion::SelectedMotion>,
@@ -11648,7 +11449,7 @@ fn read_board_model(
 /// deck as the board.
 // Bevy systems take each resource as a parameter.
 #[allow(clippy::too_many_arguments)]
-fn skate_present(
+pub fn skate_present(
     mut commands: Commands,
     skate: Res<crate::skate::Skate>,
     game: Res<Game>,
@@ -11826,11 +11627,11 @@ fn skate_present(
 }
 
 /// Sora's skinned target pose and its (kit, clip, frame).
-type ShownTarget = Option<((usize, usize, usize), Vec<Vec3>)>;
+pub type ShownTarget = Option<((usize, usize, usize), Vec<Vec3>)>;
 
 // Bevy systems take each resource as a parameter.
 #[allow(clippy::too_many_arguments)]
-fn present(
+pub fn present(
     fixed: Res<Time<Fixed>>,
     virt: Res<Time<Virtual>>,
     mut game: ResMut<Game>,
@@ -11841,7 +11642,7 @@ fn present(
     mut meshes: ResMut<Assets<Mesh>>,
     mut shown_target: Local<ShownTarget>,
 ) {
-    if kh3_model::shows_kh3(&game) {
+    if (hooks().draws_soras)(&game) {
         return;
     }
     let action = game.sora.player.action;
@@ -12002,7 +11803,7 @@ fn present(
     }
     if let Ok(mut root) = roots.single_mut() {
         root.translation = Vec3::from_array(game.sora.player.position);
-        root.rotation = duel_kh3::turn(game.sora.player.yaw, &game.sora.kh3);
+        root.rotation = (hooks().sora_turn)(&game.sora);
         // Stitch's limit draws Sora in camera space (FUN_1403cbfc0 with
         // Stitch's second matrix).
         if let Some((at, turn)) = summon::sora_camera_pose(&game) {
@@ -12014,7 +11815,7 @@ fn present(
 
 /// Unattended runs start with simulation time paused until rendering has
 /// warmed up, so the first capture is not a blank frame.
-fn pause_for_autoplay(game: Res<Game>, mut time: ResMut<Time<Virtual>>) {
+pub fn pause_for_autoplay(game: Res<Game>, mut time: ResMut<Time<Virtual>>) {
     if game.autoplay.is_some() {
         time.pause();
     }
@@ -12022,7 +11823,7 @@ fn pause_for_autoplay(game: Res<Game>, mut time: ResMut<Time<Virtual>>) {
 
 // Bevy systems take each resource as a parameter.
 #[allow(clippy::too_many_arguments)]
-fn finish(
+pub fn finish(
     mut commands: Commands,
     keys: Res<ButtonInput<KeyCode>>,
     mut overlay: Query<&mut Visibility, With<CollisionOverlay>>,
@@ -12187,77 +11988,77 @@ fn finish(
 
 /// The camp (pause) menu: its sources, the open menu and the menu pad.
 #[derive(Resource)]
-struct CampRes {
-    source: CampSource,
-    open: Option<Camp>,
+pub struct CampRes {
+    pub source: CampSource,
+    pub open: Option<Camp>,
     /// Cursor memory and the save's config bits / game mode.
-    memory: pause_menu::Memory,
-    config_flags: u32,
-    game_mode: u32,
-    pad: Pad,
+    pub memory: pause_menu::Memory,
+    pub config_flags: u32,
+    pub game_mode: u32,
+    pub pad: Pad,
     /// Sheet slots: camp art per glyph variant, then the font.
-    art: [Option<usize>; 4],
-    font_sheet: usize,
-    icon_sheet: usize,
-    glyph: usize,
-    keyboard_last: bool,
+    pub art: [Option<usize>; 4],
+    pub font_sheet: usize,
+    pub icon_sheet: usize,
+    pub glyph: usize,
+    pub keyboard_last: bool,
     /// The room's stock (ROOM_STOCK, then what the camp leaves) and the
     /// stock list's seen marks.
-    stock: std::collections::BTreeMap<u16, u8>,
-    seen: Vec<u16>,
+    pub stock: std::collections::BTreeMap<u16, u8>,
+    pub seen: Vec<u16>,
     /// The items the room starts with (never NEW!).
-    starting: Vec<u16>,
+    pub starting: Vec<u16>,
     /// Sora's 80 ability slots, seeded from the installed development catalog.
-    ability_slots: Vec<u16>,
+    pub ability_slots: Vec<u16>,
     /// Shortcut command ids (save+0x36f8; empty in a new save [test-room
     /// value]) and the MP-charge bits (save+0x3744).
-    shortcuts: [u16; 4],
-    no_charge: u8,
+    pub shortcuts: [u16; 4],
+    pub no_charge: u8,
     /// Sora's equipment [test-room values]: the Kingdom Key, one empty
     /// armor and accessory slot, two empty item slots.
-    equipment: pause_menu::items::Equipment,
+    pub equipment: pause_menu::items::Equipment,
     /// The equipment last logged from the open menu.
-    logged_equipment: Option<pause_menu::items::Equipment>,
+    pub logged_equipment: Option<pause_menu::items::Equipment>,
     /// The menu chain past the camp: the journal and the curtain between.
-    journal_source: Option<JournalSource>,
-    journal: Option<Journal>,
-    curtain: Option<Curtain>,
-    journal_sheets: JournalSheets,
+    pub journal_source: Option<JournalSource>,
+    pub journal: Option<Journal>,
+    pub curtain: Option<Curtain>,
+    pub journal_sheets: JournalSheets,
     /// The item pictures: the selected source they load from at run time
     /// (`itempic/item-%03d.imd` in kh2_fifth) and their sheets (None:
     /// the install has no such file).
-    picture_source: Option<std::sync::Arc<ProbeSource>>,
+    pub picture_source: Option<std::sync::Arc<ProbeSource>>,
     /// The journal's seen `char` and `albu` rows (save+0x4c38 / 0x4c7c).
-    seen_chars: Vec<u16>,
-    seen_albums: Vec<u16>,
-    seen_limits: Vec<u16>,
-    seen_quests: Vec<u16>,
-    seen_minigames: Vec<u16>,
-    seen_story: Vec<u16>,
-    seen_synthesis: Vec<u8>,
-    seen_reports: Vec<u16>,
+    pub seen_chars: Vec<u16>,
+    pub seen_albums: Vec<u16>,
+    pub seen_limits: Vec<u16>,
+    pub seen_quests: Vec<u16>,
+    pub seen_minigames: Vec<u16>,
+    pub seen_story: Vec<u16>,
+    pub seen_synthesis: Vec<u8>,
+    pub seen_reports: Vec<u16>,
     /// The save's puzzle fields [test-room values: no piece lies in the
     /// rooms yet].
-    puzzles: journal::PuzzleSave,
-    seen_chests: Vec<u16>,
-    seen_maps: Vec<u16>,
-    picture_sheets: HashMap<u16, Option<usize>>,
-    notice_sheets: HashMap<String, usize>,
+    pub puzzles: journal::PuzzleSave,
+    pub seen_chests: Vec<u16>,
+    pub seen_maps: Vec<u16>,
+    pub picture_sheets: HashMap<u16, Option<usize>>,
+    pub notice_sheets: HashMap<String, usize>,
     /// The menus' language code (`menu/<lang>/` notice and photo files).
-    lang: String,
+    pub lang: String,
     /// The save point's file menu (save.2ld), read the first time it opens
     /// with its sheets; the install it saves beside.
-    files: Option<crate::save_files::Files>,
-    steam_root: PathBuf,
+    pub files: Option<crate::save_files::Files>,
+    pub steam_root: PathBuf,
     /// Each character's obtained-order ability list and seen bits
     /// (save+0x4278 / +0x41f8 for Sora, +0x4318 / +0x4204 for the party),
     /// by character id (Sora 1).
-    ability_marks: HashMap<u8, (Vec<u16>, Vec<bool>)>,
+    pub ability_marks: HashMap<u8, (Vec<u16>, Vec<bool>)>,
 }
 
 /// FUN_140368ed0 at the camp's start for one member: its order list and
 /// seen bits from the room, the new marks of this camp.
-fn with_marks(
+pub fn with_marks(
     c: &CampRes,
     character: u8,
     mut m: pause_menu::abilities::MemberAbilities,
@@ -12271,26 +12072,26 @@ fn with_marks(
 }
 
 /// Sora's character id (FUN_1403e60c0 maps Roxas 0xe to it too).
-const SORA_CHARACTER: u8 = 1;
+pub const SORA_CHARACTER: u8 = 1;
 
 /// Sheet slots of the journal's images.
 #[derive(Default)]
-struct JournalSheets {
-    book: usize,
-    curtain: usize,
-    worlds: Vec<usize>,
-    tops: HashMap<String, Vec<usize>>,
+pub struct JournalSheets {
+    pub book: usize,
+    pub curtain: usize,
+    pub worlds: Vec<usize>,
+    pub tops: HashMap<String, Vec<usize>>,
     /// jmface_<code>.2ld faces by journal world, photos by `albu` row
     /// (loaded when the journal asks).
-    faces: HashMap<u8, Vec<usize>>,
-    photos: HashMap<u16, usize>,
+    pub faces: HashMap<u8, Vec<usize>>,
+    pub photos: HashMap<u16, usize>,
     /// Puzzle pictures by `puzz` row.
-    puzzles: HashMap<u8, usize>,
+    pub puzzles: HashMap<u8, usize>,
 }
 
 impl CampRes {
     /// A menu (camp, curtain or journal) holds the screen and the pad.
-    fn menu_up(&self) -> bool {
+    pub fn menu_up(&self) -> bool {
         self.open.is_some()
             || self.journal.is_some()
             || self.curtain.is_some()
@@ -12302,7 +12103,7 @@ impl CampRes {
 /// the character list, the stat browser (column switch, move), back out,
 /// down to Config, change Field Camera and Summon Effects, jump to the
 /// bottom with R1, R2 to the Graphics page, back out, close with START.
-const AUTOPLAY_CAMP: &[(u64, u64)] = &[
+pub const AUTOPLAY_CAMP: &[(u64, u64)] = &[
     (1810, 0x2),
     (1840, 0x20),
     (1850, 0x20),
@@ -12482,7 +12283,7 @@ const AUTOPLAY_CAMP: &[(u64, u64)] = &[
     (9050, 0x4000),
     (9200, 0x100),
 ];
-fn camp_setup(
+pub fn camp_setup(
     camp: Option<ResMut<CampRes>>,
     mut frame: ResMut<Ui2dFrame>,
     mut images: ResMut<Assets<Image>>,
@@ -12493,7 +12294,7 @@ fn camp_setup(
 
 /// The camp's and the journal's images as 2D sheets (again after a text
 /// language change).
-fn upload_camp_sheets(c: &mut CampRes, frame: &mut Ui2dFrame, images: &mut Assets<Image>) {
+pub fn upload_camp_sheets(c: &mut CampRes, frame: &mut Ui2dFrame, images: &mut Assets<Image>) {
     for n in 0..4 {
         if let Some((t, scale)) = c.source.menu.texture_for(0, n) {
             let (rgba, size) = (t.rgba.clone(), t.size);
@@ -12535,15 +12336,15 @@ fn upload_camp_sheets(c: &mut CampRes, frame: &mut Ui2dFrame, images: &mut Asset
     }
 }
 
-fn field_running(
+pub fn field_running(
     camp: Option<Res<CampRes>>,
     debug: Res<debug_menu::DebugMenu>,
     game_over: Option<Res<game_over::GameOverRes>>,
     game: Res<Game>,
 ) -> bool {
-    // A duel never pauses: the other player keeps playing.
+    // Another player in the room keeps playing: it never pauses.
     game.field_step
-        && (game.duel
+        && (game.versus
             || camp.is_none_or(|c| !c.menu_up())
                 && !debug.open
                 && game_over.is_none_or(|g| g.field_runs()))
@@ -12553,7 +12354,7 @@ fn field_running(
 /// (FUN_1401572b0 → FUN_1402e4950(0)); while it runs the field is not
 /// stepped, the menu reads pad mode 7 and the frame counter keeps going.
 #[allow(clippy::too_many_arguments)]
-fn camp_tick(
+pub fn camp_tick(
     keys: Res<ButtonInput<KeyCode>>,
     mouse: Res<ButtonInput<MouseButton>>,
     pads: Query<(&Gamepad, Option<&Name>)>,
@@ -12630,9 +12431,9 @@ fn camp_tick(
             // The magic, Sephiroth and enemy combat tours never open the
             // camp (the enemy roster runs past the camp check's ticks).
             0
-        } else if game.duel {
-            // The duel's screens: their script's keys.
-            std::mem::take(&mut game.duel_camp_press)
+        } else if game.versus {
+            // A screen's script's keys.
+            std::mem::take(&mut game.camp_press)
         } else {
             AUTOPLAY_CAMP
                 .iter()
@@ -12651,8 +12452,8 @@ fn camp_tick(
     if debug.open {
         return;
     }
-    if game.duel && c.open.is_none() && game.duel_camp.is_none() && c.pad.pressed & 0x2 != 0 {
-        game.duel_start = true;
+    if game.versus && c.open.is_none() && game.camp_request.is_none() && c.pad.pressed & 0x2 != 0 {
+        game.start_pressed = true;
     }
     if save_menu_tick(c, &mut game, &mut audio, &mut frame, &mut images) {
         return;
@@ -12697,7 +12498,7 @@ fn camp_tick(
         members: std::iter::once(pause_menu::Member {
             name: c.source.name.clone(),
             // The room's Sora shows level 1 [I]; a duel's is its level 99.
-            level: if game.duel {
+            level: if game.versus {
                 i32::from(game.sora.vitals.level)
             } else {
                 1
@@ -12810,7 +12611,7 @@ fn camp_tick(
         }
         if menu.closed {
             settings.save_if_changed();
-            // A duel screen's cursor places are not the player's own menu's.
+            // A screen's cursor places are not the player's own menu's.
             if menu.data.duel.is_none() {
                 c.memory = menu.memory;
             }
@@ -13010,20 +12811,22 @@ fn camp_tick(
             game.event(serde_json::json!({"event":"camp_open","tick":tick}));
         }
     } else if c.curtain.is_none()
-        && (c.pad.pressed & 0x2 != 0 || std::mem::take(&mut game.duel_open_camp))
+        && (c.pad.pressed & 0x2 != 0 || std::mem::take(&mut game.camp_open_request))
         && !game.talking
-        && (!game.duel || game.duel_camp.is_some())
+        && (!game.versus || game.camp_request.is_some())
     {
         let mut data = camp_data(c, panels, game.items.as_ref(), &settings, &side);
-        // A duel screen (duel_camp.rs): its entries (the camp's own by id)
+        // A screen's request: its entries (the camp's own by id)
         // and its pages on the Config screen, the cursor on its first entry.
-        let (menu, s) = if let Some(req) = game.duel_camp.take() {
+        let (menu, s) = if let Some(req) = game.camp_request.take() {
             data.entries = req
                 .entries
                 .iter()
                 .filter_map(|e| match e {
-                    duel_camp::Item::Own(id) => data.entries.iter().find(|x| x.id == *id).cloned(),
-                    duel_camp::Item::New(e) => Some(e.clone()),
+                    extension::CampItem::Own(id) => {
+                        data.entries.iter().find(|x| x.id == *id).cloned()
+                    }
+                    extension::CampItem::New(e) => Some(e.clone()),
                 })
                 .collect();
             data.duel = Some(req.pages);
@@ -13114,28 +12917,28 @@ fn camp_tick(
 /// What the field (or the world map) lends the camp: the equipment's
 /// totals, the owned forms with their Keyblades and abilities, the form
 /// weapon, Sora's HP and MP and the party members.
-struct CampSide {
-    gear: player::equipment_stats::Totals,
-    form_slots: Vec<(u8, u16)>,
-    form_abilities: Vec<u16>,
-    form_weapon: Option<u16>,
-    hp: i32,
-    max_hp: i32,
-    mp: i32,
-    max_mp: i32,
-    party: Vec<CampMember>,
+pub struct CampSide {
+    pub gear: player::equipment_stats::Totals,
+    pub form_slots: Vec<(u8, u16)>,
+    pub form_abilities: Vec<u16>,
+    pub form_weapon: Option<u16>,
+    pub hp: i32,
+    pub max_hp: i32,
+    pub mp: i32,
+    pub max_mp: i32,
+    pub party: Vec<CampMember>,
     /// The journal tour's extras count toward the Journal badge.
-    journal_tour: bool,
+    pub journal_tour: bool,
 }
 
-fn party_source(c: &CampRes, character: u8) -> Option<&PartyCampSource> {
+pub fn party_source(c: &CampRes, character: u8) -> Option<&PartyCampSource> {
     c.source.party.iter().find(|s| s.character == character)
 }
 
 /// A party member's camp pages: its equipment (Equip, Items, Customize),
 /// abilities with frequencies, level base, totals and Status row (bit
 /// `bit`) — FUN_140354340 and FUN_1403c1d90 for a member record.
-fn member_pages(
+pub fn member_pages(
     c: &CampRes,
     m: &CampMember,
     bit: u8,
@@ -13226,7 +13029,7 @@ fn member_pages(
 
 /// The camp's changes to a party member's record: equipment, item slots and
 /// auto-reload, abilities, frequencies, battle style, HP and MP.
-fn write_member(
+pub fn write_member(
     save: &mut player::party_members::Save,
     e: &pause_menu::items::Equipment,
     a: Option<&pause_menu::abilities::MemberAbilities>,
@@ -13258,7 +13061,7 @@ fn write_member(
 /// The camp's data when it opens (FUN_140354340 and the pages' sources):
 /// the room's camp state, the panels and what the field (or the world map)
 /// lends it.
-fn camp_data(
+pub fn camp_data(
     c: &CampRes,
     panels: pause_menu::Panels,
     battle_items: Option<&item_room::ItemRt>,
@@ -13443,7 +13246,7 @@ fn camp_data(
 /// journal tour's extras.
 /// The puzzle fields after the journal; a solved puzzle's item goes to the
 /// stock (FUN_1403c3f00).
-fn take_journal_puzzles(
+pub fn take_journal_puzzles(
     open: &Journal,
     stock: &mut std::collections::BTreeMap<u16, u8>,
     puzzles: &mut journal::PuzzleSave,
@@ -13456,7 +13259,7 @@ fn take_journal_puzzles(
     *puzzles = save;
 }
 
-fn journal_data(
+pub fn journal_data(
     c: &CampRes,
     j: &JournalSource,
     kind: u8,
@@ -13551,7 +13354,7 @@ fn journal_data(
 /// The save point's file menu (FUN_1403a8b10 case 0x37 → FUN_1402e78e0):
 /// opened when Save is chosen, then fed the camp's pad until it closes.
 /// Returns true while it holds the pad.
-fn save_menu_tick(
+pub fn save_menu_tick(
     c: &mut CampRes,
     game: &mut Game,
     audio: &mut Audio,
@@ -13661,7 +13464,7 @@ fn save_menu_tick(
 
 /// What the room writes into a save: the place and the numbers a file card
 /// shows (the rest of the save image is not captured yet, issue #79).
-fn save_snapshot(game: &Game) -> save::data::SaveData {
+pub fn save_snapshot(game: &Game) -> save::data::SaveData {
     use save::slots::field;
     let mut d = save::data::SaveData::blank();
     if let Some((world, area)) = game.save_place {
@@ -13679,7 +13482,7 @@ fn save_snapshot(game: &Game) -> save::data::SaveData {
 
 /// FUN_1403018e0's load (here at once): the item picture the camp asks for,
 /// from the install (`itempic/item-%03d.imd`).
-fn load_wanted_picture(c: &mut CampRes, frame: &mut Ui2dFrame, images: &mut Assets<Image>) {
+pub fn load_wanted_picture(c: &mut CampRes, frame: &mut Ui2dFrame, images: &mut Assets<Image>) {
     let Some(menu) = c.open.as_mut() else { return };
     let Some(id) = menu.pictures.wanted.take() else {
         return;
@@ -13708,7 +13511,7 @@ fn load_wanted_picture(c: &mut CampRes, frame: &mut Ui2dFrame, images: &mut Asse
 /// The journal's face and photo files, loaded when a page asks
 /// (FUN_14032db20 / FUN_14032a670): `menu/jmface_<code>.2ld` and
 /// `menu/us/jm_photo/<code><nn>.bin`.
-fn load_wanted_journal(c: &mut CampRes, frame: &mut Ui2dFrame, images: &mut Assets<Image>) {
+pub fn load_wanted_journal(c: &mut CampRes, frame: &mut Ui2dFrame, images: &mut Assets<Image>) {
     let (Some(open), Some(j), Some(source)) = (
         c.journal.as_mut(),
         c.journal_source.as_ref(),
@@ -13821,7 +13624,7 @@ fn load_wanted_journal(c: &mut CampRes, frame: &mut Ui2dFrame, images: &mut Asse
 }
 
 /// The notice file the camp asks for (FUN_140367150): `menu/us/<name>.bar`.
-fn load_wanted_notice(c: &mut CampRes, frame: &mut Ui2dFrame, images: &mut Assets<Image>) {
+pub fn load_wanted_notice(c: &mut CampRes, frame: &mut Ui2dFrame, images: &mut Assets<Image>) {
     let Some(menu) = c.open.as_mut() else { return };
     let Some(file) = menu.notice_files.wanted.take() else {
         return;
@@ -13856,7 +13659,7 @@ fn load_wanted_notice(c: &mut CampRes, frame: &mut Ui2dFrame, images: &mut Asset
 /// The camp over the frozen field (the field HUD is hidden meanwhile
 /// [inferred]), the curtain (0x7554) over it, the journal (0x7557 up) over
 /// that.
-fn camp_present(
+pub fn camp_present(
     camp: Option<ResMut<CampRes>>,
     model: Option<Res<MenuModel>>,
     mut frame: ResMut<Ui2dFrame>,
@@ -13955,33 +13758,33 @@ fn camp_present(
 /// Field (slot 0) and battle (slot 1) music (FUN_140155840 / FUN_140155c30)
 /// and the battle state (FUN_1403ab6f0, DAT_142a11404) driving the switch.
 #[derive(Resource)]
-struct MusicRes {
-    pending: [Option<sound::MusicSlot>; 2],
-    clips: [Option<sound::Music>; 2],
-    started: bool,
-    battle: bool,
-    counter: u32,
-    since_reset: u32,
+pub struct MusicRes {
+    pub pending: [Option<sound::MusicSlot>; 2],
+    pub clips: [Option<sound::Music>; 2],
+    pub started: bool,
+    pub battle: bool,
+    pub counter: u32,
+    pub since_reset: u32,
     /// The area's field and battle tracks are one (hb01 under program 75:
     /// 188/188): the manager plays slot 0 and never switches (bgm-input
     /// A4.3 `switchOn` = 0).
-    one_track: bool,
+    pub one_track: bool,
 }
 
-const MUSIC_KEYS: [u32; 2] = [9_000_000, 9_000_001];
+pub const MUSIC_KEYS: [u32; 2] = [9_000_000, 9_000_001];
 /// BGM slot level 0x3000 / 16383.
-const BGM_LEVEL: f32 = 0x3000 as f32 / 16383.;
+pub const BGM_LEVEL: f32 = 0x3000 as f32 / 16383.;
 /// Fade units are 1/240 s: 0xf0 = 1 s, 0x1e0 = 2 s, 0x2d0 = 3 s.
-const BATTLE_IN: f32 = 1.;
-const FIELD_PAUSE: f32 = 2.;
-const BATTLE_OUT: f32 = 3.;
-const FIELD_RESUME: f32 = 2.;
+pub const BATTLE_IN: f32 = 1.;
+pub const FIELD_PAUSE: f32 = 2.;
+pub const BATTLE_OUT: f32 = 3.;
+pub const FIELD_RESUME: f32 = 2.;
 /// Battle when an enemy is within this horizontal distance; switch after
 /// the target differs 45 frames (to battle) or 120 (to field), at once
 /// in the first 30 frames after a reset.
-const BATTLE_DISTANCE: f32 = 1200.;
+pub const BATTLE_DISTANCE: f32 = 1200.;
 
-fn music_tick(
+pub fn music_tick(
     music: Option<ResMut<MusicRes>>,
     mut game: ResMut<Game>,
     audio: Res<Audio>,
@@ -14007,8 +13810,8 @@ fn music_tick(
         }
     }
     let Some(output) = &audio.output else { return };
-    // The duel's music has the voices (duel_music.rs).
-    if game.duel_music {
+    // Something else has the voices.
+    if game.music_held {
         return;
     }
     // Room entry: the field track at full level, no fade.
@@ -14083,7 +13886,7 @@ fn music_tick(
 }
 /// Double-click launch: with no arguments, read the three required paths
 /// (and optional extra options) from a private launch file outside Git.
-fn launch_file_args(name: &str) -> Result<Vec<PathBuf>, Box<dyn std::error::Error>> {
+pub fn launch_file_args(name: &str) -> Result<Vec<PathBuf>, Box<dyn std::error::Error>> {
     #[derive(Deserialize)]
     struct Launch {
         steam_root: PathBuf,
@@ -14120,7 +13923,13 @@ fn launch_file_args(name: &str) -> Result<Vec<PathBuf>, Box<dyn std::error::Erro
     Ok(args)
 }
 
-fn run(mut args: Vec<PathBuf>) -> Result<AppExit, Box<dyn std::error::Error>> {
+pub fn run(
+    mut args: Vec<PathBuf>,
+    mut extension: Option<Box<dyn RoomExtension>>,
+) -> Result<AppExit, Box<dyn std::error::Error>> {
+    if let Some(e) = &extension {
+        extension::install(e.hooks());
+    }
     // No arguments: the private launch file; `talk`: the talk-room one.
     if args.is_empty() {
         args = launch_file_args("launch")?;
@@ -14139,29 +13948,7 @@ fn run(mut args: Vec<PathBuf>) -> Result<AppExit, Box<dyn std::error::Error>> {
     let mut show_collision = false;
     let mut perf_overlay = false;
     let mut basic_fk = false;
-    let mut rival_script = false;
-    let mut kh3_test = false;
-    let mut kh3_folder: Option<PathBuf> = None;
-    let mut duel_bench = false;
-    let mut duel_magic = false;
-    let mut duel_shots = false;
-    let mut duel_forfeit = false;
-    let mut duel_quick = false;
-    let mut duel_wisdom = false;
-    let mut duel_no_mirage = false;
-    let mut duel_idle = false;
-    let mut kh3_preview: Option<duel_kh3::Preview> = None;
-    // The LAN duel (duel_net.rs): host or join, the port, the name shown
-    // to the other player, the link simulator and the overlay.
-    let mut net_host = false;
-    let mut net_join: Option<String> = None;
-    let mut net_port = net::DEFAULT_PORT;
-    let mut net_bind = std::net::Ipv4Addr::UNSPECIFIED;
-    let mut net_name: Option<String> = None;
-    let mut net_sim = net::link::Conditions::default();
-    let mut net_overlay = false;
     let mut input_assign = input::Assign::Auto;
-    let mut duel_rules = duel_rules::MatchRules::default();
     let mut ability_tour = false;
     let mut gear_tour = false;
     let mut gear_tour_quick = false;
@@ -14206,6 +13993,12 @@ fn run(mut args: Vec<PathBuf>) -> Result<AppExit, Box<dyn std::error::Error>> {
     // `--uncapped` / `--frame-cap N`: no V-Sync and no limit, or a cap of N
     // frames per second, whatever the settings say (frame-rate checks).
     let mut frame_rate: Option<Option<u16>> = None;
+    if let Some(e) = extension.as_mut() {
+        let kept = e.take_options(&args[3..])?;
+        args.truncate(3);
+        args.extend(kept);
+    }
+    let schedule = extension.as_ref().and_then(|e| e.schedule());
     let mut options = args[3..].iter();
     while let Some(option) = options.next() {
         match option.to_str() {
@@ -14227,62 +14020,6 @@ fn run(mut args: Vec<PathBuf>) -> Result<AppExit, Box<dyn std::error::Error>> {
             Some("--show-collision") => show_collision = true,
             Some("--perf-overlay") => perf_overlay = true,
             Some("--basic-fk") => basic_fk = true,
-            Some("--rival-script") => rival_script = true,
-            // The launcher's Test KH3 mode: the KH3 ruleset against the
-            // training dummy; with `--rival-script`, against the scripted
-            // rival instead (the unattended tests' way; duel_kh3.rs).
-            // [Test] The KH3 folder, instead of the launcher's.
-            Some("--kh3-folder") => {
-                kh3_folder = Some(PathBuf::from(options.next().ok_or("KH3 folder absent")?));
-            }
-            Some("--kh3-test") => {
-                kh3_test = true;
-                duel_rules.ruleset = duel_rules::Ruleset::Kh3;
-            }
-            // [Test] The KH3 test standing still while the looks show.
-            Some("--kh3-preview") => {
-                rival_script = true;
-                duel_rules.ruleset = duel_rules::Ruleset::Kh3;
-                let spec = options
-                    .next()
-                    .and_then(|v| v.to_str())
-                    .ok_or("preview list absent")?;
-                kh3_preview = Some(duel_kh3::Preview::parse(spec)?);
-            }
-            Some("--duel-bench") => duel_bench = true,
-            Some("--duel-magic") => duel_magic = true,
-            Some("--duel-shots") => duel_shots = true,
-            Some("--duel-forfeit") => duel_forfeit = true,
-            Some("--duel-quick") => duel_quick = true,
-            Some("--duel-wisdom") => duel_wisdom = true,
-            Some("--duel-no-mirage") => duel_no_mirage = true,
-            Some("--duel-idle") => duel_idle = true,
-            Some("--host") => net_host = true,
-            Some("--join") => {
-                net_join = Some(
-                    options
-                        .next()
-                        .and_then(|v| v.to_str())
-                        .ok_or("host address absent")?
-                        .to_owned(),
-                );
-            }
-            Some("--port") => {
-                net_port = options
-                    .next()
-                    .and_then(|v| v.to_str())
-                    .ok_or("port absent")?
-                    .parse::<u16>()?;
-            }
-            Some("--name") => {
-                net_name = Some(
-                    options
-                        .next()
-                        .and_then(|v| v.to_str())
-                        .ok_or("name absent")?
-                        .to_owned(),
-                );
-            }
             Some("--input") => {
                 let v = options
                     .next()
@@ -14290,89 +14027,6 @@ fn run(mut args: Vec<PathBuf>) -> Result<AppExit, Box<dyn std::error::Error>> {
                     .ok_or("input devices absent")?;
                 input_assign =
                     input::Assign::parse(v).ok_or("--input takes auto, kbm, pad, pad:N or both")?;
-            }
-            Some("--net-sim") => {
-                net_sim = duel_net::parse_conditions(
-                    options
-                        .next()
-                        .and_then(|v| v.to_str())
-                        .ok_or("link conditions absent")?,
-                )?;
-            }
-            Some("--net-overlay") => net_overlay = true,
-            Some("--duel-damage") => {
-                duel_rules.damage = options
-                    .next()
-                    .and_then(|v| v.to_str())
-                    .ok_or("duel damage absent")?
-                    .parse::<f32>()?
-                    .clamp(duel_rules::DAMAGE_RANGE.0, duel_rules::DAMAGE_RANGE.1);
-            }
-            Some("--duel-magic-damage") => {
-                duel_rules.magic = options
-                    .next()
-                    .and_then(|v| v.to_str())
-                    .ok_or("duel magic damage absent")?
-                    .parse::<f32>()?
-                    .clamp(duel_rules::DAMAGE_RANGE.0, duel_rules::DAMAGE_RANGE.1);
-            }
-            Some("--duel-hit-cap") => {
-                let cap = options
-                    .next()
-                    .and_then(|v| v.to_str())
-                    .ok_or("duel hit cap absent")?
-                    .parse::<u8>()?;
-                if !duel_rules::HIT_CAPS.contains(&cap) {
-                    return Err(format!(
-                        "duel hit cap: one of {:?} percent (100: none)",
-                        duel_rules::HIT_CAPS
-                    )
-                    .into());
-                }
-                duel_rules.hit_cap = cap;
-            }
-            Some("--duel-ruleset") => {
-                let name = options
-                    .next()
-                    .and_then(|v| v.to_str())
-                    .ok_or("duel ruleset absent")?;
-                duel_rules.ruleset =
-                    duel_rules::ruleset_named(name).ok_or("duel ruleset: kh2 or kh3")?;
-            }
-            Some("--duel-arena") => {
-                let name = options
-                    .next()
-                    .and_then(|v| v.to_str())
-                    .ok_or("duel arena absent")?;
-                duel_rules.arena = duel_arena::named(name).ok_or("duel arena: mirage or room")?;
-            }
-            Some("--duel-mode") => {
-                let name = options
-                    .next()
-                    .and_then(|v| v.to_str())
-                    .ok_or("duel mode absent")?;
-                duel_rules.mode =
-                    duel_rules::mode_named(name).ok_or("duel mode: stock, best3 or time")?;
-            }
-            Some("--duel-time") => {
-                let seconds = options
-                    .next()
-                    .and_then(|v| v.to_str())
-                    .ok_or("duel time absent")?
-                    .parse::<u16>()?;
-                if !duel_rules::TIME_LIMITS.contains(&seconds) {
-                    return Err(
-                        format!("duel time: one of {:?} seconds", duel_rules::TIME_LIMITS).into(),
-                    );
-                }
-                duel_rules.time_limit = seconds;
-            }
-            Some("--bind") => {
-                net_bind = options
-                    .next()
-                    .and_then(|v| v.to_str())
-                    .ok_or("bind address absent")?
-                    .parse()?;
             }
             Some("--enemy-audit") if enemy_audit.is_none() => {
                 enemy_audit = Some(options.next().cloned().ok_or("enemy audit output absent")?);
@@ -14919,8 +14573,8 @@ fn run(mut args: Vec<PathBuf>) -> Result<AppExit, Box<dyn std::error::Error>> {
         enemy_battle_tour::captures()
     } else if enemy_tour {
         enemy_tour::CAPTURES.to_vec()
-    } else if let Some(p) = &kh3_preview {
-        p.captures()
+    } else if let Some((captures, _)) = &schedule {
+        captures.clone()
     } else {
         tour.as_ref()
             .map(|t| t.captures.clone())
@@ -14973,8 +14627,8 @@ fn run(mut args: Vec<PathBuf>) -> Result<AppExit, Box<dyn std::error::Error>> {
         enemy_battle_tour::end()
     } else if enemy_tour {
         enemy_tour::END
-    } else if let Some(p) = &kh3_preview {
-        p.end()
+    } else if let Some((_, end)) = &schedule {
+        *end
     } else {
         tour.as_ref().map_or(
             if talk_room {
@@ -15052,61 +14706,17 @@ fn run(mut args: Vec<PathBuf>) -> Result<AppExit, Box<dyn std::error::Error>> {
         sora: fighter::Fighter::new(player),
         rivals: Vec::new(),
         rival_kit: Some(rival_kit),
-        rival_script,
-        duel_bench,
-        duel_magic,
-        duel_idle,
+        ext: extension::no_extension(),
         room_start: (loaded.spawn.to_array(), loaded.yaw),
-        duel_arena: duel_arena::TEST_ROOM,
-        duel_rules,
-        duel: rival_script || kh3_test,
+        versus: false,
         local_slot: 0,
-        net_client: false,
-        net_pad: rival::RivalPad::default(),
-        duel_events: Vec::new(),
-        net_overlay: false,
-        net_simulated: None,
-        duel_frozen: false,
-        duel_test_vote: false,
-        duel_open_camp: false,
-        duel_camp: None,
-        duel_start: false,
-        duel_vote_up: false,
-        // [Test] `--duel-no-mirage`: this install acts as one without
-        // Birth by Sleep.
-        mirage: if duel_no_mirage {
-            mirage_arena::Avail::Missing("left out for a test (--duel-no-mirage)".into())
-        } else {
-            mirage_arena::Avail::Unknown
-        },
-        duel_music: false,
-        duel_camp_press: 0,
-        duel_shots,
-        duel_forfeit,
-        duel_quick,
-        duel_wisdom,
-        duel_shot_keys: std::collections::HashSet::new(),
-        kh3_poles: None,
-        kh3_geometry: None,
-        kh3_core_hits: Vec::new(),
-        kh3_preview,
-        kh3_install: kh3_folder
-            .or_else(|| crate::launcher::kh3_folder().0)
-            .and_then(|folder| {
-                data::kh3::admit(&folder)
-                    .inspect_err(|e| eprintln!("KH3 install refused: {e}"))
-                    .ok()
-            }),
-        kh3_book: None,
-        kh3_fx_remote: Vec::new(),
-        kh3_loading: false,
-        kh3_aim_view: None,
-        kh3_dummy: kh3_test && !rival_script,
-        kh3_dummy_seen: 0,
-        kh3_menu: None,
-        duel_match: false,
-        duel_dealt: [0; 2],
-        duel_landed: [0; 2],
+        replica: false,
+        camp_open_request: false,
+        camp_request: None,
+        start_pressed: false,
+        menu_held: false,
+        music_held: false,
+        camp_press: 0,
         poses,
         clip_poses: base_clip_poses,
         part_indices: Vec::new(),
@@ -15313,7 +14923,6 @@ fn run(mut args: Vec<PathBuf>) -> Result<AppExit, Box<dyn std::error::Error>> {
         battle_won: false,
         camera_watch: None,
         overlay_camera: None,
-        duel_camera: None,
         overlay_blur: None,
         screen_fade: Fade::default(),
         enemy_voice_banks: HashMap::new(),
@@ -15604,76 +15213,9 @@ fn run(mut args: Vec<PathBuf>) -> Result<AppExit, Box<dyn std::error::Error>> {
         game.gear = player::equipment_stats::Totals::start(0, 0, 0, 0);
         game.refresh_gear();
     }
-    // A LAN duel: the two Soras and nothing else (duel_net.rs).
-    let net_setup = match (net_host, net_join) {
-        (true, Some(_)) => return Err("--host and --join exclude each other".into()),
-        (true, None) => Some(duel_net::Setup {
-            role: net::Role::Host,
-            bind: net_bind,
-            port: net_port,
-            host: None,
-            name: net_name.clone().unwrap_or_else(duel_net::default_name),
-            conditions: net_sim,
-            overlay: net_overlay,
-        }),
-        (false, Some(address)) => Some(duel_net::Setup {
-            role: net::Role::Join,
-            bind: net_bind,
-            port: net_port,
-            host: Some(duel_net::parse_address(&address)?),
-            name: net_name.clone().unwrap_or_else(duel_net::default_name),
-            conditions: net_sim,
-            overlay: net_overlay,
-        }),
-        (false, None) => None,
-    };
-    // The duel's baseline (duel_loadout.rs), for a session or the scripted
-    // rival; the room's own build comes back when the session ends.
-    let mut duel_loadout = duel_loadout::DuelLoadout::default();
-    if net_setup.is_some() || rival_script || game.kh3_dummy {
-        let record = duel_loadout::apply(&mut game, &mut duel_loadout)?;
-        game.event(record);
-    }
-    // Unattended runs keep no duel prefs (duel_prefs.rs).
-    let duel_unattended = game.autoplay.is_some();
-    let duel_session = match &net_setup {
-        Some(setup) => {
-            let session = duel_net::DuelNet::start(setup)?;
-            game.duel = true;
-            game.local_slot = duel_net::local_slot(setup.role);
-            game.net_client = setup.role == net::Role::Join;
-            game.net_overlay = setup.overlay;
-            // [Duel rule] Sora alone: magic, items and Drive forms are the
-            // host's to run for both (duel_sync); the second deck's limits,
-            // the summons, the party and the Shadow are off.
-            game.second_deck = None;
-            game.summons = None;
-            game.party.clear();
-            if let Some(rt) = game.enemy.as_mut() {
-                rt.enabled = false;
-            }
-            game.event(serde_json::json!({"event":"duel_session",
-                "role":format!("{:?}", setup.role),"port":setup.port,
-                "host":setup.host.map(|h| h.to_string()),"name":setup.name,
-                "conditions":[setup.conditions.latency_ms, setup.conditions.jitter_ms],
-                "loss":setup.conditions.loss_percent}));
-            Some(session)
-        }
-        None => None,
-    };
-    // The launcher's Test KH3 mode is a duel as a session's is: Sora alone
-    // (duel_kh3.rs).
-    if duel_session.is_none() && (rival_script || game.kh3_dummy) && duel_rules.kh3() {
-        game.second_deck = None;
-        game.summons = None;
-        game.party.clear();
-        // The dummy is the room's Shadow, standing (duel_kh3::dummy_setup
-        // puts it in front of Sora).
-        let dummy = game.kh3_dummy;
-        if let Some(rt) = game.enemy.as_mut() {
-            rt.enabled = dummy;
-            rt.enemy.dummy = dummy;
-        }
+    let unattended_input = game.autoplay.is_some();
+    if let Some(e) = extension.as_mut() {
+        e.setup_game(&mut game, &args)?;
     }
     let rig = CameraRig {
         camera: FollowCamera::new(
@@ -15693,8 +15235,7 @@ fn run(mut args: Vec<PathBuf>) -> Result<AppExit, Box<dyn std::error::Error>> {
         fade: FadeRamp::SHOWN,
         collision_hits: 0,
         collision: CameraCollision::new(&loaded.room),
-        kh3: kh3_camera::Kh3Camera::default(),
-        kh3_view: None,
+        extra_view: None,
     };
     eprintln!(
         "Test room ready (the original PC bindings). WASD moves (Left Alt walks), Space/Backspace jump, Enter/left-click decides (Attack), Up/Down choose a command, right-click/Right Shift guards, F/Right Ctrl reacts (Talk), M opens the menu, the mouse turns the camera, middle-click/Right Alt recentres, F3 opens the debug menu (F2 its help), Esc exits."
@@ -15784,30 +15325,13 @@ fn run(mut args: Vec<PathBuf>) -> Result<AppExit, Box<dyn std::error::Error>> {
     }
     #[cfg(feature = "perf-diag")]
     app.add_plugins(crate::perf::PerfPlugin { dir: perf_dir });
-    if let Some(session) = duel_session {
-        app.insert_resource(session);
-        app.insert_resource(duel_prefs::DuelPrefs::load(&args[1], duel_unattended));
-        app.init_resource::<duel_lobby_room::LobbyRoom>();
-        app.init_resource::<duel_vote::VoteRoom>();
-        app.init_resource::<duel_match_room::MatchRoom>();
-        app.init_resource::<duel_music::DuelMusic>();
-        // The Birth by Sleep arena reads the install's BBS package, bound
-        // by a manifest kept beside the KH2 one.
-        app.insert_resource(mirage_arena::MirageArena::new(
-            args[0].clone(),
-            data::bbs_source::manifest_beside(&args[1]),
-        ));
-        app.add_systems(
-            Update,
-            (
-                mirage_arena::tick,
-                mirage_arena::show,
-                mirage_arena::follow_sky,
-                mirage_arena::scroll,
-            )
-                .chain(),
-        );
+    if let Some(e) = extension.as_mut() {
+        e.build_app(&mut app, &args);
     }
+    let window_title = extension
+        .as_ref()
+        .and_then(|e| e.window_title())
+        .unwrap_or_else(|| "Kingdom Hearts II Re:Written (test room; quarantined source) | WASD move, Space jump, Enter/LMB attack, RMB guard, F talk, M menu, F3 debug, Esc".into());
     if soak {
         app.insert_resource(soak_tour::SoakRooms::new(soak_rooms, soak_rooms_every));
         app.add_systems(Update, soak_tour::soak_rooms);
@@ -15821,16 +15345,15 @@ fn run(mut args: Vec<PathBuf>) -> Result<AppExit, Box<dyn std::error::Error>> {
         app.add_systems(Last, soak_tour::survey);
     }
     app.add_systems(Last, cleanup::census);
-    app.insert_resource(duel_loadout);
     // The PC version's key bindings; unattended runs keep the exe's
     // defaults so they read the same on any PC, and read no device at all
     // (a controller reaches every window, focused or not).
-    let input_assign = if duel_unattended {
+    let input_assign = if unattended_input {
         input::Assign::Fixed(input::Devices::None)
     } else {
         input_assign
     };
-    app.insert_resource(crate::pc_controls::load(input_assign, duel_unattended));
+    app.insert_resource(crate::pc_controls::load(input_assign, unattended_input));
     app.add_systems(Update, show_devices);
     Ok(app
         .insert_resource(game)
@@ -15878,7 +15401,7 @@ fn run(mut args: Vec<PathBuf>) -> Result<AppExit, Box<dyn std::error::Error>> {
             DefaultPlugins
                 .set(WindowPlugin {
                     primary_window: Some(Window {
-                        title: "Kingdom Hearts II Re:Written (test room; quarantined source) | WASD move, Space jump, Enter/LMB attack, RMB guard, F talk, M menu, F3 debug, Esc".into(),
+                        title: window_title,
                         resolution: (1280, 720).into(),
                         // An unattended run stays behind the owner's windows
                         // and does not take the keyboard from them.
@@ -15908,159 +15431,132 @@ fn run(mut args: Vec<PathBuf>) -> Result<AppExit, Box<dyn std::error::Error>> {
             order: 0,
             overlay: false,
         })
-        .init_resource::<crate::skate::Skate>()
-        .init_resource::<debug_menu::DebugMenu>()
-        .init_resource::<perf_overlay::PerfOverlay>()
-        .init_resource::<enemy_battle_tour::Checks>()
-        .init_resource::<area_enemies::AreaEnemies>()
-        .init_resource::<sephiroth::Fight>()
-        .init_resource::<duel_kh3::Kh3Hud>()
-        .init_resource::<kh3_model::Kh3Model>()
-        .init_resource::<kh3_fx::Kh3Fx>()
-        .add_plugins(SkatePlugins)
-        .add_systems(
-            Startup,
-            (
-                setup,
-                pause_for_autoplay,
-                camp_setup,
-                game_over::setup,
-                rival::script_setup,
-                duel_kh3::dummy_setup,
-            ),
-        )
-        .add_systems(Update, crate::skate::toggle)
-        .add_systems(
-            PostUpdate,
-            kh3_model::update
-                .before(bevy::transform::TransformSystems::Propagate)
-                .before(bevy::camera::visibility::VisibilitySystems::VisibilityPropagate),
-        )
-        .add_systems(Update, settings_room::apply_settings)
-        .add_systems(Update, rumble_output)
-        .add_systems(Last, duel_net::close_on_exit)
-        .add_systems(
-            FixedUpdate,
-            (
-                (
-                    duel_net::begin,
-                    read_pad,
-                    duel_lobby_room::tick,
-                    duel_vote::tick,
-                    duel_match_room::tick,
-                    kh3_menu::tick,
+        .add_plugins(RoomPlugin)
+        .run())
+}
 
-                    duel_music::tick.run_if(resource_exists::<duel_music::DuelMusic>),
+/// The room's own resources and its systems, in order. `RoomSet` names the
+/// places an extension can order its systems around.
+pub struct RoomPlugin;
+
+impl Plugin for RoomPlugin {
+    fn build(&self, app: &mut App) {
+        app.init_resource::<crate::skate::Skate>()
+            .init_resource::<debug_menu::DebugMenu>()
+            .init_resource::<perf_overlay::PerfOverlay>()
+            .init_resource::<enemy_battle_tour::Checks>()
+            .init_resource::<area_enemies::AreaEnemies>()
+            .init_resource::<sephiroth::Fight>()
+            .add_plugins(SkatePlugins)
+            .add_systems(
+                Startup,
+                (setup, pause_for_autoplay, camp_setup, game_over::setup),
+            )
+            .add_systems(Update, crate::skate::toggle)
+            .add_systems(Update, settings_room::apply_settings)
+            .add_systems(Update, rumble_output)
+            .add_systems(
+                FixedUpdate,
+                (
+                    read_pad.in_set(RoomSet::ReadPad),
+                    camp_tick.in_set(RoomSet::CampTick),
+                    game_over::tick,
+                    command_layout::follow,
+                    boss::mission_tick.in_set(RoomSet::MissionTick),
+                    (
+                        // The command manager's reaction search and Triangle
+                        // (FUN_1403b2340) run before Sora's update.
+                        reaction_command::tick.in_set(RoomSet::ReactionCommand),
+                        simulate.in_set(RoomSet::Simulate),
+                        summon::tick.in_set(RoomSet::SummonTick),
+                        skate_tick,
+                        area_tick,
+                        enemy_battle::tick,
+                        enemy_gallery::tick,
+                        enemy_battle_tour::tick,
+                        area_enemies::tick,
+                        sephiroth::tick,
+                        enemy_tour::tick,
+                        field_npc_tick,
+                        talk_tick,
+                        effects_tick.in_set(RoomSet::EffectsTick),
+                        drive_fx::tick.in_set(RoomSet::DriveFxTick),
+                        spell_fx::tick,
+                        hud_tick.in_set(RoomSet::HudTick),
+                        play_sounds.in_set(RoomSet::PlaySounds),
+                        music_tick.in_set(RoomSet::MusicTick),
+                    )
+                        .chain()
+                        .run_if(field_running),
+                    keep_weapon_pose.in_set(RoomSet::KeepWeaponPose),
                 )
                     .chain(),
-                camp_tick,
-                game_over::tick,
-                command_layout::follow,
-                boss::mission_tick,
+            )
+            .add_systems(
+                Update,
                 (
-                    // The command manager's reaction search and Triangle
-                    // (FUN_1403b2340) run before Sora's update.
-                    (duel_sync::join_apply, reaction_command::tick).chain(),
                     (
-                        simulate,
-                        duel_sync::join_send,
-                        duel_sync::host_take_inputs,
-                        rival::tick,
-                        duel_hits::tick,
-                        kh3_hits::tick,
+                        debug_menu::tick,
+                        (enemy_gallery::service, enemy_assets::service).chain(),
+                        area_transition,
+                        cleanup::run,
+                        area_glow,
+                        transition_time,
+                        bg_visibility,
+                        boss::map_tint,
+                        area_music,
+                        uv_scroll_tick,
+                        texa_tick,
+                        bob_present,
+                        field_npc_spawn_new,
+                        field_npc_present,
+                        dissolve_present,
+                        camera_control,
+                        first_person_fade,
+                        game_over::camera,
+                        skate_camera,
                     )
                         .chain(),
-                    summon::tick,
-                    skate_tick,
-                    area_tick,
-                    enemy_battle::tick,
-                    enemy_gallery::tick,
-                    enemy_battle_tour::tick,
-                    area_enemies::tick,
-                    sephiroth::tick,
-                    enemy_tour::tick,
-                    field_npc_tick,
-                    talk_tick,
-                    effects_tick,
-                    (duel_fx::host_effects, drive_fx::tick).chain(),
-                    spell_fx::tick,
-                    hud_tick,
-                    (duel_fx::host_sounds, play_sounds).chain(),
-                    (music_tick, duel_sync::host_send).chain(),
-                )
-                    .chain()
-                    .run_if(field_running),
-                (keep_weapon_pose, duel_net::end).chain(),
-            )
-                .chain(),
-        )
-        .add_systems(
-            Update,
-            ((
-                debug_menu::tick,
-                (enemy_gallery::service, enemy_assets::service).chain(),
-                area_transition,
-                cleanup::run,
-                area_glow,
-                transition_time,
-                bg_visibility,
-                boss::map_tint,
-                area_music,
-                uv_scroll_tick,
-                texa_tick,
-                bob_present,
-                field_npc_spawn_new,
-                field_npc_present,
-                dissolve_present,
-                camera_control,
-                first_person_fade,
-                game_over::camera,
-                skate_camera,
-            )
-                .chain(),
-            (
-                drive_room::present,
-                (present, rival::spawn_drawing, rival::present).chain(),
-                drive_room::thrown_keyblade,
-                skate_present,
-                present_enemy,
-                (enemy_gallery::present, present_spells, summon::present).chain(),
-                (party_room::swap_weapons, party_room::present).chain(),
-                drive_room::party_visibility,
-                present_npc,
-                present_effects,
-                (drive_fx::present, spell_fx::present).chain(),
-                item_drop_view::present,
-                hud_present,
-                resize_scene,
-                afterimage.run_if(resource_exists::<Afterimage>),
-                compose_2d,
-                menu_model_present,
-                (
-                    camp_present,
-                    game_over::present,
-                    game_over::snap,
-                    perf_overlay::sample,
-                    perf_overlay::present,
-                    duel_net::sample,
-                    duel_net::present,
-                    duel_kh3::present,
+                    (
+                        drive_room::present,
+                        present.in_set(RoomSet::Present),
+                        drive_room::thrown_keyblade.in_set(RoomSet::ThrownKeyblade),
+                        skate_present,
+                        present_enemy,
+                        (enemy_gallery::present, present_spells, summon::present).chain(),
+                        (party_room::swap_weapons, party_room::present).chain(),
+                        drive_room::party_visibility,
+                        present_npc,
+                        present_effects,
+                        (drive_fx::present, spell_fx::present).chain(),
+                        item_drop_view::present,
+                        hud_present,
+                        resize_scene,
+                        afterimage.run_if(resource_exists::<Afterimage>),
+                        compose_2d,
+                        menu_model_present,
+                        (
+                            camp_present,
+                            game_over::present,
+                            game_over::snap,
+                            perf_overlay::sample,
+                            perf_overlay::present.in_set(RoomSet::PerfPresent),
+                        )
+                            .chain(),
+                        finish.in_set(RoomSet::Finish),
+                        frame_stats,
+                    )
+                        .chain(),
                 )
                     .chain(),
-                finish,
-                frame_stats,
-            )
-                .chain(),
-        )
-            .chain(),
-        )
-        .run())
+            );
+    }
 }
 
 /// Runs this program with its arguments; `interactive` = started from the
 /// launcher menu (keep the console open on an error).
 pub fn main(args: Vec<PathBuf>, interactive: bool) -> std::process::ExitCode {
-    match run(args) {
+    match run(args, Some(Box::new(online::OnlineRoom::default()))) {
         Ok(AppExit::Success) => std::process::ExitCode::SUCCESS,
         Ok(_) => std::process::ExitCode::FAILURE,
         Err(e) => {

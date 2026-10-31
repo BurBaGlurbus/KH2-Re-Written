@@ -396,16 +396,12 @@ enum Action {
     ToggleHideModel,
     ToggleCollisionOverlay,
     TogglePerfOverlay,
-    /// The duel's test script: a second Sora that fights the room's.
-    SpawnRival,
-    RemoveRival,
-    ToggleNetOverlay,
-    /// The duel's damage rule (host): Left/Right step it.
-    DuelDamage,
-    /// Steps the link simulator through its presets.
-    CycleNetSimulator,
-    /// The host puts a test question to both players (the vote system).
-    TestVote,
+    /// An extension's row (`extension.rs`).
+    Extra {
+        id: u8,
+        steps: bool,
+        help: &'static str,
+    },
     RemoveActor,
     ClearActors,
     Warp(u8, u8),
@@ -422,7 +418,7 @@ impl Action {
                 | Self::Growth(_)
                 | Self::PlaybackSpeed
                 | Self::GoToFrame
-                | Self::DuelDamage
+                | Self::Extra { steps: true, .. }
         )
     }
 
@@ -483,16 +479,7 @@ impl Action {
             Self::ToggleHideModel => "Hide the model and keep the skeleton.",
             Self::ToggleCollisionOverlay => "Show the room's collision. F1 does the same.",
             Self::TogglePerfOverlay => "FPS, frame times, GPU and entities at the top left.",
-            Self::SpawnRival => "A second Sora, run by a test script, to try the duel alone.",
-            Self::RemoveRival => "Remove the scripted second Sora.",
-            Self::ToggleNetOverlay => "Ping, loss, data rates and warnings at the top right.",
-            Self::DuelDamage => {
-                "Left/Right: what every Sora-against-Sora hit's damage is multiplied by."
-            }
-            Self::CycleNetSimulator => {
-                "Adds latency and loss to what this game sends. Set both games for a round trip."
-            }
-            Self::TestVote => "Both players vote; different answers go to a coin flip.",
+            Self::Extra { help, .. } => help,
             Self::RemoveActor => "Remove this enemy from the room.",
             Self::ClearActors => "Remove every summoned enemy.",
             Self::Warp(..) => "Warp to this room.",
@@ -1095,6 +1082,29 @@ fn section(label: &str) -> Row {
     }
 }
 
+/// An extension's rows, as the page's own.
+fn extension_rows(game: &Game) -> Vec<Row> {
+    (hooks().debug_rows)(game)
+        .into_iter()
+        .map(|r| match r {
+            extension::DebugRow::Section(label) => section(label),
+            extension::DebugRow::Row {
+                label,
+                value,
+                id,
+                enabled,
+                steps,
+                help,
+            } => Row {
+                label: text(label),
+                value: value.as_deref().map(text).unwrap_or_default(),
+                action: Action::Extra { id, steps, help },
+                enabled,
+            },
+        })
+        .collect()
+}
+
 fn rows(
     page: Page,
     saved: Option<(u8, u8)>,
@@ -1121,101 +1131,70 @@ fn rows(
                 .filter(|d| d.active)
                 .and_then(|d| FORMS.iter().find(|&&(f, _)| f == d.form))
                 .map_or("None", |&(_, name)| name);
-            vec![
-                section("Status"),
-                row("Restore HP, MP and Drive", Action::Restore, true),
-                Row {
-                    value: level.map_or_else(Vec::new, |(l, _)| text(&format!("Lv {l}"))),
-                    ..row("Level up", Action::LevelUp, level.is_some_and(|l| l.1))
-                },
-                Row {
-                    value: next_bonus(game).map_or_else(Vec::new, |id| text(&format!("No. {id}"))),
-                    ..row(
-                        "Bonus level",
-                        Action::BonusLevel,
-                        next_bonus(game).is_some(),
-                    )
-                },
-                row("Knock Sora out", Action::KnockOut, battle.is_some()),
-                section("Cheats"),
-                Row {
-                    value: on_off(game.cheats.invincible),
-                    ..row("Invincible", Action::ToggleInvincible, battle.is_some())
-                },
-                Row {
-                    value: on_off(game.sora.player.abilities.has(enemy_target::SCAN_BIT)),
-                    ..row(
-                        "Scan",
-                        Action::ToggleScan,
-                        game.ability_slots
-                            .iter()
-                            .any(|s| s & 0x7fff == enemy_target::SCAN_ITEM),
-                    )
-                },
-                section("Display"),
-                Row {
-                    value: on_off(game.perf_overlay),
-                    ..row("Performance overlay", Action::TogglePerfOverlay, true)
-                },
-                Row {
-                    value: on_off(game.net_overlay),
-                    ..row("Network overlay", Action::ToggleNetOverlay, game.duel)
-                },
-                Row {
-                    value: text(
-                        game.net_simulated
-                            .and_then(|p| duel_net::SIMULATED.get(p))
-                            .map_or("Off", |s| s.0),
-                    ),
-                    ..row("Simulated network", Action::CycleNetSimulator, game.duel)
-                },
-                section("Duel"),
-                Row {
-                    value: text(&format!("x{}", game.duel_rules.damage)),
-                    ..row(
-                        "Damage",
-                        Action::DuelDamage,
-                        (game.duel || !game.rivals.is_empty()) && !game.net_client,
-                    )
-                },
-                row(
-                    "Test vote",
-                    Action::TestVote,
-                    game.duel && !game.net_client && !game.rivals.is_empty(),
-                ),
-                row(
-                    "Scripted rival Sora",
-                    Action::SpawnRival,
-                    game.rivals.is_empty() && game.rival_kit.is_some(),
-                ),
-                row(
-                    "Remove the rival",
-                    Action::RemoveRival,
-                    game.rivals
-                        .iter()
-                        .any(|r| r.control == rival::Control::Script),
-                ),
-                section("Items and forms"),
-                row(
-                    "Items",
-                    Action::Page(Page::Items),
-                    game.items.is_some() || camp.is_some(),
-                ),
-                Row {
-                    value: if drive.is_some() {
-                        text(form)
-                    } else {
-                        Vec::new()
+            {
+                let mut rows = vec![
+                    section("Status"),
+                    row("Restore HP, MP and Drive", Action::Restore, true),
+                    Row {
+                        value: level.map_or_else(Vec::new, |(l, _)| text(&format!("Lv {l}"))),
+                        ..row("Level up", Action::LevelUp, level.is_some_and(|l| l.1))
                     },
-                    ..row("Drive form", Action::Page(Page::Forms), drive.is_some())
-                },
-                row("Growth abilities", Action::Page(Page::Growth), true),
-                row(
-                    "Give all puzzle pieces",
-                    Action::PuzzlePieces,
-                    camp.is_some(),
-                ),
-            ]
+                    Row {
+                        value: next_bonus(game)
+                            .map_or_else(Vec::new, |id| text(&format!("No. {id}"))),
+                        ..row(
+                            "Bonus level",
+                            Action::BonusLevel,
+                            next_bonus(game).is_some(),
+                        )
+                    },
+                    row("Knock Sora out", Action::KnockOut, battle.is_some()),
+                    section("Cheats"),
+                    Row {
+                        value: on_off(game.cheats.invincible),
+                        ..row("Invincible", Action::ToggleInvincible, battle.is_some())
+                    },
+                    Row {
+                        value: on_off(game.sora.player.abilities.has(enemy_target::SCAN_BIT)),
+                        ..row(
+                            "Scan",
+                            Action::ToggleScan,
+                            game.ability_slots
+                                .iter()
+                                .any(|s| s & 0x7fff == enemy_target::SCAN_ITEM),
+                        )
+                    },
+                    section("Display"),
+                    Row {
+                        value: on_off(game.perf_overlay),
+                        ..row("Performance overlay", Action::TogglePerfOverlay, true)
+                    },
+                ];
+                rows.extend(extension_rows(game));
+                rows.extend([
+                    section("Items and forms"),
+                    row(
+                        "Items",
+                        Action::Page(Page::Items),
+                        game.items.is_some() || camp.is_some(),
+                    ),
+                    Row {
+                        value: if drive.is_some() {
+                            text(form)
+                        } else {
+                            Vec::new()
+                        },
+                        ..row("Drive form", Action::Page(Page::Forms), drive.is_some())
+                    },
+                    row("Growth abilities", Action::Page(Page::Growth), true),
+                    row(
+                        "Give all puzzle pieces",
+                        Action::PuzzlePieces,
+                        camp.is_some(),
+                    ),
+                ]);
+                rows
+            }
         }
         Page::Home(HomeTab::Enemies) => {
             use enemy_catalog::Category;
@@ -1919,39 +1898,12 @@ fn act(
             game.perf_overlay = !game.perf_overlay;
             None
         }
-        Action::DuelDamage => {
-            let (lo, hi) = duel_rules::DAMAGE_RANGE;
-            let d = &mut game.duel_rules.damage;
-            *d = (*d + step as f32 * duel_rules::DAMAGE_STEP).clamp(lo, hi);
-            Some(format!("Duel damage x{}", *d))
-        }
-        Action::ToggleNetOverlay => {
-            game.net_overlay = !game.net_overlay;
-            None
-        }
-        Action::CycleNetSimulator => {
-            let next = game
-                .net_simulated
-                .map_or(1, |p| (p + 1) % duel_net::SIMULATED.len());
-            game.net_simulated = Some(next);
-            Some(format!(
-                "Simulated network: {}",
-                duel_net::SIMULATED[next].0
-            ))
-        }
-        Action::TestVote => {
-            game.duel_test_vote = true;
-            menu.open = false;
-            None
-        }
-        Action::SpawnRival => {
-            rival::spawn_scripted(game);
-            menu.open = false;
-            Some("A scripted rival Sora joined".into())
-        }
-        Action::RemoveRival => {
-            game.rivals.retain(|r| r.control != rival::Control::Script);
-            Some("The rival left".into())
+        Action::Extra { id, .. } => {
+            let outcome = (hooks().debug_action)(game, id, step);
+            if outcome.close {
+                menu.open = false;
+            }
+            outcome.message
         }
         Action::RemoveActor => {
             gallery.remove_selected();

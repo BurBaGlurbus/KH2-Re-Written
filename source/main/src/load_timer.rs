@@ -6,13 +6,13 @@ use std::time::Instant;
 static FIRST: OnceLock<Instant> = OnceLock::new();
 
 /// `KH2_LOAD_TIMES=1`: each load stage's time on stderr (load-time work).
-pub(crate) struct LoadTimer {
+pub struct LoadTimer {
     last: Instant,
     on: bool,
 }
 
 impl LoadTimer {
-    pub(crate) fn new() -> Self {
+    pub fn new() -> Self {
         FIRST.get_or_init(Instant::now);
         Self {
             last: Instant::now(),
@@ -20,7 +20,7 @@ impl LoadTimer {
         }
     }
 
-    pub(crate) fn mark(&mut self, stage: &str) {
+    pub fn mark(&mut self, stage: &str) {
         if self.on {
             let ms = |t: Instant| t.elapsed().as_secs_f64() * 1e3;
             eprintln!(

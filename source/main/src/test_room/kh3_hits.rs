@@ -116,7 +116,7 @@ fn shape_points(
 }
 
 /// `compute_damage` for a duel of two Soras, in KH3's own numbers.
-pub(crate) fn damage(
+pub fn damage(
     book: &Book,
     row: &AttackRow,
     set: &player::kh3::ability::Set,
@@ -207,11 +207,16 @@ fn sweep(
     body_radius: f32,
 ) -> Vec<Contact> {
     let mut out = Vec::new();
-    let Some(pts) = fighter.kh3.attack_points(&fighter.player, info) else {
+    let Some(pts) = fighter
+        .ext
+        .fighter()
+        .kh3
+        .attack_points(&fighter.player, info)
+    else {
         return out;
     };
     let player = fighter.player.clone();
-    let Some(attack) = fighter.kh3.attack.as_mut() else {
+    let Some(attack) = fighter.ext.fighter_mut().kh3.attack.as_mut() else {
         return out;
     };
     let time = attack.time;
@@ -278,7 +283,7 @@ fn land_on_sora(
     contact: [f32; 3],
     tick: u64,
 ) -> bool {
-    let rules = game.duel_rules;
+    let rules = game.ext.online().duel_rules;
     let (fighter, clips) = if victim == 0 {
         (&mut game.sora, &game.clips)
     } else {
@@ -300,20 +305,32 @@ fn land_on_sora(
         let (sin, cos) = fighter.player.yaw.sin_cos();
         let toward = -(sin * away[0] + cos * away[1]);
         if toward >= (120f32).to_radians().cos() {
-            fighter
-                .kh3
-                .guarded(&mut fighter.player, strike, away, attacker_at, attacker_air);
+            fighter.ext.fighter_mut().kh3.guarded(
+                &mut fighter.player,
+                strike,
+                away,
+                attacker_at,
+                attacker_air,
+            );
             let _ = fighter.player.guard_recoil(away, clips);
             let c = Vec3::from_array(contact);
             game.effect_queue
                 .push(EffectRequest::System { id: 11, at: c });
-            game.duel_events
+            game.ext
+                .online_mut()
+                .duel_events
                 .push(duel_wire::DuelEvent::Guard(contact, 11));
             return false;
         }
     }
-    if fighter.vitals.invulnerable > 0. || fighter.kh3.untouchable(&fighter.player, clips) {
-        fighter.kh3.dodged();
+    if fighter.vitals.invulnerable > 0.
+        || fighter
+            .ext
+            .fighter()
+            .kh3
+            .untouchable(&fighter.player, clips)
+    {
+        fighter.ext.fighter_mut().kh3.dodged();
         return false;
     }
     let raw = damage(book, row, &set, step, attacker_air, just_guard);
@@ -323,10 +340,16 @@ fn land_on_sora(
     let dealt = rules.damage(scaled, row.magic, max);
     let before = fighter.vitals.hp;
     fighter.vitals.hp = (fighter.vitals.hp - dealt).max(0);
-    fighter.kh3.hit_taken();
-    let shrug = fighter.kh3.shrugs_strike(&fighter.player, strike);
+    fighter.ext.fighter_mut().kh3.hit_taken();
+    let shrug = fighter
+        .ext
+        .fighter_mut()
+        .kh3
+        .shrugs_strike(&fighter.player, strike);
     if !shrug {
         fighter
+            .ext
+            .fighter_mut()
             .kh3
             .hurt(&mut fighter.player, strike, away, true, clips);
     }
@@ -334,7 +357,7 @@ fn land_on_sora(
     if hp == 0 {
         fighter.player.die(clips);
     }
-    let mode = fighter.kh3.mode.name();
+    let mode = fighter.ext.fighter().kh3.mode.name();
     game.event(
         serde_json::json!({"event":"kh3_hit","tick":tick,"victim":victim,
         "row_power":row.power,"kind":row.damage_kind,"raw":raw,"dealt":dealt,"before":before,
@@ -353,7 +376,14 @@ fn land_on_dummy(
     set: player::kh3::ability::Set,
 ) -> bool {
     let air = false;
-    let raw = damage(book, row, &set, step, air, game.sora.kh3.just_guard);
+    let raw = damage(
+        book,
+        row,
+        &set,
+        step,
+        air,
+        game.sora.ext.fighter().kh3.just_guard,
+    );
     let Some(rt) = game.enemy.as_mut() else {
         return false;
     };
@@ -435,7 +465,7 @@ fn bolts_tick(game: &mut Game, book: &Book, count: usize, tick: u64) {
         let body_at = if dummy {
             game.enemy
                 .as_ref()
-                .filter(|rt| game.kh3_dummy && rt.enabled)
+                .filter(|rt| game.ext.online().kh3_dummy && rt.enabled)
                 .map(|rt| rt.enemy.position)
         } else {
             target.map(|v| {
@@ -453,8 +483,14 @@ fn bolts_tick(game: &mut Game, book: &Book, count: usize, tick: u64) {
         } else {
             &mut game.rivals[attacker - 1].fighter
         };
-        let (at, air, set) = (f.player.position, f.player.in_air(), f.kh3.abilities);
+        let (at, air, set) = (
+            f.player.position,
+            f.player.in_air(),
+            f.ext.fighter().kh3.abilities,
+        );
         let hits: Vec<(u32, bool, [f32; 3])> = f
+            .ext
+            .fighter()
             .kh3
             .bolts
             .iter()
@@ -469,15 +505,19 @@ fn bolts_tick(game: &mut Game, book: &Book, count: usize, tick: u64) {
             } else {
                 &mut game.rivals[attacker - 1].fighter
             };
-            f.kh3.bolt_hit(serial);
+            f.ext.fighter_mut().kh3.bolt_hit(serial);
             let stage = book.shots[usize::from(ragnarok)].clone();
-            f.kh3.fx.push(player::kh3::spell::FxRequest {
-                attach: None,
-                effect: stage.as_ref().and_then(|s| s.hit_effect.clone()),
-                sound: stage.as_ref().and_then(|s| s.hit_sound.clone()),
-                at: on,
-                yaw: 0.,
-            });
+            f.ext
+                .fighter_mut()
+                .kh3
+                .fx
+                .push(player::kh3::spell::FxRequest {
+                    attach: None,
+                    effect: stage.as_ref().and_then(|s| s.hit_effect.clone()),
+                    sound: stage.as_ref().and_then(|s| s.hit_sound.clone()),
+                    at: on,
+                    yaw: 0.,
+                });
             let row = stage
                 .as_ref()
                 .and_then(|s| s.shapes.first())
@@ -508,31 +548,34 @@ fn send_fx(game: &mut Game, book: &Book) {
             .and_then(|n| book.names.binary_search(n).ok())
             .map_or(u16::MAX, |i| i as u16)
     };
-    let mut list = std::mem::take(&mut game.sora.kh3.fx);
+    let mut list = std::mem::take(&mut game.sora.ext.fighter_mut().kh3.fx);
     for r in &mut game.rivals {
-        list.append(&mut r.fighter.kh3.fx);
+        list.append(&mut r.fighter.ext.fighter_mut().kh3.fx);
     }
     for r in &list {
-        game.duel_events.push(duel_wire::DuelEvent::Kh3Fx {
-            effect: id(&r.effect),
-            sound: id(&r.sound),
-            at: r.at,
-            yaw: r.yaw,
-            attach: r.attach.as_ref().map(|a| duel_wire::Kh3Attach {
-                seat: a.seat,
-                bone: id(&a.bone),
-                offset: a.offset,
-                handle: a.handle,
-                group: a.group,
-                stop: match a.stop {
-                    None => 0,
-                    Some(false) => 1,
-                    Some(true) => 2,
-                },
-            }),
-        });
+        game.ext
+            .online_mut()
+            .duel_events
+            .push(duel_wire::DuelEvent::Kh3Fx {
+                effect: id(&r.effect),
+                sound: id(&r.sound),
+                at: r.at,
+                yaw: r.yaw,
+                attach: r.attach.as_ref().map(|a| duel_wire::Kh3Attach {
+                    seat: a.seat,
+                    bone: id(&a.bone),
+                    offset: a.offset,
+                    handle: a.handle,
+                    group: a.group,
+                    stop: match a.stop {
+                        None => 0,
+                        Some(false) => 1,
+                        Some(true) => 2,
+                    },
+                }),
+            });
     }
-    game.kh3_fx_remote.append(&mut list);
+    game.ext.online_mut().kh3_fx_remote.append(&mut list);
 }
 
 /// Spell actors against the other body.
@@ -549,8 +592,8 @@ fn actors_tick(game: &mut Game, book: &Book, count: usize, tick: u64) {
             (
                 f.player.position,
                 f.player.in_air(),
-                f.kh3.abilities,
-                f.kh3.chain.n,
+                f.ext.fighter().kh3.abilities,
+                f.ext.fighter().kh3.chain.n,
             )
         };
         let targets: Vec<usize> = (0..count).filter(|v| *v != attacker).collect();
@@ -558,7 +601,7 @@ fn actors_tick(game: &mut Game, book: &Book, count: usize, tick: u64) {
         let body_at = if dummy {
             game.enemy
                 .as_ref()
-                .filter(|rt| game.kh3_dummy && rt.enabled)
+                .filter(|rt| game.ext.online().kh3_dummy && rt.enabled)
                 .map(|rt| rt.enemy.position)
         } else {
             targets.first().map(|v| {
@@ -577,6 +620,8 @@ fn actors_tick(game: &mut Game, book: &Book, count: usize, tick: u64) {
             &mut game.rivals[attacker - 1].fighter
         };
         let hits: Vec<(usize, String, [f32; 3])> = f
+            .ext
+            .fighter()
             .kh3
             .actors
             .iter()
@@ -591,8 +636,8 @@ fn actors_tick(game: &mut Game, book: &Book, count: usize, tick: u64) {
                 } else {
                     &mut game.rivals[attacker - 1].fighter
                 };
-                let cmd = f.kh3.actors.get(index).map(|a| a.cmd);
-                f.kh3.actor_hit(index, on);
+                let cmd = f.ext.fighter().kh3.actors.get(index).map(|a| a.cmd);
+                f.ext.fighter_mut().kh3.actor_hit(index, on);
                 cmd
             };
             let Some(row) = book.row(&row_name) else {
@@ -611,7 +656,7 @@ fn actors_tick(game: &mut Game, book: &Book, count: usize, tick: u64) {
                 } else {
                     &mut game.rivals[attacker - 1].fighter
                 };
-                f.kh3.form_point(row.form_point, cmd);
+                f.ext.fighter_mut().kh3.form_point(row.form_point, cmd);
             }
         }
     }
@@ -620,7 +665,7 @@ fn actors_tick(game: &mut Game, book: &Book, count: usize, tick: u64) {
 /// KH3's Sora's hits, after both have stepped: each goes to the other's own victim side (KH3's guard, dodge,
 /// damage and reaction), or to the test dummy; each Sora's gauges go to the duel's.
 fn core_hits(game: &mut Game, book: &Book, tick: u64) {
-    for (slot, hit, at, yaw) in std::mem::take(&mut game.kh3_core_hits) {
+    for (slot, hit, at, yaw) in std::mem::take(&mut game.ext.online_mut().kh3_core_hits) {
         let local = game.local_slot;
         let from_room = slot == local;
         let airborne = if from_room {
@@ -645,7 +690,7 @@ fn core_hits(game: &mut Game, book: &Book, tick: u64) {
                 rt.enemy
                     .take_damage(hit.damage.round() as i32, dir, true, &attack, true);
             }
-            game.sora.kh3.attack_landed();
+            game.sora.ext.fighter_mut().kh3.attack_landed();
             let (kind, amount) = (hit.damage_kind.name(), hit.damage);
             game.event(
                 serde_json::json!({"event":"kh3_hit","tick":tick,"victim":"dummy",
@@ -661,7 +706,11 @@ fn core_hits(game: &mut Game, book: &Book, tick: u64) {
         let Some(victim) = victim else {
             continue;
         };
-        victim.kh3.core_take_hit(&hit, yaw, at, airborne);
+        victim
+            .ext
+            .fighter_mut()
+            .kh3
+            .core_take_hit(&hit, yaw, at, airborne);
         let (kind, amount, before) = (hit.damage_kind.name(), hit.damage, victim.vitals.hp);
         game.event(
             serde_json::json!({"event":"kh3_hit","tick":tick,"from":slot,
@@ -671,7 +720,7 @@ fn core_hits(game: &mut Game, book: &Book, tick: u64) {
     let _ = book;
     let clips = game.clips.clone();
     let mirror = |f: &mut Fighter, clips: &Clips| {
-        let (hp, max) = f.kh3.core_hp;
+        let (hp, max) = f.ext.fighter().kh3.core_hp;
         if max <= 0 {
             return;
         }
@@ -690,16 +739,16 @@ fn core_hits(game: &mut Game, book: &Book, tick: u64) {
 }
 
 /// Runs on the fixed tick after the Soras moved.
-pub(crate) fn tick(mut game: ResMut<Game>) {
+pub fn tick(mut game: ResMut<Game>) {
     let game = &mut *game;
-    if !duel_kh3::on(game) || game.net_client || game.duel_frozen {
+    if !duel_kh3::on(game) || game.replica || game.ext.online().duel_frozen {
         return;
     }
-    let Some(book) = game.kh3_book.clone() else {
+    let Some(book) = game.ext.online().kh3_book.clone() else {
         return;
     };
     let tick = game.tick;
-    if game.sora.kh3.core_on() {
+    if game.sora.ext.fighter().kh3.core_on() {
         core_hits(game, &book, tick);
         return;
     }
@@ -716,7 +765,7 @@ pub(crate) fn tick(mut game: ResMut<Game>) {
         } else {
             &mut game.rivals[i - 1].fighter
         };
-        let heal = std::mem::take(&mut f.kh3.heal);
+        let heal = std::mem::take(&mut f.ext.fighter_mut().kh3.heal);
         if heal > 0 {
             let max = f.vitals.target.max_hp;
             let add = ((heal as f32 + magic) / hp_scale * max as f32).round() as i32;
@@ -729,7 +778,7 @@ pub(crate) fn tick(mut game: ResMut<Game>) {
         } else {
             &mut game.rivals[attacker - 1].fighter
         };
-        let Some(row_name) = fighter.kh3.attack.as_ref().map(|a| a.row) else {
+        let Some(row_name) = fighter.ext.fighter().kh3.attack.as_ref().map(|a| a.row) else {
             continue;
         };
         let Some(info) = book.clips.get(row_name) else {
@@ -737,16 +786,16 @@ pub(crate) fn tick(mut game: ResMut<Game>) {
         };
         let attacker_at = fighter.player.position;
         let attacker_air = fighter.player.in_air();
-        let step = fighter.kh3.chain.n;
-        let set = fighter.kh3.abilities;
-        let just_guard = fighter.kh3.just_guard;
+        let step = fighter.ext.fighter().kh3.chain.n;
+        let set = fighter.ext.fighter().kh3.abilities;
+        let just_guard = fighter.ext.fighter().kh3.just_guard;
         let radius = BODY_RADIUS * length_of(1.);
         // The dummy, when it stands instead of a second Sora.
         if count == 1 {
             let dummy = game
                 .enemy
                 .as_ref()
-                .filter(|rt| game.kh3_dummy && rt.enabled)
+                .filter(|rt| game.ext.online().kh3_dummy && rt.enabled)
                 .map(|rt| rt.enemy.position);
             let Some(at) = dummy else {
                 continue;
@@ -756,14 +805,25 @@ pub(crate) fn tick(mut game: ResMut<Game>) {
                 if let Some(row) = book.row(&c.row)
                     && land_on_dummy(game, &book, row, attacker_at, step, set)
                 {
-                    game.sora.kh3.attack_landed();
-                    game.sora.kh3.form_point(row.form_point, None);
+                    game.sora.ext.fighter_mut().kh3.attack_landed();
+                    game.sora
+                        .ext
+                        .fighter_mut()
+                        .kh3
+                        .form_point(row.form_point, None);
                     if row.counter {
                         game.sora
+                            .ext
+                            .fighter_mut()
                             .kh3
                             .struck(player::kh3::Source::Counter, strike_of(row));
                     }
-                    game.sora.kh3.fx.push(hit_fx(&book, c.hit_se, c.at));
+                    game.sora
+                        .ext
+                        .fighter_mut()
+                        .kh3
+                        .fx
+                        .push(hit_fx(&book, c.hit_se, c.at));
                 }
                 let _ = c.window;
                 let _ = c.at;
@@ -807,11 +867,18 @@ pub(crate) fn tick(mut game: ResMut<Game>) {
                     } else {
                         &mut game.rivals[attacker - 1].fighter
                     };
-                    a.kh3.fx.push(hit_fx(&book, c.hit_se, c.at));
-                    a.kh3.attack_landed();
-                    a.kh3.form_point(row.form_point, None);
+                    a.ext
+                        .fighter_mut()
+                        .kh3
+                        .fx
+                        .push(hit_fx(&book, c.hit_se, c.at));
+                    a.ext.fighter_mut().kh3.attack_landed();
+                    a.ext.fighter_mut().kh3.form_point(row.form_point, None);
                     if row.counter {
-                        a.kh3.struck(player::kh3::Source::Counter, strike_of(row));
+                        a.ext
+                            .fighter_mut()
+                            .kh3
+                            .struck(player::kh3::Source::Counter, strike_of(row));
                     }
                     a.player.connected = true;
                 }

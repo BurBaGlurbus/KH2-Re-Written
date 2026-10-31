@@ -1436,7 +1436,7 @@ pub fn spell_spark(
 /// One volume of a cast against the enemy's body: the hit record, the
 /// ATKP step row and the damage with the caster's stats.
 #[allow(clippy::too_many_arguments)]
-pub(super) fn land_volume(
+pub fn land_volume(
     rt: &mut EnemyRuntime,
     index: usize,
     name: &str,
@@ -1576,9 +1576,9 @@ pub struct OutVolume {
 }
 
 /// The keys of a limit scene's attack objects among the party's volumes.
-pub(super) const SCENE_VOLUME: u64 = 3 << 58;
+pub const SCENE_VOLUME: u64 = 3 << 58;
 /// The `member` of such a volume when the attack is Sora's.
-pub(super) const SCENE_MEMBER: usize = usize::MAX;
+pub const SCENE_MEMBER: usize = usize::MAX;
 
 /// A gallery enemy a member may fight: its key, where it stands and its
 /// TARGET point.

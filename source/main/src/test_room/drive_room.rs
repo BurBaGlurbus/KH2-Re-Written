@@ -628,30 +628,31 @@ impl DriveRt {
     }
 
     /// Wisdom's bullets in flight end, their effects with them (a door).
-    pub(crate) fn end_shots(&mut self) {
+    pub fn end_shots(&mut self) {
         let bullets = std::mem::take(&mut self.bullets);
-        self.bullet_ends.extend(bullets.iter().map(|b| (b.key, false)));
+        self.bullet_ends
+            .extend(bullets.iter().map(|b| (b.key, false)));
     }
 
     /// A second Sora's drive state (the duel's rival): the same tables and
     /// form records, kits of its own (loaded as it needs them).
     /// A duel rival's bullet keys: his slot in the serial's high bits, so
     /// his bullets' effects never meet the room Sora's.
-    pub(crate) fn offset_bullet_keys(&mut self, slot: u8) {
+    pub fn offset_bullet_keys(&mut self, slot: u8) {
         self.bullet_serial = (u64::from(slot) + 1) << 40;
     }
 
     /// Wisdom Form's effects (its bullets' look) once its kit is loaded,
     /// whether or not the form was ever taken: a joiner draws the other
     /// Sora's bullets, and the KH3 ruleset's shotlock bolts ride them.
-    pub(crate) fn wisdom_pax(&mut self) -> Option<Arc<data::object_effect::Pax>> {
+    pub fn wisdom_pax(&mut self) -> Option<Arc<data::object_effect::Pax>> {
         self.form_pax(forms::WISDOM)
     }
 
     /// A form's effects once its kit is loaded (taken into `paxes`, where
     /// the form change finds them too); the KH3 ruleset's looks borrow
     /// from them.
-    pub(crate) fn form_pax(&mut self, form: u8) -> Option<Arc<data::object_effect::Pax>> {
+    pub fn form_pax(&mut self, form: u8) -> Option<Arc<data::object_effect::Pax>> {
         if let Some(p) = self.paxes.get(&form) {
             return Some(Arc::clone(p));
         }
@@ -662,7 +663,7 @@ impl DriveRt {
 
     /// Joiner: a Sora's bullets as the host's snapshot has them (key,
     /// position, direction). A new one starts its effect; one gone fades.
-    pub(crate) fn show_bullets(
+    pub fn show_bullets(
         &mut self,
         shown: &[(u64, [f32; 3], [f32; 3])],
         fx_styled: &mut Vec<(super::drive_fx::Placed, super::drive_fx::Style)>,
@@ -693,7 +694,7 @@ impl DriveRt {
                         },
                         anchor: super::drive_fx::Anchor::Bullet(key),
                     },
-                    super::duel_kh3::bullet_style(key),
+                    (super::hooks().bullet_style)(key),
                 ));
             }
         }
@@ -938,7 +939,7 @@ impl DriveRt {
 
 /// FUN_14040ce60: start a change to `form` (0 = revert). A form plays the
 /// drive-start motion; the task swaps the object.
-pub(super) fn start_change(game: &mut Game, form: u8) {
+pub fn start_change(game: &mut Game, form: u8) {
     let Some(d) = game.drive.as_mut() else { return };
     if form == d.form {
         return;
@@ -1372,7 +1373,7 @@ pub fn tick(game: &mut Game, abilities: Option<&[u16]>) {
     let p = game.sora.player.position;
     // [Duel rule] A duel is a battle throughout (Antiform can come, a form
     // in Antiform cannot revert).
-    let target = game.duel
+    let target = game.versus
         || game.enemy.as_ref().is_some_and(|rt| {
             let e = rt.enemy.position;
             !matches!(
@@ -1846,8 +1847,8 @@ pub fn shots(game: &mut Game) {
         .and_then(|rt| enemy_targets(rt).first().map(|t| t.centre));
     let ends = &mut d.bullet_ends;
     d.bullets.retain_mut(|b| {
-        // [KH3 ruleset] A shotlock bolt is steered by its own layer.
-        let bolt = super::duel_kh3::is_bolt(b.key);
+        // A bullet its own layer steers.
+        let bolt = (super::hooks().steers_bullet)(b.key);
         let live = b.step(if bolt { None } else { target });
         if !live {
             ends.push((b.key, true));
