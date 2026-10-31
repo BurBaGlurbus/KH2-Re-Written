@@ -23,11 +23,12 @@ use bevy::{
             RenderPipelineDescriptor, ShaderStages, TexelCopyBufferInfo, TexelCopyBufferLayout,
             TextureDescriptor, TextureDimension, TextureFormat, TextureUsages,
             TextureViewDescriptor,
-            binding_types::{texture_depth_2d, uniform_buffer},
+            binding_types::{texture_depth_2d, texture_depth_2d_multisampled, uniform_buffer},
         },
         renderer::{RenderContext, RenderDevice, ViewQuery},
         view::{ExtractedView, ViewDepthTexture},
     },
+    shader::{Shader, ShaderDefVal},
 };
 use effect::lens::{Probe, set_seen, take_probe};
 
@@ -79,10 +80,18 @@ fn block(probe: &Probe, clip_from_view: Mat4, size: UVec2) -> Option<(IRect, f32
     (rect.width() > 0 && rect.height() > 0).then_some((rect, ndc.z))
 }
 
-#[derive(Resource)]
-struct ProbePipeline {
+/// The test's pipeline for one kind of depth buffer.
+struct ProbeVariant {
     layout: BindGroupLayoutDescriptor,
     id: CachedRenderPipelineId,
+}
+
+/// The scene's depth has one sample, or several with anti-aliasing on (the
+/// settings' Msaa on the scene camera); the block reads the first of them.
+#[derive(Resource)]
+struct ProbePipeline {
+    single: ProbeVariant,
+    multisampled: ProbeVariant,
 }
 
 fn init_pipeline(
@@ -91,31 +100,54 @@ fn init_pipeline(
     fullscreen: Res<FullscreenShader>,
     server: Res<AssetServer>,
 ) {
-    let layout = BindGroupLayoutDescriptor::new(
-        "lens probe layout",
-        &BindGroupLayoutEntries::sequential(
-            ShaderStages::FRAGMENT,
-            (texture_depth_2d(), uniform_buffer::<UVec4>(false)),
-        ),
-    );
-    let id = cache.queue_render_pipeline(RenderPipelineDescriptor {
-        label: Some("lens probe".into()),
-        layout: vec![layout.clone()],
-        vertex: fullscreen.to_vertex_state(),
-        fragment: Some(FragmentState {
-            shader: server.load(
-                AssetPath::from_path_buf(embedded_path!("lens_probe.wgsl")).with_source("embedded"),
-            ),
-            targets: vec![Some(ColorTargetState {
-                format: BLOCK,
-                blend: None,
-                write_mask: ColorWrites::ALL,
-            })],
+    let shader: Handle<Shader> = server
+        .load(AssetPath::from_path_buf(embedded_path!("lens_probe.wgsl")).with_source("embedded"));
+    let variant = |layout: BindGroupLayoutDescriptor, shader_defs: Vec<ShaderDefVal>| {
+        let id = cache.queue_render_pipeline(RenderPipelineDescriptor {
+            label: Some("lens probe".into()),
+            layout: vec![layout.clone()],
+            vertex: fullscreen.to_vertex_state(),
+            fragment: Some(FragmentState {
+                shader: shader.clone(),
+                shader_defs,
+                targets: vec![Some(ColorTargetState {
+                    format: BLOCK,
+                    blend: None,
+                    write_mask: ColorWrites::ALL,
+                })],
+                ..default()
+            }),
             ..default()
-        }),
-        ..default()
+        });
+        ProbeVariant { layout, id }
+    };
+    let single = variant(
+        BindGroupLayoutDescriptor::new(
+            "lens probe layout",
+            &BindGroupLayoutEntries::sequential(
+                ShaderStages::FRAGMENT,
+                (texture_depth_2d(), uniform_buffer::<UVec4>(false)),
+            ),
+        ),
+        Vec::new(),
+    );
+    let multisampled = variant(
+        BindGroupLayoutDescriptor::new(
+            "lens probe multisampled layout",
+            &BindGroupLayoutEntries::sequential(
+                ShaderStages::FRAGMENT,
+                (
+                    texture_depth_2d_multisampled(),
+                    uniform_buffer::<UVec4>(false),
+                ),
+            ),
+        ),
+        vec!["MULTISAMPLED".into()],
+    );
+    commands.insert_resource(ProbePipeline {
+        single,
+        multisampled,
     });
-    commands.insert_resource(ProbePipeline { layout, id });
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -131,10 +163,15 @@ fn copy_block(
     let Some(probe) = asked.0.take() else {
         return;
     };
-    let Some(render_pipeline) = cache.get_render_pipeline(pipeline.id) else {
+    let (depth, extracted, _) = view.into_inner();
+    let variant = if depth.texture.sample_count() > 1 {
+        &pipeline.multisampled
+    } else {
+        &pipeline.single
+    };
+    let Some(render_pipeline) = cache.get_render_pipeline(variant.id) else {
         return;
     };
-    let (depth, extracted, _) = view.into_inner();
     let size = UVec2::new(depth.texture.width(), depth.texture.height());
     // Off the screen: FUN_1404d7120 sets the strength and +0xac to 0.
     let Some((rect, light)) = block(&probe, extracted.clip_from_view, size) else {
@@ -166,7 +203,7 @@ fn copy_block(
     });
     let group = device.create_bind_group(
         Some("lens probe group"),
-        &cache.get_bind_group_layout(&pipeline.layout),
+        &cache.get_bind_group_layout(&variant.layout),
         &BindGroupEntries::sequential((depth.view(), uniform.as_entire_binding())),
     );
     {

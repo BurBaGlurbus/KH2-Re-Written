@@ -21,12 +21,12 @@ use bevy::{
             BindGroupEntries, BindGroupLayoutDescriptor, BindGroupLayoutEntries, BlendComponent,
             BlendFactor, BlendOperation, BlendState, BufferInitDescriptor, BufferUsages,
             CachedRenderPipelineId, ColorTargetState, ColorWrites, CompareFunction,
-            DepthStencilState, Extent3d, FilterMode, FragmentState, LoadOp, Operations,
-            PipelineCache, RenderPassColorAttachment, RenderPassDescriptor,
-            RenderPipelineDescriptor, Sampler, SamplerBindingType, SamplerDescriptor, ShaderStages,
-            SpecializedRenderPipeline, SpecializedRenderPipelines, StoreOp, TextureDescriptor,
-            TextureDimension, TextureFormat, TextureSampleType, TextureUsages, VertexFormat,
-            VertexState, VertexStepMode,
+            DepthStencilState, Extent3d, FilterMode, FragmentState, MultisampleState,
+            PipelineCache, RenderPassDescriptor, RenderPipelineDescriptor, Sampler,
+            SamplerBindingType, SamplerDescriptor, ShaderStages, SpecializedRenderPipeline,
+            SpecializedRenderPipelines, StoreOp, TextureDescriptor, TextureDimension,
+            TextureFormat, TextureSampleType, TextureUsages, VertexFormat, VertexState,
+            VertexStepMode,
             binding_types::{sampler, texture_2d},
         },
         renderer::{RenderContext, RenderDevice, ViewQuery},
@@ -138,6 +138,8 @@ fn extract(mut current: ResMut<Current>) {
 struct Key {
     format: TextureFormat,
     depth_test: bool,
+    /// The scene's samples: the settings' anti-aliasing.
+    samples: u32,
 }
 
 #[derive(Resource)]
@@ -204,6 +206,10 @@ impl SpecializedRenderPipeline for RefractionPipeline {
                 stencil: default(),
                 bias: default(),
             }),
+            multisample: MultisampleState {
+                count: key.samples,
+                ..default()
+            },
             fragment: Some(FragmentState {
                 shader: self.shader.clone(),
                 entry_point: Some("fragment".into()),
@@ -240,7 +246,7 @@ struct RefractionView {
 #[allow(clippy::too_many_arguments)]
 fn prepare(
     mut commands: Commands,
-    views: Query<(Entity, &ExtractedCamera, &ViewTarget), With<Glow>>,
+    views: Query<(Entity, &ExtractedCamera, &ViewTarget, &Msaa), With<Glow>>,
     current: Res<Current>,
     mut cache: ResMut<TextureCache>,
     device: Res<RenderDevice>,
@@ -249,7 +255,7 @@ fn prepare(
     mut pipelines: ResMut<SpecializedRenderPipelines<RefractionPipeline>>,
 ) {
     let active = !current.0.tested.is_empty() || !current.0.untested.is_empty();
-    for (entity, camera, target) in &views {
+    for (entity, camera, target, msaa) in &views {
         let size = camera.physical_target_size.unwrap_or_default();
         if !active || size.x == 0 || size.y == 0 {
             commands.entity(entity).remove::<RefractionView>();
@@ -257,7 +263,15 @@ fn prepare(
         }
         let format = target.main_texture_format();
         let mut id = |depth_test| {
-            pipelines.specialize(&pipeline_cache, &pipeline, Key { format, depth_test })
+            pipelines.specialize(
+                &pipeline_cache,
+                &pipeline,
+                Key {
+                    format,
+                    depth_test,
+                    samples: msaa.samples(),
+                },
+            )
         };
         let (tested, untested) = (id(true), id(false));
         let copy = cache.get(
@@ -373,17 +387,11 @@ fn refract(
         &cache.get_bind_group_layout(&pipeline.layout),
         &BindGroupEntries::sequential((&r.copy.default_view, &pipeline.sampler)),
     );
+    // The scene's own attachment: its depth has the same samples, and with
+    // anti-aliasing on the pass resolves back into the main texture.
     let descriptor = RenderPassDescriptor {
         label: Some("refraction"),
-        color_attachments: &[Some(RenderPassColorAttachment {
-            view: target.main_texture_view(),
-            depth_slice: None,
-            resolve_target: None,
-            ops: Operations {
-                load: LoadOp::Load,
-                store: StoreOp::Store,
-            },
-        })],
+        color_attachments: &[Some(target.get_color_attachment())],
         depth_stencil_attachment: Some(depth.get_attachment(StoreOp::Store)),
         timestamp_writes: None,
         occlusion_query_set: None,
