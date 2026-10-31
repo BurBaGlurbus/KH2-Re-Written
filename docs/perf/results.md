@@ -135,3 +135,27 @@ The scripted battle's "Unlimited" is held near 60 by its unattended run's own pa
 - Task Manager reads its CPU column the same way as the table; the owner's "about 40%" and 250 FPS match the first Station Plaza row.
 
 Where the rest goes is in [the task record](../tasks/T312-low-cost.md).
+
+## Memory after a load, and the Steam game (T313)
+
+Measured 2026-10-31 on the same PC, other programs running (system about 30% busy). "Before" is `4b197aa`, "after" is `28eb6a1`, both release builds with Skate 3 at 60 FPS. Memory in MiB: Task Manager's Memory column (private working set), then commit (private bytes), then GPU dedicated. CPU is the share of all 8 cores over 15 s. One run each.
+
+| Scene | | CPU | Task Manager | Commit | GPU dedicated |
+|---|---|---|---|---|---|
+| The Steam game, its KH2 menu, 1280x720 window | first 20 s, then the next 30 s | 2.8%, 1.3% | 525 | 1,293 | 727 |
+| This game's title, 30 s | before | 1.7% | 289 | 532 | 203 |
+| | after | 1.2% | 111 | 532 | 203 |
+| Launcher, idle, 15 s | before | 1.7% | 226 | 508 | 243 |
+| | after | 1.7% | 53 | 523 | 243 |
+| Station Plaza, 100% scale, no anti-aliasing, 150 s | before | 5.7% | 757 | 1,139 | 333 |
+| | after | 5.9% | 221 (176 and 190 at 150 and 480 s in a second run) | 1,143 | 333 |
+| Station Plaza, the owner's settings (200%, anti-aliasing), 150 s | before | 5.8% | 771 | 1,348 | 526 |
+| | after | 5.8% | 190 | 1,325 | 526 |
+| Scripted battle, 35 s | before | 3.4% | 649 | 1,027 | 336 |
+| | after | 3.4% | 252 | 1,068 | 336 |
+
+The Steam game's field was not measured, so no row compares play with play. The owner's settings in fullscreen and borderless commit 1,660 and 1,760 MiB.
+
+With area changes (50 s of spells and 3 changes), the working set was 121 to 313 MiB and back to 101 to 121 after each change, where the build before stayed at 804 to 1,040.
+
+The launcher is the practical floor for this engine on this driver: a window and a menu with commit about 500 MiB and GPU about 240 MiB. Task Manager's number is low only until pages are touched again. The Windows trim does not free commit.
