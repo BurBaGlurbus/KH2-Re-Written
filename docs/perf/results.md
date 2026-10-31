@@ -159,3 +159,20 @@ The Steam game's field was not measured, so no row compares play with play. The 
 With area changes (50 s of spells and 3 changes), the working set was 121 to 313 MiB and back to 101 to 121 after each change, where the build before stayed at 804 to 1,040.
 
 The launcher is the practical floor for this engine on this driver: a window and a menu with commit about 500 MiB and GPU about 240 MiB. Task Manager's number is low only until pages are touched again. The Windows trim does not free commit.
+
+## Rendering refactor (T316)
+
+Measured 2026-10-31 on the same PC, other programs running (system about 30% busy). "Before" is `d905230`, "after" is the change, both release builds with Skate 3 at 60 FPS. Two runs each, CPU over 20 s; memory in MiB at the last reading of the run (90 s, 60 s, 25 s, 30 s by row). Frame times are one run each of a `perf-diag` build.
+
+| Scene | | CPU, all cores | Task Manager | Commit | GPU dedicated | FPS | p99 frame (ms) |
+|---|---|---|---|---|---|---|---|
+| Station Plaza, the owner's settings | before | 5.9%, 5.8% | 189, 210 | 1,326, 1,346 | 526 | 58.4 | 17.14 |
+| | after | 4.7%, 4.5% | 181, 184 | 1,328, 1,314 | 526 | 58.5 | 17.14 |
+| Station Plaza, 100% scale, no anti-aliasing | before | 6.2%, 6.0% | 170, 171 | 1,122, 1,125 | 334 | | |
+| | after | 4.9%, 4.9% | 156, 162 | 1,098, 1,111 | 332, 338 | | |
+| Scripted battle | before | 4.5%, 4.4% | 164, 165 | 991 | 334 | 59.7 | 17.73 |
+| | after | 4.0%, 3.7% | 160 | 984, 982 | 334 | 59.7 | 17.75 |
+| Title | before | 1.8%, 1.2% | 111 | 548, 531 | 203 | | |
+| | after | 1.8%, 1.2% | 111 | 548, 533 | 203 | | |
+
+The FPS figures include the start's load. Draw calls were not counted. What each change moved is in [the task record](../tasks/T316-render-cost.md).
