@@ -616,6 +616,20 @@ pub struct Skin {
     pub weapon_joint: usize,
 }
 
+/// A few bones' matrices at one frame, the bones shared across a clip.
+#[derive(Clone)]
+pub struct BoneMatrices {
+    pub bones: Arc<[usize]>,
+    pub matrices: Box<[Mat4]>,
+}
+
+impl BoneMatrices {
+    pub fn get(&self, bone: &usize) -> Option<&Mat4> {
+        let at = self.bones.iter().position(|b| b == bone)?;
+        self.matrices.get(at)
+    }
+}
+
 /// A weapon's own motion and the skinning that poses its vertices.
 pub struct WeaponMotion {
     pub motion: Arc<data::motion::InterpolatedMotion>,
@@ -662,7 +676,7 @@ pub struct ClipPoses {
     /// 124 / 125), on the object's attack shapes.
     pub actor_hits: Vec<(u32, u32, u16, u8)>,
     /// Sora's HIT-bone matrices per frame (model space, root removed).
-    pub body: Vec<HashMap<usize, Mat4>>,
+    pub body: Vec<BoneMatrices>,
     /// Weapon motion frame trigger 8 ("play SE"): (clip tick, sound id).
     pub sounds: Vec<(u32, u32)>,
 }
@@ -5177,6 +5191,7 @@ pub fn area_transition(
     root: Option<Res<SceneRoot>>,
     parts: Query<Entity, With<RoomPart>>,
     hud: Option<Res<Hud>>,
+    mut trim: ResMut<visual::low_cost::WorkingSetTrim>,
 ) {
     let (Some(mut area), Some(root)) = (area, root) else {
         return;
@@ -5299,6 +5314,7 @@ pub fn area_transition(
     game.fx_clear_map.push(None);
     game.map_fx_pending = true;
     game.cleanups.push(cleanup::Scope::RoomChange);
+    trim.after_load();
     if let Some(t) = area.transition.as_mut() {
         t.stage = Stage::Opening;
         t.iris = hud

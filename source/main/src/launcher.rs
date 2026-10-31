@@ -885,6 +885,7 @@ fn update(
             if !run.hidden && run.since_window.is_some_and(|t| l.now - t > 0.6) {
                 run.hidden = true;
                 window.visible = false;
+                audio::memory::trim_working_set();
                 winit.unfocused_mode = UpdateMode::reactive_low_power(Duration::from_millis(100));
             }
             if let Ok(Some(status)) = run.child.try_wait() {

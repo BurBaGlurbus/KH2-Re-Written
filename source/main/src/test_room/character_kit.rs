@@ -5,8 +5,8 @@
 //! object entry during the drive-start motion, FUN_1403e0630, and waits
 //! for the load, FUN_14039e340).
 use super::{
-    ClipPoses, HURT_COUNT, LOCOMOTION, SORA_GUARD, SORA_HURT, Skin, WEAPON_BANK, WeaponMotion,
-    clip_for, ptya_record, sound_triggers,
+    BoneMatrices, ClipPoses, HURT_COUNT, LOCOMOTION, SORA_GUARD, SORA_HURT, Skin, WEAPON_BANK,
+    WeaponMotion, clip_for, ptya_record, sound_triggers,
 };
 use bevy::prelude::*;
 use data::{model_inspection, motion, object_collision, probe_source::ProbeSource, ptya};
@@ -547,6 +547,23 @@ pub fn load_kit(source: &ProbeSource, k: KitInputs) -> Result<Kit, Box<dyn std::
             bone_length(weapon2.as_ref().unwrap_or(&weapon)),
         ];
         let mut body_frames = Vec::new();
+        let body_bones: Arc<[usize]> = {
+            let mut ids: Vec<usize> = body
+                .iter()
+                .map(|&(b, ..)| b)
+                .chain(effect_bones.iter().copied())
+                .chain(attack_bones.iter().copied())
+                .chain(
+                    target_shape
+                        .filter(|s| s.bone >= 0 && s.bone != 0x4000)
+                        .map(|s| s.bone as usize),
+                )
+                .filter(|&b| b < actor.skinning.bones.len())
+                .collect();
+            ids.sort_unstable();
+            ids.dedup();
+            ids.into()
+        };
         // Attack volumes: the weapon motion's range triggers 10.
         let own_hits = |m: &motion::SelectedMotion| -> Vec<(u32, u32, u16, u8)> {
             m.triggers
@@ -645,22 +662,13 @@ pub fn load_kit(source: &ProbeSource, k: KitInputs) -> Result<Kit, Box<dyn std::
                 stats[3] += s.unsupported_constraints;
                 pose
             };
-            body_frames.push(
-                body.iter()
-                    .map(|&(b, ..)| b)
-                    .chain(effect_bones.iter().copied())
-                    .chain(attack_bones.iter().copied())
-                    .chain(
-                        target_shape
-                            .filter(|s| s.bone >= 0 && s.bone != 0x4000)
-                            .map(|s| s.bone as usize),
-                    )
-                    .filter_map(|b| {
-                        let m = pose.matrix_bits.get(b)?;
-                        Some((b, Mat4::from_cols_array(&m.map(f32::from_bits))))
-                    })
+            body_frames.push(BoneMatrices {
+                bones: body_bones.clone(),
+                matrices: body_bones
+                    .iter()
+                    .map(|&b| Mat4::from_cols_array(&pose.matrix_bits[b].map(f32::from_bits)))
                     .collect(),
-            );
+            });
             // Row-vector matrices: the row-major words are Bevy's
             // column-major layout of the same transform.
             hand.push(Mat4::from_cols_array(

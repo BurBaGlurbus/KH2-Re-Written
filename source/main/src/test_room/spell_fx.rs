@@ -108,7 +108,7 @@ struct Frames {
     root: Mat4,
     /// Each weapon slot's blade bone and reach (`drive_fx::slot_pose`).
     slots: [Option<(Mat4, f32)>; 2],
-    bones: Option<HashMap<usize, Mat4>>,
+    bones: Option<super::BoneMatrices>,
     body_lift: f32,
     heal_lift: f32,
     members: Vec<MemberFrame>,

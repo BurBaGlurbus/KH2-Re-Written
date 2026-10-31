@@ -3,6 +3,7 @@
 //! decoded; voices are resampled linearly to the device rate.
 use std::sync::{Arc, Mutex};
 
+pub mod memory;
 #[cfg(windows)]
 mod winmm;
 

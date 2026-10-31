@@ -421,7 +421,7 @@ pub fn slot_pose(cp: &ClipPoses, frame: usize, slot: usize) -> Option<(Mat4, f32
 /// and his current motion.
 pub struct SoraPose {
     root: Mat4,
-    bones: Option<HashMap<usize, Mat4>>,
+    bones: Option<super::BoneMatrices>,
     slots: [Option<(Mat4, f32)>; 2],
     hand: Option<Mat4>,
     motion: (u64, Action),

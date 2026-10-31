@@ -4,12 +4,45 @@
 //! it and putting it back to sleep, several hundred times per frame. This
 //! game's systems are chained or tiny, so the wake-ups cost more than they
 //! save.
-use bevy::app::{App, Plugin, TaskPoolOptions, TaskPoolPlugin, TaskPoolThreadAssignmentPolicy};
+use bevy::app::{
+    App, Last, Plugin, TaskPoolOptions, TaskPoolPlugin, TaskPoolThreadAssignmentPolicy,
+};
+use bevy::ecs::resource::Resource;
 use bevy::ecs::schedule::{Schedules, SingleThreadedExecutor};
+use bevy::ecs::system::ResMut;
 use bevy::light::cluster::GlobalClusterSettings;
 use bevy::render::RenderApp;
 
 pub struct LowCostPlugin;
+
+/// Frames from the first one to the trim after the start's load: past the
+/// first frame's GPU work, and early, since the trim stalls one frame.
+const TRIM_AFTER_START: u32 = 30;
+
+/// When to hand the load's pages back (`audio::memory`): a load touches far
+/// more memory than the game reads again.
+#[derive(Resource)]
+pub struct WorkingSetTrim {
+    in_frames: Option<u32>,
+}
+
+impl WorkingSetTrim {
+    /// A load has just ended: trim while the screen is still black.
+    pub fn after_load(&mut self) {
+        self.in_frames = Some(1);
+    }
+}
+
+fn trim_when_due(mut trim: ResMut<WorkingSetTrim>) {
+    match trim.in_frames {
+        Some(0) => {
+            trim.in_frames = None;
+            audio::memory::trim_working_set();
+        }
+        Some(n) => trim.in_frames = Some(n - 1),
+        None => {}
+    }
+}
 
 fn single_threaded(schedules: &mut Schedules) {
     for (_, schedule) in schedules.iter_mut() {
@@ -18,7 +51,12 @@ fn single_threaded(schedules: &mut Schedules) {
 }
 
 impl Plugin for LowCostPlugin {
-    fn build(&self, _app: &mut App) {}
+    fn build(&self, app: &mut App) {
+        app.insert_resource(WorkingSetTrim {
+            in_frames: Some(TRIM_AFTER_START),
+        })
+        .add_systems(Last, trim_when_due);
+    }
 
     // (In `finish`: pipelined rendering takes the render app away in its
     // `cleanup`.)
