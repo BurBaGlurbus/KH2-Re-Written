@@ -3,7 +3,8 @@
 //! second deck, its Summon, Party and Limit lists open and close, left
 //! swaps back, then the second deck is shown on every installed world
 //! layout in turn. The tour owns the four summon charms [test-room values:
-//! the room has no charms otherwise].
+//! the room has no charms otherwise]. Before that, the Magic list opens and L1
+//! is held over it: the shortcut menu takes its place and casts one spell.
 use visual::field_command_menu::Buttons;
 
 /// The world layouts (field2d/<lang>/<code>command.2dd) the install holds.
@@ -25,7 +26,10 @@ enum Press {
     Right,
 }
 
-const INPUTS: [(u64, Press); 13] = [
+const INPUTS: [(u64, Press); 15] = [
+    // The Magic list, which L1 closes.
+    (8, Press::Down),
+    (12, Press::Decide),
     // The second deck, then Summon's list.
     (100, Press::Left),
     (250, Press::Down),
@@ -50,6 +54,20 @@ const INPUTS: [(u64, Press); 13] = [
 const LAYOUT_START: u64 = 840;
 const LAYOUT_STEP: u64 = 60;
 const LAYOUT_SETTLE: u64 = 40;
+
+/// L1 is held over these ticks (the shortcut menu): over the Magic list, and
+/// over the second deck, with `--magic-form` once the form has come.
+const SHORTCUT_HELD: [std::ops::Range<u64>; 2] = [30..70, 200..240];
+/// Circle at this tick: the first shortcut.
+const SHORTCUT_PRESS: u64 = 62;
+
+pub fn shortcut_held(tick: u64) -> bool {
+    SHORTCUT_HELD.iter().any(|r| r.contains(&tick))
+}
+
+pub fn shortcut_press(tick: u64) -> bool {
+    tick == SHORTCUT_PRESS
+}
 
 pub fn press(tick: u64) -> Buttons {
     let mut b = Buttons::default();
@@ -84,7 +102,10 @@ pub fn reaction(tick: u64) -> bool {
 }
 
 pub fn captures() -> Vec<u64> {
-    let mut c = vec![60, 104, 140, 230, 320, 430, 540, 600, 700, 800];
+    let mut c = vec![
+        20, 31, 34, 40, 50, 60, 71, 74, 80, 90, 104, 140, 215, 230, 245, 320, 430, 540, 600, 700,
+        800,
+    ];
     c.extend((0..LAYOUTS.len() as u64).map(|k| LAYOUT_START + k * LAYOUT_STEP + LAYOUT_SETTLE));
     c
 }

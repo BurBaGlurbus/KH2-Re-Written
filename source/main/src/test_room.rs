@@ -117,6 +117,7 @@ pub mod rival;
 pub mod second_deck;
 pub mod sephiroth;
 pub mod settings_room;
+pub mod shortcut_menu;
 pub mod soak_tour;
 pub mod spell_fx;
 pub mod summon;
@@ -4293,11 +4294,12 @@ pub fn load(
                 .collect();
             // The party list's names (message 0x851e + the character id).
             wanted.extend((0..3).map(|i| (magic_room::MEMBER_NAMES + i, 0x51f + i as u32)));
-            // The item commands (execute 3) for the Items submenu.
+            // The item commands (execute 3) for the Items submenu, and
+            // command 0's name for an empty shortcut.
             wanted.extend(
                 m.commands
                     .values()
-                    .filter(|c| c.execute == 3)
+                    .filter(|c| c.execute == 3 || c.id == 0)
                     .map(|c| (c.id, c.name)),
             );
             let ids: Vec<u32> = wanted.iter().map(|w| w.1).collect();
@@ -7148,11 +7150,15 @@ pub fn read_pad(
     }
     let p = game.pad.pressed;
     // L1 held (logical bit 23) shows the shortcut menu: the face buttons
-    // (logical bits 24-27) then pick its four slots instead of acting.
+    // (logical bits 24-27) then pick its four slots instead of acting
+    // (FUN_1403b11e0). The first slot asked for decides, and an empty one
+    // leaves the press to jump (bit 8) and guard (bit 9).
     if game.pad.held & 0x80_0000 != 0 {
-        for k in 0..4 {
-            if p & (1 << (24 + k)) != 0 {
-                game.shortcut_queued |= 1 << k;
+        match (0..4).find(|k| p & (1 << (24 + k)) != 0) {
+            Some(k) if game.shortcuts[k] != 0 => game.shortcut_queued |= 1 << k,
+            _ => {
+                game.jump_queued |= p & 0x100 != 0;
+                game.guard_queued |= p & 0x200 != 0;
             }
         }
         return;
@@ -7480,7 +7486,7 @@ pub fn simulate(
         m.menu.reaction_pen = field_command_menu::reaction_pen(
             m.layout.as_deref().unwrap_or_default(),
             m.menu.list_mode,
-            m.menu.list.is_some(),
+            m.menu.list.is_some() && !m.menu.shortcut_up(),
         );
         // A Drive form greys the commands its mask disables (FUN_1403b6cb0:
         // Magic in Valor, Limit and Antiform, Items in Antiform), and
@@ -7556,6 +7562,7 @@ pub fn simulate(
             m.menu.close_sub();
         }
         m.menu.overridden = [false; 8];
+        let was_shortcut = m.menu.shortcut_up();
         m.menu.list = None;
         let mut records = [None; 8];
         // A party limit's offers, or else the summon's script's
@@ -7659,6 +7666,9 @@ pub fn simulate(
                 };
             }
         }
+        // L1 over any deck but a limit's or summon's (FUN_1403f2470).
+        let free_deck = offers.is_none() && m.menu.list.is_none();
+        shortcut_menu::update(&mut game, &mut m.menu, was_shortcut, free_deck && !talking);
         // [Test-room choice] While a limit runs only its rows are taken:
         // the checks other commands make during a limit are not traced.
         // [Tour setup] The tour's decide presses the top row's button in a
@@ -7667,6 +7677,8 @@ pub fn simulate(
             Some(&s) if scripted_menu && decide && (1..=4).contains(&s) => face | 1 << (s - 1),
             _ => face,
         };
+        // The shortcut's own presses are taken below, by their slot.
+        let face = if m.menu.shortcut_up() { 0 } else { face };
         let on_offer = records.get(m.menu.cursor).copied().flatten().is_some();
         let (decide, right) = if limit_running && m.menu.sub.is_none() && !on_offer {
             (false, false)
@@ -8045,9 +8057,20 @@ pub fn simulate(
     // runs cast Fire, Thunder, Blizzard and Cure on fixed ticks.
     let slot = std::mem::take(&mut game.shortcut_queued);
     let mut cast = None;
-    if slot != 0 && !talking {
+    // FUN_1403b21d0: a row that cannot be used only plays the error sound.
+    let shortcut_colour = (slot != 0).then(|| {
+        shortcut_menu::rows(&game)
+            .get(slot.trailing_zeros() as usize)
+            .map_or(0, |r| r.colour)
+    });
+    if shortcut_colour.is_some_and(|c| matches!(c, 5 | 6)) {
+        game.sound_queue.push((5, "menu_denied"));
+    }
+    if slot != 0 && !talking && shortcut_colour.is_some_and(|c| c < 4) {
         let k = slot.trailing_zeros() as usize;
         let cmd = game.shortcuts[k];
+        // FUN_1403f22e0: a shortcut's Cure heals Sora, with no party list.
+        game.cure_target = 0;
         // FUN_1403f29e0: in Limit Form every non-item slot is a limit.
         let item = game
             .magic

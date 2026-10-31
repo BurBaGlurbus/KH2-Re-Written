@@ -98,6 +98,13 @@ const LIST_ROW: [usize; 5] = [0, 0xa, 0xc, 0xb, 9];
 /// not being 0xE).
 pub const WORLD_MAP_DECK: u8 = 10;
 const WORLD_LIST_ROW: [usize; 5] = [0x41, 0x43, 0x45, 0x44, 0x42];
+/// [`CommandMenu::list_mode`] for the L1 shortcut menu (kind 5, no sheet mode
+/// of its own). FUN_14015df90 draws its header and rows from the table's first
+/// five groups, and FUN_14015aab0 takes the world pen.
+pub const SHORTCUT_DECK: u8 = 0x15;
+/// A shortcut row's selector: slot k is button k's (FUN_1403f29e0 sets record
+/// +6 to k + 1; 0x1405c4ed8 maps it to logical bit 24 + k).
+pub const SHORTCUT_SELECTORS: [u8; 4] = [1, 2, 3, 4];
 /// FUN_14015df90's glyph for a list row's selector in deck mode 0xE (0
 /// none): 1 0xdb, 2 and 3 FUN_1402ebe70(0x1000 / 0x8000) = 0xdf / 0xde
 /// (the table at 0x1405ba7e0), 4 0xda.
@@ -328,7 +335,12 @@ pub struct CommandMenu {
     /// The world command layout's style ([`layout_style`]); `None` with the
     /// classic menu (save config bit 6).
     pub layout_style: Option<u8>,
+    /// The shortcut menu's four rows (menu 5), shown while [`Self::list`]
+    /// holds [`SHORTCUT_SELECTORS`] with [`SHORTCUT_DECK`].
+    pub shortcut: Vec<Item>,
     last_list: bool,
+    /// The deck drawn last frame was the shortcut menu (+0x184 == 5).
+    last_shortcut: bool,
 }
 
 /// What the menu did with this frame's input.
@@ -399,7 +411,9 @@ impl CommandMenu {
             list: None,
             list_mode: 3,
             layout_style: None,
+            shortcut: Vec::new(),
             last_list: false,
+            last_shortcut: false,
         }
     }
 
@@ -419,9 +433,16 @@ impl CommandMenu {
         }
     }
 
+    /// The shortcut menu is up (FUN_1403f2470 put menu 5 on the stack).
+    pub fn shortcut_up(&self) -> bool {
+        self.list.is_some() && self.list_mode == SHORTCUT_DECK
+    }
+
     /// The shown deck's rows.
     pub fn rows(&self) -> &[Item] {
-        if self.kind == SECOND_DECK {
+        if self.shortcut_up() {
+            &self.shortcut
+        } else if self.kind == SECOND_DECK {
             &self.second
         } else {
             &self.items
@@ -808,10 +829,13 @@ impl CommandMenu {
     /// shown deck, then the slots' players in creation order. A deck swap
     /// plays the panel's swap group (T_280) before its loop and restarts
     /// the cursor; a battle-style change replays the panel intro and
-    /// flashes the cursor (T_2B0).
+    /// flashes the cursor (T_2B0). The first frame after a list deck counts
+    /// as a change (COMMAND_DRAW +0x197); after the shortcut menu the panel
+    /// goes straight to its loop (T_EF0, FUN_14015b6d0 with +0x184 == 5).
     pub fn update(&mut self, seq: &Sequence) {
         self.root.update(seq, 1.);
         self.counter = 0;
+        let list_ended = self.last_list && self.list.is_none();
         if self.list.is_some() != self.last_list {
             self.slots.clear();
             self.last_cursor = None;
@@ -822,8 +846,9 @@ impl CommandMenu {
             self.update_list(seq, &sel);
             return;
         }
+        let from_shortcut = std::mem::take(&mut self.last_shortcut);
         let style = self.style.min(2);
-        let changed = style != self.last_style;
+        let changed = style != self.last_style || list_ended;
         let kind = self.kind;
         let swap = (kind == FIRST_DECK && self.last_kind == SECOND_DECK)
             || (kind == SECOND_DECK && self.last_kind == FIRST_DECK);
@@ -834,7 +859,9 @@ impl CommandMenu {
             self.slots.clear();
         }
         let x = ROOT_BASE[0];
-        let (group, force) = if swap {
+        let (group, force) = if from_shortcut {
+            (PANEL_LOOP[style], true)
+        } else if swap {
             (PANEL_SWAP[style], true)
         } else {
             (PANEL_INTRO[style], changed)
@@ -980,8 +1007,11 @@ impl CommandMenu {
     /// (0x1c, 0x184 - 22n), each row at (0x1c, 0x19a - 22(n - i)) with its
     /// selector's group (0x140718330 + 0x14) and colour (0x140717d50), then
     /// the reaction slot (FUN_14015d670). A row with a selector carries its
-    /// button glyph in front of its label ([`glyph_label`]).
+    /// button glyph in front of its label ([`glyph_label`]). The shortcut
+    /// menu (kind 5) takes its header and rows from the table's first five.
     fn update_list(&mut self, seq: &Sequence, sel: &[u8]) {
+        let shortcut = self.list_mode == SHORTCUT_DECK;
+        self.last_shortcut = shortcut;
         let rows: Vec<Item> = self.rows().to_vec();
         let n = rows.len();
         if self.last_count != n {
@@ -990,7 +1020,11 @@ impl CommandMenu {
         let x = ROOT_BASE[0];
         self.slot(
             seq,
-            LIST_HEADER,
+            if shortcut {
+                WORLD_LIST_ROW[0]
+            } else {
+                LIST_HEADER
+            },
             false,
             [x, PANEL_ANCHOR - PITCH * n as f32],
             None,
@@ -999,7 +1033,7 @@ impl CommandMenu {
         let mut y = ROW_ANCHOR - PITCH * n as f32;
         for (i, item) in rows.iter().enumerate() {
             let s = sel.get(i).copied().unwrap_or(0) as usize;
-            let rows = if self.list_mode == WORLD_MAP_DECK {
+            let rows = if self.list_mode == WORLD_MAP_DECK || shortcut {
                 &WORLD_LIST_ROW
             } else {
                 &LIST_ROW
@@ -1010,7 +1044,7 @@ impl CommandMenu {
                 // Chicken Little's deck (kind 5) and the world map's (kind
                 // 10) take FUN_14015aab0's world pen, a limit's `comd`
                 // (kind 0xE) FUN_14015aba0's.
-                Some(g) if self.list_mode == 5 || self.list_mode == WORLD_MAP_DECK => {
+                Some(g) if self.list_mode == 5 || self.list_mode == WORLD_MAP_DECK || shortcut => {
                     glyph_label(world_pen(self.layout_style), g, &item.label)
                 }
                 Some(g) => glyph_label(list_pen(self.list_mode), g, &item.label),
@@ -1319,7 +1353,9 @@ mod tests {
             list: None,
             list_mode: 3,
             layout_style: None,
+            shortcut: Vec::new(),
             last_list: false,
+            last_shortcut: false,
         }
     }
 
@@ -1430,6 +1466,32 @@ mod tests {
         assert_eq!(menu.press(left), Decision::None);
         assert_eq!(menu.kind, FIRST_DECK);
         assert_eq!(menu.input(false, false, true), Decision::Execute(0));
+    }
+
+    #[test]
+    fn the_shortcut_menu_shows_its_own_rows_and_takes_no_deck_input() {
+        let mut menu = bare(vec![row(1, 0), row(2, 0)], vec![None, Some(1)]);
+        menu.shortcut = vec![row(2, 0), row(2, 5), row(2, 2), row(2, 0)];
+        assert_eq!(menu.rows().len(), 2);
+        menu.list = Some(SHORTCUT_SELECTORS.to_vec());
+        menu.list_mode = SHORTCUT_DECK;
+        assert!(menu.shortcut_up());
+        assert_eq!(menu.rows().len(), 4);
+        let keys = Buttons {
+            up: true,
+            decide: true,
+            back: true,
+            left: true,
+            right: true,
+            ..Buttons::default()
+        };
+        assert_eq!(menu.press(keys), Decision::None);
+        assert_eq!((menu.kind, menu.cursor), (FIRST_DECK, 0));
+        // The world pen in front of the button glyph (FUN_14015aab0).
+        assert_eq!(world_pen(None), 0xe3);
+        menu.list = None;
+        assert!(!menu.shortcut_up());
+        assert_eq!(menu.rows().len(), 2);
     }
 
     #[test]
