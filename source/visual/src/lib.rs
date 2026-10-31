@@ -22,6 +22,7 @@ pub mod limit_hud;
 pub mod lock_on;
 pub mod low_cost;
 pub mod menu_screen;
+pub mod mesh_upload;
 pub mod mission_timer;
 pub mod new_game;
 pub mod overlay;

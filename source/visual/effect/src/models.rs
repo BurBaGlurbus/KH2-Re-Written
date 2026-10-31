@@ -345,7 +345,8 @@ fn sno_integrate(p: &Program, cursor: usize, part: &mut Part, ctx: &mut Ctx) {
 /// vertices (sequential or random), the vertex through the emitter matrix.
 fn vertex_ap(p: &Program, cursor: usize, part: &mut Part, ctx: &mut Ctx) {
     let vsf_id = i16_at(&ctx.dpd.bytes, cursor + 4).unwrap_or(-1);
-    if !active(part) || vsf_id < 0 {
+    // (`DAT_142b0efe4`: no births while a loop restart catches the part up.)
+    if !active(part) || ctx.catch_up || vsf_id < 0 {
         return;
     }
     let u0 = use_val(ctx, p, 0);

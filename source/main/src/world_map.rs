@@ -3496,6 +3496,7 @@ fn run(args: Vec<PathBuf>) -> Result<AppExit> {
         .insert_resource(visual::frame_limit::FrameLimit::new(visual::frame_limit::ORIGINAL_FPS))
         .add_plugins(visual::frame_limit::FrameLimitPlugin)
         .add_plugins(visual::low_cost::LowCostPlugin)
+        .add_plugins(visual::mesh_upload::MeshUploadPlugin)
         .add_plugins(FogPlugin)
         .add_plugins(visual::effect_draw::EffectPlugin)
         .add_plugins(Ui2dPlugin {

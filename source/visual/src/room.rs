@@ -847,6 +847,17 @@ where
     {
         return;
     }
+    // The same number of vertices: only their bytes need to reach the GPU.
+    if crate::mesh_upload::active()
+        && let Some(mesh) = meshes.get_mut_untracked(id)
+        && let Some(VertexAttributeValues::Float32x3(held)) =
+            mesh.attribute_mut(Mesh::ATTRIBUTE_POSITION)
+        && held.len() == positions.clone().count()
+    {
+        held.splice(.., positions);
+        crate::mesh_upload::changed(id);
+        return;
+    }
     if let Some(mut mesh) = meshes.get_mut(id) {
         update_positions(&mut mesh, positions);
     }

@@ -353,6 +353,51 @@ fn vertex_ap_births_children_at_model_vertices() {
     assert!(positions.contains(&[1., 2., 3.]), "{positions:?}");
 }
 
+#[test]
+fn a_loop_restart_does_not_replay_a_vertex_birth_at_frame_zero() {
+    // The save point's glow: the first key births once, the second (frame 1,
+    // the loop's start) births none. The restart's catch-up passes frame 0,
+    // where FUN_1404d3b30 births nothing (DAT_142b0efe4).
+    let emitter = vec![
+        Prog {
+            kind: 40,
+            size: 16,
+            keys: vec![0, f(0.), f(0.), f(0.)],
+            use_val: vec![0],
+        },
+        Prog {
+            kind: 42,
+            size: 16,
+            keys: vec![0, f(1.), f(1.), f(1.)],
+            use_val: vec![32],
+        },
+        Prog {
+            kind: 87,
+            size: 4,
+            keys: vec![0],
+            use_val: vec![0, 16, 32],
+        },
+        Prog {
+            kind: 174,
+            size: 20,
+            keys: vec![0, 0x0101_0000, 0, 1, 0, 0x1000, 0x0100_0000, 0, 1, 0],
+            use_val: vec![64, 64],
+        },
+    ];
+    let child = vec![point(0)];
+    let dpd = build_looped(
+        &[(0, 100, emitter), (i32::MAX, 10_000, child)],
+        &[(0, vec![[1, 2, 3], [4, 5, 6]])],
+        &[(0, 0, vec![1, 0])],
+        &[(0, 0x1000, 0x4000)],
+    );
+    let mut inst = Instance::new(dpd, 0, math::IDENTITY, 0.).unwrap();
+    let mut rng = Rng::default();
+    ticks(&mut inst, &mut rng, 40);
+    assert!(inst.unsupported.is_empty(), "{:?}", inst.unsupported);
+    assert_eq!(inst.live_parts(), 2, "the emitter and its one child");
+}
+
 fn point(var: u32) -> Prog {
     Prog {
         kind: 40,

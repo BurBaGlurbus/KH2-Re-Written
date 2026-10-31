@@ -851,10 +851,9 @@ pub struct Canvas {
     last_hash: Vec<u64>,
     /// Tiles this frame redrew.
     redraw: Vec<bool>,
-    /// Tiles drawn before, by tile and hash: the same triangles draw the same
-    /// bytes, so a looping animation is rasterized once per loop.
-    drawn: std::collections::HashMap<(u32, u64), Box<[u8]>>,
-    drawn_bytes: usize,
+    /// Tiles drawn before: the same triangles draw the same bytes, so a
+    /// looping animation is rasterized once per loop.
+    drawn: DrawnTiles,
     /// Threads for a large frame.
     pub threads: usize,
 }
@@ -862,8 +861,45 @@ pub struct Canvas {
 /// Side of the canvas tiles, in pixels.
 const TILE: usize = 16;
 
-/// The most tile bytes to keep; past this the saved tiles start over.
-const DRAWN_BYTES: usize = 16 << 20;
+/// The most tile bytes in each generation of `DrawnTiles`.
+const DRAWN_BYTES: usize = 32 << 20;
+
+/// Finished tiles by tile and hash, in two generations: when the new one
+/// fills, the old one goes, so tiles still in use stay and the rest leave.
+#[derive(Default)]
+struct DrawnTiles {
+    new: std::collections::HashMap<(u32, u64), Box<[u8]>>,
+    new_bytes: usize,
+    old: std::collections::HashMap<(u32, u64), Box<[u8]>>,
+}
+
+impl DrawnTiles {
+    fn get(&mut self, key: (u32, u64)) -> Option<&[u8]> {
+        if !self.new.contains_key(&key) {
+            let pixels = self.old.remove(&key)?;
+            self.insert(key, pixels);
+        }
+        self.new.get(&key).map(|p| &**p)
+    }
+
+    fn insert(&mut self, key: (u32, u64), pixels: Box<[u8]>) {
+        if self.new_bytes + pixels.len() > DRAWN_BYTES {
+            self.old = std::mem::take(&mut self.new);
+            self.new_bytes = 0;
+        }
+        self.new_bytes += pixels.len();
+        self.new.insert(key, pixels);
+    }
+
+    fn clear(&mut self) {
+        *self = Self::default();
+    }
+
+    #[cfg(test)]
+    fn len(&self) -> usize {
+        self.new.len() + self.old.len()
+    }
+}
 
 pub struct Texture<'a> {
     pub rgba: &'a [u8],
@@ -1072,8 +1108,7 @@ impl Canvas {
             hash: vec![0; tiles],
             last_hash: vec![0; tiles],
             redraw: vec![false; tiles],
-            drawn: std::collections::HashMap::new(),
-            drawn_bytes: 0,
+            drawn: DrawnTiles::default(),
             threads: std::thread::available_parallelism().map_or(1, |n| n.get().min(8)),
         }
     }
@@ -1083,7 +1118,6 @@ impl Canvas {
         // Tile hashes are 0 or odd, so 2 matches none.
         self.last_hash.fill(2);
         self.drawn.clear();
-        self.drawn_bytes = 0;
     }
 
     /// A tile's pixel rectangle.
@@ -1181,7 +1215,7 @@ impl Canvas {
             let rect = self.tile_rect(t);
             if self.hash[t] == 0 {
                 write_tile(&mut self.rgba, width, rect, None);
-            } else if let Some(pixels) = self.drawn.get(&(t as u32, self.hash[t])) {
+            } else if let Some(pixels) = self.drawn.get((t as u32, self.hash[t])) {
                 write_tile(&mut self.rgba, width, rect, Some(pixels));
             } else {
                 to_draw.push(t);
@@ -1231,11 +1265,6 @@ impl Canvas {
         for (t, pixels) in finished {
             let rect = self.tile_rect(t);
             write_tile(&mut self.rgba, width, rect, Some(&pixels));
-            if self.drawn_bytes + pixels.len() > DRAWN_BYTES {
-                self.drawn.clear();
-                self.drawn_bytes = 0;
-            }
-            self.drawn_bytes += pixels.len();
             self.drawn.insert((t as u32, self.last_hash[t]), pixels);
         }
         true
@@ -1886,7 +1915,7 @@ mod tests {
         assert!(canvas.render(&[], textures));
         assert!(canvas.rgba.iter().all(|&b| b == 0));
         canvas.forget();
-        assert!(canvas.drawn.is_empty());
+        assert_eq!(canvas.drawn.len(), 0);
     }
 
     #[test]

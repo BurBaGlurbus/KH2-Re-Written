@@ -15422,6 +15422,7 @@ pub fn run(
                 .set(visual::low_cost::task_pools()),
         )
         .add_plugins(visual::low_cost::LowCostPlugin)
+        .add_plugins(visual::mesh_upload::MeshUploadPlugin)
         .add_plugins(FogPlugin)
         .add_plugins(visual::frame_limit::FrameLimitPlugin)
         .add_plugins(visual::texel_upload::TexelUploadPlugin)

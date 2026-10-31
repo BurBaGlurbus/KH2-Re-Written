@@ -858,7 +858,7 @@ pub(crate) fn sprite_quads(
 /// centre at `speed`.
 fn born_rnd5(p: &Program, cursor: usize, part: &mut Part, ctx: &mut Ctx) {
     let interval = byte(ctx, cursor + 0xd);
-    if !active(part) || interval == 0 {
+    if ctx.catch_up || !active(part) || interval == 0 {
         return;
     }
     let o = use_val(ctx, p, 0);
@@ -984,7 +984,7 @@ fn angle_units(y: f32, x: f32) -> Option<i32> {
 /// from the model origin (the child's pppMatrixZXY turns shards along it).
 fn born_rnd6(p: &Program, cursor: usize, part: &mut Part, ctx: &mut Ctx) {
     let interval = byte(ctx, cursor + 7);
-    if !active(part) || interval == 0 {
+    if ctx.catch_up || !active(part) || interval == 0 {
         return;
     }
     let o = use_val(ctx, p, 0);
