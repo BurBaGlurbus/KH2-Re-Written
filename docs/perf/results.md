@@ -100,3 +100,38 @@ stay private in the output folder outside the checkout (`b-*`, `a-*`).
 
 The worst rooms were rewriting one material per UV-scrolled chunk every tick, allocating 30 to 80 MiB a frame. The room's five-minute
 soak with no duel or doors was already flat in both.
+
+## A game that costs little (T312)
+
+Measured 2026-10-31 on the same PC, one 1920x1080 monitor at 100 Hz, with other programs running (system CPU 35 to 70% busy overall). Release builds with Skate 3; "before" is the owner's release executable and a `perf-diag` build of `804e6a3`, "after" is `9ec10aa`. CPU is the share of all 8 cores over 30 s; memory is the private working set (Task Manager's Memory column), the working set, and private bytes. Frame rates come from `perf-diag` builds of the same code. One run each unless noted. Raw records stay private in the output folder outside the checkout (`f-*`).
+
+| Scene | | CPU, all cores | Memory: private working set / working set / private (MiB) | FPS | p99 frame (ms) |
+|---|---|---|---|---|---|
+| Title screen | before (V-Sync) | 6.5% | 316 / 418 / 617 | not counted | |
+| | after (60 FPS) | 1.8% | 307 / 420 / 549 | not counted (limit 60) | |
+| Launcher, idle on its screen | before | 6.1% | 214 / 304 / 510 | not counted | |
+| | after | 1.6% | 208 / 298 / 488 | not counted (limit 60) | |
+| Station Plaza, the owner's settings (200% scale, anti-aliasing) | before (Unlimited, as saved) | 35.8% | 1,663 / 1,746 / 2,546 | 192 | 9.6 |
+| | after (moved to 60 once) | 5.5% | 779 / 890 / 1,348 | 58.4 (60 once warm) | 17.3 |
+| Station Plaza, 100% scale, no anti-aliasing | before (V-Sync) | 27.6% | 1,658 / 1,749 / 2,301 | 100 (not counted) | |
+| | after (60 FPS) | 6.2% | 754 / 845 / 1,128 | 60 | 17.3 |
+| | after, Unlimited (`--uncapped`) | 19.5% | 738 / 820 / 1,099 | 361.5 | 4.5 |
+| Scripted battle (test room, Shadow, spells, a Drive form) | before, Unlimited (`--uncapped`) | 12.2% | 1,402 / 1,448 / 1,979 | 59.9 | 19.9 |
+| | before (V-Sync) | 12.4% | 1,412 / 1,481 / 2,017 | | |
+| | after (60 FPS) | 5.0% | 668 / 730 / 1,009 | 60.0 | 17.2 |
+
+The scripted battle's "Unlimited" is held near 60 by its unattended run's own pacing, as T298 noted.
+
+| Station Plaza, standing, 60 FPS, 100% scale, after five minutes | Before (the old build, capped at 60) | After |
+|---|---|---|
+| CPU, all cores | 23.5% | 6.2% |
+| Average FPS over the run | 51.6 | 59.8 |
+| p99 frame (ms) | 48.5 | 17.4 |
+| Effect parts running | 205 | 9 |
+| Allocated per frame | 112.7 MiB | 3.9 MiB |
+
+- Heap in Station Plaza: 1,378 MiB before, about 540 MiB after, flat over the soak (565 to 590 MiB with the HUD's tiles).
+- Start to first frame: 3.0 to 3.4 s before, 3.5 s after.
+- Task Manager reads its CPU column the same way as the table; the owner's "about 40%" and 250 FPS match the first Station Plaza row.
+
+Where the rest goes is in [the task record](../tasks/T312-low-cost.md).
