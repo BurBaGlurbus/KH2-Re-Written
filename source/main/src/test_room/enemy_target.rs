@@ -42,7 +42,7 @@ fn set_scan_slots(slots: &mut [u16], enabled: bool) -> Result<(), String> {
 pub enum TargetId {
     Legacy(usize),
     Gallery(u64, usize),
-    /// The duel's other Sora, by slot.
+    /// Another Sora, by slot.
     Rival(u8),
 }
 

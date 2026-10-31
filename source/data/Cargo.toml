@@ -15,9 +15,6 @@ flate2 = { version = "=1.1.10", default-features = false, features = ["rust_back
 image = { version = "=0.25.10", default-features = false, features = ["png", "dds"] }
 crc32fast = "=1.5.2"
 lewton = { version = "=0.10.2", default-features = false }
-# KH3's pak index (the key is in the player's own executable).
-aes = "=0.8.4"
-sha1 = "=0.10.6"
 
 [lints]
 workspace = true
@@ -107,15 +104,5 @@ bench = false
 
 [[bin]]
 name = "room_probe"
-test = false
-bench = false
-
-[[bin]]
-name = "bbs_probe"
-test = false
-bench = false
-
-[[bin]]
-name = "kh3_probe"
 test = false
 bench = false

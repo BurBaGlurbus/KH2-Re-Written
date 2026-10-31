@@ -117,7 +117,7 @@ struct Frames {
     /// Battle actors by gallery id (their root and heading) and their bones.
     actors: HashMap<u64, MemberFrame>,
     actor_bones: HashMap<u64, super::enemy_combat::ActorBones>,
-    /// The duel's other Soras' own frames, by slot.
+    /// Other Soras' own frames, by slot.
     rivals: Vec<(u8, Frames)>,
 }
 

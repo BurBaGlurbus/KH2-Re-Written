@@ -324,7 +324,7 @@ pub enum Anchor {
     Summon,
     /// A battle enemy by gallery actor id (a script brain's own effects).
     Actor(u64),
-    /// The duel's other Sora, by slot (his own spells and items).
+    /// Another Sora, by slot (his own spells and items).
     Rival(u8),
 }
 

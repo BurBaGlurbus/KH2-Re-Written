@@ -634,9 +634,9 @@ impl DriveRt {
             .extend(bullets.iter().map(|b| (b.key, false)));
     }
 
-    /// A second Sora's drive state (the duel's rival): the same tables and
+    /// A second Sora's drive state: the same tables and
     /// form records, kits of its own (loaded as it needs them).
-    /// A duel rival's bullet keys: his slot in the serial's high bits, so
+    /// Another Sora's bullet keys: his slot in the serial's high bits, so
     /// his bullets' effects never meet the room Sora's.
     pub fn offset_bullet_keys(&mut self, slot: u8) {
         self.bullet_serial = (u64::from(slot) + 1) << 40;

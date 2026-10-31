@@ -55,7 +55,7 @@ fn bone_length(game: &Game, slot: usize) -> Option<f32> {
 
 /// The effect owner ids of each slot's trail instance.
 pub const OWNERS: [u8; 2] = [0xfc, 0xf8];
-/// A duel rival's, by his slot then the weapon slot.
+/// Another Sora's, by his slot then the weapon slot.
 pub const RIVAL_OWNERS: [[u8; 2]; 2] = [[0xf0, 0xf1], [0xf2, 0xf3]];
 
 /// The trail owner of weapon `slot` on the room Sora (`rival` None) or a
@@ -76,7 +76,7 @@ pub fn owner(rival: Option<u8>, slot: usize) -> u8 {
 /// mode, a menu) are taken as clear.
 /// Every weapon object runs it (FUN_1403efa60), so slot 1's Keyblade
 /// (Valor, Master, Final) trails on its own motion's windows with its own
-/// element 10; slot 0's room Keyblade only while drawn. A duel rival runs it
+/// element 10; slot 0's room Keyblade only while drawn. Another Sora runs it
 /// with his state swapped in (`rival`: his slot).
 pub fn tick(game: &mut Game, pax: Option<&Arc<Pax>>, slot: usize, rival: Option<u8>) {
     let Some(pax) = pax else { return };

@@ -16,13 +16,11 @@ collision = { path = "../game/collision" }
 event = { path = "../game/event" }
 data = { path = "../data" }
 player = { path = "../game/player" }
-kh3_sora = { path = "../game/kh3_sora" }
 enemy = { path = "../game/enemy" }
 save = { path = "../game/save" }
 world_map = { path = "../game/world_map" }
 validation = { path = "../../validation" }
 skate_source = { path = "../extras/skateboard/source" }
-net = { path = "../net" }
 # The optional Skate 3 skateboard (GPL-3.0-only, extras/skateboard/engine); see T103.
 skate-disc = { path = "../extras/skateboard/engine/skate-disc", optional = true }
 skate-sim = { path = "../extras/skateboard/engine/skate-sim", optional = true }

@@ -406,7 +406,8 @@ pub fn tick(
     mut gallery: ResMut<enemy_gallery::EnemyGallery>,
 ) {
     let Some(mut res) = res else { return };
-    // A duel has no game over: a knocked-out Sora stands up again.
+    // With another player there is no game over: a knocked-out Sora stands up
+    // again.
     if game.versus {
         return;
     }

@@ -1,5 +1,0 @@
-id	game_level	base_hp	base_mp	hp_up	mp_up	player_damage	enemy_damage	enemy_attack_add	ap_add	mp_charge_time	start_abilities
-="BEGINNER"	X|f@5c0be04	X|f@5c9b324	X|f@5c86b40	X|A|f@5c7a2e8;f@5c86b20;f@5c86b24;f@5c86b2c;f@5c86b34	X|A|f@5c7a2e8;f@5c86b20;f@5c86b24;f@5c86b30	X|f@5ccda0c	X|f@5c81560	X|f@5c0be04	X|f@5c0be04	X|f@5c9b31c	X|A|
-="STANDARD"	X|f@5c8158c	X|f@5c9b324	X|f@5c86b40	X|A|f@5c7a2e8;f@5c86b20;f@5c86b24;f@5c86b2c;f@5c86b34	X|A|f@5c7a2e8;f@5c86b20;f@5c86b24;f@5c86b30	X|f@5c8158c	X|f@5c8158c	X|f@5c0be04	X|f@5c0be04	X|f@5c9b31c	X|A|
-="PROUD"	X|f@5c815e0	X|f@5c9b324	X|f@5c86b40	X|A|f@5c7a2e8;f@5c86b20;f@5c86b24;f@5c86b2c;f@5c86b34	X|A|f@5c7a2e8;f@5c86b20;f@5c86b24;f@5c86b30	X|f@5c8158c	X|f@5c9b2ec	X|f@5c0be04	X|f@5c0be04	X|f@5c9b31c	X|A|
-="CRITICAL"	X|f@5c7a2e8	X|f@5c9b318	X|f@5c9b31c	X|A|f@5c8158c;f@5c815e0;f@5c86b20;f@5d1f3b0;f@5c86b2c	X|A|f@5c8158c;f@5c815e0;f@5c86b20;f@5c86b24	X|f@5c8158c	X|f@5c815e0	X|f@5c86b20	X|f@5c86b34	X|f@5d6b0a0	X|L|s@7a3eedf+3,7a18d92+5,72e5594+3,86d54d5+3,637dcc3+2;s@7a3eedf+3,7a18d92+5,7ad8307+5,637dcc2+2;s@7a3eedf+3,7a18d92+5,7a63a6b+7,73db8d2+3

@@ -19,7 +19,6 @@ pub mod equipment_stats;
 pub mod follow_camera;
 pub mod forms;
 pub mod growth;
-pub mod kh3;
 pub mod limit_form;
 pub mod magic;
 pub mod party_hit;

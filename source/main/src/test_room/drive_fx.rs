@@ -51,9 +51,9 @@ pub enum Anchor {
     /// A Wisdom bullet (by key): the element takes its position and
     /// direction every tick (`effect_set_pos` / `effect_set_dir`).
     Bullet(u64),
-    /// The duel's other Sora's own object, by slot (as `Sora` for him).
+    /// Another Sora's own object, by slot (as `Sora` for him).
     Rival(u8),
-    /// A duel rival's weapon slot (his slot, the weapon slot): his trail.
+    /// Another Sora's weapon slot (his slot, the weapon slot): his trail.
     RivalWeapon(u8, usize),
 }
 
@@ -92,8 +92,8 @@ pub struct Placed {
     pub anchor: Anchor,
 }
 
-/// How a composite look starts an element (the KH3 ruleset's looks,
-/// `player::kh3::look`): its size, colour, place, bone, start and end. The
+/// How an extension starts an element: its size, colour, place, bone, start
+/// and end. The
 /// default leaves the element as its PAX has it.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Style {
@@ -177,7 +177,7 @@ struct Running {
     instance: Instance,
     dpd: Arc<Dpd>,
     bind: Option<Bind>,
-    /// The duel's other Sora whose object a bound element follows.
+    /// The other Sora whose object a bound element follows.
     rival: Option<u8>,
     owner: u8,
     /// Flag 0x20000 (FUN_1402c4da0): the element's own matrix under the

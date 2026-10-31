@@ -76,23 +76,6 @@ pub mod area_enemies;
 pub mod deck_tour;
 pub mod drive_fx;
 pub mod drive_room;
-pub mod duel_arena;
-pub mod duel_camp;
-pub mod duel_fx;
-pub mod duel_hits;
-pub mod duel_kh3;
-pub mod duel_loadout;
-pub mod duel_lobby;
-pub mod duel_lobby_room;
-pub mod duel_match;
-pub mod duel_match_room;
-pub mod duel_music;
-pub mod duel_net;
-pub mod duel_prefs;
-pub mod duel_rules;
-pub mod duel_sync;
-pub mod duel_vote;
-pub mod duel_wire;
 pub mod enemy_assets;
 pub mod enemy_battle;
 pub mod enemy_battle_hits;
@@ -106,20 +89,7 @@ pub mod enemy_target;
 pub mod enemy_tour;
 pub mod extension;
 pub use extension::{RoomExtension, RoomHooks, RoomSet, hooks};
-pub use online::Slot;
 pub mod fighter;
-pub mod kh3_autose;
-pub mod kh3_book;
-pub mod kh3_camera;
-pub mod kh3_core;
-pub mod kh3_fx;
-pub mod kh3_hits;
-pub mod kh3_menu;
-pub mod kh3_model;
-pub mod kh3_retarget;
-pub mod mirage_arena;
-/// The executable's identity, which the launcher's LAN search compares.
-pub use duel_net::build_identity;
 pub use fighter::{Fighter, Vitals};
 pub mod game_over;
 pub mod gear;
@@ -133,7 +103,6 @@ pub mod limit_tour;
 pub mod magic_room;
 pub mod magic_tour;
 pub mod menu_friend;
-pub mod online;
 pub mod party_anim_tour;
 pub mod party_blade;
 pub mod party_camp_tour;
@@ -145,7 +114,6 @@ pub mod perf_overlay;
 pub mod prize_room;
 pub mod reaction_command;
 pub mod rival;
-pub mod rival_play;
 pub mod second_deck;
 pub mod sephiroth;
 pub mod settings_room;
@@ -478,7 +446,7 @@ pub const PLAYER_VICTIM: u64 = u64::MAX;
 #[derive(Resource)]
 pub struct Effects {
     pub weapon: Option<Arc<object_effect::Pax>>,
-    /// The room Keyblade's PAX as loaded (a duel rival's trail until his
+    /// The room Keyblade's PAX as loaded (another Sora's trail until his
     /// own Keyblade's kit replaces it).
     pub room_weapon: Option<Arc<object_effect::Pax>>,
     pub enemy: Option<Arc<object_effect::Pax>>,
@@ -975,7 +943,7 @@ pub struct SceneRoot(pub Entity);
 #[derive(Component)]
 pub struct RoomPart;
 
-/// The generated test arena's floor and walls (hidden while the duel is in
+/// The generated test arena's floor and walls (hidden while an arena is in
 /// the Mirage Arena).
 #[derive(Component)]
 pub struct ArenaFloor;
@@ -1365,8 +1333,7 @@ pub struct Game {
     pub cleanups: Vec<cleanup::Scope>,
     /// Elements to start next tick at a place other than Sora's own.
     pub fx_queue: Vec<drive_fx::Placed>,
-    /// [KH3 ruleset] Elements of a composite look, each with its style
-    /// (duel_kh3.rs); a look reaches the joiner by its id, not by these.
+    /// Elements an extension starts, each with its style.
     pub fx_styled: Vec<(drive_fx::Placed, drive_fx::Style)>,
     /// Battle actors' scene position and yaw this tick, and the motion
     /// serial and frame their triggers were last scanned at.
@@ -1397,8 +1364,7 @@ pub struct Game {
     /// presses (Triangle; decide, back or Triangle).
     pub talking: bool,
     pub rc_queued: bool,
-    /// [KH3 ruleset] Triangle for flowmotion (duel_kh3.rs): pressed since
-    /// the last tick.
+    /// Triangle pressed since the last tick, for an extension's driver.
     pub flow_queued: bool,
     /// A save point's Save was chosen: the camp opens the file menu.
     pub save_menu_wanted: bool,
@@ -8364,7 +8330,7 @@ pub fn simulate(
                 {
                     game.event(serde_json::json!({"event":"exit","tick":tick,"world":world,
                     "area":area,"entrance":entrance}));
-                    // A duel stays in its arena.
+                    // Another player's room stays where it is.
                     if a.transition.is_none() && !game.versus {
                         a.transition = Some(Transition {
                             stage: Stage::Closing,
@@ -8699,7 +8665,7 @@ pub fn effects_tick(
     weapon_trail::tick(&mut game, fx.weapon.as_ref(), 0, None);
     let second = game.weapon2_pax.clone();
     weapon_trail::tick(&mut game, second.as_ref(), 1, None);
-    // A duel's other Sora swings his own trails (his state swapped in).
+    // Another Sora swings his own trails (his state swapped in).
     let mut rivals = std::mem::take(&mut game.rivals);
     for r in &mut rivals {
         rival::swap(&mut game, r);
@@ -12497,7 +12463,7 @@ pub fn camp_tick(
         time_frames: tick as u32,
         members: std::iter::once(pause_menu::Member {
             name: c.source.name.clone(),
-            // The room's Sora shows level 1 [I]; a duel's is its level 99.
+            // The room's Sora shows level 1 [I]; with another player, his own.
             level: if game.versus {
                 i32::from(game.sora.vitals.level)
             } else {
@@ -15556,7 +15522,7 @@ impl Plugin for RoomPlugin {
 /// Runs this program with its arguments; `interactive` = started from the
 /// launcher menu (keep the console open on an error).
 pub fn main(args: Vec<PathBuf>, interactive: bool) -> std::process::ExitCode {
-    match run(args, Some(Box::new(online::OnlineRoom::default()))) {
+    match run(args, None) {
         Ok(AppExit::Success) => std::process::ExitCode::SUCCESS,
         Ok(_) => std::process::ExitCode::FAILURE,
         Err(e) => {
