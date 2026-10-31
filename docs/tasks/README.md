@@ -263,3 +263,4 @@ Records through T128 retain historical commands and paths. See [the folder guide
 | [T306](T306-fighters-init-first-update-last-natives.md) | Fighters' OBJ_INIT at the first update; the last untranslated natives; refusals gone | PARTIAL |
 | [T308](T308-room-hooks-for-connected.md) | The room opens up: a library, hooks and extra state for Kingdom Hearts: Connected | PASS: single player unchanged in the unattended runs; the duel code stays here until the new project runs alone. |
 | [T309](T309-multiplayer-moves-out.md) | Multiplayer and KH3 move out to Kingdom Hearts: Connected; their records went with them | PASS for single player in the unattended runs. |
+| [T310](T310-launcher-parts-public.md) | The launcher's parts public, so Kingdom Hearts: Connected uses them instead of copies | PASS for visibility only: `pub` added, no logic changed; no gate moves. |

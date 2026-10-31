@@ -341,7 +341,7 @@ impl Paint {
 }
 
 /// A quad over design rectangle `[x, y, w, h]`.
-fn quad(r: [f32; 4], uv: [i32; 4], colors: [Rgba; 4], blend: i32) -> Quad {
+pub fn quad(r: [f32; 4], uv: [i32; 4], colors: [Rgba; 4], blend: i32) -> Quad {
     let [x, y, w, h] = r;
     Quad {
         corners: [

@@ -9,8 +9,8 @@
 //! [launcher design, not the original's menus]. A test runs as a child
 //! `kh2fm <program> ...` process; this window waits hidden and comes back
 //! when the test closes.
-mod install;
-mod paint;
+pub mod install;
+pub mod paint;
 mod test_configs;
 
 use bevy::app::AppExit;
@@ -35,18 +35,18 @@ pub use install::{
 };
 
 // Palette.
-const TEXT: u32 = 0xf2f5fb;
-const MUTED: u32 = 0x9aa6bd;
-const FAINT: u32 = 0x5d6880;
-const ACCENT: u32 = 0x2f63d6;
-const ACCENT_DEEP: u32 = 0x1c3f99;
-const GOLD: u32 = 0xe9c45f;
+pub const TEXT: u32 = 0xf2f5fb;
+pub const MUTED: u32 = 0x9aa6bd;
+pub const FAINT: u32 = 0x5d6880;
+pub const ACCENT: u32 = 0x2f63d6;
+pub const ACCENT_DEEP: u32 = 0x1c3f99;
+pub const GOLD: u32 = 0xe9c45f;
 
-const MARGIN: f32 = 96.;
-const LIST_TOP: f32 = 196.;
-const LIST_BOTTOM: f32 = 630.;
-const LIST_WIDTH: f32 = 620.;
-const GUIDE_LIST_TOP: f32 = 572.;
+pub const MARGIN: f32 = 96.;
+pub const LIST_TOP: f32 = 196.;
+pub const LIST_BOTTOM: f32 = 630.;
+pub const LIST_WIDTH: f32 = 620.;
+pub const GUIDE_LIST_TOP: f32 = 572.;
 #[derive(Clone, Debug, PartialEq)]
 enum Action {
     UseFolder(PathBuf),
@@ -100,22 +100,22 @@ impl Item {
 }
 
 /// A folder check or scan running on its own thread.
-struct Job {
-    folder: PathBuf,
-    progress: Arc<AtomicU64>,
-    total: Arc<AtomicU64>,
-    scanning: Arc<AtomicBool>,
-    done: Arc<Mutex<Option<Result<Bound, String>>>>,
+pub struct Job {
+    pub folder: PathBuf,
+    pub progress: Arc<AtomicU64>,
+    pub total: Arc<AtomicU64>,
+    pub scanning: Arc<AtomicBool>,
+    pub done: Arc<Mutex<Option<Result<Bound, String>>>>,
 }
 
 /// A test running as a child process.
-struct Running {
-    child: Child,
-    name: String,
-    output: Arc<Mutex<VecDeque<String>>>,
-    window_open: Arc<AtomicBool>,
-    since_window: Option<f32>,
-    hidden: bool,
+pub struct Running {
+    pub child: Child,
+    pub name: String,
+    pub output: Arc<Mutex<VecDeque<String>>>,
+    pub window_open: Arc<AtomicBool>,
+    pub since_window: Option<f32>,
+    pub hidden: bool,
 }
 
 enum Screen {
@@ -247,7 +247,7 @@ impl Launcher {
 }
 
 /// A path as people type it (no `\\?\` prefix).
-fn plain(p: &Path) -> String {
+pub fn plain(p: &Path) -> String {
     let s = p.display().to_string();
     s.strip_prefix(r"\\?\").map(str::to_owned).unwrap_or(s)
 }
@@ -343,7 +343,7 @@ fn browse_items(path: Option<&Path>) -> Vec<Item> {
 }
 
 /// Words wrapped to `width`.
-fn wrap(paint: &mut Paint, face: Face, size: f32, text: &str, width: f32) -> Vec<String> {
+pub fn wrap(paint: &mut Paint, face: Face, size: f32, text: &str, width: f32) -> Vec<String> {
     let mut lines = Vec::new();
     for para in text.split('\n') {
         let mut line = String::new();
@@ -364,7 +364,7 @@ fn wrap(paint: &mut Paint, face: Face, size: f32, text: &str, width: f32) -> Vec
     lines
 }
 
-fn start_check(folder: PathBuf, dir: PathBuf, hint: Option<PathBuf>) -> Job {
+pub fn start_check(folder: PathBuf, dir: PathBuf, hint: Option<PathBuf>) -> Job {
     let done = Arc::new(Mutex::new(None));
     let progress = Arc::new(AtomicU64::new(0));
     let total = Arc::new(AtomicU64::new(0));
@@ -418,7 +418,7 @@ fn start_viewer(v: &install::Viewer, b: &Bound) -> Result<Running, String> {
     spawn(v.label.clone(), exe, args)
 }
 
-fn spawn(name: String, exe: PathBuf, args: Vec<String>) -> Result<Running, String> {
+pub fn spawn(name: String, exe: PathBuf, args: Vec<String>) -> Result<Running, String> {
     let mut command = Command::new(exe);
     command
         .args(&args)
@@ -469,7 +469,7 @@ fn spawn(name: String, exe: PathBuf, args: Vec<String>) -> Result<Running, Strin
 
 /// The lines worth showing from a failed test's output: its own messages,
 /// not the engine's log.
-fn failure_lines(output: &VecDeque<String>) -> Vec<String> {
+pub fn failure_lines(output: &VecDeque<String>) -> Vec<String> {
     let own: Vec<String> = output
         .iter()
         .filter(|l| !l.contains(" INFO ") && !l.contains(" WARN ") && !l.trim().is_empty())
@@ -1205,7 +1205,7 @@ fn list(l: &Launcher, p: &mut Paint, f: &mut Ui2dFrame) {
     }
 }
 
-fn triangle(f: &mut Ui2dFrame, p: &Paint, pts: [[f32; 2]; 3], c: Rgba) {
+pub fn triangle(f: &mut Ui2dFrame, p: &Paint, pts: [[f32; 2]; 3], c: Rgba) {
     let at = |[x, y]: [f32; 2]| paint::to_layout(x, y);
     f.draws.push((
         p.white,
@@ -1342,7 +1342,7 @@ fn guide(p: &mut Paint, f: &mut Ui2dFrame) {
     }
 }
 
-fn check_screen(job: &Job, p: &mut Paint, f: &mut Ui2dFrame) {
+pub fn check_screen(job: &Job, p: &mut Paint, f: &mut Ui2dFrame) {
     let path = p.fit(Face::Body, 18., &plain(&job.folder), paint::W - 2. * MARGIN);
     p.text(
         f,

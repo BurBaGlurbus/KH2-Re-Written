@@ -17,10 +17,10 @@ use std::time::UNIX_EPOCH;
 use validation::{KH2_EXECUTABLE, SourceManifest};
 
 const APP_ID: &str = "2552430";
-const SETTINGS: &str = "launcher.json";
+pub const SETTINGS: &str = "launcher.json";
 /// Schema 2 manifests list ~16k chunk digests (about 1.2 MB).
 const MANIFEST_LIMIT: u64 = 8 << 20;
-const CONFIG_LIMIT: u64 = 1 << 20;
+pub const CONFIG_LIMIT: u64 = 1 << 20;
 
 static DATA_DIR: OnceLock<PathBuf> = OnceLock::new();
 
@@ -49,7 +49,7 @@ pub fn data_dir() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from(".local/test-room"))
 }
 
-fn read_limited(path: &Path, limit: u64) -> io::Result<Vec<u8>> {
+pub fn read_limited(path: &Path, limit: u64) -> io::Result<Vec<u8>> {
     let mut bytes = Vec::new();
     File::open(path)?.take(limit + 1).read_to_end(&mut bytes)?;
     if bytes.len() as u64 > limit {
@@ -133,7 +133,7 @@ fn vdf_values(text: &str, key: &str) -> Vec<String> {
 
 /// Steam library folders: the default install locations and every library
 /// they list in `steamapps/libraryfolders.vdf`.
-pub(super) fn steam_libraries() -> Vec<PathBuf> {
+pub fn steam_libraries() -> Vec<PathBuf> {
     let mut roots = Vec::new();
     for var in ["ProgramFiles(x86)", "ProgramFiles"] {
         if let Some(p) = std::env::var_os(var) {
@@ -312,22 +312,22 @@ pub fn full_scan(dir: &Path, folder: &Path, progress: &AtomicU64) -> Result<Boun
 /// A program launch file (`launch*.json`): the program's config and extra
 /// options. Its source paths are replaced by the chosen folder.
 #[derive(Debug, Deserialize)]
-struct LaunchFile {
-    steam_root: Option<PathBuf>,
-    manifest: Option<PathBuf>,
-    config: PathBuf,
+pub struct LaunchFile {
+    pub steam_root: Option<PathBuf>,
+    pub manifest: Option<PathBuf>,
+    pub config: PathBuf,
     #[serde(default)]
-    options: Vec<String>,
+    pub options: Vec<String>,
 }
 
-fn launch_file(dir: &Path, name: &str) -> Result<LaunchFile, String> {
+pub fn launch_file(dir: &Path, name: &str) -> Result<LaunchFile, String> {
     let path = dir.join(format!("{name}.json"));
     let bytes = read_limited(&path, CONFIG_LIMIT)
         .map_err(|_| format!("The test's launch file {} is missing.", path.display()))?;
     serde_json::from_slice(&bytes).map_err(|e| format!("{}: {e}", path.display()))
 }
 
-fn config_identity(path: &Path) -> Option<String> {
+pub fn config_identity(path: &Path) -> Option<String> {
     let bytes = read_limited(path, CONFIG_LIMIT).ok()?;
     let v: serde_json::Value = serde_json::from_slice(&bytes).ok()?;
     Some(v.get("source_content_identity")?.as_str()?.to_owned())
@@ -387,7 +387,7 @@ fn write_made_configs(dir: &Path, identity: &str, find: FindFile) -> Result<(), 
 
 /// The made config `key` for `b`, written first if missing or for another
 /// build. The names are looked up in the bound folder's checked indexes.
-fn made_config(dir: &Path, b: &Bound, key: &str) -> Result<PathBuf, String> {
+pub fn made_config(dir: &Path, b: &Bound, key: &str) -> Result<PathBuf, String> {
     let path = dir.join(format!("auto-{key}.json"));
     if config_identity(&path).as_deref() == Some(b.identity.as_str()) {
         return Ok(path);
