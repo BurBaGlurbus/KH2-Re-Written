@@ -91,6 +91,7 @@ pub mod extension;
 pub use extension::{RoomExtension, RoomHooks, RoomSet, hooks};
 pub mod fighter;
 pub use fighter::{Fighter, Vitals};
+pub mod boss_fight;
 pub mod game_over;
 pub mod gear;
 pub mod gear_tour;
@@ -1113,6 +1114,9 @@ pub struct Game {
     pub ability_tour: Option<ability_inventory::Tour>,
     pub enemy_tour: bool,
     pub enemy_battle_tour: bool,
+    /// An area's boss fight (`--boss-fight`, boss_fight.rs): the room's own
+    /// Shadow is off.
+    pub boss_fight: bool,
     /// The Sephiroth fight (`--sephiroth`): the room's own Shadow is off and
     /// the boss is summoned from the area's placement.
     pub sephiroth: bool,
@@ -3908,6 +3912,17 @@ pub fn load(
             })
         })
     });
+    // A fight's objects name the motions Sora is captured into, so the area's
+    // spawns come before his kit.
+    let early_area = match area_job.take() {
+        Some(job) if area_enemies::enabled() => {
+            Some(job.join().map_err(|_| "area load thread panicked")??)
+        }
+        other => {
+            area_job = other;
+            None
+        }
+    };
     let kit = character_kit::load_kit(
         source,
         character_kit::KitInputs {
@@ -3941,7 +3956,15 @@ pub fn load(
             external: {
                 let mut m = limit_source.motions(1);
                 m.extend(summon::capture_motions(source, &battle));
-                m.extend(boss::capture_motions(source));
+                m.extend(boss::capture_motions(
+                    source,
+                    early_area.iter().flat_map(|(_, _, a)| {
+                        let standing = a.spawns.iter().map(|s| s.entity.object);
+                        let groups = a.state.objects.iter();
+                        standing
+                            .chain(groups.flat_map(|o| o.point.entities.iter().map(|e| e.object)))
+                    }),
+                ));
                 m
             },
         },
@@ -4077,14 +4100,18 @@ pub fn load(
     let enemy_character = enemy_object.map_or(0, |o| o.character);
     let enemy_weight = enemy_object.map_or(100., |o| o.weight());
 
-    let room = match (room, area_job) {
-        (Some(room), _) => room,
-        (None, Some(job)) => {
+    let room = match (room, early_area, area_job) {
+        (Some(room), ..) => room,
+        (None, Some((room, src, loaded)), _) => {
+            area_load = Some((src, loaded));
+            room
+        }
+        (None, None, Some(job)) => {
             let (room, src, loaded) = job.join().map_err(|_| "area load thread panicked")??;
             area_load = Some((src, loaded));
             room
         }
-        (None, None) => return Err("no room loaded".into()),
+        (None, None, None) => return Err("no room loaded".into()),
     };
     // Floors must carry partyStand and walls partyCollide (public labels).
     let triangles = TriangleWorld::new(
@@ -14054,6 +14081,7 @@ pub fn run(
     let mut gear_tour_quick = false;
     let mut enemy_tour = false;
     let mut enemy_battle_tour = false;
+    let mut boss_fight = false;
     let mut sephiroth = false;
     let mut sephiroth_result: Option<PathBuf> = None;
     let mut sephiroth_tour = false;
@@ -14170,6 +14198,10 @@ pub fn run(
                         .cloned()
                         .ok_or("enemy tour capture directory absent")?,
                 );
+            }
+            Some("--boss-fight") => {
+                boss_fight = true;
+                enemy_battle::set_boss_fight();
             }
             Some("--sephiroth") => sephiroth = true,
             Some("--sephiroth-result") => {
@@ -14776,6 +14808,7 @@ pub fn run(
         ability_tour: tour,
         enemy_tour,
         enemy_battle_tour,
+        boss_fight,
         sephiroth,
         sephiroth_result,
         sephiroth_tour,
@@ -15254,7 +15287,7 @@ pub fn run(
         };
         game.enemy = Some(EnemyRuntime {
             sora_target_radius: e.sora_target_radius,
-            enabled: !game.enemy_battle_tour && !game.sephiroth,
+            enabled: !game.enemy_battle_tour && !game.sephiroth && !game.boss_fight,
             // FUN_1403ee1d0 at the end of the area loader: the area's op
             // 0x1e level when it gives one (hb01 btl 75: 80). [U] With none
             // the executable sums the story's `btlv` rows; the config's
@@ -15551,6 +15584,7 @@ impl Plugin for RoomPlugin {
             .init_resource::<enemy_battle_tour::Checks>()
             .init_resource::<area_enemies::AreaEnemies>()
             .init_resource::<sephiroth::Fight>()
+            .init_resource::<boss_fight::Fight>()
             .add_plugins(SkatePlugins)
             .add_systems(
                 Startup,
@@ -15580,6 +15614,7 @@ impl Plugin for RoomPlugin {
                         enemy_battle_tour::tick,
                         area_enemies::tick,
                         sephiroth::tick,
+                        boss_fight::tick,
                         enemy_tour::tick,
                         field_npc_tick,
                         talk_tick,

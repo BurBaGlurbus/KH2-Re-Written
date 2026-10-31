@@ -5,36 +5,55 @@
 //! the bosses whose sets hold such slots.
 use super::*;
 
-/// The bosses whose scripts capture Sora, and the slots of their motion sets
-/// they capture him into: Sephiroth (N_HB630.mset 252 AQ90 the Block pose,
-/// 253 AQ90 the Block counter, 254 AQ91 the grab).
-/// [U] M_EX770 (objentry 306) captures Sora into 252, 253 (`rc_catch`,
-/// whose body motion holds range 25 = 28, the partner's reaction command),
-/// 255 and 256, but its motion slot 202 has a clock the room's enemy motion
-/// does not admit, so it is not fielded here.
-pub const CAPTURES: &[(u32, &[usize])] = &[(enemy_battle::SEPHIROTH, &[252, 253, 254])];
+/// The first slot of a motion set that can hold a captured motion.
+const CAPTURE_SLOT: usize = 240;
+/// The name a captured motion's first entry has when it is for Sora's skeleton.
+/// [I] Others are for the player of another story point: 0140 in B_EX100's set
+/// (Roxas), 0200 in B_LK120's (lion Sora), 0080 in one slot of B_CA010's; their
+/// skeletons are not the kit's, so they are left out.
+const CAPTURE_NAME: &[u8; 4] = b"0010";
+/// The objects whose captured motions fit Sora's kit's ids.
+const CAPTURE_OBJECTS: usize = 8;
+
+/// The objects of this room whose motion sets capture Sora, and the slots that
+/// hold him (Sephiroth: N_HB630.mset 252 AQ90 the Block pose, 253 AQ90 the
+/// Block counter, 254 AQ91 the grab). Read once, for his kit.
+static CAPTURES: std::sync::OnceLock<Vec<(u32, Vec<usize>)>> = std::sync::OnceLock::new();
 
 /// The id Sora's kit keeps a boss's captured motion under: below the
 /// summons' (0x7800..) and above the limits' (0x4000..).
 pub fn capture_clip(object: u32, slot: i32) -> Option<u16> {
     let (index, (_, slots)) = CAPTURES
+        .get()?
         .iter()
         .enumerate()
         .find(|(_, (o, _))| *o == object)?;
     let slot = usize::try_from(slot).ok().filter(|s| slots.contains(s))?;
-    Some(0x7000 | (index as u16) << 8 | (slot - 240) as u16)
+    Some(clip_id(index, slot))
 }
 
-/// Sora's captured motions of every boss in [`CAPTURES`] for his kit: (clip
-/// id, body motion, Keyblade motion).
+fn clip_id(index: usize, slot: usize) -> u16 {
+    0x7000 | (index as u16) << 8 | (slot - CAPTURE_SLOT) as u16
+}
+
+/// Sora's captured motions for his kit, from Sephiroth's motion set and those
+/// of `objects`: (clip id, body motion, Keyblade motion).
 pub fn capture_motions(
     source: &data::probe_source::ProbeSource,
+    objects: impl Iterator<Item = u32>,
 ) -> Vec<(
     u16,
     data::motion::SelectedMotion,
     Option<data::motion::SelectedMotion>,
 )> {
     let mut out = Vec::new();
+    let mut captures = Vec::new();
+    let mut wanted = vec![enemy_battle::SEPHIROTH];
+    for object in objects {
+        if !wanted.contains(&object) {
+            wanted.push(object);
+        }
+    }
     let Ok(mut library) = data::path_lookup::Library::open(source) else {
         return out;
     };
@@ -45,8 +64,18 @@ pub fn capture_motions(
     else {
         return out;
     };
-    for &(object, slots) in CAPTURES {
-        let Some(entry) = objects.iter().find(|o| o.object_id == object) else {
+    for object in wanted {
+        if captures.len() == CAPTURE_OBJECTS {
+            eprintln!(
+                "Sora's kit holds the captures of {CAPTURE_OBJECTS} objects; the rest left out"
+            );
+            break;
+        }
+        // Objentry types 0 and 1: the party, whose sets hold no captures.
+        let Some(entry) = objects
+            .iter()
+            .find(|o| o.object_id == object && o.object_type > 1)
+        else {
             continue;
         };
         let name: Vec<u8> = entry
@@ -67,24 +96,32 @@ pub fn capture_motions(
         let Ok(table) = data::bar::read_bar(&bytes) else {
             continue;
         };
-        for &slot in slots {
-            let Some(clip) = capture_clip(object, slot as i32) else {
-                continue;
-            };
-            let Some(anb) = table
-                .entries
-                .get(slot)
+        let mut slots = Vec::new();
+        for slot in CAPTURE_SLOT..table.entries.len() {
+            let clip = clip_id(captures.len(), slot);
+            let Some(anb) = Some(&table.entries[slot])
                 .filter(|e| e.offset > 0 && e.size > 0)
                 .and_then(|e| bytes.get(e.offset as usize..e.offset as usize + e.size as usize))
+                .filter(|anb| {
+                    data::bar::read_bar(anb).is_ok_and(|b| {
+                        b.entries
+                            .first()
+                            .is_some_and(|e| e.name_bytes == *CAPTURE_NAME)
+                    })
+                })
             else {
                 continue;
             };
-            match summon::capture_parts(anb, clip) {
-                Some((body, weapon)) => out.push((clip, body, weapon)),
-                None => eprintln!("{path}: slot {slot} holds no motion for Sora; left out"),
+            if let Some((body, weapon)) = summon::capture_parts(anb, clip) {
+                out.push((clip, body, weapon));
+                slots.push(slot);
             }
         }
+        if !slots.is_empty() {
+            captures.push((object, slots));
+        }
     }
+    let _ = CAPTURES.set(captures);
     out
 }
 
@@ -92,7 +129,9 @@ pub fn capture_motions(
 /// reads through `obj_motion_capture` (how long the capture lasts).
 pub fn capture_lengths(clips: &player::Clips, object: u32) -> HashMap<usize, u32> {
     CAPTURES
-        .iter()
+        .get()
+        .into_iter()
+        .flatten()
         .filter(|(o, _)| *o == object)
         .flat_map(|(_, slots)| slots.iter())
         .filter_map(|&slot| {

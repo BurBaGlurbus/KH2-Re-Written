@@ -205,10 +205,10 @@ impl Catalog {
             // Objentry.cs names 3/12 bosses and 4/21 normal enemies. Keep
             // every candidate and every direct journal enemy, without treating
             // boss type as proof of Heartless/Nobody species.
-            // The gimmicks some bosses search for (type 8) only for the boss
-            // runs (`enemy_battle::supported`).
+            // The objects a boss's fight searches for only in such a fight
+            // (`enemy_battle::supported`).
             let gimmick =
-                object.object_type == 8 && std::env::var_os("KH2RW_ENEMY_BOSSES").is_some();
+                matches!(object.object_type, 8 | 13 | 23) && super::enemy_battle::fight_objects();
             if !matches!(object.object_type, 3 | 4 | 12 | 21)
                 && !gimmick
                 && !journal.iter().any(|j| j.object == object.object_id)
@@ -374,7 +374,10 @@ pub fn load_entry_kind(source: &ProbeSource, entry: &Entry) -> Result<Kind> {
             material_issue.is_none(),
         )
     };
-    let mut models = if material_issue.is_none() {
+    // A script-only object (F_BB090, F_MU070_BOSS) has no model entry.
+    let mut models = if !source_bar.entries.iter().any(|e| e.entry_type == 4) {
+        vec![model_inspection::InspectionModel::empty()]
+    } else if material_issue.is_none() {
         model_inspection::read_model_at(source, found.index, found.ordinal, found.name_hash)
             .or_else(|_| original())?
     } else {

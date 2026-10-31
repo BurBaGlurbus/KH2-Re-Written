@@ -1153,7 +1153,7 @@ fn prty_words(library: &mut data::path_lookup::Library, index: i32) -> Option<[u
 /// model script, its class from the entry's type byte, and its HIT spheres.
 pub struct Spawner {
     source: Arc<data::probe_source::ProbeSource>,
-    models: std::collections::HashMap<u32, (String, u8, u16)>,
+    models: std::collections::HashMap<u32, (String, u8, u16, u16)>,
     scripts: std::collections::HashMap<u32, Option<Vec<u8>>>,
     shapes: std::collections::HashMap<u32, Vec<([f32; 3], f32)>>,
     /// The ordinary enemies among the entries: those made get their motions.
@@ -1176,6 +1176,7 @@ impl Spawner {
                             String::from_utf8_lossy(&o.model_name).into_owned(),
                             o.object_type,
                             o.flags,
+                            o.character,
                         ),
                     )
                 })
@@ -1208,8 +1209,9 @@ impl enemy::world::Spawner for Spawner {
         let mut sys = enemy::sysobj::Sysobj::bare();
         sys.appear_way = 2;
         sys.model = entry;
-        if let Some(&(_, kind, flags)) = self.models.get(&entry) {
+        if let Some(&(_, kind, flags, character)) = self.models.get(&entry) {
             sys.set_class(kind);
+            sys.entry_part = character;
             // FUN_1403ba700: `obj_is_entry_fly`.
             sys.entry_fly = flags >> 3 & 1 != 0;
         }

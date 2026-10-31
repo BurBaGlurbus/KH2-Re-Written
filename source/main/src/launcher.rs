@@ -18,7 +18,7 @@ use bevy::input::mouse::{MouseScrollUnit, MouseWheel};
 use bevy::prelude::*;
 use bevy::window::{FileDragAndDrop, PrimaryWindow, WindowResolution};
 use bevy::winit::{UpdateMode, WinitSettings};
-use install::{Bound, CheckError, Settings, TESTS};
+use install::{BOSS_FIGHTS, BOSSES, Bound, CheckError, Settings, TESTS};
 use paint::{Face, Paint, Rgba, rgba, with_alpha};
 use std::collections::VecDeque;
 use std::io::{BufRead, BufReader};
@@ -58,6 +58,9 @@ enum Action {
     /// Remember this Skate 3 ISO or `default.xex`.
     UseIso(PathBuf),
     Run(usize),
+    /// The boss list, and one of its fights.
+    Bosses,
+    RunBoss(usize),
     /// A developer viewer (index into `Launcher::viewers`).
     View(usize),
     /// Open the quick start guide.
@@ -128,6 +131,7 @@ enum Screen {
     BrowseIso(Option<PathBuf>, Bound),
     Check(Job),
     Tests(Bound),
+    Bosses(Bound),
     Loading(Running, Bound),
     Problem {
         title: String,
@@ -212,7 +216,14 @@ impl Launcher {
                 let mut items: Vec<Item> = TESTS
                     .iter()
                     .enumerate()
-                    .map(|(i, t)| Item::new(t.name, Action::Run(i)).detail(t.blurb))
+                    .map(|(i, t)| {
+                        let action = if t.program == BOSSES {
+                            Action::Bosses
+                        } else {
+                            Action::Run(i)
+                        };
+                        Item::new(t.name, action).detail(t.blurb)
+                    })
                     .collect();
                 items.extend(self.viewers.iter().enumerate().map(|(i, v)| {
                     Item::new(v.label.clone(), Action::View(i))
@@ -228,6 +239,11 @@ impl Launcher {
                 items.push(Item::new("Quit", Action::Quit));
                 items
             }
+            Screen::Bosses(_) => BOSS_FIGHTS
+                .iter()
+                .enumerate()
+                .map(|(i, f)| Item::new(f.name, Action::RunBoss(i)).detail(f.blurb))
+                .collect(),
             Screen::Problem { retry, .. } => {
                 let mut items = Vec::new();
                 if let Some(b) = retry {
@@ -404,6 +420,12 @@ fn start_test(index: usize, dir: &Path, b: &Bound) -> Result<Running, String> {
     let args = install::test_args(dir, test.program, b)?;
     let exe = std::env::current_exe().map_err(|e| e.to_string())?;
     spawn(test.name.into(), exe, args)
+}
+
+fn start_boss(index: usize, dir: &Path, b: &Bound) -> Result<Running, String> {
+    let args = install::test_args(dir, &format!("boss:{index}"), b)?;
+    let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+    spawn(BOSS_FIGHTS[index].name.into(), exe, args)
 }
 
 /// A viewer runs inside the launcher executable like a test: its program
@@ -694,6 +716,18 @@ fn act(l: &mut Launcher, action: Action, exit: &mut MessageWriter<AppExit>) {
                 launch(l, &action, b);
             }
         }
+        Action::Bosses => {
+            if let Screen::Tests(b) = &l.screen {
+                let b = b.clone();
+                l.go(Screen::Bosses(b));
+            }
+        }
+        Action::RunBoss(_) => {
+            if let Screen::Bosses(b) = &l.screen {
+                let b = b.clone();
+                launch(l, &action, b);
+            }
+        }
     }
 }
 
@@ -701,6 +735,7 @@ fn act(l: &mut Launcher, action: Action, exit: &mut MessageWriter<AppExit>) {
 fn launch(l: &mut Launcher, which: &Action, b: Bound) {
     let (name, started) = match which {
         Action::Run(i) => (TESTS[*i].name.to_owned(), start_test(*i, &l.dir, &b)),
+        Action::RunBoss(i) => (BOSS_FIGHTS[*i].name.to_owned(), start_boss(*i, &l.dir, &b)),
         Action::View(i) => (
             l.viewers[*i].label.clone(),
             start_viewer(&l.viewers[*i], &b),
@@ -726,6 +761,7 @@ fn back(l: &mut Launcher, exit: &mut MessageWriter<AppExit>) {
         Screen::Pick => l.settings.game_folder.clone().map(Action::UseFolder),
         Screen::Problem { retry: Some(b), .. } => Some(Action::UseFolder(b.folder.clone())),
         Screen::Tests(_) => Some(Action::Quit),
+        Screen::Bosses(b) => Some(Action::UseFolder(b.folder.clone())),
         Screen::Guide(_) => Some(Action::CloseGuide),
         _ => None,
     };
@@ -861,6 +897,7 @@ fn update(
                         | Screen::Browse(_)
                         | Screen::Problem { .. }
                         | Screen::Tests(_)
+                        | Screen::Bosses(_)
                         | Screen::Guide(_)
                 ) {
                     act(l, Action::UseFolder(folder), &mut exit);
@@ -1047,6 +1084,7 @@ fn draw(
             .map_or_else(|| "Find your Skate 3 ISO".into(), plain),
         Screen::Check(_) => "Checking the game folder".into(),
         Screen::Tests(_) => "Choose a test".into(),
+        Screen::Bosses(_) => "Choose a boss".into(),
         Screen::Loading(run, _) => format!("Loading {}", run.name),
         Screen::Problem { title, .. } => title.clone(),
     };

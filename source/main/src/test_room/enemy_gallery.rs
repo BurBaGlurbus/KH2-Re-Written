@@ -578,6 +578,11 @@ pub fn service(
             Request::Battle { actor } => Some(*actor),
             _ => None,
         };
+        let summoned = match &request {
+            Request::Summon { entry, .. } => gallery.catalog.entries.get(*entry),
+            _ => None,
+        }
+        .map(|e| e.model_name.clone());
         let result = match request {
             Request::Battle { actor: id } => (|| {
                 let game = game.as_deref_mut().ok_or("battle session absent")?;
@@ -675,6 +680,15 @@ pub fn service(
                 && let Some(game) = game.as_deref_mut()
             {
                 game.event(serde_json::json!({"event":"enemy_battle_rejected","actor":id,"tick":game.tick,"reason":error}));
+            }
+            if let Some(model) = summoned
+                && let Some(game) = game.as_deref_mut()
+            {
+                let tick = game.tick;
+                game.event(
+                    serde_json::json!({"event":"enemy_summon_rejected","model":model,
+                    "tick":tick,"reason":error}),
+                );
             }
             gallery.status = format!("Inspection load failed: {error}");
             if let Some(kind) = gallery.selected_actor().map(|a| Arc::clone(&a.kind)) {

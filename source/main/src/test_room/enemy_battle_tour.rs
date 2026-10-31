@@ -228,6 +228,29 @@ fn area_track(game: &mut Game, gallery: &enemy_gallery::EnemyGallery, checks: &m
 /// With `KH2RW_AREA_ENEMIES` the tour is the area's own enemies
 /// (`area_enemies`): their state at checkpoints and a verdict at the end
 /// (every placed actor fought without a fault).
+/// [Tour setup] `KH2RW_TOUR_LOW=<tick>`: Sora stops falling, and at that tick
+/// each boss drops to 1 HP, so the run reaches its death and the mission's
+/// clear (a finisher must still land the last blow).
+fn area_low(game: &mut Game, gallery: &mut enemy_gallery::EnemyGallery) {
+    let Some(at) = std::env::var("KH2RW_TOUR_LOW")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+    else {
+        return;
+    };
+    let v = &mut game.sora.vitals;
+    if v.hp * 3 < v.target.max_hp {
+        v.hp = v.target.max_hp;
+    }
+    if game.tick >= at && game.tick.is_multiple_of(60) {
+        for b in gallery.actors.iter_mut().filter_map(|a| a.battle.as_mut()) {
+            if matches!(&b.brain, enemy_battle::Brain::Script(s) if s.boss()) && b.brain.hp() > 1 {
+                b.brain.set_hp(1);
+            }
+        }
+    }
+}
+
 fn area_checkpoints(game: &mut Game, gallery: &enemy_gallery::EnemyGallery) {
     let tick = game.tick;
     if !(tick.is_multiple_of(300) || tick == end()) {
@@ -254,6 +277,7 @@ fn area_checkpoints(game: &mut Game, gallery: &enemy_gallery::EnemyGallery) {
             && gallery
                 .actors
                 .iter()
+                .filter(|a| !a.kind.scripts.is_empty())
                 .all(|a| a.error.is_none() && a.battle.as_ref().is_some_and(|b| b.error.is_none()));
         game.autoplay_failed |= !pass;
         game.event(
@@ -428,6 +452,7 @@ pub fn tick(
         return;
     }
     if area_enemies::enabled() {
+        area_low(&mut game, &mut gallery);
         area_track(&mut game, &gallery, &mut checks);
         area_checkpoints(&mut game, &gallery);
         return;

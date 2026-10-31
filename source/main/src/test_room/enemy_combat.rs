@@ -280,13 +280,25 @@ impl EnemyCombat {
             .iter()
             .filter(|e| e.entry_type == 23 && e.size != 0)
             .collect();
-        if collision_entries.len() != 1 {
-            return Err("combat collision entry absent or ambiguous".into());
+        let bones = kind.model.skinning.bones.len();
+        let (mut collision, default_groups) = match collision_entries.as_slice() {
+            [entry] => {
+                let bytes = entry_payload(&archive, entry)?;
+                (
+                    object_collision::read(bytes).map_err(|e| e.to_string())?,
+                    object_collision::default_groups(bytes).map_err(|e| e.to_string())?,
+                )
+            }
+            // A script-only object can have none.
+            [] if bones == 0 => (Vec::new(), 0),
+            _ => return Err("combat collision entry absent or ambiguous".into()),
+        };
+        // [I] With no bones its shapes stand on the object's origin.
+        if bones == 0 {
+            for e in collision.iter_mut().filter(|e| e.bone >= 0) {
+                e.bone = 0x4000;
+            }
         }
-        let collision_bytes = entry_payload(&archive, collision_entries[0])?;
-        let collision = object_collision::read(collision_bytes).map_err(|e| e.to_string())?;
-        let default_groups =
-            object_collision::default_groups(collision_bytes).map_err(|e| e.to_string())?;
         let wall_radius = collision
             .iter()
             .find(|e| e.kind == 1)

@@ -416,7 +416,7 @@ pub struct Test {
     pub program: &'static str,
 }
 
-pub const TESTS: [Test; 7] = [
+pub const TESTS: [Test; 8] = [
     Test {
         name: "Title screen",
         blurb: "Disney and Square Enix logos, intro, title menu",
@@ -448,10 +448,74 @@ pub const TESTS: [Test; 7] = [
         program: "sephiroth",
     },
     Test {
+        name: "Boss fights",
+        blurb: "Choose a boss; each fight starts in its own area",
+        program: BOSSES,
+    },
+    Test {
         name: "World map",
         blurb: "Fly the cursor between the world symbols",
         program: "wm",
     },
+];
+
+/// The test that opens the boss list rather than running anything.
+pub const BOSSES: &str = "bosses";
+
+/// A fight of the boss list: the area and the programs that place it.
+pub struct BossFight {
+    pub name: &'static str,
+    pub blurb: &'static str,
+    world: &'static str,
+    area: u8,
+    /// [map, btl, evt], as a jump by program id sets them.
+    programs: [i16; 3],
+}
+
+const fn boss(
+    name: &'static str,
+    blurb: &'static str,
+    world: &'static str,
+    area: u8,
+    map: i16,
+    btl: i16,
+) -> BossFight {
+    BossFight {
+        name,
+        blurb,
+        world,
+        area,
+        programs: [map, btl, -1],
+    }
+}
+
+/// The journal's boss Heartless and Nobody, each at the area program that
+/// places it (the journal gives the names, the programs' spawn sets the rest).
+pub const BOSS_FIGHTS: [BossFight; 10] = [
+    boss("Twilight Thorn", "Station of Awakening", "tt", 34, 0, 157),
+    boss("Shadow Stalker", "Beast's Castle", "bb", 5, 114, 78),
+    boss("Dark Thorn", "Beast's Castle", "bb", 5, 114, 79),
+    boss(
+        "Thresholder and Possessor",
+        "Beast's Castle",
+        "bb",
+        11,
+        129,
+        72,
+    ),
+    boss(
+        "Volcanic Lord and Blizzard Lord",
+        "Agrabah",
+        "al",
+        3,
+        130,
+        59,
+    ),
+    boss("Grim Reaper", "Port Royal", "ca", 1, 92, 54),
+    boss("Barbossa and Illuminator", "Port Royal", "ca", 10, 0, 60),
+    boss("Groundshaker", "Pride Lands", "lk", 15, 59, 59),
+    boss("Prison Keeper", "Halloween Town", "nm", 3, 92, 52),
+    boss("Storm Rider", "The Land of Dragons", "mu", 8, 29, 79),
 ];
 
 /// Where the Twilight Town test starts: Station Plaza (tt08) entrance 0,
@@ -587,6 +651,36 @@ pub fn sephiroth_room_config(arena: &Path) -> Result<PathBuf, String> {
     let (out, next) = (
         dir.join("test-room-sephiroth.json"),
         dir.join("test-room-sephiroth.json.new"),
+    );
+    let bytes = serde_json::to_vec_pretty(&room).map_err(|e| e.to_string())?;
+    fs::write(&next, bytes)
+        .and_then(|()| fs::rename(&next, &out))
+        .map_err(|e| e.to_string())?;
+    Ok(out)
+}
+
+/// A boss fight's room config: as Sephiroth's, the arena config's sources with
+/// the fight's area under its programs, Sora at the area's own place for him.
+fn boss_room_config(arena: &Path, fight: &BossFight) -> Result<PathBuf, String> {
+    let bytes =
+        read_limited(arena, CONFIG_LIMIT).map_err(|e| format!("{}: {e}", arena.display()))?;
+    let mut room: serde_json::Value =
+        serde_json::from_slice(&bytes).map_err(|e| format!("{}: {e}", arena.display()))?;
+    let o = room
+        .as_object_mut()
+        .ok_or("The arena config is not an object.")?;
+    for key in ["arena", "spawn", "spawn_yaw", "npc", "room_selection"] {
+        o.remove(key);
+    }
+    o.insert(
+        "area".into(),
+        serde_json::json!({"world":fight.world,"area":fight.area,"entrance":0,"story":[],
+            "stay":true,"programs":fight.programs}),
+    );
+    let dir = arena.parent().unwrap_or(Path::new("."));
+    let (out, next) = (
+        dir.join("test-room-boss.json"),
+        dir.join("test-room-boss.json.new"),
     );
     let bytes = serde_json::to_vec_pretty(&room).map_err(|e| e.to_string())?;
     fs::write(&next, bytes)
@@ -859,7 +953,18 @@ pub fn test_args(dir: &Path, program: &str, b: &Bound) -> Result<Vec<String>, St
             };
             ("sephiroth", sephiroth_room_config(&arena)?, options)
         }
-        other => return Err(format!("unknown test {other}")),
+        other => {
+            let fight = other
+                .strip_prefix("boss:")
+                .and_then(|i| BOSS_FIGHTS.get(i.parse::<usize>().ok()?))
+                .ok_or_else(|| format!("unknown test {other}"))?;
+            let (arena, mut options) = match own("launch") {
+                Some(own) => own,
+                None => (made("room")?, Vec::new()),
+            };
+            options.push("--boss-fight".to_owned());
+            ("room", boss_room_config(&arena, fight)?, options)
+        }
     };
     if config_identity(&config).as_deref() != Some(b.identity.as_str()) {
         return Err(
@@ -930,6 +1035,25 @@ mod tests {
         fn drop(&mut self) {
             let _ = fs::remove_dir_all(&self.0);
         }
+    }
+    #[test]
+    fn a_boss_room_keeps_the_sources_and_names_its_area() {
+        let dir = Fixture::new();
+        let arena = dir.0.join("arena.json");
+        fs::write(
+            &arena,
+            br#"{"arena":{},"spawn":[1,2,3],"spawn_yaw":0.5,"npc":{},"enemy":{"a":1},"hud":{}}"#,
+        )
+        .unwrap();
+        let out = boss_room_config(&arena, &BOSS_FIGHTS[3]).unwrap();
+        let room: serde_json::Value = serde_json::from_slice(&fs::read(out).unwrap()).unwrap();
+        for gone in ["arena", "spawn", "spawn_yaw", "npc"] {
+            assert!(room.get(gone).is_none(), "{gone}");
+        }
+        assert!(room.get("enemy").is_some() && room.get("hud").is_some());
+        assert_eq!(room["area"]["world"], "bb");
+        assert_eq!(room["area"]["area"], 11);
+        assert_eq!(room["area"]["programs"], serde_json::json!([129, 72, -1]));
     }
     fn populate(root: &Path) {
         for (file, _) in validation::required_files() {
@@ -1258,9 +1382,15 @@ mod tests {
             .map(|n| bin.join(n))
             .find(|p| p.is_file())
             .unwrap_or_else(|| panic!("build the launcher first in {}", bin.display()));
-        for t in TESTS.iter() {
-            let mut args = test_args(&data, t.program, &bound).unwrap();
-            if matches!(t.program, "event" | "wm" | "sephiroth") {
+        let bosses = (0..BOSS_FIGHTS.len()).map(|i| format!("boss:{i}"));
+        let programs = TESTS
+            .iter()
+            .map(|t| t.program.to_owned())
+            .filter(|p| p != BOSSES)
+            .chain(bosses);
+        for program in programs {
+            let mut args = test_args(&data, &program, &bound).unwrap();
+            if matches!(program.as_str(), "event" | "wm" | "sephiroth") {
                 args.push("--load-only".into());
             } else {
                 args.extend(["--frames".into(), "240".into()]);
@@ -1269,7 +1399,7 @@ mod tests {
                 .args(&args)
                 .status()
                 .unwrap();
-            assert!(status.success(), "{} exited with {status}", t.name);
+            assert!(status.success(), "{program} exited with {status}");
         }
     }
 }

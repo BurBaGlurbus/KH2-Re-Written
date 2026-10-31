@@ -744,15 +744,30 @@ pub const SEPHIROTH_SHEET: u16 = 140;
 /// The row `btlobj_set_sheet` falls back to (FUN_1403ebf30): the host's
 /// stand-in until the object's own script binds its sheet.
 const FALLBACK_SHEET: u16 = 0x45;
-/// Objects that can fight in the room: Sephiroth, and every ordinary enemy
-/// (objentry types 4 and 21, OpenKH Objentry.cs's normal enemies), each run
-/// by its own object script. `KH2RW_ENEMY_BOSSES` admits the boss types (3
-/// and 12) and the gimmicks some of them search for (8), for unattended runs:
-/// most are not playable fights yet.
+/// Objects that can fight in the room: the bosses and the ordinary enemies
+/// (objentry types 3, 12 and 4, 21, OpenKH Objentry.cs's names), each run by
+/// its own object script. The objects a boss's fight searches for (8, 13 and
+/// 23) only in a boss fight, or with `KH2RW_ENEMY_BOSSES` for unattended runs.
 pub fn supported(e: &Entry) -> bool {
-    (e.object_id, e.model_name.as_str()) == (SEPHIROTH, "N_HB630")
-        || matches!(e.object_type, 4 | 21)
-        || (matches!(e.object_type, 3 | 8 | 12) && std::env::var_os("KH2RW_ENEMY_BOSSES").is_some())
+    matches!(e.object_type, 3 | 4 | 12 | 21)
+        || (matches!(e.object_type, 8 | 13 | 23) && fight_objects())
+}
+
+static BOSS_FIGHT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// `--boss-fight`, set while the options are read: the room is an area's
+/// boss fight (boss_fight.rs).
+pub fn set_boss_fight() {
+    BOSS_FIGHT.store(true, std::sync::atomic::Ordering::Relaxed);
+}
+
+pub fn boss_fight() -> bool {
+    BOSS_FIGHT.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// The objects a boss's fight searches for take part.
+pub fn fight_objects() -> bool {
+    boss_fight() || std::env::var_os("KH2RW_ENEMY_BOSSES").is_some()
 }
 /// The hand-written Soldier, Shadow and Dusk brains, kept for comparison
 /// runs only (`KH2RW_ENEMY_AI=port`).
@@ -893,6 +908,17 @@ pub fn build_clips(
             build_clip(kind, choice, m.slot, motion, &mut windows)?,
         );
     }
+    // An objentry row naming no motion set (B_BB130, F_BB090): its motions are
+    // no-ops and the model holds its bind pose.
+    if kind.motions.is_empty() {
+        let pose = kind
+            .model
+            .skinning
+            .bind_pose(data::model_pose::PoseProfile::Modern)
+            .map_err(|e| e.to_string())?;
+        let motion = Arc::new(SelectedMotion::held(pose.matrix_bits));
+        clips.insert(0, build_clip(kind, 0, 0, motion, &mut windows)?);
+    }
     let mut hooks = HashMap::new();
     for (hook, motions) in kind.hook_tables() {
         let mut table = clips.clone();
@@ -963,6 +989,7 @@ fn build_clip(
             // in its own table; the pose is sampled the same way when shown.
             let root = match &motion.motion.raw {
                 Some(raw) => raw.sample(key).map_err(|e| e.to_string())?.1,
+                None if kind.model.skinning.bones.is_empty() => [0.; 3],
                 None => {
                     motion_eval::evaluate(&kind.model.skinning.bones, &motion.motion, key)
                         .map_err(|e| e.to_string())?
@@ -998,6 +1025,13 @@ fn build_clip(
                 })
                 .collect(),
         };
+        // A script-only object keeps its motions' clocks and events; it has no
+        // bones to pose.
+        let motion = if kind.model.skinning.bones.is_empty() {
+            Arc::new(SelectedMotion::held(Vec::new()))
+        } else {
+            motion
+        };
         Ok(Clip {
             choice,
             motion,
@@ -1026,9 +1060,7 @@ impl BattleActor {
         adopted: Option<Box<enemy::world::Object>>,
     ) -> Result<Self, String> {
         if !supported(entry) {
-            return Err(
-                "only ordinary enemies (objentry types 4 and 21) and Sephiroth fight".into(),
-            );
+            return Err("only enemies and bosses (objentry types 3, 4, 12 and 21) fight".into());
         }
         if kind.variants {
             return Err("contextual motion variants are not qualified for battle".into());

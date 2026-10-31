@@ -423,6 +423,48 @@ pub struct SelectedMotion {
     pub motion: InterpolatedMotion,
     pub triggers: Vec<crate::motion_trigger::SelectedTriggers>,
 }
+impl SelectedMotion {
+    /// See [`crate::raw_motion::RawMotion::held`].
+    pub fn held(matrices: Vec<[u32; 16]>) -> Self {
+        let table = || Table {
+            offset: 0,
+            stride: 0,
+            bytes: Vec::new(),
+        };
+        let bone_count = matrices.len();
+        SelectedMotion {
+            slot: 0,
+            sha256: String::new(),
+            motion: InterpolatedMotion {
+                raw: Some(crate::raw_motion::RawMotion::held(matrices)),
+                header_words: [0; 4],
+                interpolated_header_words: Vec::new(),
+                bone_count,
+                total_bone_count: bone_count,
+                initial_poses: Vec::new(),
+                forward_curves: Vec::new(),
+                inverse_curves: Vec::new(),
+                keys: Vec::new(),
+                key_tail_bytes: Vec::new(),
+                time_bits: Vec::new(),
+                value_bits: Vec::new(),
+                tangent_bits: Vec::new(),
+                constraints: table(),
+                activations: table(),
+                limiters: table(),
+                expressions: table(),
+                expression_nodes: table(),
+                helpers: table(),
+                joints: table(),
+                root: table(),
+                external_effectors: table(),
+                extra_sha256: String::new(),
+                extra_size: 0,
+            },
+            triggers: Vec::new(),
+        }
+    }
+}
 /// Fresh source-bound inspection admission; selections are locators, not proof
 /// of installed action routing or supported gameplay.
 pub fn read_selected(
@@ -782,6 +824,19 @@ impl InterpolatedMotion {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn a_held_motion_holds_its_matrices_at_every_key() {
+        let mut m = [0u32; 16];
+        m[12] = 5f32.to_bits();
+        let held = SelectedMotion::held(vec![m, m]);
+        assert_eq!(held.motion.frame_window().unwrap(), (0., 1., 60., 0.));
+        for key in [-3., 0., 0.5, 1., 9.] {
+            let (matrices, root) = held.motion.raw.as_ref().unwrap().sample(key).unwrap();
+            assert_eq!(matrices.len(), 2);
+            assert_eq!(matrices[1][3][0], 5.);
+            assert_eq!(root, [0.; 3]);
+        }
+    }
     #[test]
     fn public_slot_chooser_orders_by_mode() {
         let present = |slots: &'static [usize]| move |s: usize| slots.contains(&s);

@@ -762,6 +762,8 @@ impl ScriptBrain {
     fn entry_fields(&self, sys: &mut Sysobj) {
         sys.turn_rate = actor_physics::ObjParams::defaults(sys.sstm.fall_max).turn;
         sys.entry_id = self.setup.entry_id;
+        // Objentry +0x4c, what `obj_search_by_part` looks for.
+        sys.entry_part = self.setup.character;
         sys.spawn_serial = self.setup.spawn_serial;
         sys.entry_fly = self.setup.entry_flags >> 3 & 1 != 0;
         // FUN_140411700, which every battle object's constructor starts

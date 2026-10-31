@@ -111,6 +111,27 @@ pub fn read(bytes: &[u8]) -> io::Result<RawMotion> {
     })
 }
 impl RawMotion {
+    /// A one-frame table of the given model-space matrices (row-vector words).
+    /// It is no source record: it holds the bind pose of an object whose
+    /// objentry row names no motion set.
+    pub fn held(matrices: Vec<[u32; 16]>) -> Self {
+        let mut raw_header_words = [0; 20];
+        raw_header_words[4] = 1;
+        raw_header_words[17] = 1f32.to_bits();
+        raw_header_words[18] = 60f32.to_bits();
+        RawMotion {
+            header_words: [0; 4],
+            raw_header_words,
+            bone_count: matrices.len(),
+            frame_count: 1,
+            total_frame_count: 1,
+            animation_matrix_bits: matrices,
+            position_matrix_bits: Vec::new(),
+            extra_sha256: String::new(),
+            extra_size: 0,
+        }
+    }
+
     pub fn frame_window(&self) -> io::Result<(f32, f32, f32, f32)> {
         let values: [f32; 4] =
             std::array::from_fn(|i| f32::from_bits(self.raw_header_words[16 + i]));

@@ -62,6 +62,29 @@ pub struct InspectionModel {
     pub textures: Option<Arc<InspectionTextures>>,
     pub texture_routes: Vec<UvRoutes>,
 }
+impl InspectionModel {
+    /// The model of an object archive with no model entry: nothing to draw and
+    /// no bones.
+    pub fn empty() -> Self {
+        let skinning = crate::model_pose::Skinning::default();
+        let poses = skinning
+            .bind_pose(crate::model_pose::PoseProfile::Modern)
+            .into_iter()
+            .collect();
+        InspectionModel {
+            index: String::new(),
+            ordinal: 0,
+            bar_ordinal: 0,
+            excluded_linked_groups: 0,
+            parts: Vec::new(),
+            poses,
+            skinning,
+            textures: None,
+            texture_routes: Vec::new(),
+        }
+    }
+}
+
 /// Part `i`'s texture in every UV profile.
 fn part_key(routes: &[UvRoutes], i: usize) -> Vec<usize> {
     routes

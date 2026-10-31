@@ -1,5 +1,6 @@
-//! `KH2RW_AREA_ENEMIES=1`: the current area's ordinary enemies (objentry
-//! types 4 and 21 in the spawn sets its programs name) with their AI, each
+//! A boss fight (boss_fight.rs) or `KH2RW_AREA_ENEMIES=1`: the current area's
+//! enemies and bosses (the objentry types `enemy_battle::supported` admits, in
+//! the spawn sets its programs name) with their AI, each
 //! with its spawn record's serial, so the scripts meet the map's ledges and
 //! find the partners they look up. Entities of spawn types 0, 1 and 3 stand
 //! at their places when the area is ready; the groups of spawn type 2 come
@@ -141,7 +142,7 @@ fn free_point(
 }
 
 pub fn enabled() -> bool {
-    std::env::var_os("KH2RW_AREA_ENEMIES").is_some()
+    enemy_battle::boss_fight() || std::env::var_os("KH2RW_AREA_ENEMIES").is_some()
 }
 
 /// The group point's view of the room's objects.
@@ -188,14 +189,14 @@ fn list(
     }
 }
 
-/// The catalog entry of an ordinary enemy that can fight.
+/// The catalog entry of an object that can fight.
 fn fighter(gallery: &enemy_gallery::EnemyGallery, object: u32) -> Option<usize> {
     gallery.catalog.entries.iter().position(|e| {
         e.object_id == object
             && enemy_battle::supported(e)
             && e.object_id != enemy_battle::SEPHIROTH
             && e.model_available
-            && e.motions_available
+            && (e.motions_available || e.animation_name.is_empty())
     })
 }
 
@@ -269,9 +270,29 @@ pub fn tick(
             .iter()
             .filter_map(|s| place(&mut gallery, s, None))
             .collect();
+        // What stays out, and why: its objentry row's type, or what it lacks.
+        let skipped: Vec<_> = spawns
+            .iter()
+            .filter(|s| fighter(&gallery, s.entity.object).is_none())
+            .map(|s| {
+                let object = area.source.object(s.entity.object);
+                let row = gallery
+                    .catalog
+                    .entries
+                    .iter()
+                    .find(|e| e.object_id == s.entity.object);
+                serde_json::json!({"object":s.entity.object,
+                    "type":object.map(|o| o.object_type),
+                    "spawn_type":s.entity.spawn_type,
+                    "model":row.map(|e| e.model_name.clone()),
+                    "model_available":row.map(|e| e.model_available),
+                    "motions_available":row.map(|e| e.motions_available),
+                    "animation":row.map(|e| e.animation_name.clone())})
+            })
+            .collect();
         game.event(
             serde_json::json!({"event":"area_enemies_placed","tick":tick,
-            "world":here.0,"area":here.1,"enemies":placed}),
+            "world":here.0,"area":here.1,"enemies":placed,"skipped":skipped}),
         );
     }
     // [Tour setup] The unattended tour walks no route: Sora is put in the
