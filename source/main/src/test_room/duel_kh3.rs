@@ -128,7 +128,26 @@ pub(crate) fn geometry(game: &mut Game) -> Option<Arc<kh3::core::Geometry>> {
     Some(g)
 }
 
-/// The view a shotlock's reticle tests against: from behind this Sora, on the other.
+/// The camera the player sees through, for a shotlock's reticle (the screen's 16:9).
+pub(crate) fn camera_view(eye: Vec3, look: Vec3, fov: f32) -> Option<kh3_sora::magic::View> {
+    let from = kh3::core::to_core(eye.to_array());
+    let along = (kh3::core::to_core(look.to_array()) - from).normalize_or_zero();
+    if along == kh3_sora::Vec3::ZERO {
+        return None;
+    }
+    let (width, height) = (1920, 1080);
+    let wide = 2. * ((fov / 2.).tan() * width as f32 / height as f32).atan();
+    Some(kh3_sora::magic::View::from_camera(
+        from,
+        along.y.atan2(along.x).to_degrees(),
+        along.z.asin().to_degrees(),
+        wide.to_degrees(),
+        width,
+        height,
+    ))
+}
+
+/// The view a shotlock's reticle tests against for a Sora with no screen here: from behind him, on the other.
 pub(crate) fn aim_view(at: [f32; 3], foe: Option<[f32; 3]>) -> Option<kh3_sora::magic::View> {
     let (eye, target) = (kh3::core::to_core(at), kh3::core::to_core(foe?));
     let from = eye + kh3_sora::Vec3::Z * 100.;

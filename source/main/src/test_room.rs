@@ -1235,6 +1235,8 @@ struct Game {
     kh3_fx_remote: Vec<player::kh3::spell::FxRequest>,
     /// [KH3 mode] The player's KH3 files are being read: the duel waits.
     kh3_loading: bool,
+    /// [KH3 ruleset] The camera last shown, for the shotlock's reticle.
+    kh3_aim_view: Option<kh3_sora::magic::View>,
     /// The launcher's Test KH3 mode (`--kh3-test` without
     /// `--rival-script`): the KH3 ruleset against the training dummy (the
     /// room's Shadow, standing), with the KH3 ability menu on START.
@@ -8421,10 +8423,12 @@ fn simulate(
                 let foe_body = geometry
                     .as_ref()
                     .and_then(|_| duel_kh3::room_foe_body(&game));
-                let view = duel_kh3::aim_view(
-                    game.sora.player.position,
-                    foe.map(|f: player::kh3::Foe| f.position),
-                );
+                let view = game.kh3_aim_view.or_else(|| {
+                    duel_kh3::aim_view(
+                        game.sora.player.position,
+                        foe.map(|f: player::kh3::Foe| f.position),
+                    )
+                });
                 let out = {
                     let Game {
                         sora,
@@ -8749,6 +8753,18 @@ fn simulate(
         rig.kh3.tick(&frame)
     } else {
         rig.kh3 = kh3_camera::Kh3Camera::default();
+        None
+    };
+    game.kh3_aim_view = if duel_kh3::on(&game) {
+        match &rig.kh3_view {
+            Some(v) => duel_kh3::camera_view(v.eye, v.target, v.fov),
+            None => duel_kh3::camera_view(
+                from_world(rig.camera.eye),
+                from_world(rig.camera.look_at),
+                rig.camera.vertical_fov(),
+            ),
+        }
+    } else {
         None
     };
     // Sora fades out as first person starts and back in as it ends (the ramp
@@ -15084,6 +15100,7 @@ fn run(mut args: Vec<PathBuf>) -> Result<AppExit, Box<dyn std::error::Error>> {
         kh3_book: None,
         kh3_fx_remote: Vec::new(),
         kh3_loading: false,
+        kh3_aim_view: None,
         kh3_dummy: kh3_test && !rival_script,
         kh3_dummy_seen: 0,
         kh3_menu: None,
