@@ -925,8 +925,8 @@ impl Texture<'_> {
     /// one at the same address shows as a change; `Canvas::forget` covers
     /// the rest).
     fn fingerprint(&self) -> u64 {
-        use std::hash::{Hash, Hasher};
-        let mut h = std::hash::DefaultHasher::new();
+        use std::hash::{BuildHasher, Hash, Hasher};
+        let mut h = bevy::platform::hash::FixedHasher.build_hasher();
         (self.rgba.as_ptr() as usize, self.rgba.len(), self.size).hash(&mut h);
         self.texel_scale.to_bits().hash(&mut h);
         let texels = self.rgba.len() / 4;
@@ -1131,7 +1131,7 @@ impl Canvas {
     /// still sees the draws in order, so the result does not depend on the
     /// split.
     pub fn render(&mut self, draws: &[Draw], textures: &[Texture]) -> bool {
-        use std::hash::{Hash, Hasher};
+        use std::hash::{BuildHasher, Hash, Hasher};
         let hashing = bevy::log::info_span!("hud_hash").entered();
         let k = self.scale;
         let prints: Vec<u64> = textures.iter().map(Texture::fingerprint).collect();
@@ -1181,7 +1181,7 @@ impl Canvas {
         });
         self.hash.fill(0);
         for tri in &tris {
-            let mut h = std::hash::DefaultHasher::new();
+            let mut h = bevy::platform::hash::FixedHasher.build_hasher();
             tri.p.map(|v| v.map(f32::to_bits)).hash(&mut h);
             match &tri.fill {
                 Fill::Mask(z) => (0u8, *z).hash(&mut h),

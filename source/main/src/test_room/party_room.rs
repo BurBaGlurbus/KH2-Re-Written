@@ -114,12 +114,8 @@ impl MotionData {
         let bones = &model.skinning.bones;
         let evaluated = data::motion_eval::evaluate(bones, self.motion.as_ref()?, key).ok()?;
         let joints = evaluated.joints.get(..bones.len())?;
-        let pose = model.skinning.pose_from_worlds(joints).ok()?;
-        let vertices = pose
-            .position_bits
-            .iter()
-            .map(|p| Vec3::from_array(p.map(f32::from_bits)) - r)
-            .collect();
+        let positions = model.skinning.positions_from_worlds(joints).ok()?;
+        let vertices = positions.iter().map(|p| Vec3::from_array(*p) - r).collect();
         let rootless = joints
             .iter()
             .map(|w| {

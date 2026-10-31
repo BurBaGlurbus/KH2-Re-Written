@@ -1657,13 +1657,10 @@ pub fn present(
             && let Some(pose) = cp.weapon_frame(1, frame)
         {
             for (part, handle) in &second_parts {
-                let positions: Vec<[f32; 3]> = game.weapon2_indices[part.0]
+                let positions = game.weapon2_indices[part.0]
                     .iter()
-                    .map(|&i| pose[i as usize].to_array())
-                    .collect();
-                if let Some(mut mesh) = meshes.get_mut(&handle.0) {
-                    mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, positions);
-                }
+                    .map(|&i| pose[i as usize].to_array());
+                visual::room::set_positions(&mut meshes, &handle.0, positions);
             }
         }
         for (_, mut t, mut v) in &mut seconds {

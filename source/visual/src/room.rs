@@ -1,4 +1,5 @@
 //! Source-bound room loading shared by the room preview and test room.
+use bevy::mesh::Indices;
 use bevy::{
     asset::RenderAssetUsages,
     image::{ImageAddressMode, ImageFilterMode, ImageSampler, ImageSamplerDescriptor},
@@ -785,6 +786,36 @@ pub fn mesh(positions: Vec<[f32; 3]>, uvs: Vec<[f32; 2]>, colors: Vec<[f32; 4]>)
     .with_inserted_attribute(Mesh::ATTRIBUTE_COLOR, colors)
 }
 
+/// A model part's triangles, where `corners` names each corner's model vertex:
+/// a corner sharing its vertex, UV and colour with an earlier one shares its
+/// mesh vertex, in the same triangle order. `set_positions` takes this mesh's
+/// positions corner by corner, as it does a plain one's.
+pub fn part_mesh(
+    corners: &[u32],
+    positions: Vec<[f32; 3]>,
+    uvs: Vec<[f32; 2]>,
+    colors: Vec<[f32; 4]>,
+) -> Mesh {
+    let mut known = bevy::platform::collections::HashMap::with_capacity(corners.len() / 2);
+    let mut indices = Vec::with_capacity(corners.len());
+    let (mut p, mut u, mut c) = (Vec::new(), Vec::new(), Vec::new());
+    for (corner, &vertex) in corners.iter().enumerate() {
+        let key = (
+            vertex,
+            uvs[corner].map(f32::to_bits),
+            colors[corner].map(f32::to_bits),
+        );
+        let index = *known.entry(key).or_insert_with(|| {
+            p.push(positions[corner]);
+            u.push(uvs[corner]);
+            c.push(colors[corner]);
+            p.len() as u32 - 1
+        });
+        indices.push(index);
+    }
+    mesh(p, u, c).with_inserted_indices(Indices::U32(indices))
+}
+
 /// Coloured line segments (two vertices per segment) for debug overlays.
 pub fn line_mesh(positions: Vec<[f32; 3]>, colors: Vec<[f32; 4]>) -> Mesh {
     let uvs = vec![[0., 0.]; positions.len()];
@@ -846,27 +877,70 @@ where
     if let Some(mesh) = meshes.get(id)
         && let Some(VertexAttributeValues::Float32x3(held)) =
             mesh.attribute(Mesh::ATTRIBUTE_POSITION)
-        && held.iter().copied().eq(positions.clone())
+        && match mesh.indices() {
+            Some(Indices::U32(corners)) => corners
+                .iter()
+                .map(|&v| held[v as usize])
+                .eq(positions.clone()),
+            _ => held.iter().copied().eq(positions.clone()),
+        }
     {
         return;
     }
     // The same number of vertices: only their bytes need to reach the GPU.
     if crate::mesh_upload::active()
         && let Some(mesh) = meshes.get_mut_untracked(id)
-        && let Some(VertexAttributeValues::Float32x3(held)) =
-            mesh.attribute_mut(Mesh::ATTRIBUTE_POSITION)
-        && held.len() == positions.clone().count()
     {
-        held.splice(.., positions);
-        crate::mesh_upload::changed(id);
-        return;
+        if let Some(indices) = mesh.remove_indices() {
+            let written = write_corners(mesh, &indices, positions);
+            mesh.insert_indices(indices);
+            if written {
+                crate::mesh_upload::changed(id);
+            }
+            return;
+        }
+        if let Some(VertexAttributeValues::Float32x3(held)) =
+            mesh.attribute_mut(Mesh::ATTRIBUTE_POSITION)
+            && held.len() == positions.clone().count()
+        {
+            held.splice(.., positions);
+            crate::mesh_upload::changed(id);
+            return;
+        }
     }
     if let Some(mut mesh) = meshes.get_mut(id) {
         update_positions(&mut mesh, positions);
     }
 }
 
+/// Sets each corner's vertex in an indexed mesh. False, and nothing written,
+/// when the mesh is not `part_mesh`'s or the number of corners differs.
+fn write_corners(
+    mesh: &mut Mesh,
+    indices: &Indices,
+    positions: impl Iterator<Item = [f32; 3]> + Clone,
+) -> bool {
+    let (Indices::U32(corners), Some(VertexAttributeValues::Float32x3(held))) =
+        (indices, mesh.attribute_mut(Mesh::ATTRIBUTE_POSITION))
+    else {
+        return false;
+    };
+    if corners.len() != positions.clone().count() {
+        return false;
+    }
+    for (&vertex, position) in corners.iter().zip(positions) {
+        held[vertex as usize] = position;
+    }
+    true
+}
+
 pub fn update_positions(mesh: &mut Mesh, positions: impl IntoIterator<Item = [f32; 3]>) {
+    if let Some(indices) = mesh.remove_indices() {
+        let positions: Vec<_> = positions.into_iter().collect();
+        write_corners(mesh, &indices, positions.iter().copied());
+        mesh.insert_indices(indices);
+        return;
+    }
     if let Some(VertexAttributeValues::Float32x3(values)) =
         mesh.attribute_mut(Mesh::ATTRIBUTE_POSITION)
     {
@@ -1112,6 +1186,54 @@ mod texa_tests {
                 _ => unreachable!(),
             }
         }
+    }
+
+    #[test]
+    fn a_part_mesh_shares_vertices_and_draws_the_same_corners() {
+        // Two triangles over vertices 0 1 2 / 2 1 3; corner 4 repeats vertex 1
+        // with another UV, so only corner 3 is shared.
+        let corners = [0, 1, 2, 2, 1, 3];
+        let at = |v: u32| [v as f32, 1., 2.];
+        let positions: Vec<_> = corners.iter().map(|&v| at(v)).collect();
+        let mut uvs = vec![[0.; 2]; 6];
+        uvs[4] = [0.5, 0.];
+        let colors = vec![[1.; 4]; 6];
+        let mesh = part_mesh(&corners, positions.clone(), uvs, colors);
+        assert_eq!(mesh.count_vertices(), 5);
+        let Some(Indices::U32(indices)) = mesh.indices() else {
+            panic!("no indices");
+        };
+        let Some(VertexAttributeValues::Float32x3(held)) = mesh.attribute(Mesh::ATTRIBUTE_POSITION)
+        else {
+            panic!("no positions");
+        };
+        let drawn: Vec<_> = indices.iter().map(|&i| held[i as usize]).collect();
+        assert_eq!(drawn, positions);
+    }
+
+    #[test]
+    fn a_part_mesh_takes_positions_corner_by_corner() {
+        let corners = [0, 1, 2, 2, 1, 3];
+        let at = |v: u32, k: f32| [v as f32 * k, k, 0.];
+        let positions = |k: f32| corners.iter().map(|&v| at(v, k)).collect::<Vec<_>>();
+        let mut meshes = Assets::<Mesh>::default();
+        let id = meshes.add(part_mesh(
+            &corners,
+            positions(1.),
+            vec![[0.; 2]; 6],
+            vec![[1.; 4]; 6],
+        ));
+        set_positions(&mut meshes, &id, positions(2.));
+        let mesh = meshes.get(&id).unwrap();
+        let Some(Indices::U32(indices)) = mesh.indices() else {
+            panic!("no indices");
+        };
+        let Some(VertexAttributeValues::Float32x3(held)) = mesh.attribute(Mesh::ATTRIBUTE_POSITION)
+        else {
+            panic!("no positions");
+        };
+        let drawn: Vec<_> = indices.iter().map(|&i| held[i as usize]).collect();
+        assert_eq!(drawn, positions(2.));
     }
 
     #[test]

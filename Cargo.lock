@@ -4463,6 +4463,7 @@ version = "0.1.2"
 dependencies = [
  "audio",
  "bevy",
+ "bytemuck",
  "criterion",
  "data",
  "effect",
@@ -4474,6 +4475,7 @@ dependencies = [
  "serde_json",
  "sha2",
  "validation",
+ "wgpu",
  "world_map",
 ]
 

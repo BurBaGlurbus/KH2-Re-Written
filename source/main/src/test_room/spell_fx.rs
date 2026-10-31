@@ -22,6 +22,7 @@ use ::effect::{Instance, ModelDraw, Quad, Rng, math::Mat};
 use data::object_effect::{Dpd, OmdHeader, OmdMesh, Pax};
 use player::magic::{Anchor, Fx, FxLive};
 use visual::effect_draw::{Blend, EffectMaterial, PageCache, TexKey, model_alpha, report_missing};
+use visual::effect_mesh::{EffectMesh, EffectMeshes, Vertices};
 
 /// A script's effect call with the PAX of the spell it belongs to.
 pub struct Call {
@@ -366,7 +367,7 @@ pub struct SpellFx {
     images: PageCache,
     materials: HashMap<BatchKey, Handle<EffectMaterial>>,
     missing: Vec<(usize, u16)>,
-    spawned: Vec<Entity>,
+    meshes: EffectMeshes<BatchKey>,
     dpds: Vec<Arc<Dpd>>,
     reported: Vec<u32>,
 }
@@ -408,6 +409,8 @@ impl SpellFx {
         self.materials
             .retain(|k, _| k.texture.is_none_or(|t| !stale.contains(&t.dpd)));
         out.materials = before - self.materials.len();
+        self.meshes
+            .retain(|k| k.texture.is_none_or(|t| !stale.contains(&t.dpd)));
         let before = self.models.len();
         self.models.retain(|k, _| !stale.contains(&k.0));
         out.models = before - self.models.len();
@@ -419,7 +422,7 @@ impl SpellFx {
     pub fn count(&self) -> super::cleanup::FxCount {
         super::cleanup::FxCount {
             running: self.running.len(),
-            spawned: self.spawned.len(),
+            spawned: self.meshes.shown(),
             models: self.models.len(),
             materials: self.materials.len(),
             pages: self.images.len(),
@@ -824,20 +827,27 @@ pub fn present(
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<EffectMaterial>>,
     mut images: ResMut<Assets<Image>>,
+    mut seen: Query<&mut Visibility, With<EffectMesh>>,
 ) {
     let Some(mut fx) = fx else { return };
     if !fx.dirty {
         return;
     }
     fx.dirty = false;
-    for e in std::mem::take(&mut fx.spawned) {
-        commands.entity(e).despawn();
-    }
+    fx.meshes.begin();
     let batches = std::mem::take(&mut fx.batches);
     for (key, batch) in batches {
-        if batch.positions.is_empty() || fx.spawned.len() >= super::cleanup::MAX_EFFECT_ENTITIES {
+        if batch.positions.is_empty() || fx.meshes.shown() >= super::cleanup::MAX_EFFECT_ENTITIES {
             continue;
         }
+        let vertices = Vertices {
+            positions: batch.positions,
+            uvs: batch.uvs,
+            colors: batch.colors,
+        };
+        let Some(vertices) = fx.meshes.show(&key, vertices, &mut meshes, &mut seen) else {
+            continue;
+        };
         let material = match fx.materials.get(&key) {
             Some(m) => m.clone(),
             None => {
@@ -854,18 +864,11 @@ pub fn present(
                 m
             }
         };
-        let mesh = visual::room::mesh(batch.positions, batch.uvs, batch.colors);
-        let mut e = commands.spawn((
-            Mesh3d(meshes.add(mesh)),
-            MeshMaterial3d(material),
-            Transform::default(),
-            Visibility::default(),
-        ));
-        if let Some(s) = &scene {
-            e.insert(ChildOf(s.0));
-        }
-        fx.spawned.push(e.id());
+        let parent = scene.as_ref().map(|s| s.0);
+        fx.meshes
+            .spawn(key, vertices, material, parent, &mut commands, &mut meshes);
     }
+    fx.meshes.finish(&mut commands, &mut seen);
 }
 
 #[cfg(test)]

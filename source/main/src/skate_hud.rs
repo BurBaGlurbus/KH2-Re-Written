@@ -66,8 +66,14 @@ impl Plugin for SkateHudPlugin {
     }
 }
 
+/// The layer's camera. It draws only while the HUD has something on it: its
+/// transparent layer is otherwise a pass and a full-screen blend for nothing.
+#[derive(Component)]
+struct HudCamera;
+
 fn camera(mut commands: Commands) {
     commands.spawn((
+        HudCamera,
         Camera2d,
         Projection::Orthographic(OrthographicProjection {
             scaling_mode: ScalingMode::Fixed {
@@ -80,6 +86,7 @@ fn camera(mut commands: Commands) {
         // premultiplied colour (skate-game composites the HUD the same way).
         Camera {
             order: ORDER,
+            is_active: false,
             clear_color: ClearColorConfig::Custom(Color::NONE),
             output_mode: CameraOutputMode::Write {
                 blend_state: Some(BlendState::PREMULTIPLIED_ALPHA_BLENDING),
@@ -116,6 +123,7 @@ fn render(
     mut images: ResMut<Assets<Image>>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<HudMaterial>>,
+    mut cameras: Query<&mut Camera, With<HudCamera>>,
 ) {
     let draws = match skate.score_hud() {
         Some((hud, root)) => {
@@ -199,5 +207,8 @@ fn render(
     }
     for (entity, ..) in &assets.slots[used..] {
         commands.entity(*entity).insert(Visibility::Hidden);
+    }
+    for mut camera in &mut cameras {
+        camera.is_active = used > 0;
     }
 }

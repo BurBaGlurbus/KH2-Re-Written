@@ -189,10 +189,22 @@ struct Influence {
     vertex_bits: [u32; 4],
 }
 /// Checked, retained coordinates and assignments; packet decoding happens once.
-#[derive(Clone, Default, Serialize)]
+/// One flat list of influences, each vertex's ending at its `ends` entry.
+#[derive(Clone, Default)]
 pub struct Skinning {
     pub bones: Vec<BoneRecord>,
-    assignments: Vec<Vec<Influence>>,
+    influences: Vec<Influence>,
+    ends: Vec<u32>,
+}
+impl Serialize for Skinning {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeStruct;
+        let assignments: Vec<&[Influence]> = self.assignments().collect();
+        let mut s = serializer.serialize_struct("Skinning", 2)?;
+        s.serialize_field("bones", &self.bones)?;
+        s.serialize_field("assignments", &assignments)?;
+        s.end()
+    }
 }
 impl Skinning {
     pub fn read(bytes: &[u8]) -> io::Result<Self> {
@@ -205,8 +217,8 @@ impl Skinning {
             .next()
             .ok_or_else(|| invalid("skin skeleton absent"))?
             .bones;
-        let mut assignments = Vec::new();
-        let mut bindings = 0;
+        let mut influences = Vec::new();
+        let mut ends = Vec::new();
         for part in &geometry.parts {
             let group = groups
                 .iter()
@@ -220,15 +232,13 @@ impl Skinning {
                 .and_then(|p| p.vpu_data.as_ref())
                 .ok_or_else(|| invalid("pose type-1 packet missing"))?;
             for assignment in &part.assignments {
-                bindings += assignment.len();
                 if assignment.is_empty()
                     || assignment.len() > 32
-                    || bindings > MAX_ITEMS
-                    || assignments.len() == MAX_ITEMS
+                    || influences.len() + assignment.len() > MAX_ITEMS
+                    || ends.len() == MAX_ITEMS
                 {
                     return Err(invalid("pose assignments exceed bounded profile"));
                 }
-                let mut influences = Vec::new();
                 for binding in assignment {
                     let matrix = usize::try_from(binding.matrix_index)
                         .ok()
@@ -245,10 +255,56 @@ impl Skinning {
                         vertex_bits: vertex.map(f32::to_bits),
                     });
                 }
-                assignments.push(influences);
+                ends.push(influences.len() as u32);
             }
         }
-        Ok(Self { bones, assignments })
+        Ok(Self {
+            bones,
+            influences,
+            ends,
+        })
+    }
+    /// Each vertex's influences.
+    fn assignments(&self) -> impl Iterator<Item = &[Influence]> {
+        let mut start = 0;
+        self.ends.iter().map(move |&end| {
+            let assignment = &self.influences[start..end as usize];
+            start = end as usize;
+            assignment
+        })
+    }
+    /// The vertices under `matrices` (one per bone), in assignment order.
+    fn skin(&self, matrices: &[Matrix]) -> io::Result<Vec<[f32; 3]>> {
+        if matrices.len() != self.bones.len() {
+            return Err(invalid("skin matrix count mismatch"));
+        }
+        let mut positions = Vec::with_capacity(self.ends.len());
+        let mut all_finite = true;
+        for assignment in self.assignments() {
+            let mut position = [0.; 3];
+            if let [only] = assignment {
+                let v = only.vertex_bits.map(f32::from_bits);
+                position = transform3([v[0], v[1], v[2]], &matrices[only.matrix]);
+            } else {
+                for influence in assignment {
+                    let m = &matrices[influence.matrix];
+                    let v = influence.vertex_bits.map(f32::from_bits);
+                    for (i, sum) in position.iter_mut().enumerate() {
+                        let a = m[0][i] * v[0];
+                        let b = m[1][i].mul_add(v[1], a);
+                        let c = m[2][i].mul_add(v[2], b);
+                        *sum += m[3][i].mul_add(v[3], c);
+                    }
+                }
+            }
+            all_finite &= position.iter().all(|n| n.is_finite());
+            positions.push(position);
+        }
+        if all_finite {
+            Ok(positions)
+        } else {
+            Err(invalid("nonfinite pose input/output"))
+        }
     }
     fn pose(
         &self,
@@ -256,26 +312,11 @@ impl Skinning {
         profile: PoseProfile,
         arithmetic_profile: &'static str,
     ) -> io::Result<ModelPose> {
-        if matrices.len() != self.bones.len() {
-            return Err(invalid("skin matrix count mismatch"));
-        }
-        let mut positions = Vec::with_capacity(self.assignments.len());
-        for assignment in &self.assignments {
-            let mut position = [0.; 3];
-            for influence in assignment {
-                let matrix = &matrices[influence.matrix];
-                let vertex = influence.vertex_bits.map(f32::from_bits);
-                if assignment.len() == 1 {
-                    position = transform3([vertex[0], vertex[1], vertex[2]], matrix);
-                } else {
-                    let p = transform4(vertex, matrix);
-                    for i in 0..3 {
-                        position[i] += p[i];
-                    }
-                }
-            }
-            positions.push(finite(position)?.map(f32::to_bits));
-        }
+        let positions = self
+            .skin(&matrices)?
+            .into_iter()
+            .map(|p| p.map(f32::to_bits))
+            .collect();
         Ok(ModelPose {
             profile,
             arithmetic_profile,
@@ -290,12 +331,19 @@ impl Skinning {
     /// Vertex positions skinned with caller-supplied model-space bone
     /// matrices (row-vector layout, one per bone), in assignment order.
     pub fn positions_with(&self, matrices: &[[[f32; 4]; 4]]) -> io::Result<Vec<[f32; 3]>> {
-        Ok(self
-            .pose(matrices.to_vec(), PoseProfile::Modern, "host_matrices")?
-            .position_bits
-            .into_iter()
-            .map(|p| p.map(f32::from_bits))
-            .collect())
+        self.skin(matrices)
+    }
+    /// Only the vertices of `pose_from_worlds`.
+    pub fn positions_from_worlds(
+        &self,
+        worlds: &[crate::motion_eval::World],
+    ) -> io::Result<Vec<[f32; 3]>> {
+        let matrices: Vec<Matrix> = worlds
+            .iter()
+            .take(self.bones.len())
+            .map(|w| w.matrix())
+            .collect();
+        self.skin(&matrices)
     }
     pub fn bind_pose(&self, profile: PoseProfile) -> io::Result<ModelPose> {
         self.pose(
@@ -591,11 +639,85 @@ mod tests {
                 .map(f32::to_bits),
         }
     }
+    fn skinning(bones: Vec<BoneRecord>, assignments: Vec<Vec<Influence>>) -> Skinning {
+        let mut ends = Vec::new();
+        let mut influences = Vec::new();
+        for assignment in assignments {
+            influences.extend(assignment);
+            ends.push(influences.len() as u32);
+        }
+        Skinning {
+            bones,
+            influences,
+            ends,
+        }
+    }
+    #[test]
+    fn weighted_vertices_sum_as_the_full_transform_does() {
+        let v = [1.5, -2.25, 0.125, 0.75].map(f32::to_bits);
+        let w = [-3.5, 0.5, 7., 0.25].map(f32::to_bits);
+        let skin = skinning(
+            vec![bone(-1, 1., 10.), bone(0, 1., 1.)],
+            vec![vec![
+                Influence {
+                    matrix: 0,
+                    vertex_bits: v,
+                },
+                Influence {
+                    matrix: 1,
+                    vertex_bits: w,
+                },
+            ]],
+        );
+        let turn = |k: f32| {
+            let mut m = IDENTITY;
+            m[0] = [k.cos(), k.sin(), 0.1, 0.];
+            m[1] = [-k.sin(), k.cos(), 0.2, 0.];
+            m[3] = [k, 2. * k, 3. * k, 1.];
+            m
+        };
+        let matrices = [turn(0.3), turn(1.7)];
+        let a = transform4(v.map(f32::from_bits), &matrices[0]);
+        let b = transform4(w.map(f32::from_bits), &matrices[1]);
+        let expected: [f32; 3] = std::array::from_fn(|i| 0. + a[i] + b[i]);
+        let got = skin.positions_with(&matrices).unwrap();
+        assert_eq!(got[0].map(f32::to_bits), expected.map(f32::to_bits));
+    }
+    #[test]
+    fn skinning_serializes_as_one_list_per_vertex() {
+        let skin = skinning(
+            Vec::new(),
+            vec![
+                vec![Influence {
+                    matrix: 1,
+                    vertex_bits: [1, 2, 3, 4],
+                }],
+                vec![
+                    Influence {
+                        matrix: 0,
+                        vertex_bits: [5, 6, 7, 8],
+                    },
+                    Influence {
+                        matrix: 2,
+                        vertex_bits: [9, 10, 11, 12],
+                    },
+                ],
+            ],
+        );
+        assert_eq!(
+            serde_json::to_value(&skin).unwrap(),
+            serde_json::json!({"bones": [], "assignments": [
+                [{"matrix": 1, "vertex_bits": [1, 2, 3, 4]}],
+                [{"matrix": 0, "vertex_bits": [5, 6, 7, 8]},
+                 {"matrix": 2, "vertex_bits": [9, 10, 11, 12]}],
+            ]})
+        );
+    }
     #[test]
     fn retained_skinning_reuses_single_and_weighted_bindings_without_packets() {
-        let skin = Skinning {
-            bones: vec![bone(-1, 1., 10.), bone(0, 1., 1.)],
-            assignments: vec![
+        let skin = skinning(
+            vec![bone(-1, 1., 10.), bone(0, 1., 1.)],
+            vec![
                 vec![Influence {
                     matrix: 1,
                     vertex_bits: [2., 0., 0., 0.].map(f32::to_bits),
@@ -611,7 +733,7 @@ mod tests {
                     },
                 ],
             ],
-        };
+        );
         let pose = skin.bind_pose(PoseProfile::Legacy).unwrap();
         assert_eq!(pose.position_bits[0].map(f32::from_bits), [13., 0., 0.]);
         assert_eq!(pose.position_bits[1].map(f32::from_bits), [13.5, 0., 0.]);
@@ -623,13 +745,13 @@ mod tests {
     }
     #[test]
     fn raw_source_matrices_skin_directly_without_fabricated_parent_or_ik_poses() {
-        let skin = Skinning {
-            bones: vec![bone(-1, 1., 100.), bone(0, 1., 200.)],
-            assignments: vec![vec![Influence {
+        let skin = skinning(
+            vec![bone(-1, 1., 100.), bone(0, 1., 200.)],
+            vec![vec![Influence {
                 matrix: 1,
                 vertex_bits: [2., 0., 0., 0.].map(f32::to_bits),
             }]],
-        };
+        );
         let mut bytes = vec![0; 0x90 + 224];
         let body = &mut bytes[0x90..];
         body[..4].copy_from_slice(&1u32.to_le_bytes());

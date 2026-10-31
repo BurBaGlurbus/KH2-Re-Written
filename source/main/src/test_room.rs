@@ -711,11 +711,11 @@ impl ClipPoses {
         let r = self.root[f].to_array();
         let vertices = skin
             .skinning
-            .pose_from_worlds(joints)
-            .map(|pose| {
-                pose.position_bits
+            .positions_from_worlds(joints)
+            .map(|positions| {
+                positions
                     .iter()
-                    .map(|p| Vec3::from_array(std::array::from_fn(|i| f32::from_bits(p[i]) - r[i])))
+                    .map(|p| Vec3::from_array(std::array::from_fn(|i| p[i] - r[i])))
                     .collect()
             })
             .unwrap_or_default();
@@ -4983,7 +4983,12 @@ pub fn spawn_model(
         let entity = commands
             .spawn((
                 ChildOf(parent),
-                Mesh3d(meshes.add(mesh(positions, uvs, vec![[1.; 4]; part.indices.len()]))),
+                Mesh3d(meshes.add(visual::room::part_mesh(
+                    &part.indices,
+                    positions,
+                    uvs,
+                    vec![[1.; 4]; part.indices.len()],
+                ))),
                 MeshMaterial3d(material),
                 Transform::default(),
             ))
@@ -6461,6 +6466,8 @@ pub fn setup(
         ));
         commands.spawn((
             Camera3d::default(),
+            // (Unlit, like the main camera: no lights to cluster.)
+            bevy::light::cluster::ClusterConfig::None,
             Camera {
                 order: -3,
                 is_active: false,
@@ -6688,6 +6695,8 @@ pub fn setup(
         ));
         commands.spawn((
             Camera3d::default(),
+            // (Unlit, like the main camera: no lights to cluster.)
+            bevy::light::cluster::ClusterConfig::None,
             Camera {
                 order: -1,
                 is_active: false,
@@ -11631,13 +11640,10 @@ pub fn skate_present(
     }
     if let Some((_, positions)) = &posed {
         for (part, handle) in &parts {
-            let part_positions: Vec<[f32; 3]> = game.part_indices[part.0]
+            let part_positions = game.part_indices[part.0]
                 .iter()
-                .filter_map(|&i| positions.get(i as usize).copied())
-                .collect();
-            if let Some(mut mesh) = meshes.get_mut(&handle.0) {
-                mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, part_positions);
-            }
+                .filter_map(|&i| positions.get(i as usize).copied());
+            visual::room::set_positions(&mut meshes, &handle.0, part_positions);
         }
     }
     if board_models.shown.as_deref() == Some(wanted.as_str())
@@ -11650,14 +11656,11 @@ pub fn skate_present(
         {
             let frame = b.frame(game.tick);
             for (part, handle) in &board_parts {
-                let positions: Vec<[f32; 3]> = b.model.parts[part.0]
+                let positions = b.model.parts[part.0]
                     .indices
                     .iter()
-                    .filter_map(|&i| frame.get(i as usize).map(|v| v.to_array()))
-                    .collect();
-                if let Some(mut mesh) = meshes.get_mut(&handle.0) {
-                    mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, positions);
-                }
+                    .filter_map(|&i| frame.get(i as usize).map(|v| v.to_array()));
+                visual::room::set_positions(&mut meshes, &handle.0, positions);
             }
         }
         return;
