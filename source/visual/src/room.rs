@@ -746,6 +746,9 @@ pub fn rgba_image(
 pub fn render_target(width: u32, height: u32, format: TextureFormat) -> Image {
     let mut image = Image::new_target_texture(width, height, format, None);
     image.data = None;
+    // A resized target starts empty: a camera draws it again that frame. (A
+    // copy of the old texture would need COPY_SRC, and fail without it.)
+    image.copy_on_resize = false;
     image
 }
 
@@ -1061,6 +1064,21 @@ pub fn isolated_textures(chunks: usize, words: [u32; 8]) -> &'static [u16] {
 #[cfg(test)]
 mod texa_tests {
     use super::*;
+
+    #[test]
+    fn a_render_target_resizes_without_copying_its_old_texture() {
+        let image = render_target(4, 4, TextureFormat::Rgba8UnormSrgb);
+        assert!(image.data.is_none());
+        // Bevy would copy the old texture, which has no COPY_SRC: a validation
+        // error that quits the game at the first resize (fullscreen).
+        assert!(!image.copy_on_resize);
+        assert!(
+            !image
+                .texture_descriptor
+                .usage
+                .contains(bevy::render::render_resource::TextureUsages::COPY_SRC)
+        );
+    }
 
     #[test]
     fn animated_positions_keep_storage_and_exact_vertex_bytes() {
