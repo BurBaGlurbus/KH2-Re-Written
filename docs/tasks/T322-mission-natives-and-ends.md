@@ -41,7 +41,9 @@ FUN_1403aabe0 drops every entry of a code when that code is signalled.
 | `cargo fmt --all --check`, `cargo clippy --all-targets --locked -- -D warnings`, `cargo test --locked` | PASS |
 | Synthetic test of the reservation | PASS |
 | Grim Reaper tour with magic (`t13`) | The magic reactions and `medal_vary` run. He stays at full HP and the fight does not end in the tour; medal flow not confirmed by a count |
-| Boss sweep on this build (`g1`), ordinary sweep on this build (`g2`) | Running at the time of this commit |
+| Boss sweep on this build (`g1`, 66 programs, `KH2RW_TOUR_LOW=1500`, 5400 ticks) | 26 reach `mission_clear`, 40 do not, in a tour that forces bosses to 1 HP. FAIL for one fighter fault: B_EX180 at word 10031 in eh23 program 81. FAIL for one mission fault: MU07_MS201 at word 84. |
+| Ordinary sweep on this build (`g2`, 2400 ticks) | 75 of 78 programs logged, 149 models. FAIL for one fighter fault: N_EX760_BTL at word 6901 in wi03 program 53. FAIL for one mission fault: SHIP_BATTLE at word 72. Mission natives still missing: 1:26, 1:310, 1:317, 4:15, 4:37. al14 programs refused: no player spawn for entrance 0. Whether T319 and T320 changed how ordinary enemies behave was not looked at, only that they ran |
+| Launcher's Boss fights screen on screen, launcher smoke test over the list | NOT RUN |
 | Side by side with the installed game | NOT RUN |
 
 ## Uncertainty
@@ -58,4 +60,5 @@ PARTIAL.
 
 ## Next
 
-The two sweeps' results, then a mission's OBJ_DAMAGE.
+Stopped here at the owner's request on 2026-11-01. What is left is on issue #163: the five mission natives, the faults above, a
+mission's OBJ_DAMAGE, then the Gambler's Sora side, which was not started.
