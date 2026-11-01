@@ -29,6 +29,8 @@ pub struct Cheats {
     pub invincible: bool,
     /// The enemy stands still.
     pub enemy_frozen: bool,
+    /// The crown the Crown page picked, 0..=3; none follows the Proofs held.
+    pub crown: Option<u8>,
 }
 
 /// One white texel, for the panel, the bars and the arrows.
@@ -217,6 +219,10 @@ enum Page {
     Items,
     Forms,
     Growth,
+    /// Every body of Sora and Roxas.
+    Outfits,
+    /// The crown on Sora's model.
+    Crown,
     Roster(enemy_catalog::Category),
     /// The summoned enemies.
     Actors,
@@ -238,6 +244,7 @@ impl Page {
         matches!(
             self,
             Self::Items
+                | Self::Outfits
                 | Self::Roster(_)
                 | Self::Actors
                 | Self::Preview(PreviewTab::Motions | PreviewTab::Actions)
@@ -297,7 +304,9 @@ impl Page {
     fn parent(self) -> Option<Self> {
         match self {
             Self::Home(_) => None,
-            Self::Items | Self::Forms | Self::Growth => Some(Self::Home(HomeTab::Sora)),
+            Self::Items | Self::Forms | Self::Growth | Self::Outfits | Self::Crown => {
+                Some(Self::Home(HomeTab::Sora))
+            }
             Self::Roster(_) | Self::Actors => Some(Self::Home(HomeTab::Enemies)),
             Self::Preview(_) => Some(Self::Actors),
             Self::Rooms(_) => Some(Self::Home(HomeTab::Warp)),
@@ -310,6 +319,8 @@ impl Page {
             Self::Items => "Items".into(),
             Self::Forms => "Drive Form".into(),
             Self::Growth => "Growth Abilities".into(),
+            Self::Outfits => "Outfits".into(),
+            Self::Crown => "Crown".into(),
             Self::Roster(category) => format!("Summon {}", category.label()),
             Self::Actors => "Summoned Enemies".into(),
             Self::Preview(_) => "Enemy Preview".into(),
@@ -321,7 +332,9 @@ impl Page {
     fn path(self) -> String {
         match self {
             Self::Home(_) | Self::Preview(_) => String::new(),
-            Self::Items | Self::Forms | Self::Growth => format!("Sora / {}", self.title()),
+            Self::Items | Self::Forms | Self::Growth | Self::Outfits | Self::Crown => {
+                format!("Sora / {}", self.title())
+            }
             Self::Roster(_) => "Enemies / Summon".into(),
             Self::Actors => "Enemies / Summoned".into(),
             Self::Rooms(world) => format!("Warp / {}", area::world_name(world)),
@@ -339,6 +352,8 @@ impl Page {
             Self::Items => "Left/Right change   type to search   Esc/B back",
             Self::Forms => "Enter/A change form   Esc/B back",
             Self::Growth => "Left/Right change level   Esc/B back",
+            Self::Outfits => "Enter/A wear   type to search   Esc/B back",
+            Self::Crown => "Enter/A choose   Left/Right change count   Esc/B back",
             Self::Roster(_) => "Enter/A summon   type to search   Esc/B back",
             Self::Actors => "Enter/A preview   type to search   Esc/B back",
             Self::Preview(PreviewTab::Motions | PreviewTab::Actions) => {
@@ -374,6 +389,10 @@ enum Action {
     Item(u16),
     Form(u8),
     Growth(usize),
+    /// Wears this object; none is base Sora again.
+    Outfit(Option<u32>),
+    /// Shows this crown, 0..=3; none follows the Proofs held.
+    Crown(Option<u8>),
     Summon(usize),
     SelectActor(u64),
     /// Plays the motion at this index in the enemy's motion list.
@@ -436,6 +455,8 @@ impl Action {
                 Page::Items => "Change item stock and spell levels.",
                 Page::Forms => "Change into a Drive form, or revert.",
                 Page::Growth => "Change the levels of Sora's growth abilities.",
+                Page::Outfits => "Wear any Sora or Roxas model the install has.",
+                Page::Crown => "The Final Mix crown: it follows the Proofs Sora holds.",
                 Page::Roster(Category::Heartless) => "Pick a Heartless to summon in front of Sora.",
                 Page::Roster(Category::Nobody) => "Pick a Nobody to summon in front of Sora.",
                 Page::Roster(Category::Unresolved) => {
@@ -461,6 +482,10 @@ impl Action {
             Self::Form(0) => "Leave the current form.",
             Self::Form(_) => "Change into this form with a full gauge.",
             Self::Growth(_) => "Left/Right change the level. Equip it in the pause menu.",
+            Self::Outfit(None) => "Back to base Sora and the room's own forms.",
+            Self::Outfit(Some(_)) => "Wear this model. The menu closes while it loads.",
+            Self::Crown(None) => "The game's rule: one Proof copper, two silver, all three gold.",
+            Self::Crown(Some(_)) => "Show this crown. World costumes and Roxas have none.",
             Self::Summon(_) => "Summon this enemy in front of Sora.",
             Self::SelectActor(_) => "Open this enemy's animation preview.",
             Self::PlayMotion(_) => "Play this motion. The menu stays open.",
@@ -624,6 +649,20 @@ impl DebugMenu {
         self.search = search.into();
     }
 
+    /// Opens page number `n` of the outfit tour: Outfits, its list further
+    /// down, an Outfits search and Crown.
+    pub fn show_outfit_page(&mut self, n: usize) {
+        self.open = true;
+        let (page, cursor, search) = match n {
+            0 => (Page::Outfits, 0, ""),
+            1 => (Page::Outfits, 40, ""),
+            2 => (Page::Outfits, 0, "roxas"),
+            _ => (Page::Crown, 2, ""),
+        };
+        self.go_to(page, cursor);
+        self.search = search.into();
+    }
+
     /// Whether the menu is on screen (open, or still closing).
     pub fn visible(&self) -> bool {
         self.view.visible()
@@ -654,7 +693,9 @@ impl DebugMenu {
     /// Where the menu reopens: the preview where it was left, otherwise the
     /// last of the menu's own tabs.
     fn reopen(&mut self, keep_preview: bool) {
-        if keep_preview && matches!(self.page, Page::Preview(_)) {
+        if keep_preview && matches!(self.page, Page::Preview(_))
+            || matches!(self.page, Page::Outfits | Page::Crown)
+        {
             self.top = 0;
         } else {
             let (tab, cursor) = self.home;
@@ -1031,6 +1072,8 @@ const HELP: &[(&str, &[(&str, &str)])] = &[
         "Pages",
         &[
             ("Sora", "Restore, level, cheats, items"),
+            ("Outfits", "Any Sora or Roxas model"),
+            ("Crown", "Copper, silver, gold crown"),
             ("Enemies", "Battle enemy, summon, preview"),
             ("Enemy Preview", "Play and inspect motions"),
             ("Warp", "Any installed room"),
@@ -1187,6 +1230,28 @@ fn rows(
                         ..row("Drive form", Action::Page(Page::Forms), drive.is_some())
                     },
                     row("Growth abilities", Action::Page(Page::Growth), true),
+                    Row {
+                        value: text(
+                            drive
+                                .and_then(|d| {
+                                    let id = d.outfit?;
+                                    d.src.outfits.iter().find(|o| o.object_id == id)
+                                })
+                                .map_or("Default", |o| o.label.as_str()),
+                        ),
+                        ..row(
+                            "Outfits",
+                            Action::Page(Page::Outfits),
+                            drive.is_some_and(|d| !d.src.outfits.is_empty()),
+                        )
+                    },
+                    Row {
+                        value: text(match game.cheats.crown {
+                            Some(level) => outfit::CROWN_NAMES[usize::from(level).min(3)],
+                            None => "Proofs",
+                        }),
+                        ..row("Crown", Action::Page(Page::Crown), drive.is_some())
+                    },
                     row(
                         "Give all puzzle pieces",
                         Action::PuzzlePieces,
@@ -1380,6 +1445,78 @@ fn rows(
                         })
                     }),
             );
+            list
+        }
+        Page::Outfits => {
+            let Some(d) = game.drive.as_ref() else {
+                return vec![row("Outfits need Drive forms loaded", Action::Info, false)];
+            };
+            let free = d.change.is_none();
+            let mut list = vec![Row {
+                value: if d.outfit.is_none() {
+                    text("Worn")
+                } else {
+                    Vec::new()
+                },
+                ..row("Default", Action::Outfit(None), free)
+            }];
+            let mut heading = None;
+            for outfit in &d.src.outfits {
+                if heading != Some(outfit.group) {
+                    heading = Some(outfit.group);
+                    list.push(section(outfit.group.label()));
+                }
+                list.push(Row {
+                    value: text(&if d.outfit == Some(outfit.object_id) {
+                        "Worn".to_owned()
+                    } else {
+                        outfit.model.replace('_', " ")
+                    }),
+                    ..row(&outfit.label, Action::Outfit(Some(outfit.object_id)), free)
+                });
+            }
+            list
+        }
+        Page::Crown => {
+            let on_model = outfit::wears_crown(game);
+            let picked = |choice: Option<u8>| {
+                if game.cheats.crown == choice {
+                    text("Chosen")
+                } else {
+                    Vec::new()
+                }
+            };
+            let mut list = vec![
+                section("Crown"),
+                Row {
+                    value: picked(None),
+                    ..row("Follow the Proofs held", Action::Crown(None), on_model)
+                },
+            ];
+            list.extend(
+                outfit::CROWN_NAMES
+                    .iter()
+                    .zip(0u8..)
+                    .map(|(&name, level)| Row {
+                        value: picked(Some(level)),
+                        ..row(name, Action::Crown(Some(level)), on_model)
+                    }),
+            );
+            list.push(section("Proofs"));
+            for id in outfit::PROOFS {
+                let label = camp
+                    .and_then(|c| c.source.items.table.iter().find(|r| r.id == id))
+                    .map_or_else(|| text(&format!("Item {id}")), |r| r.name.clone());
+                list.push(Row {
+                    label,
+                    value: text(&stock_of(game, camp, id).to_string()),
+                    action: Action::Item(id),
+                    enabled: game.items.is_some() || camp.is_some(),
+                });
+            }
+            if !on_model {
+                list.push(section("This model has no crown"));
+            }
             list
         }
         Page::Roster(category) => gallery
@@ -1827,6 +1964,15 @@ fn act(
             drive_room::rebuild_abilities(game, None);
             Some("Growth level changed. Equip it in Abilities".into())
         }
+        Action::Outfit(outfit) => {
+            drive_room::set_outfit(game, outfit);
+            menu.open = false;
+            Some("Loading the outfit".into())
+        }
+        Action::Crown(level) => {
+            game.cheats.crown = level;
+            None
+        }
         Action::Summon(entry) => {
             let from = Vec3::from_array(game.sora.player.position);
             let yaw = game.sora.player.yaw;
@@ -2011,11 +2157,23 @@ pub fn tick(
             h.updated = true;
         }
     }
+    // What the last outfit came to, once its kit has loaded or failed.
+    if let Some(result) = game.drive.as_mut().and_then(|d| d.outfit_result.take()) {
+        eprintln!("Debug menu: {result}");
+        menu.notice = Some((result, NOTICE_FRAMES));
+    }
+    if game.outfit_tour.is_some()
+        && let Some(page) = outfit::tour(&mut game)
+    {
+        menu.show_outfit_page(page);
+    }
     if game.autoplay.is_some() {
         if game.enemy_tour {
             enemy_tour::show_page(game.captures_taken, &mut menu, &mut gallery);
         }
-        if game.enemy_tour && (menu.open || menu.view != View::default()) {
+        if (game.enemy_tour || game.outfit_tour.is_some())
+            && (menu.open || menu.view != View::default())
+        {
             menu.settle_motion();
             menu.view = build_view(&mut menu, &game, area.as_deref(), camp.as_deref(), &gallery);
             if let Some(h) = hud.as_deref_mut() {

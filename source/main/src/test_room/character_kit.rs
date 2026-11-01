@@ -40,6 +40,13 @@ pub struct KitInputs<'a> {
     /// [test-room choice; the original's handling of an absent slot was
     /// not traced].
     pub fallback: Option<motion::MotionSetSelection>,
+    /// A body worn from the debug menu's Outfits page: a motion neither set
+    /// holds becomes one the set does hold, so a body with few motions stands
+    /// instead of failing to load [test-room choice].
+    pub lenient: bool,
+    /// The bones `motion_set` drives, on a body that shares only its first
+    /// bones with the set's skeleton (`motion_eval::evaluate_shared`).
+    pub shared_bones: usize,
     /// The Keyblade's own motion set at the same slots (attack volumes,
     /// swing sounds, key chain).
     pub weapon_motion_set: Option<motion::MotionSetSelection>,
@@ -98,6 +105,16 @@ pub fn blade_spheres(archive: &[u8]) -> Blade {
         ));
     }
     blade
+}
+
+/// An archive's object collision table (entry type 23), if it has one.
+pub fn collision_entry(archive: &[u8]) -> Option<&[u8]> {
+    let table = data::bar::read_bar(archive).ok()?;
+    let entry = table
+        .entries
+        .iter()
+        .find(|e| e.entry_type == 23 && e.offset > 0 && e.size > 0)?;
+    archive.get(entry.offset as usize..entry.offset as usize + entry.size as usize)
 }
 
 /// The Kingdom Key's reach, for a kit that reads no Keyblade of its own.
@@ -159,12 +176,16 @@ pub struct Kit {
     pub script_events: HashMap<u16, enemy::motion::MotionEvents>,
 }
 
+/// How many motion ids a lenient kit tries for its stand-in motion.
+const STAND_IN_IDS: u16 = 256;
+
 /// Reads `ids` from the set, falling back to `fallback` for absent ones;
-/// an id in neither is an error.
+/// an id in neither is an error, or when `lenient` the set's first motion.
 fn read_with_fallback(
     source: &ProbeSource,
     set: &motion::MotionSetSelection,
     fallback: Option<&motion::MotionSetSelection>,
+    lenient: bool,
     ids: &[u16],
 ) -> Result<Vec<motion::SelectedMotion>, Box<dyn std::error::Error>> {
     let mut found = motion::read_motion_ids_optional(source, set, ids)?;
@@ -182,6 +203,18 @@ fn read_with_fallback(
             *m = more.next().flatten();
         }
     }
+    if lenient {
+        for m in found.iter_mut().filter(|m| m.is_none()) {
+            for id in 0..STAND_IN_IDS {
+                *m = motion::read_motion_ids_optional(source, set, &[id])?
+                    .pop()
+                    .flatten();
+                if m.is_some() {
+                    break;
+                }
+            }
+        }
+    }
     ids.iter()
         .zip(found)
         .map(|(id, m)| m.ok_or_else(|| format!("motion {id:#x} absent from the set").into()))
@@ -196,11 +229,12 @@ fn evaluate_matrices(
     skinning: &data::model_pose::Skinning,
     motion: &data::motion::InterpolatedMotion,
     frame: f32,
+    shared: usize,
 ) -> std::io::Result<(data::model_pose::ModelPose, data::motion_eval::Evaluated)> {
     if motion.raw.is_some() {
         return skinning.sample_evaluated(motion, frame);
     }
-    let evaluated = data::motion_eval::evaluate(&skinning.bones, motion, frame)?;
+    let evaluated = data::motion_eval::evaluate_shared(&skinning.bones, motion, frame, shared)?;
     let matrix_bits = evaluated.joints[..skinning.bones.len()]
         .iter()
         .map(|w| {
@@ -238,6 +272,8 @@ pub fn load_kit(source: &ProbeSource, k: KitInputs) -> Result<Kit, Box<dyn std::
         second_joint,
         motion_set,
         fallback,
+        lenient,
+        shared_bones,
         weapon_motion_set,
         second_weapon_motion_set,
         ptya: ptya_bytes,
@@ -288,7 +324,7 @@ pub fn load_kit(source: &ProbeSource, k: KitInputs) -> Result<Kit, Box<dyn std::
     let spell_ids: Vec<u16> = spell_ids
         .iter()
         .zip(&present)
-        .filter(|(_, m)| m.is_some() || form == 0)
+        .filter(|(_, m)| m.is_some() || form == 0 && !lenient)
         .map(|(&id, _)| id)
         .collect();
     for &m in &spell_ids {
@@ -318,11 +354,12 @@ pub fn load_kit(source: &ProbeSource, k: KitInputs) -> Result<Kit, Box<dyn std::
     }
     let fb = fallback.as_ref();
     let mut ids: Vec<u16> = LOCOMOTION.iter().map(|&(_, id)| id).collect();
-    let mut motions = read_with_fallback(source, &motion_set, fb, &ids)?;
+    let mut motions = read_with_fallback(source, &motion_set, fb, lenient, &ids)?;
     motions.extend(read_with_fallback(
         source,
         &motion_set,
         fb,
+        lenient,
         &attack_motions,
     )?);
     ids.extend(&attack_motions);
@@ -338,13 +375,20 @@ pub fn load_kit(source: &ProbeSource, k: KitInputs) -> Result<Kit, Box<dyn std::
         source,
         &field(&motion_set),
         field_fb.as_ref(),
+        lenient,
         &[0, 1, 2],
     )?);
     ids.extend([0, 1, 2]);
     let battle_count = ids.len() - 3;
     // Damage reactions (motion ids 10..13) when an enemy can hit Sora.
     let hurt_count = if hurt {
-        motions.extend(read_with_fallback(source, &motion_set, fb, &SORA_HURT)?);
+        motions.extend(read_with_fallback(
+            source,
+            &motion_set,
+            fb,
+            lenient,
+            &SORA_HURT,
+        )?);
         ids.extend(SORA_HURT);
         SORA_HURT.len()
     } else {
@@ -352,7 +396,13 @@ pub fn load_kit(source: &ProbeSource, k: KitInputs) -> Result<Kit, Box<dyn std::
     };
     // Guard (PTYA 0x0b → motion 173), its success recoil (motion 42) and the
     // recoil of a swing that met the map (motion 0x29).
-    motions.extend(read_with_fallback(source, &motion_set, fb, &SORA_GUARD)?);
+    motions.extend(read_with_fallback(
+        source,
+        &motion_set,
+        fb,
+        lenient,
+        &SORA_GUARD,
+    )?);
     ids.extend(SORA_GUARD);
     // The drive-start (0x34) and drive-in (0x35) motions: base Sora's set
     // holds 0x34, the forms' sets 0x35 (FUN_14040ce60, FUN_140405630).
@@ -399,6 +449,7 @@ pub fn load_kit(source: &ProbeSource, k: KitInputs) -> Result<Kit, Box<dyn std::
         source,
         &lowered(&motion_set),
         lowered_fb.as_ref(),
+        lenient,
         &[1, 2],
     )?);
     ids.extend([1, 2]);
@@ -560,6 +611,7 @@ pub fn load_kit(source: &ProbeSource, k: KitInputs) -> Result<Kit, Box<dyn std::
             .map(|b| b.header_i32[1])
             .collect(),
         weapon_joint,
+        shared_bones,
     });
     // Each slot's weapon, whose own motions are skinned when shown.
     let weapon_skins = [
@@ -680,8 +732,12 @@ pub fn load_kit(source: &ProbeSource, k: KitInputs) -> Result<Kit, Box<dyn std::
                 root.push(Vec3::ZERO);
                 actor.skinning.sample_fk(&selected.motion, frame)?
             } else {
-                let (mut pose, evaluated) =
-                    evaluate_matrices(&actor.skinning, &selected.motion, frame as f32)?;
+                let (mut pose, evaluated) = evaluate_matrices(
+                    &actor.skinning,
+                    &selected.motion,
+                    frame as f32,
+                    shared_bones,
+                )?;
                 // Root motion moves the player; the rendered pose
                 // stays at the player origin.
                 let r = evaluated.root_translation;
@@ -776,6 +832,11 @@ pub fn load_kit(source: &ProbeSource, k: KitInputs) -> Result<Kit, Box<dyn std::
         // Range 35 opens the combo window only for its own motion id
         // (FUN_14040d810 case 0x23).
         let own_id = ids[clip_list.len()];
+        // A worn body's scene motions name no actionable range; its standing
+        // and running must still answer the stick [test-room choice].
+        if lenient && LOCOMOTION.iter().any(|&(_, id)| id == own_id) && clip.actionable.is_empty() {
+            clip.actionable.push((0, clip.end));
+        }
         for record in selected.triggers.iter().flat_map(|t| &t.records.ranges) {
             if record.trigger == 35 && record.parameters.first().map(|&m| m as u16) == Some(own_id)
             {

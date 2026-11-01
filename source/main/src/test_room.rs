@@ -105,6 +105,7 @@ pub mod limit_tour;
 pub mod magic_room;
 pub mod magic_tour;
 pub mod menu_friend;
+pub mod outfit;
 pub mod party_anim_tour;
 pub mod party_blade;
 pub mod party_camp_tour;
@@ -619,6 +620,8 @@ pub struct Skin {
     pub skinning: data::model_pose::Skinning,
     pub parents: Vec<i32>,
     pub weapon_joint: usize,
+    /// The bones a motion drives (`motion_eval::evaluate_shared`).
+    pub shared_bones: usize,
 }
 
 /// A few bones' matrices at one frame, the bones shared across a clip.
@@ -707,7 +710,9 @@ impl ClipPoses {
         let f = f.min(self.root.len().saturating_sub(1));
         let bones = &skin.skinning.bones;
         let key = (self.key_start as usize + f) as f32;
-        let Ok(evaluated) = data::motion_eval::evaluate(bones, motion, key) else {
+        let Ok(evaluated) =
+            data::motion_eval::evaluate_shared(bones, motion, key, skin.shared_bones)
+        else {
             return (Vec::new(), None);
         };
         let Some(joints) = evaluated.joints.get(..skin.parents.len()) else {
@@ -1285,6 +1290,8 @@ pub struct Game {
     pub limit_tour: bool,
     /// The unattended `--limit-form-tour` (limit_form_tour.rs).
     pub limit_form_tour: bool,
+    /// The unattended `--outfit-tour` (outfit.rs): its next step.
+    pub outfit_tour: Option<usize>,
     /// The unattended `--party-items-tour` (party_items_tour.rs).
     pub party_items_tour: bool,
     /// The unattended `--party-camp-tour` (party_camp_tour.rs).
@@ -4011,6 +4018,8 @@ pub fn load(
             second_joint: None,
             motion_set: selection.clone(),
             fallback: None,
+            lenient: false,
+            shared_bones: usize::MAX,
             weapon_motion_set: weapon_set.clone(),
             second_weapon_motion_set: None,
             ptya: ptya_bytes,
@@ -4064,6 +4073,9 @@ pub fn load(
         f.system_pax = system_pax.map(Arc::new);
         f.texcommon = texcommon;
         f.prize_pax = prize_pax.map(Arc::new);
+        if let Ok(library) = data::path_lookup::Library::open(source) {
+            f.outfits = outfit::catalog(&objects, |path| library.find(path).is_some());
+        }
         f
     });
     // The forms' and Revert's names for the command menu.
@@ -7067,7 +7079,11 @@ pub fn menu_model_present(
     }
     // The member model is base Sora's walk; in a Drive form the room's
     // clips are the form's.
-    if game.drive.as_ref().is_some_and(|d| d.shown != 0) {
+    if game
+        .drive
+        .as_ref()
+        .is_some_and(|d| d.shown != 0 || d.outfit.is_some())
+    {
         return;
     }
     let c = &game.clip_poses[model.clip];
@@ -7477,6 +7493,8 @@ pub fn simulate(
         (Vec2::ZERO, false, false)
     } else if game.party_anim_tour {
         (party_anim_tour::stick(tick), false, false)
+    } else if game.outfit_tour.is_some() {
+        (outfit::tour_stick(tick), false, false)
     } else if game.magic_tour {
         (
             Vec2::from_array(magic_tour::stick(tick, game.magic_shift)),
@@ -12684,7 +12702,7 @@ pub fn field_running(
     game.field_step
         && (game.versus
             || camp.is_none_or(|c| !c.menu_up())
-                && !debug.open
+                && (!debug.open || game.outfit_tour.is_some())
                 && game_over.is_none_or(|g| g.field_runs()))
 }
 
@@ -12772,8 +12790,12 @@ pub fn camp_tick(
             tour.logical(game.tick)
         } else if game.save_point_tour {
             reaction_command::save_tour_logical(tick)
-        } else if game.magic_tour || game.sephiroth_tour || game.enemy_battle_tour {
-            // The magic, Sephiroth and enemy combat tours never open the
+        } else if game.magic_tour
+            || game.sephiroth_tour
+            || game.enemy_battle_tour
+            || game.outfit_tour.is_some()
+        {
+            // The magic, Sephiroth, enemy combat and outfit tours never open the
             // camp (the enemy roster runs past the camp check's ticks).
             0
         } else if game.versus {
@@ -14386,6 +14408,7 @@ pub fn run(
     let mut summon_tour = false;
     let mut limit_tour = false;
     let mut limit_form_tour = false;
+    let mut outfit_tour = None;
     let mut party_items_tour = false;
     let mut party_camp_tour = false;
     let mut game_over_tour = false;
@@ -14469,6 +14492,7 @@ pub fn run(
                 )
             }
             Some("--autoplay") if autoplay.is_none() => autoplay = options.next().cloned(),
+            Some("--outfit-tour") => outfit_tour = Some(0),
             Some("--capture-at") if capture_at.is_none() => {
                 capture_at = Some(
                     options
@@ -15164,9 +15188,10 @@ pub fn run(
         back_queued: false,
         debug_blow: false,
         cheats: debug_menu::Cheats {
-            invincible: magic_tour,
+            invincible: magic_tour || outfit_tour.is_some(),
             // The survey's rooms keep their enemies moving.
-            enemy_frozen: magic_tour && !room_survey,
+            enemy_frozen: magic_tour && !room_survey || outfit_tour.is_some(),
+            ..Default::default()
         },
         shortcuts: ROOM_SHORTCUTS,
         drive: None,
@@ -15290,6 +15315,7 @@ pub fn run(
         summon_stick: [0.; 3],
         limit_tour,
         limit_form_tour,
+        outfit_tour,
         party_items_tour,
         party_camp_tour,
         party_limits: Arc::new(std::mem::take(&mut loaded.party_limits)),
@@ -16020,7 +16046,8 @@ impl Plugin for RoomPlugin {
                         .chain(),
                 )
                     .chain(),
-            );
+            )
+            .add_systems(Update, outfit::crown.after(drive_room::present));
     }
 }
 

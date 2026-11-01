@@ -395,6 +395,46 @@ struct Node {
     cdr: i16,
 }
 
+/// `evaluate` for a model that shares only its first `shared` bones with `m`'s
+/// skeleton (a cutscene body: the same body, then other hair and face bones):
+/// those follow the motion, and the others stay in their bind pose under their
+/// parents, ahead of the IK helpers as `evaluate` orders them.
+pub fn evaluate_shared(
+    bones: &[BoneRecord],
+    m: &InterpolatedMotion,
+    frame: f32,
+    shared: usize,
+) -> io::Result<Evaluated> {
+    if shared >= bones.len() {
+        return evaluate(bones, m, frame);
+    }
+    let own = bones
+        .get(..m.bone_count)
+        .ok_or_else(|| invalid("evaluation skeleton/frame mismatch"))?;
+    let mut evaluated = evaluate(own, m, frame)?;
+    let helpers = evaluated.joints.split_off(m.bone_count);
+    evaluated.joints.truncate(shared);
+    for bone in &bones[shared..] {
+        let t = bone.transform_bits.map(f32::from_bits);
+        let local = Local {
+            scale: [t[0], t[1], t[2]],
+            rotation: [t[4], t[5], t[6]],
+            translation: [t[8], t[9], t[10]],
+        };
+        let parent = usize::try_from(bone.header_i32[1])
+            .ok()
+            .and_then(|p| evaluated.joints.get(p).copied())
+            .unwrap_or(World {
+                rotation: [0., 0., 0., 1.],
+                translation: [0.; 3],
+                scale: [1.; 3],
+            });
+        evaluated.joints.push(World::compose(&parent, &local));
+    }
+    evaluated.joints.extend(helpers);
+    Ok(evaluated)
+}
+
 /// Evaluates every joint of `m` at `frame` (key-time units).
 pub fn evaluate(bones: &[BoneRecord], m: &InterpolatedMotion, frame: f32) -> io::Result<Evaluated> {
     if m.raw.is_some() {

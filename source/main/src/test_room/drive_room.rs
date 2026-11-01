@@ -56,6 +56,12 @@ pub struct FormSources {
     base_object: String,
     /// `memt` row 0 (FUN_140405190): the object id of each form.
     pub form_objects: [u16; 7],
+    /// `memt`, whose other rows hold a world costume's forms.
+    memt: Vec<u8>,
+    /// SKLT: each character's weapon joints.
+    sklt: Vec<sklt::SkltEntry>,
+    /// The debug menu's Outfits page.
+    pub outfits: Vec<super::outfit::Outfit>,
     weapon_joint: usize,
     second_joint: Option<usize>,
     ptya: Vec<u8>,
@@ -175,6 +181,9 @@ impl FormSources {
             objects: objects.to_vec(),
             base_object: base_object.to_owned(),
             form_objects,
+            memt: memt.to_vec(),
+            sklt,
+            outfits: Vec::new(),
             weapon_joint,
             second_joint,
             ptya: bar_entry(battle, b"ptya")?.to_vec(),
@@ -244,15 +253,73 @@ impl FormSources {
             .ok_or_else(|| format!("form {form} object {id:#x} absent").into())
     }
 
+    /// The object form `form` shows while `outfit` is worn: the outfit, and
+    /// for a form the column of the outfit's `memt` row (FUN_140405190: u32
+    /// version, u32 count, 0x34-byte rows, the member's object at +0x10 and
+    /// the form's at +0x16 + form × 2), the default row's where it has none.
+    fn kit_object(
+        &self,
+        form: u8,
+        outfit: Option<u32>,
+    ) -> Result<&objentry::ObjectEntry, Box<dyn std::error::Error>> {
+        let Some(id) = outfit else {
+            return self.object(form);
+        };
+        if form == 0 {
+            return self
+                .objects
+                .iter()
+                .find(|o| o.object_id == id)
+                .ok_or_else(|| format!("outfit object {id:#x} absent").into());
+        }
+        let column = self
+            .memt
+            .get(8..)
+            .into_iter()
+            .flat_map(|rows| rows.as_chunks::<0x34>().0)
+            .find(|row| {
+                u16_at(*row, 0x10).is_some_and(|o| u32::from(o) == id)
+                    || (1..7)
+                        .any(|f| u16_at(*row, 0x16 + f * 2).is_some_and(|o| u32::from(o) == id))
+            })
+            .and_then(|row| u16_at(row, 0x16 + form as usize * 2))
+            .filter(|&o| o != 0);
+        match column.and_then(|o| self.objects.iter().find(|e| e.object_id == u32::from(o))) {
+            Some(object) => Ok(object),
+            None => self.object(form),
+        }
+    }
+
     /// Builds form `form`'s kit from the installed files (run off the
-    /// main thread; the change task waits for it like FUN_14039e340).
+    /// main thread; the change task waits for it like FUN_14039e340). A
+    /// worn `outfit` takes base Sora's place; an object with no move set of
+    /// its own (objentry +0x4e = 0) plays by base Sora's tables.
     pub fn build(
         &self,
         source: &ProbeSource,
         form: u8,
         weapons: Weapons,
+        outfit: Option<u32>,
     ) -> Result<character_kit::Kit, Box<dyn std::error::Error>> {
-        let object = self.object(form)?;
+        let object = self.kit_object(form, outfit)?;
+        let worn = outfit.is_some() && form == 0;
+        let base = self.object(0)?;
+        let rules = if worn && object.neo_moveset == 0 {
+            base
+        } else {
+            object
+        };
+        let rules_name = String::from_utf8_lossy(&rules.model_name).into_owned();
+        // The object's own form decides its Keyblades and script motions.
+        let kit_form = if worn {
+            if matches!(object.form, 1..=6 | 10) {
+                object.form
+            } else {
+                0
+            }
+        } else {
+            form
+        };
         let name = String::from_utf8_lossy(&object.model_name).into_owned();
         let library = Library::open(source)?;
         let find = |path: &str| library.find(path).ok_or(format!("{path} is not installed"));
@@ -264,7 +331,15 @@ impl FormSources {
         }
         let mut actor = actors.remove(0);
         actor.merge_parts_by_texture();
-        let set_name = String::from_utf8_lossy(&object.animation_name).into_owned();
+        let bones = actor.skinning.bones.len();
+        let set_name = if worn {
+            super::outfit::motion_sets(object, &name)
+                .into_iter()
+                .find(|set| library.find(&format!("obj/{set}")).is_some())
+                .ok_or_else(|| format!("{name} has no motion set installed"))?
+        } else {
+            String::from_utf8_lossy(&object.animation_name).into_owned()
+        };
         let set = find(&format!("obj/{set_name}"))?;
         let motion_set = motion::MotionSetSelection {
             index: set.index.to_owned(),
@@ -277,14 +352,34 @@ impl FormSources {
         // wmst row names a second motion set) takes the form's own
         // Keyblade (FUN_1402fc630), the main one while its record is empty
         // [the original's handling of a Limit Form record was not traced].
-        let keyblades =
-            crate::keyblade_board::Keyblades::read(&self.went, &self.items, &self.objects, &name)?;
+        let keyblades = crate::keyblade_board::Keyblades::read(
+            &self.went,
+            &self.items,
+            &self.objects,
+            &rules_name,
+        )?;
+        // A worn body's WENT set may not name the equipped Keyblade.
+        let base_keyblades = if worn {
+            crate::keyblade_board::Keyblades::read(
+                &self.went,
+                &self.items,
+                &self.objects,
+                &self.base_object,
+            )
+            .ok()
+        } else {
+            None
+        };
+        let model_of = |item: u16| -> Option<&str> {
+            keyblades
+                .model(item)
+                .or_else(|| base_keyblades.as_ref().and_then(|k| k.model(item)))
+        };
         let load_weapon = |item: u16| -> Result<
             (model_inspection::InspectionModel, character_kit::Blade, f32),
             Box<dyn std::error::Error>,
         > {
-            let weapon_name = keyblades
-                .model(item)
+            let weapon_name = model_of(item)
                 .ok_or_else(|| format!("Keyblade {item:#x} has no model in the object's WENT set"))?
                 .to_owned();
             let w = find(&format!("obj/{weapon_name}.mdlx"))?;
@@ -303,13 +398,12 @@ impl FormSources {
         };
         let (weapon, blade0, reach0) = load_weapon(weapons.main)?;
         // The Keyblade's own effects (swing trail, hit sparks).
-        let weapon_pax = keyblades
-            .model(weapons.main)
-            .and_then(|m| object_pax(&mut Library::open(source).ok()?, m));
+        let weapon_pax =
+            model_of(weapons.main).and_then(|m| object_pax(&mut Library::open(source).ok()?, m));
         // FUN_1403ef750: each weapon slot's motion set is `obj/%s.mset` of
         // wmst row set × 2 + slot; an empty name (Antiform) leaves the
         // weapon without motions and unattached.
-        let set_index = object.neo_moveset as usize;
+        let set_index = rules.neo_moveset as usize;
         let wmst_name = |slot: usize| -> Option<String> {
             let at = (set_index * 2 + slot) * 0x20;
             let raw = self.wmst.get(at..at + 0x20)?;
@@ -320,7 +414,11 @@ impl FormSources {
             let Some(n) = wmst_name(slot) else {
                 return Ok(None);
             };
-            let f = find(&format!("obj/{n}.mset"))?;
+            let path = format!("obj/{n}.mset");
+            if worn && library.find(&path).is_none() {
+                return Ok(None);
+            }
+            let f = find(&path)?;
             Ok(Some(motion::MotionSetSelection {
                 index: f.index.to_owned(),
                 ordinal: f.ordinal,
@@ -329,8 +427,36 @@ impl FormSources {
             }))
         };
         let weapon_motion_set = weapon_set(0)?;
+        // Weapon joints: the room's Sora's, or a worn body's character's
+        // (SKLT), else its objentry +7 where SKLT's lie outside its skeleton.
+        let joints = if worn {
+            let row = self
+                .sklt
+                .iter()
+                .find(|e| u32::from(object.character) == e.character_id);
+            let primary = row
+                .and_then(|e| usize::try_from(e.primary_bone).ok())
+                .unwrap_or(self.weapon_joint);
+            let primary = if primary < bones {
+                primary
+            } else {
+                usize::from(object.weapon_joint).min(bones.saturating_sub(1))
+            };
+            let second = row
+                .map_or(self.second_joint, |e| {
+                    usize::try_from(e.secondary_bone).ok()
+                })
+                .filter(|&j| j < bones);
+            (primary, second)
+        } else {
+            (self.weapon_joint, self.second_joint)
+        };
         // Base Sora (objentry +0x57 = 0) has no slot 1.
-        let second_weapon_motion_set = if form == 0 { None } else { weapon_set(1)? };
+        let second_weapon_motion_set = if kit_form == 0 || joints.1.is_none() {
+            None
+        } else {
+            weapon_set(1)?
+        };
         let second = if second_weapon_motion_set.is_some() {
             Some(load_weapon(if weapons.sub != 0 {
                 weapons.sub
@@ -353,28 +479,81 @@ impl FormSources {
                 } else {
                     weapons.main
                 };
-                keyblades
-                    .model(item)
-                    .and_then(|m| object_pax(&mut Library::open(source).ok()?, m))
+                model_of(item).and_then(|m| object_pax(&mut Library::open(source).ok()?, m))
             })
             .flatten();
         let collision_archive = if self.hurt {
             let mut lib = Library::open(source)?;
-            Some(lib.read_found(&model)?)
+            let own = lib.read_found(&model)?;
+            // A body with no object collision uses base Sora's.
+            if worn && character_kit::collision_entry(&own).is_none() {
+                let base_name = String::from_utf8_lossy(&base.model_name);
+                let found = find(&format!("obj/{base_name}.mdlx"))?;
+                Some(lib.read_found(&found)?)
+            } else {
+                Some(own)
+            }
         } else {
             None
         };
-        let (params, _, _) = player_params(&self.objects, &name, &self.pref, &self.sstm)?;
+        let (params, _, _) = player_params(&self.objects, &rules_name, &self.pref, &self.sstm)?;
         let pax = object_pax(&mut Library::open(source)?, &name);
         // Slot 1 (the form Keyblade) hangs on SKLT's second bone.
         let second_joint = second_weapon_motion_set
             .is_some()
-            .then_some(self.second_joint)
+            .then_some(joints.1)
             .flatten();
+        // A worn body plays its own set, then base Sora's if it has his
+        // skeleton.
+        let fallback = if worn {
+            let base_name = String::from_utf8_lossy(&base.model_name);
+            let base_model = find(&format!("obj/{base_name}.mdlx"))?;
+            let base_bones = model_inspection::read_model_at(
+                source,
+                base_model.index,
+                base_model.ordinal,
+                base_model.name_hash,
+            )?
+            .first()
+            .map_or(0, |m| m.skinning.bones.len());
+            (base_bones == bones).then(|| self.base_set.clone())
+        } else {
+            (form != 0).then(|| self.base_set.clone())
+        };
+        // A body with another skeleton than its set's owner shares only the
+        // bones whose parents match (a cutscene body: its body, not its hair
+        // or face).
+        let owner = set_name.strip_suffix(".mset").unwrap_or(&set_name);
+        let owner_bones = if worn {
+            library
+                .find(&format!("obj/{owner}.mdlx"))
+                .and_then(|found| {
+                    let mut models = model_inspection::read_model_at(
+                        source,
+                        found.index,
+                        found.ordinal,
+                        found.name_hash,
+                    )
+                    .ok()?;
+                    Some(std::mem::take(&mut models.first_mut()?.skinning.bones))
+                })
+        } else {
+            None
+        };
+        let shared_bones =
+            owner_bones
+                .filter(|owner| owner.len() != bones)
+                .map_or(usize::MAX, |owner| {
+                    owner
+                        .iter()
+                        .zip(&actor.skinning.bones)
+                        .take_while(|(a, b)| a.header_i32[1] == b.header_i32[1])
+                        .count()
+                });
         character_kit::load_kit(
             source,
             character_kit::KitInputs {
-                form,
+                form: kit_form,
                 actor,
                 weapon,
                 weapon2,
@@ -382,14 +561,16 @@ impl FormSources {
                 blade_reach: [reach0, reach1],
                 weapon_pax,
                 weapon2_pax,
-                weapon_joint: self.weapon_joint,
+                weapon_joint: joints.0,
                 second_joint,
                 motion_set,
-                fallback: (form != 0).then(|| self.base_set.clone()),
+                fallback,
+                lenient: worn,
+                shared_bones,
                 weapon_motion_set,
                 second_weapon_motion_set,
                 ptya: &self.ptya,
-                ptya_pointer: object.neo_moveset as usize,
+                ptya_pointer: rules.neo_moveset as usize,
                 spell_ids: self.spell_ids.clone(),
                 hurt: self.hurt,
                 collision_archive,
@@ -397,7 +578,7 @@ impl FormSources {
                 params,
                 pax,
                 // Limit Form's limits (limitform-01 §3.4).
-                scripted: if form == forms::LIMIT {
+                scripted: if kit_form == forms::LIMIT {
                     [211, 212, 213]
                         .into_iter()
                         .chain(221..=227)
@@ -499,6 +680,11 @@ pub struct DriveRt {
     /// rebuild after it changes.
     pub main_weapon: u16,
     reweapon: Option<u8>,
+    /// The object worn in base Sora's place (the debug menu's Outfits), and
+    /// what the last choice came to, for its notice.
+    pub outfit: Option<u32>,
+    outfit_pending: bool,
+    pub outfit_result: Option<String>,
     /// Keyblades each kit shows: 0 (Antiform), 1 or 2.
     pub weapons: HashMap<u8, u8>,
     loading: Option<(u8, KitSlot)>,
@@ -589,6 +775,9 @@ impl DriveRt {
             change: None,
             stash: HashMap::new(),
             models: HashMap::new(),
+            outfit: None,
+            outfit_pending: false,
+            outfit_result: None,
             main_weapon: KINGDOM_KEY,
             reweapon: None,
             weapons: HashMap::new(),
@@ -868,8 +1057,11 @@ impl DriveRt {
             Arc::clone(&slot),
         );
         let weapons = self.weapons_for(form);
+        let outfit = self.outfit;
         std::thread::spawn(move || {
-            let built = src.build(&source, form, weapons).map_err(|e| e.to_string());
+            let built = src
+                .build(&source, form, weapons, outfit)
+                .map_err(|e| e.to_string());
             if let Ok(mut o) = out.lock() {
                 *o = Some(built);
             }
@@ -935,6 +1127,17 @@ impl DriveRt {
             None => Ok(false),
         }
     }
+}
+
+/// Wears `outfit` in base Sora's place, or base Sora again: a form in play
+/// ends, and the kit is rebuilt in the background and swapped in when ready.
+pub fn set_outfit(game: &mut Game, outfit: Option<u32>) {
+    end_form(game);
+    let Some(d) = game.drive.as_mut() else { return };
+    d.outfit = outfit;
+    d.outfit_pending = true;
+    d.outfit_result = None;
+    d.keyblades_changed(d.main_weapon);
 }
 
 /// FUN_14040ce60: start a change to `form` (0 = revert). A form plays the
@@ -1026,9 +1229,10 @@ fn swap_kit(game: &mut Game, form: u8) -> Result<(), String> {
             };
             d.weapons.insert(form, n);
             d.models.insert(form, (kit.actor, kit.weapon, kit.weapon2));
-            if let Some(p) = kit.pax {
-                d.paxes.insert(form, Arc::new(p));
-            }
+            match kit.pax {
+                Some(p) => d.paxes.insert(form, Arc::new(p)),
+                None => d.paxes.remove(&form),
+            };
             d.script_events.insert(form, kit.script_events);
             Stash {
                 blade: kit.blades,
@@ -1347,6 +1551,27 @@ pub fn rebuild_weapons(game: &mut Game) {
                         game.event(
                             serde_json::json!({"event":"keyblade_kit","tick":tick,"form":form}),
                         );
+                        // A worn body starts standing: the old clip may not
+                        // be in its kit.
+                        if game.drive.as_mut().is_some_and(|d| {
+                            let worn = d.outfit_pending;
+                            d.outfit_pending = false;
+                            if worn {
+                                d.outfit_result = Some("Outfit on".into());
+                            }
+                            worn
+                        }) {
+                            let p = &mut game.sora.player;
+                            if !p.dead() {
+                                let airborne = p.in_air();
+                                p.arrive(0, airborne, &game.clips);
+                                game.action_started = game.tick;
+                            }
+                            let outfit = game.drive.as_ref().and_then(|d| d.outfit);
+                            game.event(
+                                serde_json::json!({"event":"outfit_on","tick":tick,"object":outfit}),
+                            );
+                        }
                     }
                     Err(e) => {
                         game.event(serde_json::json!({"event":"keyblade_kit_error","error":e}))
@@ -1357,8 +1582,19 @@ pub fn rebuild_weapons(game: &mut Game) {
             Err(e) => {
                 if let Some(d) = game.drive.as_mut() {
                     d.reweapon = None;
+                    if d.outfit_pending {
+                        d.outfit_pending = false;
+                        d.outfit_result = Some(format!("Outfit failed: {e}"));
+                        // The kit on screen stays, so its rebuild must too.
+                        d.outfit = None;
+                        d.keyblades_changed(d.main_weapon);
+                    }
                 }
-                game.event(serde_json::json!({"event":"keyblade_kit_error","error":e}));
+                let outfit_error = game.drive.as_ref().and_then(|d| d.outfit_result.clone());
+                eprintln!("Kit rebuild failed: {e}");
+                game.event(
+                    serde_json::json!({"event":"keyblade_kit_error","error":e,"outfit":outfit_error}),
+                );
             }
         }
     }
