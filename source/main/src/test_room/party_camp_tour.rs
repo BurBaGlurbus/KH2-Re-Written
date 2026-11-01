@@ -95,6 +95,9 @@ const STEPS: &[(u64, u64, bool)] = &[
     (MOVE, DOWN, false),
     (20, DECIDE, false),
     (SCREEN, UP, true),
+    // Donald and Goofy change places: the room follows when the camp closes.
+    (20, DECIDE, false),
+    (20, DECIDE, true),
     (SCREEN, CANCEL, false),
     (SCREEN, CANCEL, false),
 ];

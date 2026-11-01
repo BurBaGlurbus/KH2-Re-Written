@@ -5383,6 +5383,7 @@ pub fn area_transition(
     area.bg_mask = next.state.setup.bg_mask;
     let tick = game.tick;
     game.save.note_world(next.world, tick);
+    party_room::follow_party_table(&mut game, next.world);
     area.current = next;
     // The old area's effects end with it; the new area's start next tick.
     game.fx_clear_map.push(None);
@@ -12746,6 +12747,11 @@ pub fn camp_tick(
         max_mp,
         party,
         journal_tour: game.journal_tour,
+        party_locked: {
+            let world = area.as_deref().map_or(0, |a| a.current.world);
+            let row = game_save::world_party(&game.save.party_table, world);
+            (0..4).map(|k| game_save::party_locked(&row, k)).collect()
+        },
     };
     // The menu chain (menu mode 10, FUN_14031aac0): the camp; deciding a
     // journal brings the curtain down over the camp's close; the journal
@@ -12917,6 +12923,18 @@ pub fn camp_tick(
                     }
                 }
             }
+            // FUN_14036b460: a Party swap goes into the world's table.
+            let world = area.as_deref().map_or(0, |a| a.current.world);
+            let order: Vec<u8> = menu.data.items.equipment[1..]
+                .iter()
+                .map(|e| e.character)
+                .collect();
+            let mut row = game_save::world_party(&game.save.party_table, world);
+            game_save::write_party_order(&mut row, &order);
+            if let Some(to) = game.save.party_table.get_mut(world as usize) {
+                *to = row;
+            }
+            party_room::follow_party_table(&mut game, world);
             if !game.party.is_empty() {
                 let records: Vec<_> = game.party.iter().map(|m| serde_json::json!({
                     "character": m.kind.character, "style": m.save.style,
@@ -13114,6 +13132,8 @@ pub struct CampSide {
     pub party: Vec<CampMember>,
     /// The journal tour's extras count toward the Journal badge.
     pub journal_tour: bool,
+    /// Party slots that cannot be picked (FUN_1403e37c0).
+    pub party_locked: Vec<bool>,
 }
 
 pub fn party_source(c: &CampRes, character: u8) -> Option<&PartyCampSource> {
@@ -13254,6 +13274,7 @@ pub fn camp_data(
     side: &CampSide,
 ) -> pause_menu::Data {
     let CampSide {
+        party_locked: _,
         gear,
         form_slots,
         form_abilities,
@@ -13391,6 +13412,7 @@ pub fn camp_data(
             texts: c.source.abilities.clone(),
         },
         party_help: c.source.party_help.clone(),
+        party_locked: side.party_locked.clone(),
         equip: pause_menu::equip::EquipData {
             stats: c.source.equip_stats.clone(),
             totals,
@@ -15771,7 +15793,12 @@ impl Plugin for RoomPlugin {
                         skate_present,
                         present_enemy,
                         (enemy_gallery::present, present_spells, summon::present).chain(),
-                        (party_room::swap_weapons, party_room::present).chain(),
+                        (
+                            party_room::renumber,
+                            party_room::swap_weapons,
+                            party_room::present,
+                        )
+                            .chain(),
                         drive_room::party_visibility,
                         present_npc,
                         present_effects,

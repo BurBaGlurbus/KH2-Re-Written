@@ -2252,6 +2252,69 @@ pub fn room_loaded(game: &mut Game) {
     game.sora.player.room_loaded();
 }
 
+/// The members stand in the order of `world`'s table (FUN_1403e3680: party
+/// slot k's type). The slots are the follow offsets, the gauges and the
+/// meshes' numbers (`renumber`). [I] It takes effect when the camp closes or
+/// an area loads; a member a Drive form holds waits for the next area.
+pub fn follow_party_table(game: &mut Game, world: u8) {
+    if game.party.iter().any(|m| m.stored) {
+        return;
+    }
+    let row = game_save::world_party(&game.save.party_table, world);
+    let characters: Vec<u8> = game.party.iter().map(|m| m.kind.character).collect();
+    let order = game_save::party_order(&row, &characters);
+    if order.iter().enumerate().all(|(i, &o)| i == o) {
+        return;
+    }
+    let mut members: Vec<Option<MemberRt>> = std::mem::take(&mut game.party)
+        .into_iter()
+        .map(Some)
+        .collect();
+    game.party = order.iter().filter_map(|&i| members[i].take()).collect();
+    for (i, m) in game.party.iter_mut().enumerate() {
+        m.follower.slot = i as u8;
+    }
+    game.save.party_order = order;
+    game.save.party_moved = true;
+    let tick = game.tick;
+    let party: Vec<u8> = game.party.iter().map(|m| m.kind.character).collect();
+    game.event(serde_json::json!({"event":"party_order","tick":tick,"world":world,"party":party}));
+}
+
+/// The meshes, gauges and camp models follow `follow_party_table`.
+pub fn renumber(
+    mut game: ResMut<Game>,
+    mut roots: Query<&mut PartyRoot>,
+    mut parts: Query<&mut PartyPart>,
+    mut hud: Option<ResMut<Hud>>,
+    mut model: Option<ResMut<MenuModel>>,
+) {
+    if !std::mem::take(&mut game.save.party_moved) {
+        return;
+    }
+    let order = std::mem::take(&mut game.save.party_order);
+    let new_of = |old: usize| order.iter().position(|&o| o == old).unwrap_or(old);
+    for mut r in &mut roots {
+        r.0 = new_of(r.0);
+    }
+    for mut p in &mut parts {
+        p.member = new_of(p.member);
+    }
+    if let Some(h) = hud.as_mut()
+        && order.len() == 2
+    {
+        // A gauge's slot is fixed when it is made: they are made again.
+        h.friends = [None, None];
+        h.friend_faces.swap(0, 1);
+    }
+    if let Some(m) = model.as_mut()
+        && m.friends.len() >= 2
+        && order.len() == 2
+    {
+        m.friends.swap(0, 1);
+    }
+}
+
 /// Puts a member at a point facing a heading (the tour stages its cases).
 pub fn place_member(game: &mut Game, member: usize, at: Vec3, yaw: f32) {
     if let Some(m) = game.party.get_mut(member) {

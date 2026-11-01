@@ -268,6 +268,8 @@ pub struct Data {
     /// Party help: 0xbb88 "There are no Party Members to switch.", 0x846b
     /// "Select Party Member.", 0x846c "Switch Party Member."
     pub party_help: [Vec<u8>; 3],
+    /// Party slots that cannot be picked (FUN_1403e37c0).
+    pub party_locked: Vec<bool>,
     pub customize: customize::CustomizeData,
     pub equip: equip::EquipData,
     /// 03system.bin `ipic`: the item pictures' sequence (FUN_1403b0c90).
@@ -2686,7 +2688,7 @@ impl Camp {
         }
         let n = self.data.panels.members.len();
         let members = (0..n.min(3))
-            .map(|i| (i, model_offset(i, n), s.ctx_color[3]))
+            .map(|i| (self.party_ui.model_of(i), model_offset(i, n), s.ctx_color[3]))
             .collect();
         Some((PRIO_MODEL, members))
     }

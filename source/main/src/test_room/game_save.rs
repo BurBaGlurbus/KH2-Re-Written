@@ -32,6 +32,11 @@ pub struct SaveState {
     pub dump: Option<PathBuf>,
     /// The room started from a loaded save.
     pub loaded: bool,
+    /// Each world's party (save+0x3534 + 4·world, FUN_1403e2e20).
+    pub party_table: [[u8; 4]; 19],
+    /// The members' order changed: their meshes and gauges follow.
+    pub party_moved: bool,
+    pub party_order: Vec<usize>,
     /// The room's install, manifest and config: what the world map's row
     /// starts the world map with.
     pub args: Vec<PathBuf>,
@@ -48,6 +53,9 @@ impl Default for SaveState {
             world_tick: 0,
             dump: None,
             loaded: false,
+            party_table: [[0; 4]; 19],
+            party_moved: false,
+            party_order: Vec::new(),
             args: Vec::new(),
         }
     }
@@ -72,6 +80,65 @@ impl SaveState {
         self.world = Some(world);
         self.world_tick = tick;
     }
+}
+
+/// A party byte's member type (FUN_1403e3670) and the empty slot.
+pub const fn party_type(byte: u8) -> u8 {
+    byte & 0x1f
+}
+const PARTY_EMPTY: u8 = 0x12;
+/// A new world's table in the room: Sora, Donald, Goofy, no reserve
+/// [test-room value: the exe builds them from DAT_142a252e8 by event].
+pub const ROOM_PARTY: [u8; 4] = [0, 1, 2, PARTY_EMPTY];
+
+/// A world's table, the room's own if the save has none for it (an unset one
+/// reads as all Soras).
+pub fn world_party(table: &[[u8; 4]; 19], world: u8) -> [u8; 4] {
+    match table.get(world as usize) {
+        Some(row) if *row != [0; 4] => *row,
+        _ => ROOM_PARTY,
+    }
+}
+
+/// FUN_1403e37c0: slot 0 always, else bit 7. FUN_140400880's runtime list has
+/// no producer traced [U].
+pub fn party_locked(row: &[u8; 4], slot: usize) -> bool {
+    slot == 0 || row.get(slot).is_some_and(|b| b & 0x80 != 0)
+}
+
+/// FUN_14036b460 between the room's two members: the world table takes the
+/// camp's order when both active slots changed.
+pub fn write_party_order(row: &mut [u8; 4], order: &[u8]) {
+    let type_of = |character: u8| match character {
+        2 => 1,
+        3 => 2,
+        _ => 3,
+    };
+    if let [a, b] = order
+        && type_of(*a) != party_type(row[1])
+        && type_of(*b) != party_type(row[2])
+    {
+        row.swap(1, 2);
+    }
+}
+
+/// The room's members in the order of a world's table: by the party slots
+/// their types hold, Donald before Goofy when the table has neither.
+pub fn party_order(row: &[u8; 4], characters: &[u8]) -> Vec<usize> {
+    let slot_of = |character: u8| {
+        let t = match character {
+            2 => 1,
+            3 => 2,
+            _ => 3,
+        };
+        row[1..]
+            .iter()
+            .position(|&b| party_type(b) == t)
+            .unwrap_or(usize::from(character))
+    };
+    let mut order: Vec<usize> = (0..characters.len()).collect();
+    order.sort_by_key(|&i| slot_of(characters[i]));
+    order
 }
 
 /// The image of `--load-image <file>`, refusing what FUN_1402ecc00 refuses.
@@ -456,6 +523,7 @@ pub fn capture(game: &Game, c: &CampRes, area: Option<&AreaRes>) -> SaveData {
     {
         p.entrance = entrance;
     }
+    p.party_table = game.save.party_table;
     p.play_frames = game.save.play_frames(game.tick);
     p.world_frames = game.save.world_frames;
     if let Some(w) = game.save.world
@@ -722,6 +790,7 @@ pub fn apply_game(game: &mut Game, data: &SaveData) {
     game.save.world = Some(p.world);
     game.save.world_tick = 0;
     game.save.loaded = true;
+    game.save.party_table = p.party_table;
     if let Some(rt) = game.enemy.as_mut() {
         rt.enabled = false;
     }
@@ -819,6 +888,7 @@ pub fn apply_game(game: &mut Game, data: &SaveData) {
     }
     let slots = game.ability_slots.clone();
     drive_room::rebuild_abilities(game, Some(&slots));
+    party_room::follow_party_table(game, p.world);
     let event = serde_json::json!({"event":"save_applied","world":p.world,"area":p.area,
         "entrance":p.entrance,"level":game.sora.vitals.level,"exp":p.exp,"munny":p.munny,
         "weapon":r.weapon,"difficulty":p.difficulty,"frames":p.play_frames,
@@ -995,6 +1065,27 @@ mod tests {
             box_style: 0,
             icon: 0,
         }
+    }
+
+    #[test]
+    fn the_world_table_takes_a_swap_and_gives_the_order() {
+        let mut row = ROOM_PARTY;
+        // Goofy, then Donald: both active slots changed.
+        write_party_order(&mut row, &[3, 2]);
+        assert_eq!(row, [0, 2, 1, 0x12]);
+        assert_eq!(party_order(&row, &[2, 3]), vec![1, 0]);
+        assert_eq!(party_order(&row, &[3, 2]), vec![0, 1]);
+        // The same order leaves it.
+        write_party_order(&mut row, &[3, 2]);
+        assert_eq!(row, [0, 2, 1, 0x12]);
+        // A guest in the reserve slot; Goofy locked stays with his bit.
+        let mut row = [0, 1, 2 | 0x80, 3];
+        assert!(party_locked(&row, 0) && party_locked(&row, 2) && !party_locked(&row, 1));
+        write_party_order(&mut row, &[3, 2]);
+        assert_eq!(row, [0, 2 | 0x80, 1, 3]);
+        // No table yet: the room's.
+        let table = [[0; 4]; 19];
+        assert_eq!(world_party(&table, 2), ROOM_PARTY);
     }
 
     #[test]

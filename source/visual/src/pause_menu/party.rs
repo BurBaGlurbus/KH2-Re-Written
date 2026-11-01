@@ -3,8 +3,7 @@
 //! FUN_14031fbb0), the second pick and swap (0x16: FUN_14031f9a0). Sora
 //! (card 0) is never picked; with fewer than three members the cards
 //! cannot move (no hand, LightCur or marker) and the help says so. The
-//! event-driven notice (0x15), locked members, world guests and writing the
-//! party table back are not built.
+//! event-driven notice (0x15) and world guests are not built.
 use super::*;
 
 const PRIO_PARTY_PANEL: u32 = 0x753d;
@@ -27,6 +26,15 @@ pub(super) struct Ui {
     pub(super) swap: MenuList,
     names: Vec<Id>,
     marker: Option<Id>,
+    /// Which member's model each card shows once a swap has moved them (the
+    /// models stay numbered as the camp opened).
+    models: Vec<usize>,
+}
+
+impl Ui {
+    pub(super) fn model_of(&self, card: usize) -> usize {
+        self.models.get(card).copied().unwrap_or(card)
+    }
 }
 
 impl Camp {
@@ -50,7 +58,7 @@ impl Camp {
             .map(|(i, &n)| {
                 let c = self.sprites.context(n);
                 let a = self.sprites.get(n).ctx_color[3] * panel_alpha;
-                (i, [c[0] - 256., c[1] - 208.], a)
+                (self.party_ui.model_of(i), [c[0] - 256., c[1] - 208.], a)
             })
             .collect();
         (!members.is_empty()).then_some((PRIO_PARTY_MODEL, members))
@@ -87,11 +95,12 @@ impl Camp {
             cards.push(r);
             let mut t = Text::new(name, TEXT_SIZE);
             t.align = 2;
+            let locked = self.data.party_locked.get(i).copied().unwrap_or(false);
             let nb = self.sprites.create(
                 seq,
                 PRIO_CARD,
                 ART,
-                NAME[usize::from(i != 0)],
+                NAME[usize::from(i != 0 && !locked)],
                 None,
                 Some(t),
             );
@@ -99,12 +108,18 @@ impl Camp {
             self.sprites.get_mut(nb).offset = [name_pitch * i as f32, 0.];
             self.party_ui.names.push(nb);
         }
-        // Sora (card 0) is skipped; the cursor starts on the first other.
-        let cursor = usize::from(n > 1);
+        // Sora (card 0) and locked members are skipped; the cursor starts on
+        // the first other.
+        let locked: Vec<usize> = (1..n)
+            .filter(|&i| self.data.party_locked.get(i).copied().unwrap_or(false))
+            .collect();
+        let cursor = (1..n)
+            .find(|i| !locked.contains(i))
+            .unwrap_or(usize::from(n > 1));
         let mut list = MenuList::new(cards.clone(), cursor);
         list.keys = Some((bits::LEFT, bits::RIGHT));
-        list.skip = 1;
-        let movable = n >= 3;
+        list.skip = locked.iter().fold(1, |m, &i| m | 1 << i);
+        let movable = n >= 3 && n - locked.len() >= 3;
         if !movable {
             list.mask &= !0x13;
         }
@@ -215,6 +230,10 @@ impl Camp {
                 v.swap(a, b);
             }
         }
+        if self.party_ui.models.is_empty() {
+            self.party_ui.models = (0..self.party_ui.names.len()).collect();
+        }
+        swap(&mut self.party_ui.models, a, b);
         let d = &mut self.data;
         swap(&mut d.panels.members, a, b);
         swap(&mut d.items.equipment, a, b);
@@ -237,7 +256,8 @@ impl Camp {
         if self.substate == 2 {
             self.state = State::Party;
             self.substate = 1;
-            let movable = self.party_ui.cards.total >= 3;
+            let locked = self.party_ui.cards.skip.count_ones() as usize - 1;
+            let movable = self.party_ui.cards.total >= 3 && self.party_ui.cards.total - locked >= 3;
             let h = self.data.party_help[usize::from(movable)].clone();
             self.show_help(seq, h);
             return false;

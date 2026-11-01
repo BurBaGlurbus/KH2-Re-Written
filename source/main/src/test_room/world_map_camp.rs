@@ -232,6 +232,7 @@ impl WorldMapCamp {
             max_mp,
             party: Vec::new(),
             journal_tour: false,
+            party_locked: Vec::new(),
         };
         camp_data(c, panels, None, &self.settings, &side)
     }
