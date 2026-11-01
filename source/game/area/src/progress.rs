@@ -93,6 +93,14 @@ impl Progress {
         self.world_tables.as_deref()
     }
 
+    /// FUN_140418c20 / FUN_140418e30: a world point object marks the point
+    /// of the area it is created in (FUN_1403f2270).
+    pub fn enter_world_point(&mut self, world: u8, area: u8) {
+        if let Some(tables) = self.world_tables.clone() {
+            self.world.enter_area_with_world_point(&tables, world, area);
+        }
+    }
+
     /// The 'dsa' entry: `u16 count`, then `count` `{world, area}` bytes.
     pub fn set_dsa(&mut self, bytes: &[u8]) {
         let count = bytes
