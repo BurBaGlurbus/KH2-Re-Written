@@ -377,6 +377,8 @@ pub struct MemberRt {
     /// effect (00effect element 14) while it lies down.
     pub record: combat::HitRecord,
     pub ko_fx: bool,
+    /// Ticks left of a prize's heal effect (+0xd40, FUN_1403d68b0).
+    pub heal_ticks: f32,
     /// The motion the running act started (`sysobj_motion_id == m` in its
     /// waits) and whether its shot was clashed by a guard last tick.
     pub cast_motion: u16,
@@ -1899,6 +1901,11 @@ impl BattleMode {
 
 /// A key family for the KO marker effects (00effect element 14).
 const KO_FX: u64 = FX_BASE | 1 << 39;
+
+/// The key of a member's prize heal effect (00effect element 6).
+pub fn heal_fx(index: usize) -> u64 {
+    FX_BASE | 1 << 37 | index as u64
+}
 /// Effect keys of a party item's two effects.
 const ITEM_FX: u64 = FX_BASE | 1 << 38;
 

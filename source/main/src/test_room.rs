@@ -827,6 +827,8 @@ pub const SE_CLOSE: u32 = 4;
 /// The command deck swap (FUN_1403f2470).
 pub const SE_DECK: u32 = 0x14;
 pub const SE_LOW_HP: u32 = 9;
+/// A treasure window opens (FUN_140159ed0, FUN_140159970).
+pub const SE_TREASURE: u32 = 10;
 /// Manual lock engaged, and released by the toggle (FUN_1401dd170(7) / (8) in
 /// the lock manager, FUN_1403dd650 / FUN_1403dcd70).
 pub const SE_LOCK: u32 = 7;
@@ -1395,6 +1397,8 @@ pub struct Game {
     pub autoplay_failed: bool,
     /// Sound requests raised this tick: (id, cause).
     pub sound_queue: Vec<(u32, &'static str)>,
+    /// Items whose name window is due (FUN_1401595d0): the boxes that arrived.
+    pub treasure_items: Vec<u16>,
     /// Action start tick and clip tick already scanned for sound triggers.
     pub sound_frame: Option<(u64, u32)>,
     pub effect_queue: Vec<EffectRequest>,
@@ -1550,6 +1554,8 @@ pub struct Hud {
     pub updated: bool,
     /// The form level-up panels (sprite priority 9000, after the gauge).
     pub panels: visual::level_up::Panels,
+    /// The windows that name an obtained item.
+    pub treasure: visual::treasure_info::TreasureInfo,
     /// A party limit's gauge and combo counter while it runs.
     pub limit_hud: Option<party_limit::LimitHud>,
     /// The limit whose `comd` sheet the command menu wears while its
@@ -6440,6 +6446,7 @@ pub fn setup(
         let mut slots = visual::hud_slots::HudSlots::default();
         commands.insert_resource(Hud {
             panels: Default::default(),
+            treasure: Default::default(),
             limit_hud: None,
             menu_skin: None,
             gauge: Gauge::new(
@@ -10022,6 +10029,7 @@ pub fn hud_tick(
     gallery: Res<enemy_gallery::EnemyGallery>,
     targeting: Res<enemy_target::Targeting>,
     rig: Option<Res<CameraRig>>,
+    camp: Option<Res<CampRes>>,
 ) {
     if keys.just_pressed(KeyCode::F4) && game.autoplay.is_none() {
         game.debug_blow = true;
@@ -10248,6 +10256,25 @@ pub fn hud_tick(
     }
     let Hud { sheets, panels, .. } = &mut *hud;
     panels.update(&sheets[0].sequence);
+    // FUN_1403c4330: `09 icon name`.
+    for id in std::mem::take(&mut game.treasure_items) {
+        let text = camp.as_ref().and_then(|c| {
+            let r = c.source.items.table.iter().find(|r| r.id == id)?;
+            let mut t = vec![0x09, r.icon];
+            t.extend_from_slice(&r.name);
+            Some(t)
+        });
+        if let Some(t) = text {
+            hud.treasure.push_prize(t);
+        }
+    }
+    let Hud {
+        sheets, treasure, ..
+    } = &mut *hud;
+    // FUN_140159ed0: se000 #10 as a window starts.
+    if treasure.update(&sheets[0].sequence) {
+        game.sound_queue.push((SE_TREASURE, "treasure_window"));
+    }
     // A party limit's gauge and combo counter (FUN_1403d96d0 shows them,
     // FUN_1403d8f40 hides them).
     let values = game
@@ -10325,6 +10352,7 @@ pub fn hud_present(
         panels,
         limit_hud,
         menu_skin,
+        treasure,
         ..
     } = &mut *hud;
     // The limit file whose sheets the texture list borrows while a limit's
@@ -10416,12 +10444,9 @@ pub fn hud_present(
             draws.extend(h.draw(at[0], at[1]));
         }
         if let Some((font_sheet, widths)) = menu_font.as_ref() {
-            draws.extend(panels.draw(
-                &sheets[0].sequence,
-                &field_command_menu::Font { widths, pad: 1 },
-                0,
-                *font_sheet,
-            ));
+            let font = field_command_menu::Font { widths, pad: 1 };
+            draws.extend(panels.draw(&sheets[0].sequence, &font, 0, *font_sheet));
+            draws.extend(treasure.draw(&sheets[0].sequence, &font, 0, *font_sheet));
         }
     }
     // Message windows (task priority 25000) draw above the HUD.
@@ -15284,6 +15309,7 @@ pub fn run(
                 reload: None,
                 rebody: false,
                 ko_fx: false,
+                heal_ticks: 0.,
                 cast_motion: 0,
                 reflected: false,
                 targeting: player::party_style::Targeting::default(),
@@ -15380,6 +15406,7 @@ pub fn run(
         rendered_frames: 0,
         autoplay_failed: false,
         sound_queue: Vec::new(),
+        treasure_items: Vec::new(),
         sound_frame: None,
         effect_queue: Vec::new(),
         fx_queue: Vec::new(),

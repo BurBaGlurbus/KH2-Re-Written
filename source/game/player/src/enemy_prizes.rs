@@ -227,49 +227,105 @@ pub fn box_style(index: u8) -> Option<(u32, f32)> {
     TABLE.get(index as usize).copied()
 }
 
-/// An item dropped by a kill (FUN_1403f8170): a treasure box that lands and
-/// waits to be picked up, which adds the item (FUN_1403f8770).
+/// YS::ACTION_PRIZEBOX's tick FUN_1403f8500: gravity, its cap and the drag.
+const BOX_GRAVITY: f32 = 1.5;
+const BOX_FALL_MAX: f32 = 25.;
+const BOX_DRAG: f32 = 0.97;
+/// FUN_1403f88c0: a landing this fast bounces back at this rate; the first two
+/// bounces sound (FUN_1401de150(0xe, ..)).
+const BOX_BOUNCE_SPEED: f32 = 2.5;
+const BOX_BOUNCE: f32 = 0.8;
+pub const BOX_BOUNCE_SOUND: u32 = 14;
+/// FUN_1403f8a10: the flight's start (FUN_1401de150(0x12, ..)).
+pub const BOX_FLY_SOUND: u32 = 18;
+/// FUN_1403f8590: the height the flight arcs by, and the spin at its end.
+const BOX_ARC: f32 = 50.;
+const BOX_SPIN: f32 = std::f32::consts::FRAC_PI_6;
+
+/// An item dropped by a kill (FUN_1403f8170): a treasure box (YS::PRIZEBOX)
+/// that falls and bounces (state 0xc), then flies to whoever picks it up
+/// (state 0xd), which added the item when it took off (FUN_1403f8770).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ItemDrop {
     /// Unique within a room, for the presenter.
     pub id: u32,
     pub item: u16,
-    /// The box's object id and scale (`box_style`).
+    /// The box's object id and the scale shown (`box_style`).
     pub object: u32,
     pub scale: f32,
+    /// +0xbb4: the base scale.
+    pub base_scale: f32,
     pub position: Vec3,
-    pub velocity: f32,
+    /// +0x20, with +y up here (the game's is down).
+    pub velocity: Vec3,
     /// A random heading (FUN_1403f8170: a draw of 2π − π).
     pub yaw: f32,
-    pub landed: bool,
+    /// +0x120 bit 1 clear: it has started to fall (FUN_1403f8500).
+    pub collectable: bool,
+    /// +0xbd0 bit 0: at rest.
+    pub rested: bool,
+    /// +0xbd4.
+    pub bounces: u8,
+    /// State 0xd.
+    pub flight: Option<BoxFlight>,
+}
+
+/// The flight (FUN_1403f8770's fields): +0xbc0, +0xbb8 and +0xbbc.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct BoxFlight {
+    pub offset: Vec3,
+    pub left: f32,
+    pub total: f32,
 }
 
 impl ItemDrop {
-    /// `r` is a draw in [0, 1) for the heading.
-    pub fn spawn(id: u32, item: u16, style: (u32, f32), at: Vec3, r: f32) -> ItemDrop {
+    /// `r` is the four draws in [0, 1) of FUN_1403f8170 and FUN_1403f8950: the
+    /// heading, then x, z and y of the start velocity (±5 across, 10..15 up).
+    pub fn spawn(id: u32, item: u16, style: (u32, f32), at: Vec3, r: [f32; 4]) -> ItemDrop {
         ItemDrop {
             id,
             item,
             object: style.0,
             scale: style.1,
+            base_scale: style.1,
             position: at,
-            velocity: 0.,
-            yaw: r * std::f32::consts::TAU - std::f32::consts::PI,
-            landed: false,
+            velocity: [r[1] * 10. - 5., 15. - r[3] * 5., r[2] * 10. - 5.],
+            yaw: r[0] * std::f32::consts::TAU - std::f32::consts::PI,
+            collectable: false,
+            rested: false,
+            bounces: 0,
+            flight: None,
         }
     }
 
-    /// One tick of the fall to `floor` [I: the box actor's state 0xc was
-    /// not traced; it falls with the actors' gravity and rests].
-    pub fn tick(&mut self, floor: f32) {
-        if self.landed {
-            return;
+    /// One tick of the fall to `floor` (FUN_1403f8500, FUN_1403f88c0); the
+    /// sound of a bounce.
+    pub fn tick(&mut self, floor: f32) -> Option<u32> {
+        if self.rested || self.flight.is_some() {
+            return None;
         }
-        self.velocity -= actor_physics::G;
-        self.position[1] += self.velocity;
-        if self.position[1] <= floor {
-            self.position[1] = floor;
-            self.landed = true;
+        if self.velocity[1] < 0. {
+            self.collectable = true;
+        }
+        self.velocity[1] = (self.velocity[1] - BOX_GRAVITY).max(-BOX_FALL_MAX);
+        self.velocity[0] *= BOX_DRAG;
+        self.velocity[2] *= BOX_DRAG;
+        for (p, v) in self.position.iter_mut().zip(self.velocity) {
+            *p += v;
+        }
+        if self.position[1] > floor {
+            return None;
+        }
+        self.position[1] = floor;
+        if -self.velocity[1] > BOX_BOUNCE_SPEED {
+            self.velocity[1] *= -BOX_BOUNCE;
+            let sound = (self.bounces < 2).then_some(BOX_BOUNCE_SOUND);
+            self.bounces = self.bounces.saturating_add(1);
+            sound
+        } else {
+            self.rested = true;
+            self.velocity = [0.; 3];
+            None
         }
     }
 
@@ -281,7 +337,49 @@ impl ItemDrop {
             self.position[1] - body[1],
             self.position[2] - body[2],
         ];
-        self.landed && d[1].abs() <= 30. && d[0].hypot(d[2]) <= 120.
+        self.collectable && self.flight.is_none() && d[1].abs() <= 30. && d[0].hypot(d[2]) <= 120.
+    }
+
+    /// FUN_1403f8770's flight: toward `anchor`, |offset| × 0.05 ticks within
+    /// 30..60.
+    pub fn take_off(&mut self, anchor: Vec3) {
+        let offset = [
+            self.position[0] - anchor[0],
+            self.position[1] - anchor[1],
+            self.position[2] - anchor[2],
+        ];
+        let length = (offset[0] * offset[0] + offset[1] * offset[1] + offset[2] * offset[2]).sqrt();
+        let total = (length * 0.05).clamp(30., 60.);
+        self.velocity = [0.; 3];
+        self.flight = Some(BoxFlight {
+            offset,
+            left: total,
+            total,
+        });
+    }
+
+    /// FUN_1403f8590, one tick toward `anchor` (read live); false when the
+    /// flight is over and the box goes.
+    pub fn fly(&mut self, anchor: Vec3) -> bool {
+        let Some(f) = self.flight.as_mut() else {
+            return true;
+        };
+        f.left -= 1.;
+        if f.left <= 0. {
+            return false;
+        }
+        let eased = ((1. - f.left / f.total) * std::f32::consts::FRAC_PI_2).sin();
+        let t = 1. - eased;
+        self.position = [
+            anchor[0] + f.offset[0] * t,
+            anchor[1] + f.offset[1] * t + (t * std::f32::consts::PI).sin() * BOX_ARC,
+            anchor[2] + f.offset[2] * t,
+        ];
+        self.yaw += (1. - t) * BOX_SPIN;
+        if t < 0.1 {
+            self.scale = t * 10. * self.base_scale;
+        }
+        true
     }
 }
 
@@ -357,14 +455,37 @@ mod tests {
         assert_eq!(box_style(0), Some((0x3b9, 1.6)));
         assert_eq!(box_style(11), Some((0x3b8, 3.2)));
         assert_eq!(box_style(12), None);
-        let mut d = ItemDrop::spawn(1, 280, (0x3b9, 1.6), [0., 50., 0.], 0.5);
-        assert!(!d.collected_by([0., 0., 0.]));
-        for _ in 0..100 {
-            d.tick(0.);
+        let mut d = ItemDrop::spawn(1, 280, (0x3b9, 1.6), [0., 50., 0.], [0.5; 4]);
+        // Thrown up: not collectable until it falls.
+        assert_eq!(d.velocity, [0., 12.5, 0.]);
+        assert!(!d.collected_by([0., 50., 0.]));
+        let mut sounds = 0;
+        for _ in 0..200 {
+            sounds += d.tick(0.).map_or(0, |_| 1);
         }
-        assert!(d.landed && d.position[1] == 0.);
+        assert_eq!(sounds, 2, "the first two bounces sound");
+        assert!(d.rested && d.position[1] == 0. && d.bounces > 2);
         assert!(d.collected_by([100., 0., 0.]));
         assert!(!d.collected_by([130., 0., 0.]));
+    }
+
+    #[test]
+    fn a_taken_box_arcs_to_its_target_and_shrinks_at_the_end() {
+        let mut d = ItemDrop::spawn(1, 280, (0x3b9, 2.), [0., 0., 100.], [0.5; 4]);
+        d.take_off([0., 0., 0.]);
+        let f = d.flight.unwrap();
+        // |v| × 0.05 is under the 30-tick floor.
+        assert_eq!((f.left, f.total), (30., 30.));
+        assert!(!d.collected_by([0., 0., 100.]));
+        let mut high = 0f32;
+        let mut ticks = 0;
+        while d.fly([0., 0., 0.]) {
+            high = high.max(d.position[1]);
+            ticks += 1;
+        }
+        assert_eq!(ticks, 29);
+        assert!(high > 45. && high <= 50.);
+        assert!(d.position[2].abs() < 1. && d.scale < 0.2);
     }
 
     #[test]

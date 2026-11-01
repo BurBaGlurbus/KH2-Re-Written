@@ -44,10 +44,19 @@ pub fn tour(game: &mut Game) {
         sora: Fighter { player, .. },
         enemy,
         world,
+        party,
         ..
     } = game;
     let Some(rt) = enemy.as_mut() else { return };
     let at = player.position;
+    // An HP prize at Donald's feet: he collects it and wears the effect.
+    if tick == 200
+        && let Some(m) = party.first()
+    {
+        let mut orb = Orb::spawn(0, m.follower.position, [0.5, 0.5, 0.5]);
+        orb.landed = true;
+        rt.orbs.push(orb);
+    }
     if game.badge_tour {
         if tick == 20 {
             let id = rt.next_drop;
@@ -58,7 +67,7 @@ pub fn tour(game: &mut Game) {
                     280,
                     s,
                     [at[0], at[1] + 5., at[2]],
-                    0.5,
+                    [0.5; 4],
                 ));
             }
         }
@@ -86,7 +95,7 @@ pub fn tour(game: &mut Game) {
                     280,
                     s,
                     [x, floor + 20., z],
-                    0.3 * i as f32,
+                    [0.3 * i as f32, 0.5, 0.5, 0.5],
                 ));
             }
         }
@@ -99,6 +108,12 @@ pub fn tour(game: &mut Game) {
         {
             orb.position = [at[0] + 40., at[1], at[2]];
             orb.landed = true;
+        }
+        // The first box beside him, to show its flight and name window.
+        if let Some(d) = rt.drops.first_mut() {
+            d.position = [at[0] + 90., at[1], at[2]];
+            d.collectable = true;
+            d.rested = true;
         }
     }
 }
@@ -116,8 +131,13 @@ pub fn tick(game: &mut Game, tick: u64) {
         fx_release,
         items,
         save,
+        magic,
+        treasure_items,
+        party,
+        fx_calls,
         ..
     } = game;
+    let body_lift = magic.as_ref().map_or(85., |m| m.src.body_lift);
     let system = drive.as_ref().and_then(|d| d.src.system_pax.clone());
     // The Drive form Sora is in (0 without one).
     let form = drive.as_ref().filter(|d| d.active).map_or(0, |d| d.form);
@@ -136,30 +156,40 @@ pub fn tick(game: &mut Game, tick: u64) {
         }
     }
     rt.was_dead = dead;
-    // The item boxes fall, rest and are picked up (FUN_1403f7df0 →
-    // FUN_1403f8770 adds the item).
+    // The item boxes fall, bounce and rest; Sora in range takes one
+    // (FUN_1403f7df0 → FUN_1403f8770 adds the item), it flies to his middle
+    // and its name shows as it arrives (FUN_1403f8590 → FUN_1401595d0). A full
+    // stock adds nothing and the box still flies.
     let body = player.position;
-    let mut taken = Vec::new();
-    for (i, drop) in rt.drops.iter_mut().enumerate() {
+    let anchor = [body[0], body[1] + body_lift, body[2]];
+    rt.drops.retain_mut(|drop| {
+        if drop.flight.is_some() {
+            if !player.dead() && drop.fly(anchor) {
+                return true;
+            }
+            treasure_items.push(drop.item);
+            return false;
+        }
         let floor = world
             .floor(drop.position[0], drop.position[2], drop.position[1] + 30.)
             .unwrap_or(0.);
-        drop.tick(floor);
+        if let Some(id) = drop.tick(floor) {
+            sound_queue.push((id, "box_bounce"));
+        }
         if !player.dead() && drop.collected_by(body) {
-            taken.push(i);
+            if let Some(i) = items.as_mut() {
+                let n = i.stock.entry(drop.item).or_insert(0);
+                *n = n.saturating_add(1).min(99);
+            }
+            drop.take_off(anchor);
+            sound_queue.push((enemy_prizes::BOX_FLY_SOUND, "box_fly"));
+            log_event(
+                log,
+                serde_json::json!({"event":"item_pickup","tick":tick,"item":drop.item}),
+            );
         }
-    }
-    for i in taken.into_iter().rev() {
-        let drop = rt.drops.remove(i);
-        if let Some(i) = items.as_mut() {
-            let n = i.stock.entry(drop.item).or_insert(0);
-            *n = n.saturating_add(1).min(99);
-        }
-        log_event(
-            log,
-            serde_json::json!({"event":"item_pickup","tick":tick,"item":drop.item}),
-        );
-    }
+        true
+    });
     // The prizes fall and wait to be collected.
     let at = player.position;
     let draw = player.abilities.draw;
@@ -176,7 +206,31 @@ pub fn tick(game: &mut Game, tick: u64) {
         // (FUN_1403dbea0: +0xde0 == 6 skips kinds below 2); they stay.
         let refused = form == player::forms::ANTI && orb.kind < 2;
         if !player.dead() && !refused && orb.collected_by(at, draw) {
-            collected.push(i);
+            collected.push((i, None));
+            continue;
+        }
+        // FUN_1403dbea0: then Donald and Goofy, by the same range from where
+        // each stands; the first in range collects, and they pass over Drive
+        // prizes. The prize acts on the collector only.
+        if orb.kind < 7
+            && let Some(k) = party
+                .iter()
+                .position(|m| !m.down() && orb.collected_by(m.follower.position, m.abilities.draw))
+        {
+            collected.push((i, Some(k)));
+        }
+    }
+    // The members' heal effects run down as Sora's does.
+    for (k, m) in party.iter_mut().enumerate() {
+        if m.heal_ticks > 0. {
+            m.heal_ticks -= 1.;
+            if m.heal_ticks <= 0. {
+                m.heal_ticks = 0.;
+                fx_calls.push(spell_fx::Call {
+                    pax: None,
+                    fx: player::magic::Fx::LoopEnd(party_room::heal_fx(k)),
+                });
+            }
         }
     }
     // FUN_1403d4cc0: the heal effect's time runs down every frame; at zero
@@ -189,9 +243,42 @@ pub fn tick(game: &mut Game, tick: u64) {
             fx_release.push(HEAL_OWNER);
         }
     }
-    for i in collected.into_iter().rev() {
+    for (i, member) in collected.into_iter().rev() {
         let orb = rt.orbs.remove(i);
         let e = enemy_prizes::effect(orb.kind);
+        if let Some(m) = member.and_then(|k| party.get_mut(k).map(|m| (k, m))) {
+            let (k, m) = m;
+            // FUN_1403d7bd0 has no member test: element 6 on that member, a
+            // repeat only raising its time.
+            let heal = enemy_prizes::heal_ticks(orb.kind);
+            if heal > 0. {
+                if m.heal_ticks <= 0. {
+                    fx_calls.push(spell_fx::Call {
+                        pax: system.clone(),
+                        fx: player::magic::Fx::Start {
+                            key: party_room::heal_fx(k),
+                            id: 6,
+                            bound: Some(player::magic::Anchor::Party(k + 1)),
+                            at: None,
+                        },
+                    });
+                }
+                m.heal_ticks = m.heal_ticks.max(heal);
+            }
+            sound_queue.push((enemy_prizes::sounds(orb.kind).1, "prize_pickup"));
+            if e.hp > 0 {
+                m.hp = (m.hp + e.hp).min(m.max_hp);
+            }
+            if e.mp > 0 {
+                m.mp.add(e.mp);
+            }
+            rt.munny += e.munny as u32;
+            log_event(
+                log,
+                serde_json::json!({"event":"prize","tick":tick,"kind":orb.kind,"member":k,"hp":m.hp}),
+            );
+            continue;
+        }
         // FUN_1403dca50 → FUN_1403d7bd0: HP, MP and Drive prizes start the
         // heal effect (system element 6) unless it still plays, which only
         // extends its time.
@@ -292,7 +379,7 @@ fn kill(
             {
                 let id = rt.next_drop;
                 rt.next_drop += 1;
-                let r = rt.rng.range(0., 1.);
+                let r = [(); 4].map(|_| rt.rng.range(0., 1.));
                 rt.drops.push(enemy_prizes::ItemDrop::spawn(
                     id,
                     item,

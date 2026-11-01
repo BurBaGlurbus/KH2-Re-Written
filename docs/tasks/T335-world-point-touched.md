@@ -33,3 +33,5 @@ PASS for the item. #143 stays open only for playing the chain across windows by 
 ## Next
 
 The owner plays save point → World Map → landing → field once.
+
+The two call sites in `test_room.rs` landed in T336's commit `07650a1`; this record's commit holds `Progress::enter_world_point`.

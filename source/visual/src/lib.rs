@@ -40,4 +40,5 @@ pub mod sprite_player;
 pub mod texel_upload;
 pub mod title;
 pub mod title_banner;
+pub mod treasure_info;
 pub mod world_map_menu;
