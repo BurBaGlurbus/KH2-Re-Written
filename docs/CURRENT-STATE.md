@@ -125,9 +125,14 @@ Built (`kh2fm wm`, the launcher's World map test):
 
 - From T214: START's camp menu and the journal (also from the landing grid's Triangle), and
   each world's play time on the info panel.
+- From T328: the launcher's test starts with every world open (`--all-worlds`, the state the
+  installed tables leave at the story's end). The map has the exe's 12 symbols; all 12 land in
+  their fields. Timeless River, 100 Acre Wood and Space Paranoids are entered by their doors
+  inside Disney Castle and Hollow Bastion. A field room's party comes from `memt`.
 
 Unfinished:
 - The Gummi game mode after a route is chosen.
+- The computers' menus in Ansem's Study and Space Paranoids (their first row is taken at once).
 - No comparison with the installed game: no save on this PC reaches the world map.
 
 ## Open decisions

@@ -25,6 +25,8 @@ pub const TALK: u32 = 0xffff_0001;
 pub const SUMMON: u32 = 0xffff_0002;
 /// Save point `k` of the area is `SAVE_POINT + k`.
 pub const SAVE_POINT: u32 = 0xffff_0100;
+/// Gate `k` of the area (`LoadedArea::gates`) is `GATE + k`.
+pub const GATE: u32 = 0xffff_0200;
 /// Command 0x37 "Save" (exec 0x37).
 const SAVE_COMMAND: u16 = 0x37;
 /// Effect owners of the save points' glow (element 1, started with the
@@ -63,6 +65,11 @@ pub fn save_tour_logical(tick: u64) -> u64 {
         .filter(|(at, _)| *at == tick)
         .fold(0, |acc, &(_, b)| acc | b)
 }
+fn gate_tour_tick() -> Option<u64> {
+    static AT: std::sync::OnceLock<Option<u64>> = std::sync::OnceLock::new();
+    *AT.get_or_init(|| std::env::var("KH2RW_TOUR_GATE").ok()?.parse().ok())
+}
+
 /// The townspeople's and the test NPC's reaction (cmd 31 "Talk").
 const TALK_COMMAND: u16 = 0x1f;
 
@@ -401,6 +408,32 @@ pub fn tick(
             owner_yaw: 0.,
             attack: None,
         });
+    }
+    // The area's gates: objects whose reaction raises a signal.
+    if let Some(a) = area.as_deref() {
+        for (k, g) in a.current.gates.iter().enumerate() {
+            inputs.shapes.push(rc::Shape {
+                owner: GATE + k as u32,
+                group: g.shape.group,
+                command: g.command,
+                centre: (g.position + Vec3::Y * f32::from(g.shape.position_height)).to_array(),
+                radius: f32::from(g.shape.radius),
+                height: f32::from(g.shape.height),
+                owner_yaw: 0.,
+                attack: None,
+            });
+        }
+        // `KH2RW_TOUR_GATE=<tick>`: Sora stands at the area's first gate from
+        // tick 20 and presses Triangle from that tick on, until he is free to
+        // take it [tour setup].
+        if let Some(at) = gate_tour_tick()
+            && let Some(g) = a.current.gates.first()
+            && tick >= 20
+            && tick < at + 120
+        {
+            game.sora.player.position = g.position.to_array();
+            game.rc_queued = tick >= at;
+        }
     }
     let world = World {
         commands: &commands,
@@ -854,6 +887,10 @@ fn carry_out(game: &mut Game, actors: &mut [GalleryActor], c: rc::Candidate, tic
                 serde_json::json!({"event":"save_menu_requested","tick":tick,
                 "save_point":c.target.owner - SAVE_POINT}),
             );
+        }
+        // FUN_1403a8b10 case 0x1e (the talk's op 3) or 0x7f: the signal.
+        rc::Source::Shape if (GATE..GATE + 0x100).contains(&c.target.owner) => {
+            game.gate_wanted = Some((c.target.owner - GATE) as usize);
         }
         rc::Source::Auto(item) => {
             let Some(row) = game

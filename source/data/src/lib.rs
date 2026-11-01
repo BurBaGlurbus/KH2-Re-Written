@@ -20,6 +20,7 @@ pub mod inspection;
 pub mod item_table;
 pub mod journal_table;
 pub mod limit_file;
+pub mod member_table;
 pub mod menu_layout;
 pub mod message;
 pub mod message_text;

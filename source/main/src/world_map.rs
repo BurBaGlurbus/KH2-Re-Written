@@ -2841,13 +2841,14 @@ fn parse_story(spec: &str) -> Result<(u32, u32)> {
 
 fn run(args: Vec<PathBuf>) -> Result<AppExit> {
     if args.len() < 2 {
-        return Err("usage: kh2fm wm <Steam-root> <manifest> [--from <world code>] [--story <first>:<last>]... [--touch <world point>,...] [--seen <world-event bit>,...] [--slot <n>:<state>]... [--at <x>,<z>] [--event <id>]... [--field <test-room config>] [--play-time <h>:<m>] [--world-time <world>:<h>:<m>]... [--load-only] [--autoplay <new-capture-dir> [--decide]]".into());
+        return Err("usage: kh2fm wm <Steam-root> <manifest> [--from <world code>] [--story <first>:<last>]... [--touch <world point>,...] [--seen <world-event bit>,...] [--slot <n>:<state>]... [--at <x>,<z>] [--event <id>]... [--field <test-room config>] [--play-time <h>:<m>] [--world-time <world>:<h>:<m>]... [--all-worlds] [--load-only] [--autoplay <new-capture-dir> [--decide]]".into());
     }
     // The GPU device starts while the data decodes (used by the app below).
     let early_renderer = crate::early_renderer::EarlyRenderer::start();
     let mut from = "tt".to_owned();
     let mut story = Vec::new();
     let mut load_only = false;
+    let mut all_worlds = false;
     let mut autoplay = None;
     let mut decide = false;
     let mut touched: Vec<u32> = Vec::new();
@@ -2874,6 +2875,8 @@ fn run(args: Vec<PathBuf>) -> Result<AppExit> {
             Some("--from") => from = value()?,
             Some("--story") => story.push(parse_story(&value()?)?),
             Some("--load-only") => load_only = true,
+            // The state the story ends with (`Progress::finish_story`).
+            Some("--all-worlds") => all_worlds = true,
             Some("--autoplay") => autoplay = Some(PathBuf::from(value()?)),
             Some("--decide") => decide = true,
             // Play this libretto-wm.bar event after the queued ones.
@@ -2984,6 +2987,9 @@ fn run(args: Vec<PathBuf>) -> Result<AppExit> {
     let mut src = AreaSource::open(Arc::clone(&source), &story)?;
     if let Some(image) = &load_image {
         crate::test_room::game_save::apply_progress(src.progress_mut(), image);
+    } else if all_worlds {
+        src.progress_mut().finish_story();
+        story = src.progress().story_ranges();
     }
     let (room, mut loaded) = src
         .load(target.world, target.area, target.entrance, [-1; 3])

@@ -454,7 +454,7 @@ pub const TESTS: [Test; 8] = [
     },
     Test {
         name: "World map",
-        blurb: "Fly the cursor between the world symbols",
+        blurb: "Every world open: fly to one and land in its field",
         program: "wm",
     },
 ];
@@ -921,10 +921,11 @@ pub fn test_args(dir: &Path, program: &str, b: &Bound) -> Result<Vec<String>, St
         ];
         // The world map's landing starts the field from the arena config's
         // sources when one is at hand.
-        if program == "wm"
-            && let Some(arena) = own("launch").map(|(a, _)| a).or_else(|| made("room").ok())
-        {
-            args.extend(["--field".to_owned(), arena.to_string_lossy().into_owned()]);
+        if program == "wm" {
+            args.push("--all-worlds".to_owned());
+            if let Some(arena) = own("launch").map(|(a, _)| a).or_else(|| made("room").ok()) {
+                args.extend(["--field".to_owned(), arena.to_string_lossy().into_owned()]);
+            }
         }
         return Ok(args);
     }

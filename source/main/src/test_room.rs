@@ -954,7 +954,16 @@ pub type AreaJob = Result<(LoadedRoom, LoadedArea, AreaSource, f64), String>;
 /// Starts decoding an area on a worker thread with a fork of the source.
 pub fn start_area_job(
     source: &AreaSource,
+    place: (u8, u8, u8),
+) -> Option<std::thread::JoinHandle<AreaJob>> {
+    start_area_job_with(source, place, [-1; 3])
+}
+
+/// `start_area_job` with a jump by program id's overrides (FUN_14039fbc0).
+pub fn start_area_job_with(
+    source: &AreaSource,
     (world, area, entrance): (u8, u8, u8),
+    programs: [i16; 3],
 ) -> Option<std::thread::JoinHandle<AreaJob>> {
     let mut fork = match source.fork() {
         Ok(fork) => fork,
@@ -968,7 +977,7 @@ pub fn start_area_job(
         .spawn(move || {
             let started = Instant::now();
             let (room, loaded) = fork
-                .load(world, area, entrance, [-1; 3])
+                .load(world, area, entrance, programs)
                 .map_err(|e| e.to_string())?;
             Ok((room, loaded, fork, started.elapsed().as_secs_f64() * 1e3))
         })
@@ -1418,6 +1427,8 @@ pub struct Game {
     pub flow_queued: bool,
     /// A save point's Save was chosen: the camp opens the file menu.
     pub save_menu_wanted: bool,
+    /// A gate's reaction was taken: `LoadedArea::gates` index.
+    pub gate_wanted: Option<usize>,
     /// Files the save point's menu wrote this run, and the world and area
     /// of the save point last used.
     pub files_saved: u32,
@@ -3602,6 +3613,25 @@ pub fn load(
         .and_then(actor_physics::Sstm::read)
         .ok_or("SSTM record truncated")?;
     timer.mark("objects and room start");
+    // The HUD's faces and the party below go by the place's party, which the
+    // area's programs and the story settle.
+    let early_area = match area_job.take() {
+        Some(job) => {
+            let loaded = job.join().map_err(|_| "area load thread panicked")??;
+            let friends = loaded
+                .2
+                .members
+                .friends
+                .iter()
+                .filter_map(|&o| loaded.1.model_name(u32::from(o)))
+                .map(|n| &*Box::leak(n.into_boxed_str()))
+                .take(2)
+                .collect();
+            let _ = FIELD_PARTY.set(friends);
+            Some(loaded)
+        }
+        None => None,
+    };
     let battle = read_archive(source, &config.battle)?;
     // The effect containers and the enemies' sound banks likewise.
     // The party limits' files (rooms with a fight), likewise: Sora's kit
@@ -3958,15 +3988,6 @@ pub fn load(
     });
     // A fight's objects name the motions Sora is captured into, so the area's
     // spawns come before his kit.
-    let early_area = match area_job.take() {
-        Some(job) if area_enemies::enabled() => {
-            Some(job.join().map_err(|_| "area load thread panicked")??)
-        }
-        other => {
-            area_job = other;
-            None
-        }
-    };
     let kit = character_kit::load_kit(
         source,
         character_kit::KitInputs {
@@ -5389,6 +5410,13 @@ pub fn area_transition(
     area.bg_mask = next.state.setup.bg_mask;
     let tick = game.tick;
     game.save.note_world(next.world, tick);
+    // ARD op 0x0f (FUN_1403a24c0 → FUN_1403e31f0) writes the world's table.
+    if let (Some(record), Some(to)) = (
+        next.members.record,
+        game.save.party_table.get_mut(next.world as usize),
+    ) {
+        *to = record;
+    }
     party_room::follow_party_table(&mut game, next.world);
     area.current = next;
     // The old area's effects end with it; the new area's start next tick.
@@ -7303,6 +7331,12 @@ pub fn read_pad(
 /// The party's members by model name: `KH2RW_PARTY` (a comma list of
 /// objentry models, e.g. `P_HE000,P_EX020`), Donald and Goofy by default.
 pub fn party_names() -> Vec<&'static str> {
+    // A field room's party is the place's (`AreaSource::members`).
+    if std::env::var_os("KH2RW_PARTY").is_none()
+        && let Some(names) = FIELD_PARTY.get()
+    {
+        return names.clone();
+    }
     match std::env::var("KH2RW_PARTY") {
         Ok(list) => list
             .split(',')
@@ -7314,6 +7348,8 @@ pub fn party_names() -> Vec<&'static str> {
         Err(_) => vec!["P_EX020", "P_EX030"],
     }
 }
+
+static FIELD_PARTY: std::sync::OnceLock<Vec<&'static str>> = std::sync::OnceLock::new();
 
 /// Scripted input for unattended verification runs.
 pub fn autoplay_input(tick: u64) -> (Vec2, bool, bool) {
@@ -8562,6 +8598,44 @@ pub fn simulate(
                         }
                     }
                 }
+            }
+        }
+        // A gate's reaction was taken (reaction_command.rs).
+        if let (Some(a), Some(k)) = (area.as_deref_mut(), game.gate_wanted.take())
+            && a.transition.is_none()
+            && !game.versus
+            && let Some(gate) = a.current.gates.get(k).copied()
+        {
+            let jump = a
+                .source
+                .signal_jump(&a.current.state.setup.events, gate.signal);
+            game.event(serde_json::json!({"event":"gate_taken","tick":tick,
+                "command":gate.command,"signal":gate.signal,"jump":format!("{jump:?}")}));
+            match jump {
+                // FUN_1403a46e0 → FUN_140152990(target, 1): mode 1 fades to
+                // black over n = 15 (FUN_140156520 → FUN_140156ce0).
+                Some(crate::area::SignalJump::Field {
+                    world,
+                    area: place,
+                    entrance,
+                    programs,
+                }) => {
+                    let mut fade = Fade::default();
+                    fade.fade_out(15, false);
+                    a.transition = Some(Transition {
+                        stage: Stage::Black,
+                        iris: None,
+                        fade,
+                        target: (world, place, entrance),
+                        job: start_area_job_with(&a.source, (world, place, entrance), programs),
+                    });
+                }
+                Some(crate::area::SignalJump::WorldMap(_)) => {
+                    if let Some(c) = camp.as_deref() {
+                        game_save::jump_to_world_map(&mut game, c, Some(&*a));
+                    }
+                }
+                None => {}
             }
         }
         wall_hit::tick(&mut game, tick);
@@ -15224,6 +15298,7 @@ pub fn run(
         rc_queued: false,
         flow_queued: false,
         save_menu_wanted: false,
+        gate_wanted: None,
         files_saved: 0,
         save_place: None,
         save: game_save::SaveState {
@@ -15448,6 +15523,7 @@ pub fn run(
         let setup = &a.current.state.setup;
         game.event(serde_json::json!({"event":"area_start","world":a.current.world,
             "area":a.current.area,"programs":a.current.programs,
+            "members":format!("{:x?}", a.current.members),
             "bg_mask":format!("{:#x}", setup.bg_mask),"battle_level":setup.battle_level,
             "bgm":setup.bgm,"camera_mode":setup.camera_mode,
             "events":setup.events.iter().map(|e| format!("{e:?}")).collect::<Vec<_>>(),

@@ -6,14 +6,16 @@ use crate::npcs::{FieldNpc, Lcg, NpcKind};
 use ::area::{
     Area, PlayerProbe, Request, Spawn,
     progress::{self, Progress},
-    script::{self, Location, ScriptRandom},
-    world_state::WorldTables,
+    script::{self, EventEntry, Location, ScriptRandom},
+    world_state::{self, WorldTables},
 };
 use bevy::prelude::Vec3;
 use collision::{Body, Query};
 use data::{
     ard::{self, tag},
-    bar, objentry,
+    bar,
+    member_table::{self, MemberTable},
+    objentry,
     path_lookup::Library,
     probe_source::ProbeSource,
     room_collision,
@@ -103,6 +105,95 @@ pub struct AreaSource {
     reasons: HashMap<u16, Vec<u8>>,
     /// The ARD language directory (`*0x1408ec5d0`; "us" in this build).
     language: &'static str,
+    /// 03system `cmd`: execute and argument by command.
+    commands: HashMap<u16, (u16, i16)>,
+    /// 07localset.bin (`data::world_map::read_program_areas`).
+    program_areas: Vec<Vec<(u16, u16)>>,
+    /// 03system `memt`.
+    members: MemberTable,
+}
+
+/// The object that offers a door between worlds or the like: a type-8 object
+/// with a reaction shape (FUN_140407de0) whose command raises a signal.
+#[derive(Clone, Copy, Debug)]
+pub struct Gate {
+    /// Scene position (Y up).
+    pub position: Vec3,
+    pub shape: data::object_collision::Entry,
+    pub command: u16,
+    pub signal: i32,
+}
+
+/// Where a signal's area entry sends the game (FUN_1403f60d0 → FUN_1403a46e0).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SignalJump {
+    /// Kind 1 by place, kind 2 by program id (FUN_1403a4bd0).
+    Field {
+        world: u8,
+        area: u8,
+        entrance: u8,
+        programs: [i16; 3],
+    },
+    /// Kind 4 (FUN_140154e20): the map, beside this world.
+    WorldMap(u8),
+}
+
+/// Reaction commands F_TR010 and the computer's F_EX000 raise these signals
+/// (FUN_1403aabe0 → FUN_1402e4570), which open the computers' menus
+/// (`tr_co.2ld`, `hb_co.2ld`, table 0x1405ba140). [Not built] Those menus are
+/// not drawn, so the signal stands for the first row's: 60, the first
+/// terminal in Hollow Bastion's Ansem's Study and Space Paranoids' way out.
+const COMPUTER_SIGNALS: [(i32, i32); 2] = [(0x57, 60), (0x58, 60)];
+
+/// Who the party is in an area: objects, Sora's first (FUN_140405190(0),
+/// FUN_1403c32e0).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Members {
+    pub player: u16,
+    pub friends: Vec<u16>,
+    /// The world's member bytes (save +0x3534 + 4 × world) after the area's
+    /// op 0x0f, when it has one.
+    pub record: Option<[u8; 4]>,
+}
+
+/// FUN_1403f60d0(signal, 0): the area's entry for the signal (an entry with no
+/// spawn id matches; the last such wins, as the exe's walk leaves it) and
+/// FUN_1403a4bd0's reading of its jump. An entry's event (FUN_1403ac350) is
+/// not played here.
+fn signal_jump(
+    events: &[EventEntry],
+    program_areas: &[Vec<(u16, u16)>],
+    signal: i32,
+) -> Option<SignalJump> {
+    let entry = events
+        .iter()
+        .find(|e| e.signal == signal && e.spawn_id == 0)
+        .or_else(|| {
+            events
+                .iter()
+                .rev()
+                .find(|e| e.signal == signal && e.spawn_id < 0)
+        })?;
+    let [kind, world, area, entrance, program, _] = entry.jump?;
+    match kind {
+        1 => Some(SignalJump::Field {
+            world: world as u8,
+            area: area as u8,
+            entrance: entrance as u8,
+            programs: [-1; 3],
+        }),
+        2 => {
+            let t = world_state::resolve_program(program_areas, world as u8, program as u16)?;
+            Some(SignalJump::Field {
+                world: t.world,
+                area: t.area,
+                entrance: entrance as u8,
+                programs: [program; 3],
+            })
+        }
+        4 => Some(SignalJump::WorldMap(world as u8)),
+        _ => None,
+    }
 }
 
 /// One loaded area.
@@ -142,6 +233,8 @@ pub struct LoadedArea {
     /// Each save point is a WORLD_POINT (0x239), whose menu has the World Map
     /// row, or a SAVE_POINT (0x23a) (FUN_1403a8b10, FUN_1402eb490).
     pub world_points: Vec<bool>,
+    pub gates: Vec<Gate>,
+    pub members: Members,
     /// The save point object's effects (`obj/SAVE_POINT.a.us`) when the
     /// area has save points.
     pub save_point_pax: Option<Arc<data::object_effect::Pax>>,
@@ -283,10 +376,41 @@ impl AreaSource {
                     .map(<[u8]>::to_vec)
             })
             .unwrap_or_default();
+        let members = library
+            .read("03system.bin")
+            .ok()
+            .and_then(|sys| {
+                let table = bar::read_bar(&sys).ok()?;
+                let e = table.entries.iter().find(|e| e.name_bytes == *b"memt")?;
+                let bytes = sys.get(e.offset as usize..e.offset as usize + e.size as usize)?;
+                MemberTable::read(bytes).ok()
+            })
+            .unwrap_or_default();
+        let commands = library
+            .read("03system.bin")
+            .ok()
+            .and_then(|sys| {
+                let table = bar::read_bar(&sys).ok()?;
+                let e = table.entries.iter().find(|e| e.name_bytes == *b"cmd\0")?;
+                let bytes = sys.get(e.offset as usize..e.offset as usize + e.size as usize)?;
+                data::command_table::read(bytes).ok()
+            })
+            .into_iter()
+            .flatten()
+            .map(|c| (c.id, (c.execute, c.argument)))
+            .collect();
+        let program_areas = library
+            .read("07localset.bin")
+            .ok()
+            .and_then(|b| data::world_map::read_program_areas(&b).ok())
+            .unwrap_or_default();
         Ok(Self {
             source,
             library,
             progress,
+            commands,
+            program_areas,
+            members,
             arif,
             last_pair: None,
             place_names,
@@ -326,6 +450,9 @@ impl AreaSource {
             unknown_place: Vec::new(),
             reasons: HashMap::new(),
             language: self.language,
+            commands: self.commands.clone(),
+            program_areas: self.program_areas.clone(),
+            members: self.members.clone(),
         })
     }
 
@@ -455,6 +582,8 @@ impl AreaSource {
         let save_points = self.save_points(&spawns);
         let save_entrances = self.save_entrances(&spawns);
         let world_points = self.world_points(&spawns);
+        let gates = self.gates(code, &spawns, &state.setup.events);
+        let members = self.members(world, area, &state.setup.party_set);
         let save_point_pax = if save_points.is_empty() {
             None
         } else {
@@ -495,6 +624,8 @@ impl AreaSource {
                 save_points,
                 save_entrances,
                 world_points,
+                gates,
+                members,
                 save_point_pax,
                 world_point_pax,
             },
@@ -563,6 +694,141 @@ impl AreaSource {
             Some(e) => points.into_iter().map(|p| (p, e)).collect(),
             None => Vec::new(),
         }
+    }
+
+    /// The type-8 objects whose reaction raises a signal the area answers
+    /// with a jump: FUN_140407de0 offers the shape's command (0x83 names the
+    /// placement's own, entity +0x2c); FUN_1403a8b10's execute 0x1e runs the
+    /// placement's talk script (FUN_140400cd0, whose libretto op 3 raises the
+    /// signal) and execute 0x7f raises the command's argument.
+    fn gates(&mut self, code: &str, spawns: &[Spawn], events: &[EventEntry]) -> Vec<Gate> {
+        let mut out = Vec::new();
+        for s in spawns {
+            let Some(&i) = self.object_index.get(&s.entity.object) else {
+                continue;
+            };
+            let o = &self.objects[i];
+            if o.object_type != 8 {
+                continue;
+            }
+            let name = String::from_utf8_lossy(&o.model_name)
+                .trim_end_matches('\0')
+                .to_owned();
+            let shapes = self
+                .library
+                .read(&format!("obj/{name}.mdlx"))
+                .ok()
+                .and_then(|b| {
+                    let table = bar::read_bar(&b).ok()?;
+                    let e = table.entries.iter().find(|e| e.entry_type == 23)?;
+                    let bytes = b.get(e.offset as usize..e.offset as usize + e.size as usize)?;
+                    data::object_collision::read(bytes).ok()
+                })
+                .unwrap_or_default();
+            for shape in shapes
+                .into_iter()
+                .filter(|e| e.kind == data::object_collision::REACTION)
+            {
+                let command = match shape.argument as u16 {
+                    0x83 => s.entity.reaction,
+                    c => c,
+                };
+                let signal = match self.commands.get(&command).copied() {
+                    Some((0x1e | 0x1f, _)) => self.talk_signal(code, s.entity.talk),
+                    Some((0x7f, argument)) => Some(i32::from(argument)),
+                    _ => None,
+                };
+                let Some(signal) = signal else { continue };
+                let signal = COMPUTER_SIGNALS
+                    .iter()
+                    .find(|(menu, _)| *menu == signal)
+                    .map_or(signal, |(_, row)| *row);
+                if self.signal_jump(events, signal).is_some() {
+                    let [x, y, z] = s.entity.position;
+                    out.push(Gate {
+                        position: Vec3::new(x, -y, -z),
+                        shape,
+                        command,
+                        signal,
+                    });
+                }
+            }
+        }
+        out
+    }
+
+    /// Who the party is here: FUN_1403e2eb0's objects for the place, indexed
+    /// by the world's member bytes after the area's ARD op 0x0f
+    /// (FUN_1403e31f0). The bytes live in the save, world by world; with no
+    /// op in this area's programs and no save at hand they take preset 1
+    /// (Donald and Goofy) [I].
+    pub fn members(&self, world: u8, area: u8, party_set: &[u32]) -> Members {
+        let variant = self.command_variant(world, area);
+        let objects = self
+            .members
+            .objects(world, variant, |flag| self.progress.test(flag));
+        let mut record = member_table::NEW_RECORD;
+        let presets: Vec<u32> = if party_set.is_empty() {
+            self.members.presets.get(1).copied().into_iter().collect()
+        } else {
+            party_set
+                .iter()
+                .filter_map(|&p| self.members.presets.get(p as usize).copied())
+                .collect()
+        };
+        for preset in presets {
+            record = member_table::apply_preset(record, preset);
+        }
+        let object = |byte: u8| objects.get((byte & 0x1f) as usize).copied().unwrap_or(0);
+        Members {
+            record: (!party_set.is_empty()).then_some(record),
+            player: object(record[0]),
+            friends: record[1..]
+                .iter()
+                .filter(|b| *b & 0x1f != member_table::NO_MEMBER)
+                .map(|&b| object(b))
+                .filter(|&o| o != 0)
+                .collect(),
+        }
+    }
+
+    /// An object's model name.
+    pub fn model_name(&self, object: u32) -> Option<String> {
+        let &i = self.object_index.get(&object)?;
+        Some(
+            String::from_utf8_lossy(&self.objects[i].model_name)
+                .trim_end_matches('\0')
+                .to_owned(),
+        )
+    }
+
+    /// The signal a talk script raises (libretto op 3), if any.
+    fn talk_signal(&mut self, code: &str, talk: u16) -> Option<i32> {
+        if talk == 0 {
+            return None;
+        }
+        let bytes = self.library.read(&format!("libretto-{code}.bar")).ok()?;
+        let table = bar::read_bar(&bytes).ok()?;
+        let e = table.entries.iter().find(|e| e.entry_type == 2)?;
+        let entry = bytes.get(e.offset as usize..e.offset as usize + e.size as usize)?;
+        let count = i32::from_le_bytes(entry.get(4..8)?.try_into().ok()?).max(0) as usize;
+        (0..count).find_map(|r| {
+            let rec = entry.get(8 + r * 8..16 + r * 8)?;
+            if u16::from_le_bytes([rec[0], rec[1]]) != talk {
+                return None;
+            }
+            let at = u32::from_le_bytes(rec[4..8].try_into().ok()?) as usize;
+            dialogue::read_script(entry.get(at..)?)
+                .into_iter()
+                .find_map(|op| match op {
+                    Op::Signal(n) => Some(n as i32),
+                    _ => None,
+                })
+        })
+    }
+
+    pub fn signal_jump(&self, events: &[EventEntry], signal: i32) -> Option<SignalJump> {
+        signal_jump(events, &self.program_areas, signal)
     }
 
     /// FUN_1403a5920: the room's command-layout digit, arif row byte +0x34
@@ -1225,6 +1491,68 @@ pub fn command_layout(world: &str, variant: u8, language: &str, default: bool) -
         format!("field2d/{language}/zz0command.2dd")
     } else {
         format!("field2d/{language}/{world}{variant}command.2dd")
+    }
+}
+
+#[cfg(test)]
+mod signal_tests {
+    use super::*;
+
+    fn entry(signal: i32, spawn_id: i32, jump: [i16; 6]) -> EventEntry {
+        EventEntry {
+            signal,
+            spawn_id,
+            jump: Some(jump),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn a_signal_finds_its_jump() {
+        let mut areas = vec![Vec::new(); 5];
+        areas[4] = vec![(0x78, 26)];
+        let events = [
+            entry(11, -1, [1, 9, 0, 6, 0, 1]),
+            entry(15, -1, [4, 4, 0, 0, 0, -1]),
+            entry(161, -1, [2, 4, 0, 3, 0x78, 1]),
+            entry(60, -1, [1, 17, 0, 50, 0, 1]),
+            entry(60, -1, [1, 17, 5, 55, 0, 1]),
+            entry(60, 0, [1, 17, 8, 50, 0, 1]),
+            entry(61, 25, [1, 17, 8, 50, 0, 1]),
+            entry(62, -1, [1, 17, 0, 50, 0, 1]),
+            entry(62, -1, [1, 17, 5, 55, 0, 1]),
+        ];
+        let field = |world, area, entrance, programs| SignalJump::Field {
+            world,
+            area,
+            entrance,
+            programs,
+        };
+        assert_eq!(
+            signal_jump(&events, &areas, 11),
+            Some(field(9, 0, 6, [-1; 3]))
+        );
+        assert_eq!(
+            signal_jump(&events, &areas, 15),
+            Some(SignalJump::WorldMap(4))
+        );
+        assert_eq!(
+            signal_jump(&events, &areas, 161),
+            Some(field(4, 26, 3, [0x78; 3]))
+        );
+        // The entry for no spawn wins over those for any.
+        assert_eq!(
+            signal_jump(&events, &areas, 60),
+            Some(field(17, 8, 50, [-1; 3]))
+        );
+        // Of those for any, the last.
+        assert_eq!(
+            signal_jump(&events, &areas, 62),
+            Some(field(17, 5, 55, [-1; 3]))
+        );
+        // An entry tied to another spawn does not answer.
+        assert_eq!(signal_jump(&events, &areas, 61), None);
+        assert_eq!(signal_jump(&events, &areas, 9), None);
     }
 }
 

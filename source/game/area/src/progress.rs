@@ -192,6 +192,24 @@ impl Progress {
         self.flags.get(w).is_some_and(|v| v & bit != 0)
     }
 
+    /// Every world's flags as `first..=last`, from the size of its script
+    /// table (`FUN_14039afc0` indexes it by `flag & 0x3ff`). World 0 holds the
+    /// new-game setup, not story.
+    pub fn story_ranges(&self) -> Vec<(u32, u32)> {
+        self.scripts
+            .iter()
+            .enumerate()
+            .skip(1)
+            .filter_map(|(world, script)| {
+                let script = script.as_ref()?;
+                let table = u16::from_le_bytes([*script.first()?, *script.get(1)?]);
+                let slots = u32::from(table / 2);
+                let first = world as u32 * 0x400;
+                (slots != 0).then_some((first, first + slots - 1))
+            })
+            .collect()
+    }
+
     /// The flag words a save holds (`DAT_1409ab540`).
     pub fn flag_words(&self) -> &[u32] {
         &self.flags
@@ -254,6 +272,11 @@ impl Progress {
         let Some(mut at) = read(slot * 2).map(usize::from) else {
             return;
         };
+        // A slot of offset 0 has no script: the exe would run the table
+        // itself as one, and its story never sets such a flag.
+        if at == 0 {
+            return;
+        }
         while let Some(&op) = script.get(at) {
             if op == 0 {
                 break;
@@ -392,6 +415,14 @@ mod tests {
         // Slot 1's op 7 cleared the flag that started the chain.
         assert!(!p.test(0x800));
         assert!(!p.test(0xffff));
+    }
+
+    #[test]
+    fn story_ranges_follow_the_script_tables() {
+        let mut v = scripts();
+        v[0] = Some(vec![2, 0, 0, 0]);
+        let p = Progress::new(v);
+        assert_eq!(p.story_ranges(), vec![(0x800, 0x801)]);
     }
 
     #[test]

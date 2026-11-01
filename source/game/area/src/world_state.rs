@@ -58,6 +58,11 @@ pub const WORLD_MAP_ENTRANCES: [(u8, u8); 15] = [
     (15, 17),
 ];
 
+/// World point 0x18 (eh11, 00worldpoint.bin): no program of that area's ARD
+/// places a WORLD_POINT object or an entrance 0x63, so nothing touches it
+/// (FUN_140418e30) and the landing grid never shows it.
+const NO_OBJECT_POINT: u32 = 0x18;
+
 /// The tables the world map state reads (00progress.bin, 70landing.bar,
 /// 00worldpoint.bin).
 #[derive(Clone, Debug, Default)]
@@ -574,6 +579,40 @@ impl Progress {
         }
     }
 
+    /// The save the story ends with, from the installed tables alone: every
+    /// world's flags in order (FUN_14039afc0), every world event in the
+    /// order the map plays them (FUN_14038da10's priority, which follows the
+    /// story) with its script run (FUN_1403deb40), and every world point
+    /// touched. Nothing is left to queue, so no arrival event plays. The last
+    /// scripts (`wldf` 0x4c, priority 149) open all 12 symbols and the Gummi
+    /// routes. Story blocks are lifted as `AreaSource::open` lifts them.
+    pub fn finish_story(&mut self) {
+        for (first, last) in self.story_ranges() {
+            for flag in first..=last {
+                if !self.test(flag) {
+                    self.set(flag);
+                }
+            }
+        }
+        if let Some(tables) = self.world_tables.clone() {
+            let mut events: Vec<&WorldEvent> = tables.events.iter().collect();
+            events.sort_by_key(|e| e.priority);
+            for e in events {
+                if gate_open(&self.world.event_bits, e.id) {
+                    set_bit(&mut self.world.event_bits, e.id as u32);
+                    self.world.run_event_script(&e.script, false);
+                }
+            }
+            for point in 0..tables.world_points.len() as u32 {
+                if point != NO_OBJECT_POINT {
+                    self.world.touch_point(point);
+                }
+            }
+        }
+        self.world.queue.clear();
+        self.unblock_all();
+    }
+
     /// FUN_14038dc60 (the world map's first task): the queued events' scripts
     /// run at once, then the distinct world map events they name, in
     /// priority order. Returns those event ids and the last draw-group set
@@ -935,6 +974,51 @@ mod tests {
         assert!(p.world.point_touched(0xd) && p.world.point_touched(16));
         p.set(0x2023);
         assert!(p.world.point_touched(41));
+    }
+
+    #[test]
+    fn a_finished_story_opens_by_the_last_scripts_and_queues_nothing() {
+        let mut p = progress_with(WorldTables {
+            events: vec![
+                event(
+                    1,
+                    2,
+                    149,
+                    0xffff_ffff,
+                    0x6c6,
+                    vec![op(4, &[2, 4]), op(15, &[24])],
+                ),
+                event(
+                    2,
+                    2,
+                    39,
+                    0xffff_ffff,
+                    0x71f,
+                    vec![op(5, &[2, 4]), op(15, &[10])],
+                ),
+                event(0x25, 2, 58, 0xffff_ffff, 0, vec![op(3, &[6])]),
+                event(0x73, 2, 60, 0xffff_ffff, 0, vec![op(4, &[6])]),
+            ],
+            world_points: vec![
+                WorldPoint {
+                    world: 2,
+                    area: 9,
+                    entrance: 0x63,
+                };
+                0x19
+            ],
+            ..Default::default()
+        });
+        p.finish_story();
+        for w in [2, 4] {
+            assert_eq!((p.world.records[w].state, p.world.records[w].flags), (2, 0));
+        }
+        assert_eq!(p.world.draw_group_set, 24);
+        // Event 0x25 plays before the event that gates it.
+        assert!(p.world.event_seen(0x25) && p.world.event_seen(0x73));
+        assert!(p.world.queue.is_empty());
+        assert!(p.world.point_touched(2));
+        assert!(!p.world.point_touched(NO_OBJECT_POINT));
     }
 
     #[test]
