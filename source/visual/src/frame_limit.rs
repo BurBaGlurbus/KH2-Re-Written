@@ -149,6 +149,8 @@ mod tests {
     fn locked_frames_run_one_tick_each_and_stay_on_real_time() {
         let mut app = App::new();
         app.add_plugins((bevy::time::TimePlugin, FrameLimitPlugin));
+        // The game's tick, as its apps set it; Bevy's default is 64 Hz.
+        app.insert_resource(Time::<Fixed>::from_hz(f64::from(ORIGINAL_FPS)));
         app.world_mut().resource_mut::<FrameLimit>().fps = Some(ORIGINAL_FPS);
         app.init_resource::<Ticks>()
             .add_systems(FixedUpdate, |mut t: ResMut<Ticks>| t.0 += 1);
