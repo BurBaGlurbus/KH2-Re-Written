@@ -349,7 +349,26 @@ pub fn tick(
                 p.distance_squared(sora)
                     .total_cmp(&q.distance_squared(sora))
             });
-        if let Some(at) = nearest
+        // A boss's reaction command on offer comes first: it can stand behind
+        // the boss (B_BB100's), where a walk from the front does not reach.
+        let offered = fighting().filter(boss).find_map(|a| {
+            let b = a.battle.as_ref()?;
+            b.pose
+                .reactions
+                .iter()
+                .find(|(shape, kind, argument)| {
+                    *kind == data::object_collision::REACTION
+                        && b.brain.reaction_offered(
+                            i32::from(*argument),
+                            i32::from(shape.group),
+                            b.assets.default_groups,
+                        )
+                })
+                .map(|(shape, ..)| shape.centre)
+        });
+        if let Some(at) = offered {
+            game.sora.player.position = [at.x, sora.y, at.z];
+        } else if let Some(at) = nearest
             && at.distance(sora) > 300.
         {
             let away = (sora - at) * Vec3::new(1., 0., 1.);

@@ -628,9 +628,12 @@ pub fn hit_spheres(source: &ProbeSource, model: &str) -> Vec<([f32; 3], f32)> {
                 .iter()
                 .filter(|e| e.kind == data::object_collision::HIT && e.group == 0)
                 .map(|e| {
-                    let [x, y, z] = e.position.map(f32::from);
+                    let mut at = bevy::math::Vec3::from_array(e.position.map(f32::from));
+                    if e.bone == 0x4000 {
+                        at = super::enemy_combat::origin_offset(at);
+                    }
                     (
-                        [x, y + f32::from(e.position_height), z],
+                        [at.x, at.y + f32::from(e.position_height), at.z],
                         f32::from(e.radius),
                     )
                 })

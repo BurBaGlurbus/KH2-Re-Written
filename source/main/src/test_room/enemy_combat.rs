@@ -589,8 +589,13 @@ impl EnemyCombat {
                     } else {
                         removed_root
                     };
-                    let local = matrix.transform_point3(shape.offset) - root
-                        + Vec3::Y * shape.position_height;
+                    let offset = if shape.bone == 0x4000 {
+                        origin_offset(shape.offset)
+                    } else {
+                        shape.offset
+                    };
+                    let local =
+                        matrix.transform_point3(offset) - root + Vec3::Y * shape.position_height;
                     let centre = position + turn * local;
                     if !centre.is_finite() {
                         return Err("combat shape centre nonfinite".into());
@@ -665,6 +670,14 @@ fn reaction_shapes(entries: &[object_collision::Entry], bones: usize) -> Vec<(Hi
             )
         })
         .collect()
+}
+
+/// A shape on the actor's origin (FUN_1403b50f0 case 0x4000) is offset by the
+/// object's rotation (+0x40) in engine axes, where up is -y and the engine yaw
+/// is pi minus the scene's: in the frame a scene yaw turns, x and y change sign.
+/// [`attack_shapes`]'s `[0, -200, -281]` of B_BB100 stands above the floor.
+pub fn origin_offset(offset: Vec3) -> Vec3 {
+    Vec3::new(-offset.x, -offset.y, offset.z)
 }
 
 /// The kind-18 entries that are live without script help: FUN_1403c9c00
@@ -909,6 +922,10 @@ mod tests {
         root_sphere.bone = 0x4000;
         root_sphere.position = [0, 0, 200];
         root_sphere.position_height = 7;
+        assert_eq!(
+            origin_offset(Vec3::new(1., -200., -281.)),
+            Vec3::new(-1., 200., -281.)
+        );
         let spheres = camera_spheres(&[root_sphere, entry(18, 3), entry(object_collision::HIT, 3)]);
         assert_eq!(spheres.len(), 1);
         let data = EnemyCombat {
