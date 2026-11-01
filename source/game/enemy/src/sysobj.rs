@@ -1531,7 +1531,14 @@ impl Sysobj {
             self.sampler.store(step);
         }
         self.steer = Some(steer);
-        let d = self.sampler.displacement();
+        let mut d = self.sampler.displacement();
+        // FUN_1403b89a0 adds the motion root's change in every mode: a flying
+        // B_AL100 comes down by its motions.
+        let root = self.motion.root_step;
+        let (sin, cos) = self.yaw.sin_cos();
+        d[0] += root[0] * cos + root[2] * sin;
+        d[1] += root[1];
+        d[2] += -root[0] * sin + root[2] * cos;
         self.apply_movement(d, env);
     }
 

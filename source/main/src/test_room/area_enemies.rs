@@ -325,11 +325,25 @@ pub fn tick(
     // close-range acts and its reaction commands come up.
     if game.enemy_battle_tour && tick >= 60 && tick.is_multiple_of(TOUR_CLOSE_TICKS) {
         let sora = Vec3::from_array(game.sora.player.position);
-        let nearest = gallery
-            .actors
-            .iter()
+        let fighting = || {
+            gallery.actors.iter().filter(|a| {
+                a.battle
+                    .as_ref()
+                    .is_some_and(|b| b.brain.alive() && !b.brain.gone())
+            })
+        };
+        // A boss with a character of its own first (a helper has none), so a
+        // fight's own reaction commands come up.
+        let boss = |a: &&enemy_gallery::GalleryActor| {
+            gallery.catalog.entries[a.entry].character != 0
+                && a.battle
+                    .as_ref()
+                    .is_some_and(|b| matches!(&b.brain, enemy_battle::Brain::Script(s) if s.boss()))
+        };
+        let bosses = fighting().filter(boss).count();
+        let nearest = fighting()
+            .filter(|a| bosses == 0 || boss(a))
             .filter_map(|a| a.battle.as_ref())
-            .filter(|b| b.brain.alive() && !b.brain.gone())
             .map(|b| Vec3::from_array(b.brain.position()))
             .min_by(|p, q| {
                 p.distance_squared(sora)

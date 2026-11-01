@@ -385,12 +385,34 @@ fn set_rtn_time(ctx: &mut Ctx<'_>, m: &mut Memory<'_>, args: &mut Args) -> Resul
     Ok(())
 }
 
+/// How far above and below the object FUN_1403b87e0's ray reaches
+/// (DAT_140585efc, DAT_1405b6108).
+const FLOOR_RAY_ABOVE: f32 = 200.;
+const FLOOR_RAY_BELOW: f32 = 100_000.;
+
 /// 1:99 FUN_14042fb50 -> FUN_1403b87e0: minus the height of the object above
-/// the ground at its position (0 on it).
+/// the ground at its position (0 on it). The ground is the first polygon of the
+/// body's class on a ray from 200 above it (FUN_1403f3dd0), so with none it is
+/// its own height: B_AL100 (class 2) hovers over ground of no class of its and
+/// `atk_bound` waits on this. [U] FUN_1403b87e0 only runs the ray when +0x744
+/// bit 1 is set; otherwise it answers the solver's last floor (+0x738), which
+/// is not kept here. [I] With no map body, the room's floor.
 fn float_height(ctx: &mut Ctx<'_>, m: &mut Memory<'_>, args: &mut Args) -> Result<(), Fault> {
     let id = ctx.sys_of_ai(m, args[0].value)?;
-    let p = ctx.object(id)?.sys.position;
-    let floor = ctx.env.floor(p[0], p[2], p[1]).unwrap_or(p[1]);
+    let sys = &ctx.object(id)?.sys;
+    let (p, class) = (sys.position, sys.map_body.as_ref().map(|b| b.class));
+    let floor = match class {
+        Some(class) => ctx
+            .env
+            .line_hit_class(
+                [p[0], p[1] + FLOOR_RAY_ABOVE, p[2]],
+                [p[0], p[1] - FLOOR_RAY_BELOW, p[2]],
+                class,
+            )
+            .map(|hit| hit[1]),
+        None => ctx.env.floor(p[0], p[2], p[1] + FLOOR_RAY_ABOVE),
+    }
+    .unwrap_or(p[1]);
     let above = (p[1] - floor).max(0.);
     args[0] = Slot::float(-above);
     Ok(())

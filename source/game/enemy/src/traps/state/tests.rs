@@ -31,6 +31,15 @@ fn obj_fly_normalises_the_direction_and_decays_without_a_request() {
 }
 
 #[test]
+fn a_flying_object_moves_by_its_motions_root() {
+    let mut s = Sysobj::bare();
+    s.start_steer([0., 0., 0.], 0., 0.5);
+    s.motion.root_step = [0., -3., 0.];
+    s.end_tick(&NullEnv);
+    assert_eq!(s.moved, [0., -3., 0.]);
+}
+
+#[test]
 fn obj_fly_follows_a_move_request_with_its_inertia() {
     let mut s = Sysobj::bare();
     s.start_steer([1., 0., 0.], 10., 0.75);
