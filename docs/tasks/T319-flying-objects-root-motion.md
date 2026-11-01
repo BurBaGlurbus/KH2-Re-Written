@@ -31,7 +31,7 @@ The Lords (B_AL100_FIRE, B_AL100_ICE) enter physics mode 5 in OBJ_INIT and staye
 
 | Check | Result |
 | --- | --- |
-| `cargo fmt`, `cargo clippy --all-targets --locked -- -D warnings`, `cargo test --locked`, `cargo build --locked` | PASS (before the one-line synthetic test was added; that test then run with `-p enemy`, PASS) |
+| `cargo fmt`, `cargo clippy --all-targets --locked -- -D warnings`, `cargo test --locked`, `cargo build --locked` | PASS before the synthetic test was added. The test failed at first (its fall stopped on the test environment's floor), was committed that way in `31c7d3d`, and was fixed in the next commit; `-p enemy` then PASS |
 | Volcanic and Blizzard Lord tour (`t8`) | PASS: both descend and attack, signal 4 at ticks 2574 and 4094, `DeadBoss(-1)` only on the second, `mission_clear` 4281 |
 | Shadow Stalker tour (`f6`) | PASS: clear, `mission_clear` 1523 |
 | Thresholder tour (`f6`) | FAIL: still stops in `freeze`; the reaction command 67 was not taken in the tour |

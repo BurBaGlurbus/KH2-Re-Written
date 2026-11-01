@@ -34,6 +34,7 @@ fn obj_fly_normalises_the_direction_and_decays_without_a_request() {
 fn a_flying_object_moves_by_its_motions_root() {
     let mut s = Sysobj::bare();
     s.start_steer([0., 0., 0.], 0., 0.5);
+    s.position = [0., 10., 0.];
     s.motion.root_step = [0., -3., 0.];
     s.end_tick(&NullEnv);
     assert_eq!(s.moved, [0., -3., 0.]);
