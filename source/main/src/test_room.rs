@@ -1400,6 +1400,10 @@ pub struct Game {
     pub sound_queue: Vec<(u32, &'static str)>,
     /// Items whose name window is due (FUN_1401595d0): the boxes that arrived.
     pub treasure_items: Vec<u16>,
+    /// This tick's defeated objects' keys (FUN_1403db680) and the reaction
+    /// commands taken (FUN_1403a8b10), for the journal's counters.
+    pub defeated_keys: Vec<u16>,
+    pub command_presses: Vec<u16>,
     /// Items a chest gave, for its window (FUN_140159550).
     pub treasure_boxes: Vec<u16>,
     /// A chest's reaction was taken (reaction_command.rs).
@@ -2346,6 +2350,10 @@ pub struct JournalSource {
     pub opened_bits: Vec<u16>,
     pub owned_items: Vec<u16>,
     pub chars: Vec<data::journal_table::Char>,
+    /// Each `char` row's object key (objentry +0x4c), and each key's reaction
+    /// commands (`rcct`): name and use counter.
+    pub char_keys: Vec<u16>,
+    pub key_commands: HashMap<u16, Vec<(Vec<u8>, u16)>>,
     pub diag: Vec<data::journal_table::Diag>,
     pub albums: Vec<data::journal_table::Album>,
 }
@@ -2463,6 +2471,41 @@ pub fn load_journal(
             )
         })
         .collect();
+    // The Character Files' counters: each row's object key, each key's
+    // reaction commands (FUN_1403dfeb0, FUN_1403e6ff0, FUN_1403b68b0).
+    let objects = data::path_lookup::Library::open(source)
+        .ok()
+        .and_then(|mut l| l.read("00objentry.bin").ok())
+        .and_then(|b| objentry::read(&b).ok())
+        .unwrap_or_default();
+    let char_keys: Vec<u16> = chars
+        .iter()
+        .map(|c| {
+            objects
+                .iter()
+                .find(|o| o.object_id == u32::from(c.object))
+                .map_or(0, |o| o.character)
+        })
+        .collect();
+    let commands = data::command_table::read(bar_entry(system, b"cmd\0")?)?;
+    let mut key_commands: HashMap<u16, Vec<(Vec<u8>, u16)>> = HashMap::new();
+    for (key, slots) in journal_table::read_rcct(bar_entry(system, b"rcct")?)? {
+        let rows: Vec<&data::command_table::Command> = slots
+            .iter()
+            .filter(|&&id| id != 0)
+            .filter_map(|&id| commands.iter().find(|c| c.id == id))
+            .collect();
+        let name_ids: Vec<u32> = rows.iter().map(|r| r.name & 0x7fff).collect();
+        let names =
+            hud::load_messages_optional(source, &sys.index, sys.ordinal, sys.name_hash, &name_ids)?;
+        key_commands.insert(
+            key,
+            rows.iter()
+                .zip(names)
+                .map(|(r, n)| (n.unwrap_or_default(), r.reaction.counter))
+                .collect(),
+        );
+    }
     let mut texts: HashMap<u16, Vec<u8>> = ids
         .iter()
         .zip(found)
@@ -2523,6 +2566,8 @@ pub fn load_journal(
             .ok()
             .and_then(|b| data::sprite_sequence::read(b).ok()),
         treasures,
+        char_keys,
+        key_commands,
         item_names,
         opened_bits: j.opened_bits.clone(),
         owned_items: j.owned_items.clone(),
@@ -5446,7 +5491,9 @@ pub fn area_transition(
     game.event(serde_json::json!({"event":"area_enter","world":world,"area":number,
         "entrance":entrance,"programs":next.programs,"bg_mask":format!("{:#x}", next.state.setup.bg_mask),
         "spawn":position.to_array(),"yaw":yaw,
-        "save_points":next.save_points.iter().map(|(p, _)| p.to_array()).collect::<Vec<_>>()}));
+        "save_points":next.save_points.iter().map(|(p, _)| p.to_array()).collect::<Vec<_>>(),
+        "bob_models":next.bobs.models.len(),
+        "bobs_unread":next.bobs.models.iter().filter(|m| m.is_none()).count()}));
     area.previous = Some(area.current.area);
     area.visited.insert((next.world, next.area));
     area.music = Some(std::mem::take(&mut next.music));
@@ -12503,6 +12550,10 @@ pub struct CampRes {
     pub journal_save: game_save::JournalSave,
     /// The forms' and Summons' seen bits (save+0x4274).
     pub status_seen: u16,
+    /// The kill counters by object key, and the reaction commands' use counts
+    /// by counter.
+    pub kills: HashMap<u16, u32>,
+    pub command_uses: HashMap<u16, u16>,
 }
 
 /// FUN_140368ed0 at the camp's start for one member: its order list and
@@ -13807,6 +13858,25 @@ pub fn journal_data(
         tops: j.tops.iter().map(|(code, _)| code.clone()).collect(),
         world_icons: !j.world_icons.is_empty(),
         chars: j.chars.clone(),
+        kills: j
+            .char_keys
+            .iter()
+            .map(|k| c.kills.get(k).copied().unwrap_or(0))
+            .collect(),
+        file_rows: j
+            .char_keys
+            .iter()
+            .map(|k| {
+                j.key_commands.get(k).map_or_else(Vec::new, |rows| {
+                    rows.iter()
+                        .map(|(name, counter)| {
+                            let n = c.command_uses.get(counter).copied().unwrap_or(0);
+                            (name.clone(), n)
+                        })
+                        .collect()
+                })
+            })
+            .collect(),
         diag: j.diag.clone(),
         albums: j.albums.clone(),
         reports: j.reports.clone(),
@@ -15467,6 +15537,8 @@ pub fn run(
         autoplay_failed: false,
         sound_queue: Vec::new(),
         treasure_items: Vec::new(),
+        defeated_keys: Vec::new(),
+        command_presses: Vec::new(),
         treasure_boxes: Vec::new(),
         chest_wanted: None,
         chest_tour,
@@ -15721,6 +15793,8 @@ pub fn run(
         let setup = &a.current.state.setup;
         game.event(serde_json::json!({"event":"area_start","world":a.current.world,
             "area":a.current.area,"programs":a.current.programs,
+            "bob_models":a.current.bobs.models.len(),
+            "bobs_unread":a.current.bobs.models.iter().filter(|m| m.is_none()).count(),
             "members":format!("{:x?}", a.current.members),
             "bg_mask":format!("{:#x}", setup.bg_mask),"battle_level":setup.battle_level,
             "bgm":setup.bgm,"camera_mode":setup.camera_mode,
@@ -15921,6 +15995,8 @@ pub fn run(
             steam_root: args[0].clone(),
             ability_marks: HashMap::new(),
             form_marks: HashMap::new(),
+            kills: HashMap::new(),
+            command_uses: HashMap::new(),
             journal_save: Default::default(),
             status_seen: status_forms::ALL_SEEN,
         };
@@ -16095,7 +16171,7 @@ impl Plugin for RoomPlugin {
                         sephiroth::tick,
                         boss_fight::tick,
                         enemy_tour::tick,
-                        (field_npc_tick, chest::tick).chain(),
+                        (field_npc_tick, chest::tick, chest::count_journal).chain(),
                         talk_tick,
                         effects_tick.in_set(RoomSet::EffectsTick),
                         drive_fx::tick.in_set(RoomSet::DriveFxTick),

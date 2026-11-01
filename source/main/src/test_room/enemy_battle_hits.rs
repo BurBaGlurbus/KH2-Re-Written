@@ -127,6 +127,7 @@ pub fn tick(game: &mut Game, actors: &mut [GalleryActor], tick: u64) {
         wall,
         party,
         enemy_guards,
+        defeated_keys,
         party_volumes,
         party_struck,
         gallery_targets,
@@ -387,6 +388,7 @@ pub fn tick(game: &mut Game, actors: &mut [GalleryActor], tick: u64) {
             }
         }
         if defeated {
+            defeated_keys.push(battle.assets.character);
             let low = vitals.hp * 2 <= vitals.target.max_hp;
             let exp = player::enemy_prizes::kill_exp(
                 battle.assets.exp.0,

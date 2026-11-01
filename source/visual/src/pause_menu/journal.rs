@@ -192,10 +192,10 @@ pub const MESSAGES: [u16; 52] = [
     0x26b3,
 ];
 /// Messages of the category pages (help lines and the empty album).
-pub const PAGE_MESSAGES: [u16; 35] = [
-    0x48d5, 0x48d6, 0x48d8, 0x48d9, 0x32dd, 0x48ee, 0x48ef, 0x48f0, 0x48f1, 0x48f2, 0x36b3, 0x2874,
-    0x2dc6, 0x48f4, 0x48f5, 0x4a0f, 0x4a12, 0x4a11, 0x4a13, 0x48ec, 0x48ed, 0x48f8, 0x4b00, 0x4b06,
-    0x48f6, 0x48f7, 0x4b71, 0x4b80, 0x48d7, 0x4b37, 0x4b38, 0x4b39, 0x4b3a, 0x36f8, 0x48f9,
+pub const PAGE_MESSAGES: [u16; 36] = [
+    0x489b, 0x48d5, 0x48d6, 0x48d8, 0x48d9, 0x32dd, 0x48ee, 0x48ef, 0x48f0, 0x48f1, 0x48f2, 0x36b3,
+    0x2874, 0x2dc6, 0x48f4, 0x48f5, 0x4a0f, 0x4a12, 0x4a11, 0x4a13, 0x48ec, 0x48ed, 0x48f8, 0x4b00,
+    0x4b06, 0x48f6, 0x48f7, 0x4b71, 0x4b80, 0x48d7, 0x4b37, 0x4b38, 0x4b39, 0x4b3a, 0x36f8, 0x48f9,
 ];
 /// The Moogle level names (0x1405bbd50: nine system messages).
 pub const MOOGLE_NAMES: [u32; 9] = [
@@ -281,6 +281,10 @@ pub struct JournalData {
     pub world_icons: bool,
     /// jiminy.bar `char`, `diag` and `albu`.
     pub chars: Vec<Char>,
+    /// By `char` row: its kill counter (FUN_1403444a0), and the reaction
+    /// commands its object offers with their use counts (`rcct`).
+    pub kills: Vec<u32>,
+    pub file_rows: Vec<Vec<(Vec<u8>, u16)>>,
     pub diag: Vec<Diag>,
     pub albums: Vec<Album>,
     /// 03system `trsr`, the items they hold (names, icons, map type) and
@@ -342,6 +346,14 @@ impl JournalData {
     /// FUN_1403444f0's character bits: an entry of a record whose
     /// condition holds (the off flag is not tested).
     fn char_available(&self, character: u16) -> bool {
+        // A flagged row is seen once its kill counter is not 0.
+        let flagged = self
+            .chars
+            .get(character as usize)
+            .is_some_and(|c| c.flags & 0x800 != 0);
+        if flagged && self.kills.get(character as usize).is_some_and(|&n| n != 0) {
+            return true;
+        }
         self.diag.iter().any(|r| {
             let cond = if r.kind == 2 {
                 false
@@ -2208,6 +2220,7 @@ mod tests {
             name: 0,
             description: 0,
             origin: 0,
+            object: 0,
             flags: 0,
         };
         let mut d = JournalData {

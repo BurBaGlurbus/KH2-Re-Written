@@ -68,6 +68,19 @@ pub fn minigame_records() -> Vec<(u8, u32)> {
     r
 }
 
+/// `KH2RW_JOURNAL_KEYS=<tick>:<bits>,...`: this route in place of the tour's.
+fn route() -> Option<Vec<(u64, u64)>> {
+    let keys = std::env::var("KH2RW_JOURNAL_KEYS").ok()?;
+    Some(
+        keys.split(',')
+            .filter_map(|k| {
+                let (at, bits) = k.split_once(':')?;
+                Some((at.parse().ok()?, bits.parse().ok()?))
+            })
+            .collect(),
+    )
+}
+
 pub fn tour(inventory: &Inventory) -> Tour {
     let mut inputs = vec![(40, START)];
     // The camp's Journal row is the sixth.
@@ -150,7 +163,7 @@ pub fn tour(inventory: &Inventory) -> Tour {
     inputs.push((6180, DOWN));
     inputs.push((6200, DECIDE));
     Tour {
-        inputs,
+        inputs: route().unwrap_or(inputs),
         captures: CAPTURES.to_vec(),
         close: 10_000,
         end: END,

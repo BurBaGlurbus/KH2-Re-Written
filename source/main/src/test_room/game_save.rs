@@ -733,6 +733,14 @@ pub fn write_camp(
     for (&form, (order, seen)) in &c.form_marks {
         write_form_marks(d, form, order, seen);
     }
+    for (&key, &n) in &c.kills {
+        if let Some(at) = state::kill_counter_at(key) {
+            d.set_u32(at, n);
+        }
+    }
+    for (&counter, &n) in &c.command_uses {
+        d.set_u16(state::COMMAND_USES + counter as usize * 2, n);
+    }
     // The journal's seen rows.
     write_bits(d, state::SEEN_CHARS, 0x44, &c.seen_chars);
     write_bits(d, state::SEEN_LIMITS, 4, &c.seen_limits);
@@ -1064,6 +1072,19 @@ pub fn apply_camp(c: &mut CampRes, ctx: &CampContext, data: &SaveData) {
             read_ability_marks(data, ch)
                 .filter(|(order, _)| !order.is_empty())
                 .map(|m| (ch, m))
+        })
+        .collect();
+    c.kills = (1000..=1071u16)
+        .chain(3000..=3011)
+        .filter_map(|key| {
+            let n = data.u32_at(state::kill_counter_at(key)?);
+            (n != 0).then_some((key, n))
+        })
+        .collect();
+    c.command_uses = (0..state::COMMAND_USE_COUNT as u16)
+        .filter_map(|counter| {
+            let n = data.u16_at(state::COMMAND_USES + counter as usize * 2);
+            (n != 0).then_some((counter, n))
         })
         .collect();
     c.form_marks = [1u8, 2, 3, 4, 5, 7]

@@ -85,6 +85,23 @@ pub const NO_CHARGE: usize = 0x3744;
 pub const WORLD_FRAMES: usize = 0x244c;
 /// Opened-chest bits (journal treasure pages).
 pub const CHESTS: usize = 0x23ac;
+/// Reaction command use counts, `u16` by the command's +0x26 (FUN_1403b6ca0,
+/// FUN_1403a1590, both read and raised only once story flag 0x2d0 is set).
+pub const COMMAND_USES: usize = 0x3948;
+pub const COMMAND_USE_COUNT: usize = 0x40;
+/// FUN_14039ac70: the counters run once this story flag is set.
+pub const COUNTERS_FLAG: u32 = 0x2d0;
+/// FUN_1403a1520's most, for a kill.
+pub const KILL_MAX: u32 = 9999;
+
+/// FUN_1403a1470: where a kill counter sits, by objentry +0x4c.
+pub fn kill_counter_at(key: u16) -> Option<usize> {
+    match key {
+        1000..=1071 => Some(0x3748 + (key as usize - 1000) * 4),
+        3000..=3011 => Some(0x38c8 + (key as usize - 3000) * 4),
+        _ => None,
+    }
+}
 pub const CHEST_BYTES: usize = 0x40;
 /// Destination block words (`DAT_1409ab7a8`, two `u16` per 'dsa' entry).
 pub const DSA: usize = 0x1ef8;
@@ -670,5 +687,16 @@ mod tests {
         }
         p.write(&mut scrambled);
         assert_eq!(scrambled, image);
+    }
+}
+
+#[cfg(test)]
+mod counter_tests {
+    #[test]
+    fn kill_counters_sit_at_their_keys() {
+        assert_eq!(super::kill_counter_at(1001), Some(0x374c));
+        assert_eq!(super::kill_counter_at(3011), Some(0x38f4));
+        assert_eq!(super::kill_counter_at(1072), None);
+        assert_eq!(super::kill_counter_at(1), None);
     }
 }

@@ -88,6 +88,8 @@ pub struct AutoRecord {
 /// auto abilities' item records.
 pub struct Commands {
     pub rows: HashMap<u16, rc::Row>,
+    /// +0x26: each command's use counter (0: none).
+    pub counters: HashMap<u16, u16>,
     pub names: HashMap<u16, Vec<u8>>,
     pub autos: HashMap<u16, AutoRecord>,
 }
@@ -100,6 +102,11 @@ pub fn load(
 ) -> Result<Commands, String> {
     let table = data::command_table::read(bar_entry(system, b"cmd\0").map_err(|e| e.to_string())?)
         .map_err(|e| e.to_string())?;
+    let counters: HashMap<u16, u16> = table
+        .iter()
+        .filter(|c| c.reaction.counter != 0)
+        .map(|c| (c.id, c.reaction.counter))
+        .collect();
     let rows: HashMap<u16, rc::Row> = table
         .iter()
         .map(|c| {
@@ -168,7 +175,12 @@ pub fn load(
             }
         }
     }
-    Ok(Commands { rows, names, autos })
+    Ok(Commands {
+        rows,
+        counters,
+        names,
+        autos,
+    })
 }
 
 /// The Auto Summon ability (item 0x185: status bit 56, FUN_140407a90).
@@ -547,6 +559,10 @@ pub fn tick(
             // (FUN_14040a500), so nothing is left to hold.
             if (CHEST..CHEST + 0x100).contains(&c.target.owner) {
                 state.hold = None;
+            }
+            // FUN_1403a8b10: the command's use count.
+            if let Some(&counter) = commands.counters.get(&command) {
+                game.command_presses.push(counter);
             }
             game.event(serde_json::json!({"event":"reaction_taken","tick":tick,
                 "command":command,"source":format!("{:?}", c.source),"owner":c.target.owner}));

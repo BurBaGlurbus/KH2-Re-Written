@@ -125,6 +125,8 @@ pub fn load(
             steam_root: std::path::PathBuf::new(),
             ability_marks: HashMap::new(),
             form_marks: HashMap::new(),
+            kills: HashMap::new(),
+            command_uses: HashMap::new(),
             journal_save: Default::default(),
             status_seen: status_forms::ALL_SEEN,
         },

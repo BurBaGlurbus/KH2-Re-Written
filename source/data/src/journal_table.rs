@@ -166,6 +166,8 @@ pub struct Char {
     pub description: u16,
     /// +0xa: the origin note message (0 = none).
     pub origin: u16,
+    /// +0xc: the object id (its model; its objentry +0x4c keys the counters).
+    pub object: u16,
     /// +0x10: flag 0x800 = a kill counter exists.
     pub flags: u16,
 }
@@ -180,8 +182,26 @@ pub fn read_chars(bytes: &[u8]) -> io::Result<Vec<Char>> {
             name: u16_at(r, 6),
             description: u16_at(r, 8),
             origin: u16_at(r, 0xa),
+            object: u16_at(r, 0xc),
             flags: u16_at(r, 0x10),
         })
+        .collect())
+}
+
+/// 03system `rcct` (u32 version, u32 count, 12-byte records at +8): an
+/// object's key (objentry +0x4c) and the reaction commands it offers.
+pub fn read_rcct(bytes: &[u8]) -> io::Result<Vec<(u16, [u16; 5])>> {
+    let invalid = || io::Error::new(io::ErrorKind::InvalidData, "rcct table truncated");
+    let count = bytes
+        .get(4..8)
+        .map(|w| u32::from_le_bytes(w.try_into().unwrap()) as usize)
+        .ok_or_else(invalid)?;
+    let body = bytes.get(8..8 + count * 12).ok_or_else(invalid)?;
+    Ok(body
+        .as_chunks::<12>()
+        .0
+        .iter()
+        .map(|r| (u16_at(r, 0), std::array::from_fn(|k| u16_at(r, 2 + k * 2))))
         .collect())
 }
 

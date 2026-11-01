@@ -1,8 +1,8 @@
 //! Character Files / The Heartless / The Nobodies: the world menu (state
 //! 0xe, FUN_140331da0), the lists (0xf / 0x12 / 0x15, FUN_140331870) and
 //! the detail page (0x10 / 0x13 / 0x16, FUN_1403315b0) with the portrait
-//! from `menu/jmface_<code>.2ld`. The 3D model, the "Slain" count and the
-//! reaction rows need data the room does not carry yet and are not built.
+//! from `menu/jmface_<code>.2ld`, the "Slain" count and the reaction rows
+//! (FUN_14032e5c0). The 3D model is not built.
 use super::*;
 
 const MENU_STATE: u8 = 0xe;
@@ -16,6 +16,13 @@ const ORIGIN: usize = 77;
 const UP_ARROW: usize = 81;
 const DOWN_ARROW: usize = 82;
 const FRAME: usize = 10;
+/// "Slain" and its number; the reaction rows and their numbers.
+const SLAIN: usize = 78;
+const COUNT: usize = 149;
+const COMMAND_ROW: usize = 79;
+const SLAIN_TEXT: u16 = 0x489b;
+const PRIO_COMMAND: u32 = 0x7564;
+const COUNT_MAX: u16 = 999;
 const PRIO_PANEL: u32 = 0x755c;
 const PRIO_NEW: u32 = 0x755e;
 const PRIO_FACE: u32 = 0x755f;
@@ -520,6 +527,53 @@ impl Journal {
             t.group_position = false;
             t.colour = 0x6000_0008;
             self.page_sprite(seq, PRIO_PANEL, ORIGIN, c, Some(t));
+        }
+        // Flag 0x800: "Slain" and the kill counter.
+        if let (Some(ch), Some(r)) = (ch, r)
+            && ch.flags & 0x800 != 0
+        {
+            let size = Self::size(seq, SLAIN);
+            let mut t = Self::text(self.msg(SLAIN_TEXT), size);
+            t.group_position = false;
+            let label = self.page_sprite(seq, PRIO_PANEL, SLAIN, c, Some(t));
+            let g = &seq.groups[SLAIN];
+            let at = [g.light_position_x as f32, g.text_position_y as f32];
+            let n = self.data.kills.get(r).copied().unwrap_or(0);
+            let mut t = Self::text(crate::pause_menu::encode_number(&n.to_string()), size);
+            t.group_position = false;
+            t.keep_rgb = false;
+            t.align = 1;
+            let v = self.page_sprite(seq, PRIO_PANEL + 1, COUNT, label, Some(t));
+            self.sprites.get_mut(v).offset = at;
+        }
+        // The Heartless' and the Nobodies' pages: each reaction command, its
+        // name once it has been used (or under show-all, "?????").
+        if matches!(self.files.kind, HEARTLESS | NOBODIES)
+            && let Some(rows) = r.and_then(|r| self.data.file_rows.get(r)).cloned()
+        {
+            let g = &seq.groups[COMMAND_ROW];
+            let (pad, at) = (g.ui_padding as f32, g.light_position_x as f32);
+            let size = Self::size(seq, COMMAND_ROW);
+            let show_all = self.show_all();
+            let mut k = 0;
+            for (name, n) in rows {
+                if n == 0 && !show_all {
+                    continue;
+                }
+                let name = if n == 0 { Self::locked_text() } else { name };
+                let mut t = Self::text(name, size);
+                t.group_position = false;
+                let row = self.page_sprite(seq, PRIO_COMMAND, COMMAND_ROW, c, Some(t));
+                self.sprites.get_mut(row).offset = [0., pad * k as f32];
+                let count = n.min(COUNT_MAX).to_string();
+                let mut t = Self::text(crate::pause_menu::encode_number(&count), size);
+                t.group_position = false;
+                t.keep_rgb = false;
+                t.align = 1;
+                let v = self.page_sprite(seq, PRIO_COMMAND + 1, COUNT, row, Some(t));
+                self.sprites.get_mut(v).offset = [at, 0.];
+                k += 1;
+            }
         }
         // The portrait frame at P0 + (LightPositionX, TextPositionY).
         let g = &seq.groups[DETAIL_PANEL];

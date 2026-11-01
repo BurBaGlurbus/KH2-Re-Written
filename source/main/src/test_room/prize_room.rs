@@ -135,6 +135,7 @@ pub fn tick(game: &mut Game, tick: u64) {
         treasure_items,
         party,
         fx_calls,
+        defeated_keys,
         ..
     } = game;
     let body_lift = magic.as_ref().map_or(85., |m| m.src.body_lift);
@@ -153,6 +154,7 @@ pub fn tick(game: &mut Game, tick: u64) {
         // FUN_1403e8780: Wisdom counts Heartless, Final Nobodies.
         if let Some(d) = drive.as_mut() {
             d.pending_exp += player::forms::kill_exp(form, d.enemy_character);
+            defeated_keys.push(d.enemy_character);
         }
     }
     rt.was_dead = dead;

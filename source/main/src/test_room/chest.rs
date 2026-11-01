@@ -36,6 +36,43 @@ fn turned(yaw: f32, target: f32) -> f32 {
     yaw + d.clamp(-TURN_RATE, TURN_RATE)
 }
 
+/// FUN_1403a1520 and FUN_1403a1590: the kills and the reaction commands of
+/// this tick count once story flag 0x2d0 is set.
+pub fn count_journal(
+    mut game: ResMut<Game>,
+    area: Option<Res<AreaRes>>,
+    camp: Option<ResMut<CampRes>>,
+) {
+    let kills = std::mem::take(&mut game.defeated_keys);
+    let presses = std::mem::take(&mut game.command_presses);
+    if kills.is_empty() && presses.is_empty() {
+        return;
+    }
+    let counts = area
+        .as_ref()
+        .is_none_or(|a| a.source.progress().test(state::COUNTERS_FLAG));
+    let Some(mut camp) = camp.filter(|_| counts) else {
+        return;
+    };
+    let tick = game.tick;
+    for key in kills {
+        if state::kill_counter_at(key).is_some() {
+            let n = camp.kills.entry(key).or_insert(0);
+            *n = (*n + 1).min(state::KILL_MAX);
+            let n = *n;
+            game.event(serde_json::json!({"event":"kill_counted","tick":tick,"key":key,"n":n}));
+        }
+    }
+    for counter in presses {
+        let n = camp.command_uses.entry(counter).or_insert(0);
+        *n = n.saturating_add(1);
+        let n = *n;
+        game.event(
+            serde_json::json!({"event":"command_counted","tick":tick,"counter":counter,"n":n}),
+        );
+    }
+}
+
 /// One tick of the area's chests, and a press taken by the reaction search.
 pub fn tick(
     mut game: ResMut<Game>,
