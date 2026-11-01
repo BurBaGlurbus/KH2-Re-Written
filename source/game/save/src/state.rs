@@ -456,7 +456,9 @@ impl Persistent {
             roxas: data.u8_at(field::ROXAS) & 1 != 0,
             exp: data.u32_at(EXP),
             records: (0..RECORDS).map(|i| Record::read(data, i)).collect(),
-            forms: (1..=FORM_COUNT).map(|f| FormRecord::read(data, f)).collect(),
+            forms: (1..=FORM_COUNT)
+                .map(|f| FormRecord::read(data, f))
+                .collect(),
             current_form: data.u8_at(CURRENT_FORM),
             drive: std::array::from_fn(|i| data.u8_at(DRIVE + i)),
             party_table: std::array::from_fn(|w| {

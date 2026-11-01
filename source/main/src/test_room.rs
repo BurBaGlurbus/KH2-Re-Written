@@ -3289,6 +3289,7 @@ pub fn load_camp_source(
         abilities,
         weapon_ability,
         party_help,
+        status_texts,
         customize,
         equip_texts,
         equip_stats,
