@@ -93,6 +93,7 @@ pub mod fighter;
 pub use fighter::{Fighter, Vitals};
 pub mod boss_fight;
 pub mod game_over;
+pub mod game_save;
 pub mod gear;
 pub mod gear_tour;
 pub mod item_drop_view;
@@ -1418,6 +1419,8 @@ pub struct Game {
     /// of the save point last used.
     pub files_saved: u32,
     pub save_place: Option<(u8, u8)>,
+    /// The save the room started from and what a new one is built on.
+    pub save: game_save::SaveState,
     pub advance_queued: bool,
     /// The reaction-command search's records and the command manager's
     /// reaction state: the slot, the held command, this tick's press
@@ -2211,6 +2214,8 @@ mod ability_source_tests {
 
 pub struct Loaded {
     pub room: LoadedRoom,
+    /// 03system `item`: what a save's stock is stored by.
+    pub item_rows: Vec<data::item_table::Item>,
     /// Keyblade items' models (the skateboard), and the room's own weapon.
     pub keyblades: crate::keyblade_board::Keyblades,
     pub weapon_model: String,
@@ -3447,9 +3452,39 @@ pub fn load(
     source: &Arc<ProbeSource>,
     config_path: &Path,
     basic_fk: bool,
+    start: Option<&save::data::SaveData>,
 ) -> Result<Loaded, Box<dyn std::error::Error>> {
     let mut timer = LoadTimer::new();
-    let config: Config = serde_json::from_slice(&read_limited(config_path)?)?;
+    let mut config: Config = serde_json::from_slice(&read_limited(config_path)?)?;
+    // A loaded save opens its own place (FUN_1403a05f0), with the room's
+    // sources: the configured start and story give way, not a jump's
+    // program overrides or its arrival.
+    if let Some(image) = start {
+        let (world, area, entrance) = (
+            image.u8_at(save::slots::field::WORLD),
+            image.u8_at(save::slots::field::AREA),
+            image.u8_at(save::slots::field::ENTRANCE),
+        );
+        let code = ::area::progress::WORLDS
+            .get(world as usize)
+            .filter(|_| world != 0 && world != ::area::world_state::WORLD_MAP)
+            .ok_or("this save's place is not a field area")?;
+        config.arena = None;
+        config.room_selection = None;
+        config.spawn = None;
+        config.spawn_yaw = None;
+        config.npc = None;
+        let jump = config.area.take();
+        config.area = Some(AreaConfig {
+            world: (*code).to_owned(),
+            area,
+            entrance,
+            story: Vec::new(),
+            stay: false,
+            programs: jump.as_ref().map_or(no_programs(), |j| j.programs),
+            arrival: jump.as_ref().map_or(1, |j| j.arrival),
+        });
+    }
     if config.schema_version != 1 || config.source_content_identity != source.content_identity() {
         return Err("test room configuration identity/schema invalid".into());
     }
@@ -3531,10 +3566,14 @@ pub fn load(
                 });
                 let source = Arc::clone(source);
                 let (number, entrance, programs) = (a.area, a.entrance, a.programs);
+                let image = start.cloned();
                 area_job = Some(std::thread::Builder::new().name("area load".into()).spawn(
                     move || {
                         let mut src =
                             AreaSource::open(source, &story).map_err(|e| e.to_string())?;
+                        if let Some(image) = &image {
+                            game_save::apply_progress(src.progress_mut(), image);
+                        }
                         let (room, loaded) = src
                             .load(world, number, entrance, programs)
                             .map_err(|e| e.to_string())?;
@@ -4563,6 +4602,8 @@ pub fn load(
         items: item_room::load(&system).ok(),
         party,
         menu_friends,
+        item_rows: data::item_table::read(bar_entry(&system, b"item").unwrap_or(&[]))
+            .unwrap_or_default(),
         party_reload: config.enemy.as_ref().map(|_| party_room::ReloadSource {
             source: source.clone(),
             system: system.clone(),
@@ -5340,6 +5381,8 @@ pub fn area_transition(
         .place_name(next.world, next.area)
         .map(|t| (t.clone(), 120));
     area.bg_mask = next.state.setup.bg_mask;
+    let tick = game.tick;
+    game.save.note_world(next.world, tick);
     area.current = next;
     // The old area's effects end with it; the new area's start next tick.
     game.fx_clear_map.push(None);
@@ -12186,6 +12229,8 @@ pub struct CampRes {
     /// (save+0x4278 / +0x41f8 for Sora, +0x4318 / +0x4204 for the party),
     /// by character id (Sora 1).
     pub ability_marks: HashMap<u8, (Vec<u16>, Vec<bool>)>,
+    /// The journal's numbers a loaded save holds.
+    pub journal_save: game_save::JournalSave,
 }
 
 /// FUN_140368ed0 at the camp's start for one member: its order list and
@@ -12499,6 +12544,7 @@ pub fn camp_tick(
     mut settings: ResMut<settings_room::SettingsRes>,
     debug: Res<debug_menu::DebugMenu>,
     controls: Res<input::Controls>,
+    area: Option<Res<AreaRes>>,
 ) {
     let Some(mut c) = camp else { return };
     let c = &mut *c;
@@ -12539,6 +12585,12 @@ pub fn camp_tick(
         let v = &g.sora.vitals;
         if let Some(row) = rt.sora_levels.get(v.level as usize - 1) {
             let n = &mut c.source.numbers;
+            // The AP row moves with the level (FUN_1403c1d90), the bonus stays.
+            let old_ap = rt
+                .sora_levels
+                .get(n.level.max(1) as usize - 1)
+                .map_or(0, |r| i32::from(r.ap));
+            n.ap += i32::from(row.ap) - old_ap;
             n.level = v.level;
             n.next_exp = row.exp.saturating_sub(rt.exp_total);
             n.strength = v.attacker.strength - i32::from(gear.strength);
@@ -12587,13 +12639,19 @@ pub fn camp_tick(
     if game.versus && c.open.is_none() && game.camp_request.is_none() && c.pad.pressed & 0x2 != 0 {
         game.start_pressed = true;
     }
-    if save_menu_tick(c, &mut game, &mut audio, &mut frame, &mut images) {
+    if save_menu_tick(
+        c,
+        &mut game,
+        &mut audio,
+        &mut frame,
+        &mut images,
+        area.as_deref(),
+    ) {
         return;
     }
     let mut sounds = Vec::new();
     let layout = &c.source.menu.layout;
-    // Test-room values: no munny, level 1, the room's HP/MP; the clock is
-    // the room's frame count.
+    // The room's HP/MP; the munny, level and clock as a save holds them.
     let (hp, max_hp, mp, max_mp) = match (&game.enemy, &hud) {
         (Some(_), Some(_)) => (
             game.sora.vitals.hp,
@@ -12625,16 +12683,11 @@ pub fn camp_tick(
         })
         .collect();
     let panels = pause_menu::Panels {
-        munny: 0,
-        time_frames: tick as u32,
+        munny: game.enemy.as_ref().map_or(0, |rt| rt.munny),
+        time_frames: game.save.play_frames(tick),
         members: std::iter::once(pause_menu::Member {
             name: c.source.name.clone(),
-            // The room's Sora shows level 1 [I]; with another player, his own.
-            level: if game.versus {
-                i32::from(game.sora.vitals.level)
-            } else {
-                1
-            },
+            level: i32::from(game.sora.vitals.level),
             hp,
             max_hp,
             mp,
@@ -13411,20 +13464,29 @@ pub fn journal_data(
         stories: j.stories.clone(),
         flags: {
             let mut f = j.flags.clone();
+            f.extend(&c.journal_save.story_flags);
             // The tour shows everything (story flag 0x4837).
             if tour {
                 f.extend(journal_tour::STORY_FLAGS);
             }
             f
         },
-        // FUN_140339500 counts each `limi` command's limit in
-        // save+0x3d48 (FUN_1403e7c30 / FUN_1403e8150): none
-        // in this save; no reports, pieces, missions, minigames
-        // or synthesis either [test-room values].
+        // FUN_140339500: a `limi` command's limit used (save+0x3d48,
+        // FUN_1403e7c30 / FUN_1403e8150); the others from the same save.
         unlocks: journal::Unlocks {
-            limits: tour,
+            limits: tour
+                || j.limits.iter().any(|l| {
+                    c.journal_save
+                        .limit_counts
+                        .get(&l.id)
+                        .is_some_and(|&n| n > 0)
+                }),
             pieces: !puzzles.owned.is_empty(),
-            ..Default::default()
+            reports: j.reports.iter().any(|r| c.stock.contains_key(&r.item)),
+            minigames: c.journal_save.minigames.iter().any(|r| r.0 > 1),
+            missions: !c.journal_save.menu_flags.is_empty(),
+            synthesis: c.journal_save.synthesis.moogle_seen
+                || c.journal_save.synthesis.materials > 0,
         },
         puzzles: j.puzzles.clone(),
         pieces: j.pieces.clone(),
@@ -13442,17 +13504,29 @@ pub fn journal_data(
         seen_maps: c.seen_maps.clone(),
         treasures: j.treasures.clone(),
         item_names: j.item_names.clone(),
-        opened_bits: j.opened_bits.clone(),
-        owned_items: j.owned_items.clone(),
+        opened_bits: {
+            let mut b = j.opened_bits.clone();
+            b.extend(&c.journal_save.opened_bits);
+            b
+        },
+        owned_items: {
+            let mut o = j.owned_items.clone();
+            o.extend(c.stock.keys());
+            o
+        },
         seen_chars: c.seen_chars.clone(),
         seen_albums: c.seen_albums.clone(),
-        // No limit has been used in this save [test-room value].
+        // FUN_140339500 reads each `limi` command's limit in save+0x3d48.
         limit_counts: (0..j.limits.len())
             .map(|i| {
                 if tour {
                     journal_tour::LIMIT_COUNTS.get(i).copied().unwrap_or(0)
                 } else {
-                    0
+                    c.journal_save
+                        .limit_counts
+                        .get(&j.limits[i].id)
+                        .copied()
+                        .unwrap_or(0)
                 }
             })
             .collect(),
@@ -13460,23 +13534,20 @@ pub fn journal_data(
         seen_limits: c.seen_limits.clone(),
         quests: j.quests.clone(),
         minigames: j.minigames.clone(),
-        // No minigame has been played and no menu flag is set
-        // in this save [test-room values].
         minigame_records: if tour {
             journal_tour::minigame_records()
         } else {
-            Vec::new()
+            c.journal_save.minigames.clone()
         },
-        menu_flags: Vec::new(),
+        menu_flags: c.journal_save.menu_flags.clone(),
         seen_quests: c.seen_quests.clone(),
         seen_minigames: c.seen_minigames.clone(),
         seen_story: c.seen_story.clone(),
-        // No synthesis yet [test-room value]; the tour gives
-        // the Moogle and some finds.
+        // The tour gives the Moogle and some finds.
         synthesis: if tour {
             journal_tour::SYNTHESIS
         } else {
-            journal::Synthesis::default()
+            c.journal_save.synthesis
         },
         moogle_names: j.moogle_names.clone(),
         seen_synthesis: c.seen_synthesis.clone(),
@@ -13492,6 +13563,7 @@ pub fn save_menu_tick(
     audio: &mut Audio,
     frame: &mut Ui2dFrame,
     images: &mut Assets<Image>,
+    area: Option<&AreaRes>,
 ) -> bool {
     let tick = game.tick;
     let mut sounds = Vec::new();
@@ -13533,8 +13605,9 @@ pub fn save_menu_tick(
                 }
             }
         }
+        let snapshot = game_save::capture(game, c, area);
         if let Some(f) = c.files.as_mut() {
-            f.backend.set_snapshot(save_snapshot(game));
+            f.backend.set_snapshot(snapshot);
             let menu = save::menu::Menu::new(
                 save::menu::Kind::SavePoint { world_map: false },
                 &f.backend,
@@ -13564,10 +13637,22 @@ pub fn save_menu_tick(
             save::menu::Event::Saved { slot } => {
                 f.last_slot = Some(slot);
                 game.files_saved += 1;
+                if let Some(path) = &game.save.dump {
+                    use save::menu::Backend;
+                    if let Err(e) = std::fs::write(path, f.backend.capture().bytes()) {
+                        eprintln!("Save dump rejected: {e}");
+                    }
+                }
                 game.event(serde_json::json!({"event":"file_saved","tick":tick,"slot":slot}));
             }
             save::menu::Event::Closed => ui.close(layout),
-            // [Not built] The room cannot return to the title.
+            // FUN_140154dd0(0): the room closes and the launcher starts the
+            // title.
+            save::menu::Event::ReturnToTitle => {
+                println!("kh2fm-handoff Title");
+                game.limit = Some(tick);
+                ui.close(layout);
+            }
             other => {
                 game.event(serde_json::json!({"event":"file_menu","tick":tick,
                     "what":format!("{other:?}")}));
@@ -13592,24 +13677,6 @@ pub fn save_menu_tick(
         }
     }
     true
-}
-
-/// What the room writes into a save: the place and the numbers a file card
-/// shows (the rest of the save image is not captured yet, issue #79).
-pub fn save_snapshot(game: &Game) -> save::data::SaveData {
-    use save::slots::field;
-    let mut d = save::data::SaveData::blank();
-    if let Some((world, area)) = game.save_place {
-        d.set_u8(field::WORLD, world);
-        d.set_u8(field::AREA, area);
-    }
-    let level = game.sora.vitals.level;
-    d.set_u8(field::PARTY + field::RECORD_LEVEL, level);
-    d.set_u32(field::PLAY_FRAMES, game.tick as u32);
-    let difficulty = game.enemy.as_ref().map_or(1, |rt| rt.difficulty as u32);
-    d.set_u32(field::DIFFICULTY, difficulty);
-    d.seal();
-    d
 }
 
 /// FUN_1403018e0's load (here at once): the item picture the camp asks for,
@@ -14116,6 +14183,10 @@ pub fn run(
     let mut party_camp_tour = false;
     let mut game_over_tour = false;
     let mut enemy_audit = None;
+    // `--load-image <file>`: start from a save image (the title's Load, tests);
+    // `--save-dump <file>`: each written save also goes to a file (tests).
+    let mut load_image: Option<save::data::SaveData> = None;
+    let mut save_dump: Option<PathBuf> = None;
     // Capture ticks replacing the unattended run's own list (research).
     let mut capture_at: Option<Vec<u64>> = None;
     // `--party-styles D:G` (or D,G): the members' battle styles [tour setup].
@@ -14160,6 +14231,13 @@ pub fn run(
                     .ok_or("input devices absent")?;
                 input_assign =
                     input::Assign::parse(v).ok_or("--input takes auto, kbm, pad, pad:N or both")?;
+            }
+            Some("--load-image") => {
+                let path = options.next().ok_or("save image absent")?;
+                load_image = Some(game_save::read_image(path)?);
+            }
+            Some("--save-dump") => {
+                save_dump = Some(options.next().cloned().ok_or("save dump file absent")?);
             }
             Some("--enemy-audit") if enemy_audit.is_none() => {
                 enemy_audit = Some(options.next().cloned().ok_or("enemy audit output absent")?);
@@ -14530,7 +14608,7 @@ pub fn run(
     };
     timer.mark("captures and options");
     eprintln!("Validating the selected KH2FM source, then decoding the test room...");
-    let mut loaded = load(&source, &args[2], basic_fk)?;
+    let mut loaded = load(&source, &args[2], basic_fk, load_image.as_ref())?;
     // The motion sets the load read many times are not needed in play.
     data::motion::release_motion_sets();
     let mut timer = LoadTimer::new();
@@ -15056,6 +15134,11 @@ pub fn run(
         save_menu_wanted: false,
         files_saved: 0,
         save_place: None,
+        save: game_save::SaveState {
+            items: std::mem::take(&mut loaded.item_rows),
+            dump: save_dump,
+            ..Default::default()
+        },
         reaction_commands: None,
         reaction: Default::default(),
         offers_seen: 0,
@@ -15353,6 +15436,10 @@ pub fn run(
         game.gear = player::equipment_stats::Totals::start(0, 0, 0, 0);
         game.refresh_gear();
     }
+    game.save.world = area_res.as_ref().map(|a| a.current.world);
+    if let Some(image) = &load_image {
+        game_save::apply_game(&mut game, image);
+    }
     let unattended_input = game.autoplay.is_some();
     if let Some(e) = extension.as_mut() {
         e.setup_game(&mut game, &args)?;
@@ -15408,7 +15495,7 @@ pub fn run(
             "replacements":c.menu.replacements.iter().map(|r| r.as_ref().map(|t| t.size)).collect::<Vec<_>>(),
             "entries":c.entries.len(),"stats":c.stats.len(),"config_rows":c.config.len(),
             "picture_groups":c.picture_sequence.as_ref().map(|s| s.groups.len())}));
-        app.insert_resource(CampRes {
+        let mut camp = CampRes {
             source: c,
             open: None,
             memory: pause_menu::Memory::default(),
@@ -15454,7 +15541,12 @@ pub fn run(
             files: None,
             steam_root: args[0].clone(),
             ability_marks: HashMap::new(),
-        });
+            journal_save: Default::default(),
+        };
+        if let Some(image) = &load_image {
+            game_save::apply_camp(&mut camp, &game, image);
+        }
+        app.insert_resource(camp);
     }
     if let Some(src) = loaded.game_over.take() {
         app.insert_resource(game_over::GameOverRes::new(

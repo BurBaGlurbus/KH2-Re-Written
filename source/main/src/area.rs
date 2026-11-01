@@ -134,6 +134,9 @@ pub struct LoadedArea {
     /// type 7): scene position (Y up) and the REACTION entry of its model's
     /// collision table (command 0x37 "Save").
     pub save_points: Vec<(Vec3, data::object_collision::Entry)>,
+    /// Each save point's object argument 1 (`obj+0x9f8`): the entrance a save
+    /// written there records (FUN_1403a8b10 case 0x37).
+    pub save_entrances: Vec<u8>,
     /// The save point object's effects (`obj/SAVE_POINT.a.us`) when the
     /// area has save points.
     pub save_point_pax: Option<Arc<data::object_effect::Pax>>,
@@ -440,6 +443,7 @@ impl AreaSource {
         let pax = map_pax(&map, &replacements).map(Arc::new);
         timer.mark("area: collision and map effects");
         let save_points = self.save_points(&spawns);
+        let save_entrances = self.save_entrances(&spawns);
         let save_point_pax = if save_points.is_empty() {
             None
         } else {
@@ -472,6 +476,7 @@ impl AreaSource {
                 player,
                 pax,
                 save_points,
+                save_entrances,
                 save_point_pax,
             },
         ))
@@ -480,16 +485,25 @@ impl AreaSource {
     /// The spawns of the `SAVE_POINT` object with the REACTION entry of its
     /// model archive (`obj/SAVE_POINT.mdlx` holds only a collision table:
     /// one kind-5 sphere, argument 0x37, centre 50 up, radius and height 50).
+    fn is_save_point(&self, id: u32) -> bool {
+        self.object_index.get(&id).is_some_and(|&i| {
+            let o = &self.objects[i];
+            o.object_type == 7 && o.model_name.starts_with(b"SAVE_POINT")
+        })
+    }
+
+    fn save_entrances(&self, spawns: &[Spawn]) -> Vec<u8> {
+        spawns
+            .iter()
+            .filter(|s| self.is_save_point(s.entity.object))
+            .map(|s| s.entity.arg1 as u8)
+            .collect()
+    }
+
     fn save_points(&mut self, spawns: &[Spawn]) -> Vec<(Vec3, data::object_collision::Entry)> {
-        let is_save = |id: u32| {
-            self.object_index.get(&id).is_some_and(|&i| {
-                let o = &self.objects[i];
-                o.object_type == 7 && o.model_name.starts_with(b"SAVE_POINT")
-            })
-        };
         let points: Vec<Vec3> = spawns
             .iter()
-            .filter(|s| is_save(s.entity.object))
+            .filter(|s| self.is_save_point(s.entity.object))
             .map(|s| {
                 let [x, y, z] = s.entity.position;
                 Vec3::new(x, -y, -z)

@@ -115,6 +115,7 @@ pub fn load(
             files: None,
             steam_root: std::path::PathBuf::new(),
             ability_marks: HashMap::new(),
+            journal_save: Default::default(),
         },
         settings,
         tick: 0,

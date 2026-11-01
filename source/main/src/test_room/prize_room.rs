@@ -115,13 +115,14 @@ pub fn tick(game: &mut Game, tick: u64) {
         fx_queue,
         fx_release,
         items,
+        save,
         ..
     } = game;
     let system = drive.as_ref().and_then(|d| d.src.system_pax.clone());
     // The Drive form Sora is in (0 without one).
     let form = drive.as_ref().filter(|d| d.active).map_or(0, |d| d.form);
     let Some(rt) = enemy.as_mut() else { return };
-    if autoplay.is_some() && tick == 1 {
+    if autoplay.is_some() && tick == 1 && !save.loaded {
         // The unattended run starts two EXP short of level 2.
         rt.exp_total = 38;
     }

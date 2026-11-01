@@ -1,0 +1,948 @@
+//! The room's picture of the save (issue #79). `capture` is FUN_1402ed110's
+//! copy: the running game into the save image a file holds, on top of the
+//! image the room started from so what the room does not model stays as
+//! loaded. `apply_progress`, `apply_game` and `apply_camp` are FUN_1402ed0e0's
+//! copy the other way, FUN_1403a05f0 and FUN_1402e5000's config.
+//!
+//! The room keeps the same numbers on its own objects (Sora's vitals, the
+//! camp, the party's records), so each is written out and read back here.
+use super::*;
+use ::area::progress::Progress;
+use ::area::world_state::WorldRecord;
+use data::item_table::Item;
+use save::{
+    data::SaveData,
+    slots::field,
+    state::{self, FormRecord, Persistent, Record, read_bits, write_bits},
+};
+
+/// What the room keeps for the save: the image it started from, the item
+/// table a stock is stored by, the play time up to this run and the world
+/// the running time counts for.
+#[derive(Clone)]
+pub struct SaveState {
+    pub base: SaveData,
+    pub items: Vec<Item>,
+    pub play_start: u32,
+    pub world_frames: [u32; 19],
+    /// The world the frames since `world_tick` belong to.
+    pub world: Option<u8>,
+    pub world_tick: u64,
+    /// `--save-dump <file>`: each written save also goes here (tests).
+    pub dump: Option<PathBuf>,
+    /// The room started from a loaded save.
+    pub loaded: bool,
+}
+
+impl Default for SaveState {
+    fn default() -> Self {
+        Self {
+            base: SaveData::blank(),
+            items: Vec::new(),
+            play_start: 0,
+            world_frames: [0; 19],
+            world: None,
+            world_tick: 0,
+            dump: None,
+            loaded: false,
+        }
+    }
+}
+
+impl SaveState {
+    /// The play time so far (FUN_1401574e0 caps it at 0xcdfe5c4).
+    pub fn play_frames(&self, tick: u64) -> u32 {
+        (u64::from(self.play_start) + tick).min(0xcdf_e5c4) as u32
+    }
+
+    /// FUN_1401574e0's world counter, brought up to `tick`: the frames since
+    /// the last call count for the world the room was in.
+    pub fn note_world(&mut self, world: u8, tick: u64) {
+        if let Some(w) = self.world
+            && let Some(f) = self.world_frames.get_mut(w as usize)
+        {
+            *f = f
+                .saturating_add((tick - self.world_tick) as u32)
+                .min(0xcdf_e5c4);
+        }
+        self.world = Some(world);
+        self.world_tick = tick;
+    }
+}
+
+/// The image of `--load-image <file>`, refusing what FUN_1402ecc00 refuses.
+pub fn read_image(path: &Path) -> Result<SaveData, String> {
+    let bytes = std::fs::read(path).map_err(|e| format!("{}: {e}", path.display()))?;
+    SaveData::from_bytes(&bytes).map_err(|e| format!("{}: {e}", path.display()))
+}
+
+/// The story state a save holds, on a progress whose scripts are loaded: the
+/// load replaces it whole (FUN_1402ed0e0), so no flag script runs.
+pub fn apply_progress(progress: &mut Progress, data: &SaveData) {
+    let p = Persistent::read(data);
+    progress.restore_flags(&p.flags);
+    progress.programs.clone_from(&p.programs);
+    for (to, from) in progress.arif_set.iter_mut().zip(&p.arif) {
+        *to = i32::from(*from as i8);
+    }
+    let w = &mut progress.world;
+    for (to, from) in w.records.iter_mut().zip(&p.world_records) {
+        *to = WorldRecord {
+            state: from[0],
+            landing_set: from[1],
+            value: from[2],
+            flags: from[3],
+        };
+    }
+    w.symbol_slots = p.symbol_slots;
+    w.event_bits = p.world_events;
+    w.queue.clone_from(&p.event_queue);
+    w.episodes = p.episodes;
+    w.episodes_new = p.episodes_new;
+    w.draw_group_set = p.draw_group_set;
+    w.world_points = p.world_points;
+    w.menu_flags = p.menu_flags;
+    let dsa: Vec<[u16; 2]> = (0..progress.dsa_state().len())
+        .map(|i| {
+            [
+                data.u16_at(state::DSA + i * 4),
+                data.u16_at(state::DSA + i * 4 + 2),
+            ]
+        })
+        .collect();
+    progress.restore_dsa_state(&dsa);
+}
+
+fn write_progress(progress: &Progress, p: &mut Persistent, data: &mut SaveData) {
+    let words = progress.flag_words();
+    for (to, from) in p.flags.iter_mut().zip(words) {
+        *to = *from;
+    }
+    p.programs.clone_from(&progress.programs);
+    for (to, from) in p.arif.iter_mut().zip(&progress.arif_set) {
+        *to = *from as u8;
+    }
+    let w = &progress.world;
+    for (to, from) in p.world_records.iter_mut().zip(&w.records) {
+        *to = [from.state, from.landing_set, from.value, from.flags];
+    }
+    p.symbol_slots = w.symbol_slots;
+    p.world_events = w.event_bits;
+    p.event_queue.clone_from(&w.queue);
+    p.episodes = w.episodes;
+    p.episodes_new = w.episodes_new;
+    p.draw_group_set = w.draw_group_set;
+    p.world_points = w.world_points;
+    p.menu_flags = w.menu_flags;
+    for (i, e) in progress.dsa_state().iter().enumerate() {
+        data.set_u16(state::DSA + i * 4, e[0]);
+        data.set_u16(state::DSA + i * 4 + 2, e[1]);
+    }
+}
+
+/// FUN_1403c4720 over the table: the count of every item the image holds.
+/// Type 0x13 has no count.
+pub fn read_stock(items: &[Item], data: &SaveData) -> std::collections::BTreeMap<u16, u8> {
+    items
+        .iter()
+        .filter_map(|r| {
+            let count = if r.flags & 1 != 0 {
+                let slot = r.slot as usize;
+                (slot < state::ITEM_BIT_BYTES * 8)
+                    .then(|| data.u8_at(state::ITEM_BITS + slot / 8) >> (slot % 8) & 1)
+            } else if r.kind == 0x13 {
+                None
+            } else {
+                ((r.slot as usize) < state::ITEM_COUNT_BYTES)
+                    .then(|| data.u8_at(state::ITEM_COUNTS + r.slot as usize))
+            }?;
+            (count > 0).then_some((r.id, count))
+        })
+        .collect()
+}
+
+/// The stock back into the image. Slots no table row names keep their bytes.
+pub fn write_stock(
+    items: &[Item],
+    stock: &std::collections::BTreeMap<u16, u8>,
+    data: &mut SaveData,
+) {
+    for r in items {
+        let slot = r.slot as usize;
+        if r.flags & 1 != 0 && slot < state::ITEM_BIT_BYTES * 8 {
+            let at = state::ITEM_BITS + slot / 8;
+            data.set_u8(at, data.u8_at(at) & !(1 << (slot % 8)));
+        } else if r.flags & 1 == 0 && r.kind != 0x13 && slot < state::ITEM_COUNT_BYTES {
+            data.set_u8(state::ITEM_COUNTS + slot, 0);
+        }
+    }
+    for r in items {
+        let count = stock.get(&r.id).copied().unwrap_or(0);
+        if count == 0 {
+            continue;
+        }
+        let slot = r.slot as usize;
+        if r.flags & 1 != 0 && slot < state::ITEM_BIT_BYTES * 8 {
+            let at = state::ITEM_BITS + slot / 8;
+            data.set_u8(at, data.u8_at(at) | 1 << (slot % 8));
+        } else if r.flags & 1 == 0 && r.kind != 0x13 && slot < state::ITEM_COUNT_BYTES {
+            data.set_u8(state::ITEM_COUNTS + slot, count);
+        }
+    }
+}
+
+/// Rows keyed by table row to the exe's per-world seen bits
+/// (`base + ((ord >> 5) + world) * 4`, bit `ord & 31`, ord the row's place
+/// among its world's rows, FUN_1403460d0).
+fn per_world_bits(worlds: &[i8], rows: &[u16]) -> Vec<u16> {
+    rows.iter()
+        .filter_map(|&r| {
+            let world = *worlds.get(r as usize)?;
+            let ord = worlds[..r as usize].iter().filter(|&&w| w == world).count();
+            u16::try_from(world).ok().map(|w| w * 32 + ord as u16)
+        })
+        .collect()
+}
+
+fn per_world_rows(worlds: &[i8], bits: &[u16]) -> Vec<u16> {
+    let mut seen = [0u16; 128];
+    worlds
+        .iter()
+        .enumerate()
+        .filter_map(|(r, &w)| {
+            let n = seen.get_mut(w as usize)?;
+            let ord = *n;
+            *n += 1;
+            let world = u16::try_from(w).ok()?;
+            bits.contains(&(world * 32 + ord)).then_some(r as u16)
+        })
+        .collect()
+}
+
+/// Pieces as `(puzzle, piece)` to the bitmap of 8 bytes a puzzle.
+fn piece_bits(pieces: &std::collections::BTreeSet<(u8, u8)>) -> Vec<u16> {
+    pieces
+        .iter()
+        .map(|&(puzzle, piece)| u16::from(puzzle) * 64 + u16::from(piece))
+        .collect()
+}
+
+fn piece_set(bits: &[u16]) -> std::collections::BTreeSet<(u8, u8)> {
+    bits.iter()
+        .map(|&b| ((b / 64) as u8, (b % 64) as u8))
+        .collect()
+}
+
+fn write_puzzles(puzzles: &journal::PuzzleSave, data: &mut SaveData) {
+    let bytes = state::PUZZLE_COUNT * 8;
+    write_bits(
+        data,
+        state::PIECES_OWNED,
+        bytes,
+        &piece_bits(&puzzles.owned),
+    );
+    write_bits(
+        data,
+        state::PIECES_SEEN_BOARD,
+        bytes,
+        &piece_bits(&puzzles.seen_board),
+    );
+    write_bits(
+        data,
+        state::PIECES_SEEN_LIST,
+        bytes,
+        &piece_bits(&puzzles.seen_list),
+    );
+    data.set_u16(state::PUZZLE_COMPLETED, puzzles.completed);
+    let tutorial = data.u16_at(state::PUZZLE_TUTORIAL) & !1 | u16::from(puzzles.tutorial);
+    data.set_u16(state::PUZZLE_TUTORIAL, tutorial);
+    for (p, board) in puzzles.slots.iter().enumerate().take(state::PUZZLE_COUNT) {
+        for (s, slot) in board.iter().enumerate() {
+            let at = state::PUZZLE_SLOTS + (p * state::PUZZLE_SLOT_COUNT + s) * 4;
+            data.set_u8(at, slot.piece as u8);
+            data.set_u8(at + 1, slot.rot);
+        }
+    }
+}
+
+fn read_puzzles(data: &SaveData) -> journal::PuzzleSave {
+    let bytes = state::PUZZLE_COUNT * 8;
+    let mut slots = vec![[journal::PuzzleSlot::EMPTY; 48]; state::PUZZLE_COUNT];
+    for (p, board) in slots.iter_mut().enumerate() {
+        for (s, slot) in board.iter_mut().enumerate() {
+            let at = state::PUZZLE_SLOTS + (p * state::PUZZLE_SLOT_COUNT + s) * 4;
+            slot.piece = data.u8_at(at) as i8;
+            slot.rot = data.u8_at(at + 1);
+        }
+    }
+    journal::PuzzleSave {
+        owned: piece_set(&read_bits(data, state::PIECES_OWNED, bytes)),
+        seen_board: piece_set(&read_bits(data, state::PIECES_SEEN_BOARD, bytes)),
+        seen_list: piece_set(&read_bits(data, state::PIECES_SEEN_LIST, bytes)),
+        completed: data.u16_at(state::PUZZLE_COMPLETED),
+        tutorial: data.u16_at(state::PUZZLE_TUTORIAL) & 1 != 0,
+        slots,
+        ..Default::default()
+    }
+}
+
+fn list(values: &[u16]) -> [u16; 8] {
+    std::array::from_fn(|i| values.get(i).copied().unwrap_or(0))
+}
+
+fn member_of(save: &player::party_members::Save, hp: i32, max_hp: i32, mp: (i32, i32)) -> Record {
+    Record {
+        weapon: save.weapon,
+        hp: hp.clamp(0, 255) as u8,
+        max_hp: max_hp.clamp(0, 255) as u8,
+        mp: mp.0.clamp(0, 255) as u8,
+        max_mp: mp.1.clamp(0, 255) as u8,
+        ap: save.bonus[0],
+        strength: save.bonus[1],
+        magic: save.bonus[2],
+        defense: save.bonus[3],
+        armor_slots: save.armor_slots,
+        accessory_slots: save.accessory_slots,
+        item_slots: save.item_slots,
+        armor: save.armor,
+        accessories: save.accessories,
+        items: save.items,
+        originals: save.originals,
+        abilities: save.abilities,
+        style: save.style,
+        frequency: save.frequency,
+        ..Record::default()
+    }
+}
+
+fn apply_member(m: &mut party_room::MemberRt, r: &Record) {
+    let s = &mut m.save;
+    s.weapon = r.weapon;
+    s.bonus = [r.ap, r.strength, r.magic, r.defense];
+    s.armor_slots = r.armor_slots;
+    s.accessory_slots = r.accessory_slots;
+    s.item_slots = r.item_slots;
+    s.armor = r.armor;
+    s.accessories = r.accessories;
+    s.items = r.items;
+    s.originals = r.originals;
+    s.abilities = r.abilities;
+    s.style = r.style;
+    s.frequency = r.frequency;
+    m.max_hp = i32::from(r.max_hp);
+    m.hp = i32::from(r.hp.min(r.max_hp));
+    m.mp = player::magic::Mp::new(i32::from(r.max_mp));
+    let delta = i32::from(r.mp.min(r.max_mp)) - m.mp.cur;
+    if delta != 0 {
+        m.mp.add(delta);
+    }
+}
+
+/// The level row Sora's numbers stand on (FUN_1403ed2e0).
+fn level_row(game: &Game, level: u8) -> Option<data::battle_tables::PlayerLevel> {
+    game.enemy
+        .as_ref()?
+        .sora_levels
+        .get((level.max(1) - 1) as usize)
+        .copied()
+}
+
+/// FUN_1402ed110's copy: the running game into the image.
+pub fn capture(game: &Game, c: &CampRes, area: Option<&AreaRes>) -> SaveData {
+    let mut d = game.save.base.clone();
+    let mut p = Persistent::read(&d);
+    if let Some(a) = area {
+        p.world = a.current.world;
+        p.area = a.current.area;
+        p.entrance = a.current.state.entrance;
+        write_progress(a.source.progress(), &mut p, &mut d);
+    }
+    // FUN_1403a8b10 case 0x37: the save point's own world and area.
+    if let Some((world, area)) = game.save_place {
+        p.world = world;
+        p.area = area;
+    }
+    if let Some(a) = area {
+        let at = Vec3::from_array(game.sora.player.position);
+        let nearest = a
+            .current
+            .save_points
+            .iter()
+            .enumerate()
+            .min_by(|x, y| {
+                x.1.0
+                    .distance_squared(at)
+                    .total_cmp(&y.1.0.distance_squared(at))
+            })
+            .map(|(i, _)| i);
+        if let Some(&entrance) = nearest.and_then(|i| a.current.save_entrances.get(i)) {
+            p.entrance = entrance;
+        }
+    }
+    p.play_frames = game.save.play_frames(game.tick);
+    p.world_frames = game.save.world_frames;
+    if let Some(w) = game.save.world
+        && let Some(f) = p.world_frames.get_mut(w as usize)
+    {
+        *f = f.saturating_add((game.tick - game.save.world_tick) as u32);
+    }
+    if let Some(rt) = game.enemy.as_ref() {
+        p.munny = rt.munny;
+        p.exp = rt.exp_total;
+        p.difficulty = rt.difficulty as u32;
+        p.bonus_count = rt.bonus_taken.len() as u8;
+        let bits: Vec<u16> = rt.bonus_taken.iter().map(|&b| u16::from(b)).collect();
+        write_bits(&mut d, state::BONUS_BITS, state::BONUS_BIT_BYTES, &bits);
+    } else {
+        p.difficulty = c.game_mode;
+    }
+    p.config = c.config_flags;
+    p.shortcuts = c.shortcuts;
+    p.no_charge = u32::from(c.no_charge);
+    // Sora's record, with the numbers as bonus over the level's row.
+    let sora = &game.sora;
+    let v = &sora.vitals;
+    let e = &c.equipment;
+    let row = level_row(game, v.level);
+    let abilities: [u16; 80] =
+        std::array::from_fn(|i| c.ability_slots.get(i).copied().unwrap_or(0));
+    let over = |value: i32, base: u8| (value - i32::from(base)).clamp(0, 255) as u8;
+    let mut record = p.records[0];
+    record.weapon = e.weapon;
+    record.second_weapon = e.secondary_weapon;
+    record.level = v.level;
+    record.armor_slots = e.armor.len() as u8;
+    record.accessory_slots = e.accessories.len() as u8;
+    record.item_slots = e.items.len() as u8;
+    record.armor = list(&e.armor);
+    record.accessories = list(&e.accessories);
+    record.items = list(&e.items);
+    record.originals = list(&e.originals);
+    record.abilities = abilities;
+    record.mp = sora.player.mp.cur.clamp(0, 255) as u8;
+    record.max_mp = sora.player.mp.max.clamp(0, 255) as u8;
+    if game.enemy.is_some() {
+        record.hp = v.hp.clamp(0, 255) as u8;
+        record.max_hp = v.target.max_hp.clamp(0, 255) as u8;
+    }
+    if let Some(r) = row {
+        let gear = game.gear;
+        record.strength = over(v.attacker.strength - i32::from(gear.strength), r.strength);
+        record.magic = over(v.attacker.magic - i32::from(gear.magic), r.magic);
+        record.defense = over(v.target.defense - i32::from(gear.defense), r.defense);
+        record.ap = over(c.source.numbers.ap, r.ap);
+    }
+    p.records[0] = record;
+    p.drive = [
+        sora.player.drive.partial,
+        sora.player.drive.level,
+        sora.player.drive.max,
+    ];
+    if let Some(drive) = game.drive.as_ref() {
+        for f in 1..=6u8 {
+            if let Some(r) = drive.forms.record(f) {
+                p.forms[f as usize - 1] = FormRecord {
+                    weapon: r.keyblade,
+                    level: r.level,
+                    exp: r.exp,
+                    abilities: r.abilities,
+                };
+            }
+        }
+        p.current_form = if drive.active { drive.form } else { 0 };
+    }
+    for m in &game.party {
+        let index = m.kind.character as usize - 1;
+        if let Some(r) = p.records.get_mut(index) {
+            // A new game's records stand at level 1 (FUN_1403a0e70).
+            let level = r.level.max(1);
+            *r = Record {
+                level,
+                ..member_of(&m.save, m.hp, m.max_hp, (m.mp.cur, m.mp.max))
+            };
+        }
+    }
+    p.write(&mut d);
+    if let Some(a) = area {
+        let progress = a.source.progress();
+        write_background(&mut d, game.tick, |flag| progress.test(flag));
+    }
+    // The stock (the battle's is the live one) and what the camp has seen.
+    let stock = game.items.as_ref().map_or(&c.stock, |i| &i.stock);
+    write_stock(&game.save.items, stock, &mut d);
+    let mut seen = c.seen.clone();
+    seen.extend(&c.starting);
+    write_bits(&mut d, state::SEEN_ITEMS, state::SEEN_ITEM_BYTES, &seen);
+    d.set_u16(state::NOTICES_SEEN, c.memory.notices_seen);
+    for (&character, (order, seen)) in &c.ability_marks {
+        write_ability_marks(&mut d, character, order, seen);
+    }
+    // The journal's seen rows.
+    write_bits(&mut d, state::SEEN_CHARS, 0x44, &c.seen_chars);
+    write_bits(&mut d, state::SEEN_LIMITS, 4, &c.seen_limits);
+    write_bits(&mut d, state::SEEN_MINIGAMES, 0xc, &c.seen_minigames);
+    write_bits(&mut d, state::SEEN_QUESTS, 0x18, &c.seen_quests);
+    write_bits(&mut d, state::SEEN_CHESTS, 0x40, &c.seen_chests);
+    write_bits(&mut d, state::SEEN_MAPS, 0x10, &c.seen_maps);
+    write_bits(&mut d, state::SEEN_REPORTS, 4, &c.seen_reports);
+    let synthesis: Vec<u16> = c.seen_synthesis.iter().map(|&s| u16::from(s)).collect();
+    write_bits(&mut d, state::SEEN_SYNTHESIS, 4, &synthesis);
+    if let Some(j) = c.journal_source.as_ref() {
+        let albums: Vec<i8> = j.albums.iter().map(|a| a.world).collect();
+        let bits = per_world_bits(&albums, &c.seen_albums);
+        write_bits(&mut d, state::SEEN_ALBUMS, 0x40, &bits);
+        let stories: Vec<i8> = j.stories.iter().map(|s| s.world).collect();
+        let bits = per_world_bits(&stories, &c.seen_story);
+        write_bits(&mut d, state::SEEN_STORY, 0x40, &bits);
+    }
+    write_puzzles(&c.puzzles, &mut d);
+    d.seal();
+    d
+}
+
+/// FUN_1402ed110's table at 0x1405ba910: the card backgrounds and the flags
+/// that offer them.
+const BACKGROUNDS: [(u16, u16); 8] = [
+    (0x892, 0x4825),
+    (0, 0x892),
+    (0, 0x892),
+    (0, 0x892),
+    (0, 0x1076),
+    (0, 0x1076),
+    (0, 0x1076),
+    (0, 0x4825),
+];
+
+/// The byte a file's card draws behind it, picked among the rows the story
+/// allows (FUN_140157350's draw is not the same stream here [I]), and the
+/// bit Hollow Bastion sets once flag 0x108b is on.
+fn write_background(d: &mut SaveData, draw: u64, test: impl Fn(u32) -> bool) {
+    let rows: Vec<u8> = BACKGROUNDS
+        .iter()
+        .enumerate()
+        .filter(|(_, row)| {
+            let (first, second) = **row;
+            (first != 0 && !test(u32::from(first))) || test(u32::from(second))
+        })
+        .map(|(i, _)| i as u8)
+        .collect();
+    if !rows.is_empty() {
+        d.set_u8(field::BACKGROUND, rows[draw as usize % rows.len()]);
+    }
+    let bit = d.u8_at(field::WORLD) == 4 && test(0x108b);
+    let flags = d.u8_at(field::BACKGROUND + 1) & !1 | u8::from(bit);
+    d.set_u8(field::BACKGROUND + 1, flags);
+}
+
+/// One character's obtained-order list and seen bits (FUN_140368ed0): Sora's
+/// at save+0x4278 / +0x41f8, the party's at +0x4318 + 0x60·(t−2) and bit
+/// 0x30·(t−2) of +0x4204.
+fn write_ability_marks(d: &mut SaveData, character: u8, order: &[u16], seen: &[bool]) {
+    let (list, cap) = match character {
+        1 => (state::ORDER_SORA, 80),
+        2..=13 => (
+            state::ORDER_PARTY + state::ORDER_PARTY_BYTES * (character as usize - 2),
+            48,
+        ),
+        _ => return,
+    };
+    for i in 0..cap {
+        d.set_u16(list + i * 2, order.get(i).copied().unwrap_or(0));
+    }
+    let (base, first) = match character {
+        1 => (state::SEEN_SORA_ABILITIES, 0),
+        _ => (state::SEEN_PARTY_ABILITIES, 0x30 * (character as usize - 2)),
+    };
+    for i in 0..cap {
+        let n = first + i;
+        let at = base + n / 8;
+        let bit = 1 << (n % 8);
+        let on = seen.get(i).copied().unwrap_or(false);
+        let b = d.u8_at(at);
+        d.set_u8(at, if on { b | bit } else { b & !bit });
+    }
+}
+
+fn read_ability_marks(d: &SaveData, character: u8) -> Option<(Vec<u16>, Vec<bool>)> {
+    let (list, cap, base, first) = match character {
+        1 => (state::ORDER_SORA, 80, state::SEEN_SORA_ABILITIES, 0),
+        2..=13 => (
+            state::ORDER_PARTY + state::ORDER_PARTY_BYTES * (character as usize - 2),
+            48,
+            state::SEEN_PARTY_ABILITIES,
+            0x30 * (character as usize - 2),
+        ),
+        _ => return None,
+    };
+    let order: Vec<u16> = (0..cap)
+        .map(|i| d.u16_at(list + i * 2))
+        .take_while(|&id| id != 0)
+        .collect();
+    let seen = (0..order.len())
+        .map(|i| {
+            let n = first + i;
+            d.u8_at(base + n / 8) >> (n % 8) & 1 != 0
+        })
+        .collect();
+    Some((order, seen))
+}
+
+/// FUN_1402ed0e0 for what the field keeps: Sora, the party, the forms, the
+/// item slots and the magic. The room's own Shadow stays out of a loaded game.
+pub fn apply_game(game: &mut Game, data: &SaveData) {
+    let p = Persistent::read(data);
+    let stock = read_stock(&game.save.items, data);
+    game.save.base = data.clone();
+    game.save.play_start = p.play_frames;
+    game.save.world_frames = p.world_frames;
+    game.save.world = Some(p.world);
+    game.save.world_tick = 0;
+    game.save.loaded = true;
+    game.config_flags = p.config;
+    game.shortcuts = p.shortcuts;
+    let r = p.records[0];
+    let equipment = equipment_of(&r);
+    game.ability_slots = r.abilities.to_vec();
+    game.sora.vitals.level = r.level.max(1);
+    let row = level_row(game, r.level);
+    let g = &mut *game;
+    if let Some(rt) = g.enemy.as_mut() {
+        rt.enabled = false;
+        rt.exp_total = p.exp;
+        rt.munny = p.munny;
+        rt.difficulty = match p.difficulty {
+            0 => combat::Difficulty::Beginner,
+            2 => combat::Difficulty::Proud,
+            3 => combat::Difficulty::Critical,
+            _ => combat::Difficulty::Standard,
+        };
+        rt.bonus_taken = read_bits(data, state::BONUS_BITS, state::BONUS_BIT_BYTES)
+            .into_iter()
+            .map(|b| b as u8)
+            .collect();
+        let v = &mut g.sora.vitals;
+        if let Some(row) = row {
+            v.attacker.strength = i32::from(row.strength) + i32::from(r.strength);
+            v.attacker.magic = i32::from(row.magic) + i32::from(r.magic);
+            v.target.defense = i32::from(row.defense) + i32::from(r.defense);
+        }
+        v.target.max_hp = i32::from(r.max_hp);
+        v.hp = i32::from(r.hp.min(r.max_hp));
+    }
+    let player = &mut g.sora.player;
+    player.mp.max = i32::from(r.max_mp);
+    player.mp.cur = i32::from(r.mp.min(r.max_mp));
+    let [partial, level, max] = p.drive;
+    player.drive.partial = partial;
+    player.drive.level = level;
+    player.drive.max = max;
+    // The numbers above stand without the equipment: `refresh_gear` adds it.
+    g.gear = player::equipment_stats::Totals::start(0, 0, 0, 0);
+    g.equipment = equipment.clone();
+    if let Some(d) = g.drive.as_mut() {
+        for f in 1..=6u8 {
+            let saved = p.forms[f as usize - 1];
+            d.forms.owned[f as usize] = stock
+                .get(&player::forms::FORM_ITEMS[f as usize])
+                .is_some_and(|&n| n > 0);
+            if let Some(to) = d.forms.record_mut(f) {
+                to.keyblade = saved.weapon;
+                to.level = saved.level.max(1);
+                to.exp = saved.exp;
+                to.abilities = saved.abilities;
+            }
+        }
+        d.keyblades_changed(equipment.weapon);
+    }
+    if let Some(it) = g.items.as_mut() {
+        it.slots.clone_from(&equipment.items);
+        it.originals.clone_from(&equipment.originals);
+        it.stock.clone_from(&stock);
+    }
+    if let Some(m) = g.magic.as_mut() {
+        for (t, item) in ELEMENT_ITEMS.iter().enumerate() {
+            m.levels[t] = stock.get(item).copied().unwrap_or(0);
+        }
+        m.dont_charge = p.no_charge as u8;
+    }
+    let Game {
+        party,
+        ability_source,
+        party_reload,
+        party_limits,
+        ..
+    } = g;
+    for m in party.iter_mut() {
+        let Some(r) = p.records.get(m.kind.character as usize - 1) else {
+            continue;
+        };
+        apply_member(m, r);
+        m.gear = ability_source.gear(&equipment_of(r), None);
+        if let Some(src) = party_reload.as_ref() {
+            party_room::start_reweapon(src, party_limits, m);
+        }
+    }
+    let slots = game.ability_slots.clone();
+    drive_room::rebuild_abilities(game, Some(&slots));
+    let event = serde_json::json!({"event":"save_applied","world":p.world,"area":p.area,
+        "entrance":p.entrance,"level":game.sora.vitals.level,"exp":p.exp,"munny":p.munny,
+        "weapon":r.weapon,"difficulty":p.difficulty,"frames":p.play_frames,
+        "hp":r.hp,"max_hp":r.max_hp,"mp":r.mp,"max_mp":r.max_mp,"stock":stock.len(),
+        "party":game.party.iter().map(|m| m.save.weapon).collect::<Vec<_>>(),
+        "flags":p.flags.iter().map(|w| w.count_ones()).sum::<u32>()});
+    game.event(event);
+}
+
+/// A record's gear as the camp shows it.
+fn equipment_of(r: &Record) -> pause_menu::items::Equipment {
+    let take = |values: &[u16; 8], n: u8| values[..(n as usize).min(8)].to_vec();
+    pause_menu::items::Equipment {
+        weapon: r.weapon,
+        secondary_weapon: r.second_weapon,
+        armor: take(&r.armor, r.armor_slots),
+        accessories: take(&r.accessories, r.accessory_slots),
+        items: take(&r.items, r.item_slots),
+        originals: take(&r.originals, r.item_slots),
+        ..Default::default()
+    }
+}
+
+/// The same for what the camp keeps: its stock, gear, seen marks and the
+/// journal's numbers.
+pub fn apply_camp(c: &mut CampRes, game: &Game, data: &SaveData) {
+    let p = Persistent::read(data);
+    let r = p.records[0];
+    c.config_flags = p.config;
+    c.game_mode = p.difficulty;
+    c.shortcuts = p.shortcuts;
+    c.no_charge = p.no_charge as u8;
+    c.stock = read_stock(&game.save.items, data);
+    c.starting.clear();
+    c.seen = read_bits(data, state::SEEN_ITEMS, state::SEEN_ITEM_BYTES);
+    c.equipment = equipment_of(&r);
+    c.ability_slots = r.abilities.to_vec();
+    c.memory.notices_seen = data.u16_at(state::NOTICES_SEEN);
+    c.ability_marks = (1..=13u8)
+        .filter_map(|ch| {
+            read_ability_marks(data, ch)
+                .filter(|(order, _)| !order.is_empty())
+                .map(|m| (ch, m))
+        })
+        .collect();
+    let row = level_row(game, r.level);
+    let exp = game.enemy.as_ref().map_or(p.exp, |rt| rt.exp_total);
+    let n = &mut c.source.numbers;
+    n.level = r.level.max(1);
+    if let Some(row) = row {
+        n.next_exp = row.exp.saturating_sub(exp);
+        n.ap = i32::from(row.ap) + i32::from(r.ap);
+        n.strength = i32::from(row.strength) + i32::from(r.strength);
+        n.magic = i32::from(row.magic) + i32::from(r.magic);
+        n.defense = i32::from(row.defense) + i32::from(r.defense);
+    }
+    c.source.weapon_ability = game
+        .ability_source
+        .equipment_abilities
+        .get(&r.weapon)
+        .copied()
+        .unwrap_or(0);
+    c.seen_chars = read_bits(data, state::SEEN_CHARS, 0x44);
+    c.seen_limits = read_bits(data, state::SEEN_LIMITS, 4);
+    c.seen_minigames = read_bits(data, state::SEEN_MINIGAMES, 0xc);
+    c.seen_quests = read_bits(data, state::SEEN_QUESTS, 0x18);
+    c.seen_chests = read_bits(data, state::SEEN_CHESTS, 0x40);
+    c.seen_maps = read_bits(data, state::SEEN_MAPS, 0x10);
+    c.seen_reports = read_bits(data, state::SEEN_REPORTS, 4);
+    c.seen_synthesis = read_bits(data, state::SEEN_SYNTHESIS, 4)
+        .into_iter()
+        .map(|b| b as u8)
+        .collect();
+    if let Some(j) = c.journal_source.as_ref() {
+        let albums: Vec<i8> = j.albums.iter().map(|a| a.world).collect();
+        c.seen_albums = per_world_rows(&albums, &read_bits(data, state::SEEN_ALBUMS, 0x40));
+        let stories: Vec<i8> = j.stories.iter().map(|s| s.world).collect();
+        c.seen_story = per_world_rows(&stories, &read_bits(data, state::SEEN_STORY, 0x40));
+    }
+    c.puzzles = read_puzzles(data);
+    c.journal_save = JournalSave::read(data, game);
+}
+
+/// The journal's numbers from the image: nothing in a new game.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct JournalSave {
+    /// Use counts by `limit` row's command (save+0x3d48 + 2 * the `limt`
+    /// row's id, FUN_1403e7c30 / FUN_1403e8150).
+    pub limit_counts: HashMap<u16, u16>,
+    pub minigames: Vec<(u8, u32)>,
+    pub menu_flags: Vec<u16>,
+    pub synthesis: journal::Synthesis,
+    pub opened_bits: Vec<u16>,
+    pub story_flags: Vec<u16>,
+}
+
+impl JournalSave {
+    pub fn read(data: &SaveData, game: &Game) -> Self {
+        let limit_counts = game
+            .second_deck
+            .as_ref()
+            .map(|deck| {
+                deck.limits
+                    .iter()
+                    .map(|l| {
+                        (
+                            l.command,
+                            data.u16_at(state::LIMIT_COUNTS + 2 * usize::from(l.id)),
+                        )
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        let minigames = (0..state::MINIGAME_COUNT)
+            .map(|i| {
+                let at = state::MINIGAMES + i * 8;
+                (data.u32_at(at) as u8, data.u32_at(at + 4))
+            })
+            .collect();
+        let count =
+            |at: usize, end: usize| (at..end).map(|a| data.u8_at(a).count_ones()).sum::<u32>();
+        Self {
+            limit_counts,
+            minigames,
+            menu_flags: read_bits(data, state::MENU_FLAGS, state::MENU_FLAG_WORDS * 4),
+            synthesis: journal::Synthesis {
+                moogle_seen: data.u32_at(state::SYNTHESIS_SEEN) & (1 | 1 << 10) != 0,
+                level: data.u8_at(state::SYNTHESIS_LEVEL),
+                materials: count(state::SYNTHESIS_MATERIALS, state::SYNTHESIS_COLLECTIONS),
+                collections: count(state::SYNTHESIS_COLLECTIONS, state::SYNTHESIS_RECIPES),
+                recipes: count(state::SYNTHESIS_RECIPES, state::SYNTHESIS_SEEN),
+            },
+            opened_bits: read_bits(data, state::CHESTS, state::CHEST_BYTES),
+            story_flags: read_bits(data, state::FLAGS, state::FLAG_WORDS * 4),
+        }
+    }
+}
+
+/// `field` is used by the tour's verdict: what a card shows of an image.
+pub fn card(data: &SaveData) -> (u8, u8, u8, u32) {
+    (
+        data.u8_at(field::WORLD),
+        data.u8_at(field::AREA),
+        data.u8_at(field::PARTY + field::RECORD_LEVEL),
+        data.u32_at(field::MUNNY),
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn item(id: u16, kind: u8, flags: u8, slot: u16) -> Item {
+        Item {
+            id,
+            kind,
+            flags,
+            amount: 0,
+            weapon_stats: 0,
+            name: 0,
+            description: 0,
+            buy: 0,
+            sell: 0,
+            command: 0,
+            slot,
+            picture: 0,
+            box_style: 0,
+            icon: 0,
+        }
+    }
+
+    #[test]
+    fn stock_round_trips_by_count_byte_and_flag_bit() {
+        let items = [
+            item(1, 0, 0, 5),
+            item(2, 17, 1, 9),
+            item(3, 0x13, 0, 6),
+            item(4, 0, 0, 7),
+        ];
+        let mut stock = std::collections::BTreeMap::new();
+        stock.insert(1, 3);
+        stock.insert(2, 1);
+        // Type 0x13 has no count, whatever the room's map says.
+        stock.insert(3, 2);
+        let mut d = SaveData::blank();
+        // A count byte no row names is left alone; a stale one is cleared.
+        d.set_u8(state::ITEM_COUNTS + 8, 9);
+        d.set_u8(state::ITEM_COUNTS + 7, 4);
+        write_stock(&items, &stock, &mut d);
+        assert_eq!(d.u8_at(state::ITEM_COUNTS + 5), 3);
+        assert_eq!(d.u8_at(state::ITEM_COUNTS + 6), 0);
+        assert_eq!(d.u8_at(state::ITEM_COUNTS + 7), 0);
+        assert_eq!(d.u8_at(state::ITEM_COUNTS + 8), 9);
+        assert_eq!(d.u8_at(state::ITEM_BITS + 1), 1 << 1);
+        let back = read_stock(&items, &d);
+        assert_eq!(back.get(&1), Some(&3));
+        assert_eq!(back.get(&2), Some(&1));
+        assert_eq!(back.get(&3), None);
+    }
+
+    #[test]
+    fn the_card_background_follows_the_story_flags() {
+        let mut d = SaveData::blank();
+        d.set_u8(field::WORLD, 4);
+        // Nothing set: only the first row (its first flag is clear).
+        write_background(&mut d, 5, |_| false);
+        assert_eq!(d.u8_at(field::BACKGROUND), 0);
+        assert_eq!(d.u8_at(field::BACKGROUND + 1), 0);
+        // 0x892 set: the first row needs 0x4825 now; rows 1..=3 open.
+        write_background(&mut d, 5, |f| f == 0x892);
+        assert_eq!(d.u8_at(field::BACKGROUND), 3);
+        write_background(&mut d, 0, |f| f == 0x108b);
+        assert_eq!(d.u8_at(field::BACKGROUND + 1), 1);
+    }
+
+    #[test]
+    fn per_world_rows_go_through_the_save_bits_and_back() {
+        // Rows of worlds 2, 3, 2, 2: row 3 is world 2's third.
+        let worlds = [2i8, 3, 2, 2];
+        let bits = per_world_bits(&worlds, &[1, 3]);
+        assert_eq!(bits, vec![3 * 32, 2 * 32 + 2]);
+        assert_eq!(per_world_rows(&worlds, &bits), vec![1, 3]);
+    }
+
+    #[test]
+    fn puzzles_round_trip() {
+        let mut save = journal::PuzzleSave::default();
+        save.owned.insert((1, 40));
+        save.seen_board.insert((9, 63));
+        save.seen_list.insert((0, 0));
+        save.completed = 0x21;
+        save.tutorial = true;
+        save.slots[2][47] = journal::PuzzleSlot { piece: 5, rot: 3 };
+        let mut d = SaveData::blank();
+        write_puzzles(&save, &mut d);
+        // `u32 at (puzzle * 2 + (piece >> 5)) * 4`, bit `piece & 31`.
+        assert_eq!(d.u32_at(state::PIECES_OWNED + 3 * 4), 1 << 8);
+        let back = read_puzzles(&d);
+        assert_eq!(back.owned, save.owned);
+        assert_eq!(back.seen_board, save.seen_board);
+        assert_eq!(back.seen_list, save.seen_list);
+        assert_eq!(back.completed, 0x21);
+        assert!(back.tutorial);
+        assert_eq!(back.slots, save.slots);
+    }
+
+    #[test]
+    fn ability_marks_sit_in_each_characters_bits() {
+        let mut d = SaveData::blank();
+        write_ability_marks(&mut d, 1, &[7, 8], &[true, false]);
+        write_ability_marks(&mut d, 3, &[9], &[true]);
+        assert_eq!(d.u16_at(state::ORDER_SORA + 2), 8);
+        assert_eq!(d.u16_at(state::ORDER_PARTY + 0x60), 9);
+        // Goofy (3): bit 0x30 of the party's block.
+        assert_eq!(d.u8_at(state::SEEN_PARTY_ABILITIES + 6), 1);
+        assert_eq!(
+            read_ability_marks(&d, 1),
+            Some((vec![7, 8], vec![true, false]))
+        );
+        assert_eq!(read_ability_marks(&d, 3), Some((vec![9], vec![true])));
+    }
+}

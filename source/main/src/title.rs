@@ -180,6 +180,8 @@ struct Session {
     files_plan: bool,
     savepoint_plan: bool,
     loaded_slot: Option<usize>,
+    /// The chosen slot's image, for the room the launcher starts next.
+    loaded_image: Option<Box<save::data::SaveData>>,
 }
 
 impl Session {
@@ -536,9 +538,10 @@ fn tick(
         for n in file_sounds {
             s.play(n, "file menu");
         }
-        if let Some((slot, _data)) = loaded {
+        if let Some((slot, data)) = loaded {
             s.event(serde_json::json!({"event":"file_loaded","tick":tick,"slot":slot}));
             s.loaded_slot = Some(slot);
+            s.loaded_image = Some(data);
             t.action = Some(Action::Load);
             t.leave(&mut events);
         }
@@ -696,8 +699,14 @@ fn finish(
             session.exit_code = Some(code);
             let tick = session.tick;
             session.event(serde_json::json!({"event":"exit","tick":tick,"code":code}));
-            // For the launcher: New Game continues in the test room.
+            // For the launcher: New Game continues in the test room, Load in
+            // the room with the slot's image.
             if handed_off && let Some(a) = session.handoff {
+                if let Some(image) = &session.loaded_image
+                    && let Err(e) = crate::save_files::write_handoff(image)
+                {
+                    eprintln!("Loaded file rejected: {e}");
+                }
                 println!("kh2fm-handoff {a:?}");
             }
             exit.write(if code == 0 {
@@ -936,6 +945,7 @@ fn run(mut args: Vec<PathBuf>) -> Result<AppExit, Box<dyn std::error::Error>> {
         files_plan,
         savepoint_plan,
         loaded_slot: None,
+        loaded_image: None,
     };
     eprintln!(
         "Title ready. Arrows/W/S or the D-pad move, Enter/left-click/A decides, Space/Backspace/B backs out, M/Start skips the intro, Esc quits."

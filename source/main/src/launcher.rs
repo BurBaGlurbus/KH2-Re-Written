@@ -422,6 +422,13 @@ fn start_test(index: usize, dir: &Path, b: &Bound) -> Result<Running, String> {
     spawn(test.name.into(), exe, args)
 }
 
+/// The room started on the file the title's Load chose.
+fn start_loaded(dir: &Path, b: &Bound) -> Result<Running, String> {
+    let args = install::test_args(dir, "load", b)?;
+    let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+    spawn("Test room".into(), exe, args)
+}
+
 fn start_boss(index: usize, dir: &Path, b: &Bound) -> Result<Running, String> {
     let args = install::test_args(dir, &format!("boss:{index}"), b)?;
     let exe = std::env::current_exe().map_err(|e| e.to_string())?;
@@ -926,24 +933,41 @@ fn update(
                 winit.unfocused_mode = UpdateMode::reactive_low_power(Duration::from_millis(100));
             }
             if let Ok(Some(status)) = run.child.try_wait() {
-                let (lines, new_game) = run
+                let (lines, next) = run
                     .output
                     .lock()
                     .map(|o| {
-                        let new_game = o.iter().any(|l| l.trim() == "kh2fm-handoff NewGame");
-                        (failure_lines(&o), new_game)
+                        let next = o
+                            .iter()
+                            .rev()
+                            .find_map(|l| l.trim().strip_prefix("kh2fm-handoff "))
+                            .map(str::to_owned);
+                        (failure_lines(&o), next)
                     })
                     .unwrap_or_default();
-                ended = Some((status, b.clone(), run.name.clone(), lines, new_game));
+                ended = Some((status, b.clone(), run.name.clone(), lines, next));
             }
         }
         _ => {}
     }
-    if let Some((status, b, name, lines, new_game)) = ended {
-        let room = TESTS.iter().position(|t| t.program == "play");
-        if let (true, true, Some(room)) = (status.success(), new_game, room) {
+    if let Some((status, b, name, lines, next)) = ended {
+        let next = next.as_deref().filter(|_| status.success());
+        let run_of = |program: &str| TESTS.iter().position(|t| t.program == program);
+        if let (Some("NewGame"), Some(room)) = (next, run_of("play")) {
             // New Game on the title continues straight into the test room.
             launch(l, &Action::Run(room), b);
+        } else if next == Some("Load") {
+            match start_loaded(&l.dir, &b) {
+                Ok(running) => l.go(Screen::Loading(running, b)),
+                Err(why) => l.go(Screen::Problem {
+                    title: "The file could not start".into(),
+                    lines: vec![why],
+                    retry: Some(b),
+                }),
+            }
+        } else if let (Some("Title"), Some(title)) = (next, run_of("title")) {
+            // The save point's Title Screen.
+            launch(l, &Action::Run(title), b);
         } else if status.success() {
             let cursor = l.cursor;
             l.go(Screen::Tests(b));

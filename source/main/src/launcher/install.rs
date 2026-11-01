@@ -924,6 +924,20 @@ pub fn test_args(dir: &Path, program: &str, b: &Bound) -> Result<Vec<String>, St
         return Ok(args);
     }
     let (command, config, options) = match program {
+        // A loaded file: the room's sources, at the save's place.
+        "load" => {
+            let (arena, mut options) = match own("launch") {
+                Some(own) => own,
+                None => (made("room")?, Vec::new()),
+            };
+            options.extend([
+                "--load-image".to_owned(),
+                crate::save_files::handoff_path()
+                    .to_string_lossy()
+                    .into_owned(),
+            ]);
+            ("room", arena, options)
+        }
         "title" => {
             let (config, options) = match own("launch-title") {
                 Some(own) => own,

@@ -17,6 +17,23 @@ use visual::{
     menu_screen::{self, Menu2ld},
 };
 
+/// The image one program hands the next (the title's Load to the room, the
+/// room to the world map and back): a save file of its own under the data
+/// folder, kept beside the container.
+pub fn handoff_path() -> PathBuf {
+    crate::launcher::data_dir()
+        .join("saves")
+        .join("handoff.sav")
+}
+
+pub fn write_handoff(image: &SaveData) -> std::io::Result<()> {
+    let path = handoff_path();
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    std::fs::write(path, image.bytes())
+}
+
 /// The save container the menu works on, written back after each change.
 pub struct FileBackend {
     container: Container,

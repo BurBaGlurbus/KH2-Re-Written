@@ -192,6 +192,31 @@ impl Progress {
         self.flags.get(w).is_some_and(|v| v & bit != 0)
     }
 
+    /// The flag words a save holds (`DAT_1409ab540`).
+    pub fn flag_words(&self) -> &[u32] {
+        &self.flags
+    }
+
+    /// FUN_1402ed0e0's share: a loaded save's flag words replace the running
+    /// ones; words past the saved ones stay clear.
+    pub fn restore_flags(&mut self, words: &[u32]) {
+        self.flags.fill(0);
+        for (to, from) in self.flags.iter_mut().zip(words) {
+            *to = *from;
+        }
+    }
+
+    /// The 'dsa' state words (`DAT_1409ab7a8`).
+    pub fn dsa_state(&self) -> &[[u16; 2]] {
+        &self.dsa_state
+    }
+
+    pub fn restore_dsa_state(&mut self, words: &[[u16; 2]]) {
+        for (to, from) in self.dsa_state.iter_mut().zip(words) {
+            *to = *from;
+        }
+    }
+
     pub fn programs(&self, world: u8, area: u8) -> [i16; 3] {
         self.programs[world as usize * AREAS_PER_WORLD + area as usize]
     }
@@ -367,6 +392,16 @@ mod tests {
         // Slot 1's op 7 cleared the flag that started the chain.
         assert!(!p.test(0x800));
         assert!(!p.test(0xffff));
+    }
+
+    #[test]
+    fn restored_flags_replace_the_running_ones() {
+        let mut p = Progress::new(vec![None; 19]);
+        p.set(0x800);
+        p.restore_flags(&[0, 0, 1 << 3]);
+        assert!(!p.test(0x800));
+        assert!(p.test(2 * 0x20 + 3));
+        assert_eq!(p.flag_words()[2], 1 << 3);
     }
 
     #[test]
