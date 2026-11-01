@@ -2158,6 +2158,8 @@ mod tests {
             item: 7,
             kind: 0,
             game_world: 2,
+            room: 0,
+            sub: 0,
             flag: 0x10,
             opened: 0,
         };

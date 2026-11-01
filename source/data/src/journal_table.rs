@@ -292,6 +292,10 @@ pub struct Treasure {
     pub kind: u8,
     /// +5: the game world.
     pub game_world: u8,
+    /// +6 and +7: the chest's area and the spawn's sub index (entity arg1,
+    /// FUN_1403a19c0).
+    pub room: u8,
+    pub sub: u8,
     /// +8: the story flag that makes it available.
     pub flag: u16,
     /// +10: the opened bit (save+0x23ac); 0 = none.
@@ -310,6 +314,8 @@ pub fn read_treasures(bytes: &[u8]) -> io::Result<Vec<Treasure>> {
             item: u16_at(r, 2),
             kind: r[4],
             game_world: r[5],
+            room: r[6],
+            sub: r[7],
             flag: u16_at(r, 8),
             opened: u16_at(r, 10),
         })

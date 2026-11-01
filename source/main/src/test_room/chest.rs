@@ -1,0 +1,279 @@
+//! The field's treasure chests: FUN_140402200 reads the opened bit when the
+//! chest is made, the reaction search offers command 32 (reaction_command.rs),
+//! and FUN_1403a8b10 case 0x20 → FUN_1404025c0 opens it: the chest plays its
+//! opening motion, Sora the capture motion from the chest's slot 252, and on
+//! that tick FUN_1403a1b60 gives the item and sets the bit. The small chest's
+//! window shows 60 ticks later (dk::TREASURE_BOX_INFO).
+use super::*;
+use crate::chests::{Chest, ChestState};
+use save::state;
+
+/// Sora's captured motion in the chest's set (FUN_1404025c0).
+const CAPTURE_SLOT: i32 = 252;
+/// FUN_1404025c0 (DAT_140623bac): a small chest's and its capture's blend.
+const SMALL_BLEND: f32 = 8.;
+/// AZ10's range 22: the turn toward the target over the first 12 ticks, at 15
+/// degrees a tick [I: the parameter's unit].
+const TURN_TICKS: u32 = 12;
+const TURN_RATE: f32 = 15. * std::f32::consts::PI / 180.;
+/// The effect owner of the chests' effects.
+const CHEST_FX: u8 = 0xf5;
+
+/// The unattended `--chest-tour`: Sora stands before the area's first closed
+/// chest at tick 20 and presses Triangle from tick 60.
+pub const TOUR_PRESS: u64 = 60;
+pub const CAPTURES: [u64; 6] = [40, 90, 120, 165, 200, 260];
+pub const END: u64 = 330;
+
+fn opened(game: &Game, c: &Chest) -> bool {
+    c.bit != 0 && game.save.base.u8_at(state::CHESTS + c.bit as usize / 8) >> (c.bit % 8) & 1 != 0
+}
+
+/// The turn toward the chest, as FUN_1403d4b90 steps a yaw.
+fn turned(yaw: f32, target: f32) -> f32 {
+    let tau = std::f32::consts::TAU;
+    let d = (target - yaw + std::f32::consts::PI).rem_euclid(tau) - std::f32::consts::PI;
+    yaw + d.clamp(-TURN_RATE, TURN_RATE)
+}
+
+/// One tick of the area's chests, and a press taken by the reaction search.
+pub fn tick(
+    mut game: ResMut<Game>,
+    area: Option<ResMut<AreaRes>>,
+    mut camp: Option<ResMut<CampRes>>,
+) {
+    let Some(mut area) = area else { return };
+    let tick = game.tick;
+    let wanted = game.chest_wanted.take();
+    if game.chest_tour {
+        tour(&mut game, &area, tick);
+    }
+    let sora = Vec3::from_array(game.sora.player.position);
+    let mut at = sora;
+    for k in 0..area.current.chests.len() {
+        let chest = &area.current.chests[k];
+        if chest.state == ChestState::Unread {
+            let state = if opened(&game, chest) {
+                ChestState::Opened
+            } else {
+                ChestState::Closed
+            };
+            area.current.chests[k].state = state;
+        }
+        if wanted == Some(k) && area.current.chests[k].state == ChestState::Closed {
+            open(&mut game, &mut area.current.chests[k], camp.as_deref_mut());
+        }
+        let chest = &mut area.current.chests[k];
+        // The opening motion's own triggers (se000 #22, effect 0).
+        if let ChestState::Opening(t) = chest.state {
+            for &(frame, id) in &chest.kind.sounds {
+                if frame == t {
+                    game.sound_queue.push((id, "chest"));
+                }
+            }
+            for &(frame, id) in &chest.kind.effects {
+                if frame == t
+                    && let Some(pax) = chest.kind.pax.clone()
+                {
+                    game.fx_queue.push(drive_fx::Placed {
+                        req: drive_fx::FxRequest {
+                            pax,
+                            id,
+                            owner: CHEST_FX,
+                        },
+                        anchor: drive_fx::Anchor::World {
+                            at: chest.position,
+                            pitch: 0.,
+                            yaw: chest.yaw,
+                        },
+                    });
+                }
+            }
+            if t < TURN_TICKS && !chest.kind.big {
+                let to = chest.position - sora;
+                let target = to.x.atan2(to.z);
+                game.sora.player.yaw = turned(game.sora.player.yaw, target);
+            }
+            // Holds the last pose; the next load stands on the opened one.
+            if t + 1 < chest.kind.opening.frames.len() as u32 {
+                chest.state = ChestState::Opening(t + 1);
+            }
+        }
+        // [I] The kind-1 shape is the chest's solid body, as the townspeople's.
+        let body = chest.kind.body;
+        if let Some((_, back)) = crate::npcs::push(at, SORA_OBJ, chest.position, body, false) {
+            at.x += back[0];
+            at.z += back[1];
+        }
+    }
+    game.sora.player.position[0] = at.x;
+    game.sora.player.position[2] = at.z;
+}
+
+/// FUN_1404025c0 and FUN_1403a1b60.
+fn open(game: &mut Game, chest: &mut Chest, camp: Option<&mut CampRes>) {
+    let tick = game.tick;
+    let big = chest.kind.big;
+    chest.state = ChestState::Opening(0);
+    let blend = if big { 0. } else { SMALL_BLEND };
+    let played = boss::chest_capture(big)
+        .and_then(|o| boss::capture_clip(o, CAPTURE_SLOT))
+        .is_some_and(|clip| game.sora.player.capture_motion(clip, blend, &game.clips));
+    if played {
+        game.sora.player.queue_motion(0, 0.);
+        game.action_started = tick;
+    }
+    // A chest without a row gives Land of Dragons' first and closes again
+    // (FUN_1404025c0's fallback); no such row is modelled here.
+    let Some(item) = chest.item else {
+        game.event(
+            serde_json::json!({"event":"chest_open","tick":tick,"object":chest.object,
+            "row":false,"capture":played}),
+        );
+        return;
+    };
+    // FUN_1403c3f00, into the stock; a full stock loses the item while the bit
+    // and the window still happen.
+    let counts = match game.items.as_mut() {
+        Some(i) => Some(&mut i.stock),
+        None => None,
+    };
+    let mut camp = camp;
+    let counts = match (counts, camp.as_mut()) {
+        (Some(c), _) => Some(c),
+        (None, Some(c)) => Some(&mut c.stock),
+        _ => None,
+    };
+    if let Some(stock) = counts {
+        let n = stock.entry(item).or_insert(0);
+        *n = n.saturating_add(1).min(99);
+    }
+    if chest.bit != 0 {
+        let at = state::CHESTS + chest.bit as usize / 8;
+        let b = game.save.base.u8_at(at);
+        game.save.base.set_u8(at, b | 1 << (chest.bit % 8));
+        if let Some(c) = camp.as_mut() {
+            c.journal_save.opened_bits.push(chest.bit);
+        }
+    }
+    // FUN_1403a1b20 hands it to the box window, which waits out Sora's motion.
+    game.treasure_boxes.push(item);
+    game.event(
+        serde_json::json!({"event":"chest_open","tick":tick,"object":chest.object,
+        "item":item,"bit":chest.bit,"big":big,"capture":played}),
+    );
+}
+
+/// The tour's placement, in front of the first closed chest.
+fn tour(game: &mut Game, area: &AreaRes, tick: u64) {
+    let first = area
+        .current
+        .chests
+        .iter()
+        .find(|c| matches!(c.state, ChestState::Closed | ChestState::Unread));
+    if tick == 1 {
+        let chests: Vec<_> = area
+            .current
+            .chests
+            .iter()
+            .map(|c| {
+                serde_json::json!({"object":c.object,"item":c.item,"bit":c.bit,
+                "at":c.position.to_array(),"yaw":c.yaw,"big":c.kind.big})
+            })
+            .collect();
+        game.event(serde_json::json!({"event":"chests","list":chests}));
+    }
+    if let Some(c) = first {
+        if (20..TOUR_PRESS).contains(&tick) {
+            let front = Vec3::new(c.yaw.sin(), 0., c.yaw.cos());
+            let to = c.position + front * 110.;
+            game.sora.player.position = to.to_array();
+            game.sora.player.yaw = (-front.x).atan2(-front.z);
+        }
+        if (TOUR_PRESS..TOUR_PRESS + 3).contains(&tick) {
+            game.rc_queued = true;
+        }
+    }
+}
+
+/// Places and poses the chests.
+pub fn present(
+    game: Res<Game>,
+    area: Option<Res<AreaRes>>,
+    parts: Query<(&ChestPart, &Mesh3d)>,
+    added: Query<(), Added<ChestPart>>,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut shown: Local<Option<u64>>,
+) {
+    let Some(area) = area else { return };
+    if *shown == Some(game.tick) && added.is_empty() {
+        return;
+    }
+    *shown = Some(game.tick);
+    for (part, handle) in &parts {
+        let Some(c) = area.current.chests.get(part.chest) else {
+            continue;
+        };
+        let frame = c.pose();
+        let positions = c.kind.model.parts[part.ordinal]
+            .indices
+            .iter()
+            .map(|&i| frame[i as usize].to_array());
+        visual::room::set_positions(&mut meshes, &handle.0, positions);
+    }
+}
+
+/// A chest's mesh part.
+#[derive(Component)]
+pub struct ChestPart {
+    pub chest: usize,
+    pub ordinal: usize,
+}
+
+/// Spawns the chests' models under `parent`.
+pub fn spawn(
+    commands: &mut Commands,
+    meshes: &mut Assets<Mesh>,
+    materials: &mut Assets<FogMaterial>,
+    images: &mut Assets<Image>,
+    area: &LoadedArea,
+    parent: Entity,
+) {
+    for (i, c) in area.chests.iter().enumerate() {
+        let root = commands
+            .spawn((
+                RoomPart,
+                ChildOf(parent),
+                Transform::from_translation(c.position).with_rotation(Quat::from_rotation_y(c.yaw)),
+                Visibility::default(),
+            ))
+            .id();
+        for (ordinal, entity) in spawn_model(
+            commands,
+            &c.kind.model,
+            c.pose(),
+            root,
+            meshes,
+            materials,
+            images,
+        ) {
+            if let Some(entity) = entity {
+                commands
+                    .entity(entity)
+                    .insert((RoomPart, ChestPart { chest: i, ordinal }));
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_turn_takes_the_short_way_at_its_rate() {
+        assert!((turned(0., 0.1) - 0.1).abs() < 1e-5);
+        assert!((turned(0., 3.) - TURN_RATE).abs() < 1e-5);
+        assert!((turned(3., -3.) - (3. + TURN_RATE)).abs() < 1e-5);
+    }
+}

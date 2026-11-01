@@ -609,7 +609,13 @@ impl FormSources {
                 } else {
                     vec![player::WALL_RECOIL_AIR]
                 },
-                external: Vec::new(),
+                // A worn body opens chests like the base one. [U] A Drive
+                // form's capture variant was not traced.
+                external: if worn {
+                    boss::chest_clips()
+                } else {
+                    Vec::new()
+                },
             },
         )
     }

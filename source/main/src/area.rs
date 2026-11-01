@@ -111,6 +111,8 @@ pub struct AreaSource {
     program_areas: Vec<Vec<(u16, u16)>>,
     /// 03system `memt`.
     members: MemberTable,
+    /// 03system `trsr`.
+    treasures: Vec<data::journal_table::Treasure>,
 }
 
 /// The object that offers a door between worlds or the like: a type-8 object
@@ -214,6 +216,8 @@ pub struct LoadedArea {
     /// The townspeople of this area (objentry type 15, spawn types 0/1/3,
     /// then zone-spawned ones as Sora enters their zones).
     pub npcs: Vec<FieldNpc>,
+    /// The treasure chests of this area's spawns (objentry type 10).
+    pub chests: Vec<crate::chests::Chest>,
     /// Spawn-type-2 townspeople waiting for their zone.
     pub deferred: Vec<Deferred>,
     /// Libretto scripts by talk id and their message texts.
@@ -404,6 +408,16 @@ impl AreaSource {
             .ok()
             .and_then(|b| data::world_map::read_program_areas(&b).ok())
             .unwrap_or_default();
+        let treasures = library
+            .read("03system.bin")
+            .ok()
+            .and_then(|b| {
+                let table = data::bar::read_bar(&b).ok()?;
+                let e = table.entries.iter().find(|e| e.name_bytes == *b"trsr")?;
+                let bytes = b.get(e.offset as usize..e.offset as usize + e.size as usize)?;
+                data::journal_table::read_treasures(bytes).ok()
+            })
+            .unwrap_or_default();
         Ok(Self {
             source,
             library,
@@ -411,6 +425,7 @@ impl AreaSource {
             commands,
             program_areas,
             members,
+            treasures,
             arif,
             last_pair: None,
             place_names,
@@ -441,6 +456,7 @@ impl AreaSource {
             kinds: Vec::new(),
             kind_index: self.kind_index.clone(),
             kind_programs: self.kind_programs.clone(),
+            treasures: self.treasures.clone(),
             kind_base: self.kind_base + self.kinds.len(),
             rng: self.rng,
             place_names: HashMap::new(),
@@ -582,6 +598,7 @@ impl AreaSource {
         let save_points = self.save_points(&spawns);
         let save_entrances = self.save_entrances(&spawns);
         let world_points = self.world_points(&spawns);
+        let chests = self.chests(world, area, &spawns);
         let gates = self.gates(code, &spawns, &state.setup.events);
         let members = self.members(world, area, &state.setup.party_set);
         let save_point_pax = if save_points.is_empty() {
@@ -616,6 +633,7 @@ impl AreaSource {
                 music,
                 bobs,
                 npcs,
+                chests,
                 deferred,
                 scripts,
                 lines,
@@ -654,6 +672,52 @@ impl AreaSource {
                     .is_some_and(|&i| self.objects[i].model_name.starts_with(b"WORLD_POINT"))
             })
             .collect()
+    }
+
+    /// The spawns of type-10 objects, each on its `trsr` row (world, area,
+    /// entity arg1; FUN_140402200). A kind is read once per area.
+    fn chests(&mut self, world: u8, area: u8, spawns: &[Spawn]) -> Vec<crate::chests::Chest> {
+        use crate::chests::{Chest, ChestKind, ChestState};
+        let mut kinds: HashMap<u32, Arc<ChestKind>> = HashMap::new();
+        let mut out = Vec::new();
+        for s in spawns {
+            let id = s.entity.object;
+            let Some(&oi) = self.object_index.get(&id) else {
+                continue;
+            };
+            if self.objects[oi].object_type != 10 {
+                continue;
+            }
+            let kind = match kinds.get(&id) {
+                Some(k) => k.clone(),
+                None => {
+                    let object = self.objects[oi].clone();
+                    match ChestKind::load(&self.source, &mut self.library, &object) {
+                        Ok(k) => {
+                            let k = Arc::new(k);
+                            kinds.insert(id, k.clone());
+                            k
+                        }
+                        Err(e) => {
+                            eprintln!("Chest {id} not loaded: {e}");
+                            continue;
+                        }
+                    }
+                }
+            };
+            let row = crate::chests::row(&self.treasures, world, area, s.entity.arg1 as u8);
+            let [x, y, z] = s.entity.position;
+            out.push(Chest {
+                kind,
+                object: id,
+                position: Vec3::new(x, -y, -z),
+                yaw: s.yaw,
+                item: row.map(|r| r.item),
+                bit: row.map_or(0, |r| r.opened),
+                state: ChestState::Unread,
+            });
+        }
+        out
     }
 
     fn save_entrances(&self, spawns: &[Spawn]) -> Vec<u8> {

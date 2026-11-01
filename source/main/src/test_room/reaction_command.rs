@@ -27,6 +27,8 @@ pub const SUMMON: u32 = 0xffff_0002;
 pub const SAVE_POINT: u32 = 0xffff_0100;
 /// Gate `k` of the area (`LoadedArea::gates`) is `GATE + k`.
 pub const GATE: u32 = 0xffff_0200;
+/// Chest `k` of the area (`LoadedArea::chests`) is `CHEST + k`.
+pub const CHEST: u32 = 0xffff_0300;
 /// Command 0x37 "Save" (exec 0x37).
 const SAVE_COMMAND: u16 = 0x37;
 /// Effect owners of the save points' glow (element 1, started with the
@@ -409,6 +411,29 @@ pub fn tick(
             attack: None,
         });
     }
+    // The area's closed chests (REACTION shape, command 32; FUN_140402200
+    // takes an opened chest's command off with its kill list). The shape's
+    // centre is carried in `position` y (game +y is down).
+    if let Some(a) = area.as_deref() {
+        for (k, c) in a.current.chests.iter().enumerate() {
+            if c.state != crate::chests::ChestState::Closed {
+                continue;
+            }
+            let e = c.kind.reaction;
+            inputs.shapes.push(rc::Shape {
+                owner: CHEST + k as u32,
+                group: e.group,
+                command: rc::shape_command(5, e.argument as u16, 0, None),
+                centre: (c.position
+                    + Vec3::Y * (f32::from(e.position_height) - f32::from(e.position[1])))
+                .to_array(),
+                radius: f32::from(e.radius),
+                height: f32::from(e.height),
+                owner_yaw: c.yaw,
+                attack: None,
+            });
+        }
+    }
     // The area's gates: objects whose reaction raises a signal.
     if let Some(a) = area.as_deref() {
         for (k, g) in a.current.gates.iter().enumerate() {
@@ -517,6 +542,11 @@ pub fn tick(
             // flag bit 9 says not to.
             if let Some(row) = row {
                 state.hold = rc::hold_after(&row, true).map(|cmd| (cmd, c.target));
+            }
+            // [I] FUN_1404025c0 puts the chest's command on its kill list
+            // (FUN_14040a500), so nothing is left to hold.
+            if (CHEST..CHEST + 0x100).contains(&c.target.owner) {
+                state.hold = None;
             }
             game.event(serde_json::json!({"event":"reaction_taken","tick":tick,
                 "command":command,"source":format!("{:?}", c.source),"owner":c.target.owner}));
@@ -887,6 +917,10 @@ fn carry_out(game: &mut Game, actors: &mut [GalleryActor], c: rc::Candidate, tic
                 serde_json::json!({"event":"save_menu_requested","tick":tick,
                 "save_point":c.target.owner - SAVE_POINT}),
             );
+        }
+        // FUN_1403a8b10 case 0x20: the chest opens (chest.rs).
+        rc::Source::Shape if (CHEST..CHEST + 0x100).contains(&c.target.owner) => {
+            game.chest_wanted = Some((c.target.owner - CHEST) as usize);
         }
         // FUN_1403a8b10 case 0x1e (the talk's op 3) or 0x7f: the signal.
         rc::Source::Shape if (GATE..GATE + 0x100).contains(&c.target.owner) => {

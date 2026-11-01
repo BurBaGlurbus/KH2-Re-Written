@@ -68,6 +68,7 @@ pub mod ability_inventory;
 pub mod actor_push;
 pub mod boss;
 pub mod character_kit;
+pub mod chest;
 pub mod cleanup;
 pub mod command_layout;
 pub mod debug_menu;
@@ -1399,6 +1400,12 @@ pub struct Game {
     pub sound_queue: Vec<(u32, &'static str)>,
     /// Items whose name window is due (FUN_1401595d0): the boxes that arrived.
     pub treasure_items: Vec<u16>,
+    /// Items a chest gave, for its window (FUN_140159550).
+    pub treasure_boxes: Vec<u16>,
+    /// A chest's reaction was taken (reaction_command.rs).
+    pub chest_wanted: Option<usize>,
+    /// The unattended `--chest-tour`.
+    pub chest_tour: bool,
     /// Action start tick and clip tick already scanned for sound triggers.
     pub sound_frame: Option<(u64, u32)>,
     pub effect_queue: Vec<EffectRequest>,
@@ -5389,6 +5396,14 @@ pub fn area_transition(
         root.0,
         next.state.setup.bg_mask,
     );
+    chest::spawn(
+        &mut commands,
+        &mut meshes,
+        &mut materials,
+        &mut images,
+        &next,
+        root.0,
+    );
     spawn_field_npcs(
         &mut commands,
         &mut meshes,
@@ -6541,6 +6556,14 @@ pub fn setup(
             &a.current,
             world,
             a.current.state.setup.bg_mask,
+        );
+        chest::spawn(
+            &mut commands,
+            &mut meshes,
+            &mut materials,
+            &mut images,
+            &a.current,
+            world,
         );
         spawn_field_npcs(
             &mut commands,
@@ -10268,10 +10291,25 @@ pub fn hud_tick(
             hud.treasure.push_prize(t);
         }
     }
+    // FUN_140159550: the item's name alone, and its picture.
+    for id in std::mem::take(&mut game.treasure_boxes) {
+        let Some(c) = camp.as_ref() else { continue };
+        let Some(r) = c.source.items.table.iter().find(|r| r.id == id) else {
+            continue;
+        };
+        let picture = c.picture_source.as_ref().and_then(|s| {
+            let path = format!("itempic/item-{:03}.imd", r.picture);
+            visual::menu_screen::load_imgd(s, PICTURE_INDEX, &path)
+                .ok()
+                .flatten()
+        });
+        let ipic = c.source.picture_sequence.clone();
+        hud.treasure.push_box(r.name.clone(), picture, ipic);
+    }
     let Hud {
         sheets, treasure, ..
     } = &mut *hud;
-    // FUN_140159ed0: se000 #10 as a window starts.
+    // FUN_140159ed0, FUN_140159970: se000 #10 as a window starts.
     if treasure.update(&sheets[0].sequence) {
         game.sound_queue.push((SE_TREASURE, "treasure_window"));
     }
@@ -10446,7 +10484,15 @@ pub fn hud_present(
         if let Some((font_sheet, widths)) = menu_font.as_ref() {
             let font = field_command_menu::Font { widths, pad: 1 };
             draws.extend(panels.draw(&sheets[0].sequence, &font, 0, *font_sheet));
-            draws.extend(treasure.draw(&sheets[0].sequence, &font, 0, *font_sheet));
+            let picture = treasure.picture().map(|t| {
+                textures.push(Texture {
+                    rgba: &t.rgba,
+                    size: t.size.map(|v| v as usize),
+                    texel_scale: t.texel_scale,
+                });
+                textures.len() - 1
+            });
+            draws.extend(treasure.draw(&sheets[0].sequence, &font, 0, *font_sheet, picture));
         }
     }
     // Message windows (task priority 25000) draw above the HUD.
@@ -14444,6 +14490,7 @@ pub fn run(
     let mut magic_form = 0u8;
     let mut growth_tour = false;
     let mut prize_tour = false;
+    let mut chest_tour = false;
     let mut npc_tour = false;
     let mut save_point_tour = false;
     let mut badge_tour = false;
@@ -14817,6 +14864,15 @@ pub fn run(
                         .ok_or("badge tour capture directory absent")?,
                 );
             }
+            Some("--chest-tour") if autoplay.is_none() => {
+                chest_tour = true;
+                autoplay = Some(
+                    options
+                        .next()
+                        .cloned()
+                        .ok_or("chest tour capture directory absent")?,
+                );
+            }
             Some("--prize-tour") if autoplay.is_none() => {
                 prize_tour = true;
                 autoplay = Some(
@@ -15063,6 +15119,8 @@ pub fn run(
         capture_at
             .clone()
             .unwrap_or_else(|| magic_tour::captures(magic_shift))
+    } else if chest_tour {
+        chest::CAPTURES.to_vec()
     } else if prize_tour {
         prize_room::CAPTURES.to_vec()
     } else if growth_tour {
@@ -15119,6 +15177,8 @@ pub fn run(
         u64::MAX
     } else if magic_tour {
         magic_tour::end() + magic_shift
+    } else if chest_tour {
+        chest::END
     } else if prize_tour {
         prize_room::END
     } else if growth_tour {
@@ -15407,6 +15467,9 @@ pub fn run(
         autoplay_failed: false,
         sound_queue: Vec::new(),
         treasure_items: Vec::new(),
+        treasure_boxes: Vec::new(),
+        chest_wanted: None,
+        chest_tour,
         sound_frame: None,
         effect_queue: Vec::new(),
         fx_queue: Vec::new(),
@@ -16032,7 +16095,7 @@ impl Plugin for RoomPlugin {
                         sephiroth::tick,
                         boss_fight::tick,
                         enemy_tour::tick,
-                        field_npc_tick,
+                        (field_npc_tick, chest::tick).chain(),
                         talk_tick,
                         effects_tick.in_set(RoomSet::EffectsTick),
                         drive_fx::tick.in_set(RoomSet::DriveFxTick),
@@ -16064,7 +16127,7 @@ impl Plugin for RoomPlugin {
                         texa_tick,
                         bob_present,
                         field_npc_spawn_new,
-                        field_npc_present,
+                        (field_npc_present, chest::present),
                         dissolve_present,
                         camera_control,
                         first_person_fade,

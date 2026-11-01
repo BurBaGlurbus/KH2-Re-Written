@@ -20,6 +20,42 @@ const CAPTURE_OBJECTS: usize = 8;
 /// Block counter, 254 AQ91 the grab). Read once, for his kit.
 static CAPTURES: std::sync::OnceLock<Vec<(u32, Vec<usize>)>> = std::sync::OnceLock::new();
 
+static CHEST_OBJECTS: std::sync::OnceLock<Vec<(bool, u32)>> = std::sync::OnceLock::new();
+
+/// A motion in Sora's kit: clip id, body motion, Keyblade motion.
+type KitMotion = (
+    u16,
+    data::motion::SelectedMotion,
+    Option<data::motion::SelectedMotion>,
+);
+/// The chests' captures: clip id and the slot's archive.
+static CHEST_CLIPS: std::sync::OnceLock<Vec<(u16, Vec<u8>)>> = std::sync::OnceLock::new();
+
+/// The generic chest object whose capture motion Sora's kit holds.
+pub fn chest_capture(big: bool) -> Option<u32> {
+    CHEST_OBJECTS
+        .get()?
+        .iter()
+        .find(|(b, _)| *b == big)
+        .map(|(_, id)| *id)
+}
+
+/// The generic small and big chests (`F_EX030`, `F_EX040`), by big: their
+/// capture motions stand for every world's copy, whose slot 252 holds the same
+/// clip for Sora.
+pub fn chest_objects(objects: &[objentry::ObjectEntry]) -> Vec<(bool, u32)> {
+    [(false, &b"F_EX030"[..]), (true, &b"F_EX040"[..])]
+        .into_iter()
+        .filter_map(|(big, name)| {
+            let id = objects
+                .iter()
+                .find(|o| o.object_type == 10 && o.model_name == name)?
+                .object_id;
+            Some((big, id))
+        })
+        .collect()
+}
+
 /// The id Sora's kit keeps a boss's captured motion under: below the
 /// summons' (0x7800..) and above the limits' (0x4000..).
 pub fn capture_clip(object: u32, slot: i32) -> Option<u16> {
@@ -64,6 +100,15 @@ pub fn capture_motions(
     else {
         return out;
     };
+    // The chests' capture motions: any area's chest may be opened later.
+    let chests = chest_objects(&objects);
+    let _ = CHEST_OBJECTS.set(chests.clone());
+    let mut chest_clips = Vec::new();
+    for &(_, id) in &chests {
+        if !wanted.contains(&id) {
+            wanted.insert(1, id);
+        }
+    }
     for object in wanted {
         if captures.len() == CAPTURE_OBJECTS {
             eprintln!(
@@ -97,6 +142,7 @@ pub fn capture_motions(
             continue;
         };
         let mut slots = Vec::new();
+        let is_chest = chests.iter().any(|&(_, id)| id == object);
         for slot in CAPTURE_SLOT..table.entries.len() {
             let clip = clip_id(captures.len(), slot);
             let Some(anb) = Some(&table.entries[slot])
@@ -113,6 +159,9 @@ pub fn capture_motions(
                 continue;
             };
             if let Some((body, weapon)) = summon::capture_parts(anb, clip) {
+                if is_chest {
+                    chest_clips.push((clip, anb.to_vec()));
+                }
                 out.push((clip, body, weapon));
                 slots.push(slot);
             }
@@ -122,7 +171,22 @@ pub fn capture_motions(
         }
     }
     let _ = CAPTURES.set(captures);
+    let _ = CHEST_CLIPS.set(chest_clips);
     out
+}
+
+/// The chests' capture motions for a kit worn later (an outfit or a place's
+/// body, drive_room.rs), under the same clip ids.
+pub fn chest_clips() -> Vec<KitMotion> {
+    CHEST_CLIPS
+        .get()
+        .into_iter()
+        .flatten()
+        .filter_map(|(clip, anb)| {
+            let (body, weapon) = summon::capture_parts(anb, *clip)?;
+            Some((*clip, body, weapon))
+        })
+        .collect()
 }
 
 /// The lengths of a boss's captured motions in Sora's kit, which its script

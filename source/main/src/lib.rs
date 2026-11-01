@@ -4,6 +4,7 @@
 #![allow(clippy::new_without_default, clippy::len_without_is_empty)]
 
 pub mod area;
+pub mod chests;
 pub mod cutscene;
 pub mod early_renderer;
 pub mod image_inspector;
