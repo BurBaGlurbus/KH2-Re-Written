@@ -3,7 +3,8 @@
 //! once); without this they stay resident for as long as nothing else needs
 //! the memory. A page still in use comes back at its next touch, without a
 //! disk read. Here, not in the game crates, because this crate alone may call
-//! the system directly.
+//! the system directly. Other systems have no such call here: nothing is
+//! trimmed and the game runs the same.
 #![allow(unsafe_code)]
 
 #[cfg(windows)]

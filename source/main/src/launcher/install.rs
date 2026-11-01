@@ -31,7 +31,8 @@ pub fn set_data_dir(dir: PathBuf) {
 
 /// The private folder for launch files, configs, manifests and the
 /// launcher's settings: `.local/test-room` beside the checkout the
-/// executable was built in, else `%LOCALAPPDATA%\KH2FinalRewrite`.
+/// executable was built in, else `KH2FinalRewrite` under the system's local
+/// data folder (`%LOCALAPPDATA%`, `~/.local/share`).
 pub fn data_dir() -> PathBuf {
     if let Some(dir) = DATA_DIR.get() {
         return dir.clone();
@@ -44,8 +45,8 @@ pub fn data_dir() -> PathBuf {
             }
         }
     }
-    std::env::var_os("LOCALAPPDATA")
-        .map(|local| PathBuf::from(local).join("KH2FinalRewrite"))
+    validation::host::local_data_root()
+        .map(|local| local.join("KH2FinalRewrite"))
         .unwrap_or_else(|| PathBuf::from(".local/test-room"))
 }
 
@@ -134,15 +135,8 @@ fn vdf_values(text: &str, key: &str) -> Vec<String> {
 /// Steam library folders: the default install locations and every library
 /// they list in `steamapps/libraryfolders.vdf`.
 pub fn steam_libraries() -> Vec<PathBuf> {
-    let mut roots = Vec::new();
-    for var in ["ProgramFiles(x86)", "ProgramFiles"] {
-        if let Some(p) = std::env::var_os(var) {
-            roots.push(PathBuf::from(p).join("Steam"));
-        }
-    }
-    roots.push(PathBuf::from(r"C:\Program Files (x86)\Steam"));
     let mut libraries = Vec::new();
-    for root in roots {
+    for root in validation::host::steam_roots() {
         if !root.is_dir() {
             continue;
         }
@@ -153,6 +147,28 @@ pub fn steam_libraries() -> Vec<PathBuf> {
         }
     }
     libraries
+}
+
+/// Where the collection's Proton prefix in `library` keeps "Documents".
+fn proton_documents(library: &Path) -> PathBuf {
+    library.join(format!(
+        "steamapps/compatdata/{APP_ID}/pfx/drive_c/users/steamuser/Documents"
+    ))
+}
+
+/// Documents folders beyond the Windows profile's where the original game's
+/// saves and key bindings can be: off Windows, Proton's prefix in each Steam
+/// library, then the home folder's (for a copy brought over by hand).
+pub fn game_documents() -> Vec<PathBuf> {
+    if cfg!(windows) {
+        return Vec::new();
+    }
+    let mut folders: Vec<PathBuf> = steam_libraries()
+        .iter()
+        .map(|library| proton_documents(library))
+        .collect();
+    folders.extend(std::env::home_dir().map(|home| home.join("Documents")));
+    folders
 }
 
 /// Installs of the collection (Steam app 2552430) that hold the KH2FM
@@ -835,10 +851,10 @@ pub fn make_configs(dir: &Path, b: &Bound) -> Result<(), String> {
 }
 
 /// A new private log path for a viewer: outside any checkout, under
-/// `%LOCALAPPDATA%\KH2FinalRewrite\logs`.
+/// `KH2FinalRewrite/logs` in the system's local data folder.
 pub fn viewer_log(program: &str) -> Result<PathBuf, String> {
-    let local = std::env::var_os("LOCALAPPDATA").ok_or("LOCALAPPDATA is not set")?;
-    let logs = PathBuf::from(local).join("KH2FinalRewrite").join("logs");
+    let local = validation::host::local_data_root().ok_or("No local data folder is known")?;
+    let logs = local.join("KH2FinalRewrite").join("logs");
     fs::create_dir_all(&logs).map_err(|e| e.to_string())?;
     let stamp = std::time::SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -1331,6 +1347,14 @@ mod tests {
     }
 
     #[test]
+    fn proton_documents_are_in_the_collections_prefix() {
+        assert_eq!(
+            proton_documents(Path::new("/lib")),
+            Path::new("/lib/steamapps/compatdata/2552430/pfx/drive_c/users/steamuser/Documents")
+        );
+    }
+
+    #[test]
     fn library_paths_unescape() {
         let text =
             "\"libraryfolders\"\n{\n\t\"0\"\n\t{\n\t\t\"path\"\t\t\"D:\\\\SteamLibrary\"\n\t}\n}";
@@ -1376,8 +1400,9 @@ mod tests {
     /// installed game (`KH2_TEST_FOLDER` = the Steam game folder): scans
     /// it, makes the configs, then runs each program of the built
     /// launcher (short unattended runs; the event player only loads):
-    /// `KH2RW Launcher.exe` from `tools/Build-Launcher.ps1 -Debug`, else Cargo's `KH2RW`
-    /// from `cargo build -p main`. Build first; run with `-- --ignored`.
+    /// `KH2RW Launcher.exe` from `tools/Build-Launcher.ps1 -Debug` (`KH2RW
+    /// Launcher` from `build.sh --debug`), else Cargo's `KH2RW` from
+    /// `cargo build -p main`. Build first; run with `-- --ignored`.
     #[test]
     #[ignore = "needs the installed game: set KH2_TEST_FOLDER"]
     fn every_test_starts_from_an_empty_data_folder() {
@@ -1396,7 +1421,7 @@ mod tests {
         let names: &[&str] = if cfg!(windows) {
             &["KH2RW Launcher.exe", "KH2RW.exe"]
         } else {
-            &["KH2RW"]
+            &["KH2RW Launcher", "KH2RW"]
         };
         let exe = names
             .iter()

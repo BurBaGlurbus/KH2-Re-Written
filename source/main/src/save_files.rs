@@ -66,7 +66,7 @@ impl FileBackend {
     pub fn open(data_dir: &Path, root: &Path) -> Result<Self, Box<dyn std::error::Error>> {
         let exe = std::fs::read(root.join("KINGDOM HEARTS II FINAL MIX.exe"))?;
         let sbox = save::cipher::Sbox::from_executable(&exe)?;
-        let original = store::original_folder();
+        let original = store::original_folder(&crate::launcher::install::game_documents());
         let id = original
             .as_deref()
             .and_then(|f| store::steam_ids(f).first().copied())

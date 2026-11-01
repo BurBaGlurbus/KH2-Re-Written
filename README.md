@@ -43,7 +43,7 @@ for package boundaries and current limitations.
 
 ## Quick start
 
-You need Windows, your own **legally obtained** Steam copy of Kingdom Hearts HD 1.5 + 2.5 ReMIX, and the pinned Rust toolchain. See [CONTRIBUTING.md](CONTRIBUTING.md#setup).
+You need Windows, your own **legally obtained** Steam copy of Kingdom Hearts HD 1.5 + 2.5 ReMIX, and the pinned Rust toolchain. See [CONTRIBUTING.md](CONTRIBUTING.md#setup). For Linux, which is untested so far, see [docs/LINUX.md](docs/LINUX.md).
 
 ```powershell
 powershell -NoProfile -File tools/Build-Launcher.ps1

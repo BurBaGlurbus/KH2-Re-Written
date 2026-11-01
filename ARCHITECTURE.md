@@ -1,6 +1,6 @@
 # Architecture
 
-This is a Windows Rust/Bevy rewrite of Kingdom Hearts II Final Mix. It reads the
+This is a Windows (and, untested so far, Linux; see [docs/LINUX.md](docs/LINUX.md)) Rust/Bevy rewrite of Kingdom Hearts II Final Mix. It reads the
 selected Steam installation without modifying it. Game files, manifests, saves,
 captures and research output stay outside Git. Scope and acceptance remain in the
 [fidelity contract](docs/fidelity-contract.md), [milestones](docs/milestones.md)
@@ -25,7 +25,7 @@ inside the visual folder because it draws what the game produces.
 | `source/game/event/` | Cutscene timeline and camera state | `event` |
 | `source/visual/` | Rendering, menus, HUD, controller input and scene presentation | `visual` |
 | `source/visual/effect/` | Particle and model effect execution | `effect` |
-| `source/audio/` | Mixing and Windows sound output | `audio` |
+| `source/audio/` | Mixing and sound output (waveOut on Windows, cpal elsewhere) | `audio` |
 | `source/data/` | Bounded readers for game packages, models, motion, images, text and sound | `data` |
 | `validation/` | Selected-install validation, hashing and manifest tools | `validation` |
 | `source/extras/` | Existing optional skateboard extension and its license boundary | See its README |

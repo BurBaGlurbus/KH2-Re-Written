@@ -33,6 +33,10 @@ fontdue = { version = "=0.9.4", default-features = false, features = ["std"] }
 image = { version = "=0.25.10", default-features = false, features = ["png"] }
 bevy = { version = "=0.19.1", default-features = false, features = ["std", "async_executor", "multi_threaded", "bevy_log", "bevy_asset", "bevy_window", "bevy_winit", "bevy_render", "bevy_camera", "bevy_image", "bevy_sprite", "bevy_sprite_render", "bevy_core_pipeline", "bevy_pbr", "bmp", "bevy_gilrs"] }
 
+# Windows on Linux: without these two winit has no display backend to open one.
+[target.'cfg(target_os = "linux")'.dependencies]
+bevy = { version = "=0.19.1", default-features = false, features = ["x11", "wayland"] }
+
 # The engine: everything but the launcher's entry point. Kingdom Hearts: Online
 # builds its room on this library.
 [lib]

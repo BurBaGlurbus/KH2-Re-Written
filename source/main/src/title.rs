@@ -739,8 +739,8 @@ fn launch_file_args() -> Result<Vec<PathBuf>, Box<dyn std::error::Error>> {
             candidates.push(up.join(".local/test-room/launch-title.json"));
         }
     }
-    if let Some(local) = std::env::var_os("LOCALAPPDATA") {
-        candidates.push(PathBuf::from(local).join("KH2FinalRewrite/test-room-launch-title.json"));
+    if let Some(local) = validation::host::local_data_root() {
+        candidates.push(local.join("KH2FinalRewrite/test-room-launch-title.json"));
     }
     let path = candidates
         .iter()

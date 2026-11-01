@@ -22,6 +22,7 @@ fn documents() -> Vec<PathBuf> {
     if let Some(one) = std::env::var_os("OneDrive").map(PathBuf::from) {
         out.push(one.join("Documents"));
     }
+    out.extend(crate::launcher::install::game_documents());
     out.dedup();
     out
 }

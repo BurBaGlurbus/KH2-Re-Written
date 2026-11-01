@@ -117,7 +117,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .ok_or("existing private output directory required")?;
     let directory = fs::canonicalize(path)?;
     let root = fs::canonicalize(
-        std::path::PathBuf::from(std::env::var_os("LOCALAPPDATA").ok_or("LOCALAPPDATA required")?)
+        validation::host::local_data_root()
+            .ok_or("no local data folder is known")?
             .join("KH2FinalRewrite/research"),
     )?;
     if !directory.starts_with(&root) || directory.ancestors().any(|p| p.join(".git").exists()) {

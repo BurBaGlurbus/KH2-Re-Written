@@ -5,7 +5,7 @@
 //! opens on a short quick start guide (F1 brings it back).
 //!
 //! Before a folder is chosen there are no game files, so the launcher is
-//! drawn from plain shapes and a Windows font: a dark screen and one list
+//! drawn from plain shapes and a system font: a dark screen and one list
 //! [launcher design, not the original's menus]. A test runs as a child
 //! `kh2fm <program> ...` process; this window waits hidden and comes back
 //! when the test closes.
@@ -268,12 +268,35 @@ pub fn plain(p: &Path) -> String {
     s.strip_prefix(r"\\?\").map(str::to_owned).unwrap_or(s)
 }
 
+/// Where browsing starts: the drives, or off Windows the home folder, the
+/// root and where other disks are usually mounted.
+fn browse_roots() -> Vec<PathBuf> {
+    let roots: Vec<PathBuf> = if cfg!(windows) {
+        ('A'..='Z')
+            .map(|d| PathBuf::from(format!("{d}:\\")))
+            .collect()
+    } else {
+        std::env::home_dir()
+            .into_iter()
+            .chain(["/", "/mnt", "/media", "/run/media"].map(PathBuf::from))
+            .collect()
+    };
+    roots.into_iter().filter(|p| p.is_dir()).collect()
+}
+
+fn browse_heading() -> &'static str {
+    if cfg!(windows) {
+        "Choose a drive"
+    } else {
+        "Choose where to look"
+    }
+}
+
 /// Drives, folders, `.iso` files and `default.xex` for the Skate 3 disc.
 fn browse_iso_items(path: Option<&Path>, tests: &Bound) -> Vec<Item> {
     let Some(path) = path else {
-        let mut items: Vec<Item> = ('A'..='Z')
-            .map(|d| PathBuf::from(format!("{d}:\\")))
-            .filter(|p| p.is_dir())
+        let mut items: Vec<Item> = browse_roots()
+            .into_iter()
             .map(|p| Item::new(plain(&p), Action::BrowseIso(Some(p))))
             .collect();
         items.push(Item::new("Back", Action::UseFolder(tests.folder.clone())));
@@ -316,9 +339,8 @@ fn browse_iso_items(path: Option<&Path>, tests: &Bound) -> Vec<Item> {
 
 fn browse_items(path: Option<&Path>) -> Vec<Item> {
     let Some(path) = path else {
-        let mut items: Vec<Item> = ('A'..='Z')
-            .map(|d| PathBuf::from(format!("{d}:\\")))
-            .filter(|p| p.is_dir())
+        let mut items: Vec<Item> = browse_roots()
+            .into_iter()
             .map(|p| Item::new(plain(&p), Action::Browse(Some(p))))
             .collect();
         items.push(Item::new("Back", Action::Pick));
@@ -1102,7 +1124,7 @@ fn draw(
         Screen::Pick => "Select the game folder".into(),
         Screen::Browse(path) => path
             .as_deref()
-            .map_or_else(|| "Choose a drive".into(), plain),
+            .map_or_else(|| browse_heading().into(), plain),
         Screen::BrowseIso(path, _) => path
             .as_deref()
             .map_or_else(|| "Find your Skate 3 ISO".into(), plain),

@@ -1,9 +1,10 @@
 //! The launcher's drawing, made without game files: shapes generated here,
-//! text from Windows' own fonts, all as `Ui2dFrame` quads. Coordinates are
-//! a 1280x720 design space mapped onto the 16:9 layout space.
+//! text from the system's own fonts, all as `Ui2dFrame` quads. Coordinates
+//! are a 1280x720 design space mapped onto the 16:9 layout space.
 use bevy::prelude::*;
 use data::sprite_sequence::Quad;
 use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 use visual::overlay::{Sheet, Ui2dFrame, WIDE_WIDTH};
 
 pub const W: f32 = 1280.;
@@ -46,6 +47,7 @@ pub enum Face {
     Body,
 }
 
+/// The Windows names first, then the usual Linux packages' closest faces.
 const FACES: [(Face, &[&str]); 2] = [
     (
         Face::Heading,
@@ -54,10 +56,32 @@ const FACES: [(Face, &[&str]); 2] = [
             "seguisbi.ttf",
             "segoeuiz.ttf",
             "arialbi.ttf",
+            "Trebuchet_MS_Bold_Italic.ttf",
+            "Arial_Bold_Italic.ttf",
+            "LiberationSans-BoldItalic.ttf",
+            "NotoSans-BoldItalic.ttf",
+            "DejaVuSans-BoldOblique.ttf",
+            "FreeSansBoldOblique.ttf",
         ],
     ),
-    (Face::Body, &["seguisb.ttf", "segoeui.ttf", "arial.ttf"]),
+    (
+        Face::Body,
+        &[
+            "seguisb.ttf",
+            "segoeui.ttf",
+            "arial.ttf",
+            "Arial.ttf",
+            "LiberationSans-Regular.ttf",
+            "NotoSans-Regular.ttf",
+            "DejaVuSans.ttf",
+            "FreeSans.ttf",
+        ],
+    ),
 ];
+
+/// How deep and how many files the search through Linux's font folders goes.
+const FONT_SEARCH_DEPTH: u32 = 6;
+const FONT_SEARCH_FILES: usize = 20_000;
 
 #[derive(Clone, Copy)]
 struct Glyph {
@@ -100,14 +124,71 @@ fn shape(size: u32, alpha: impl Fn(f32, f32) -> f32) -> Vec<u8> {
     out
 }
 
+fn read_font(path: &Path) -> Option<fontdue::Font> {
+    let bytes = std::fs::read(path).ok()?;
+    fontdue::Font::from_bytes(bytes, fontdue::FontSettings::default()).ok()
+}
+
+/// Every `.ttf` or `.otf` under `folder`, in name order, added to `found`.
+fn font_files(folder: &Path, depth: u32, found: &mut Vec<PathBuf>) {
+    let mut paths: Vec<PathBuf> = std::fs::read_dir(folder)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|e| e.path())
+        .collect();
+    paths.sort();
+    for path in paths {
+        if found.len() >= FONT_SEARCH_FILES {
+            return;
+        }
+        if path.is_dir() {
+            if depth > 0 {
+                font_files(&path, depth - 1, found);
+            }
+        } else if path
+            .extension()
+            .is_some_and(|e| e.eq_ignore_ascii_case("ttf") || e.eq_ignore_ascii_case("otf"))
+        {
+            found.push(path);
+        }
+    }
+}
+
+/// `files` with the ones called `names` first, in that order, then the rest.
+/// Linux packages differ in folders and file-name case, so names match any
+/// folder and either case.
+fn font_candidates<'a>(names: &[&str], files: &'a [PathBuf]) -> Vec<&'a PathBuf> {
+    let rank = |path: &PathBuf| {
+        let file = path.file_name().map(|n| n.to_string_lossy());
+        file.and_then(|file| names.iter().position(|n| n.eq_ignore_ascii_case(&file)))
+            .unwrap_or(names.len())
+    };
+    let mut ranked: Vec<&PathBuf> = files.iter().collect();
+    ranked.sort_by_key(|path| rank(path));
+    ranked
+}
+
 fn load_font(face: Face) -> Option<fontdue::Font> {
-    let windir = std::env::var_os("WINDIR").unwrap_or_else(|| "C:\\Windows".into());
-    let fonts = std::path::Path::new(&windir).join("Fonts");
     let names = FACES.iter().find(|(f, _)| *f == face)?.1;
-    names.iter().find_map(|name| {
-        let bytes = std::fs::read(fonts.join(name)).ok()?;
-        fontdue::Font::from_bytes(bytes, fontdue::FontSettings::default()).ok()
-    })
+    if cfg!(windows) {
+        let windir = std::env::var_os("WINDIR").unwrap_or_else(|| "C:\\Windows".into());
+        let fonts = Path::new(&windir).join("Fonts");
+        return names.iter().find_map(|name| read_font(&fonts.join(name)));
+    }
+    let mut folders = vec![
+        PathBuf::from("/usr/share/fonts"),
+        PathBuf::from("/usr/local/share/fonts"),
+    ];
+    folders.extend(validation::host::local_data_root().map(|data| data.join("fonts")));
+    folders.extend(std::env::home_dir().map(|home| home.join(".fonts")));
+    let mut files = Vec::new();
+    for folder in &folders {
+        font_files(folder, FONT_SEARCH_DEPTH, &mut files);
+    }
+    font_candidates(names, &files)
+        .into_iter()
+        .find_map(|path| read_font(path))
 }
 
 impl Paint {
@@ -130,7 +211,9 @@ impl Paint {
         let atlas = sheet_from(images, frame, pixels.clone(), ATLAS);
         let mut fonts = HashMap::new();
         for (face, _) in FACES {
-            let font = load_font(face).ok_or("no usable Windows font found")?;
+            let font = load_font(face).ok_or(
+                "no usable system font found (on Linux, install the DejaVu or Liberation fonts)",
+            )?;
             fonts.insert(face, font);
         }
         Ok(Self {
@@ -366,6 +449,34 @@ mod tests {
         let [r, b] = to_layout(W, H);
         assert!((r - (LEFT + WIDE_WIDTH)).abs() < 1e-3);
         assert!((b - visual::overlay::HEIGHT).abs() < 1e-3);
+    }
+
+    #[test]
+    fn fonts_are_ranked_by_name_in_any_folder_and_case() {
+        let files = [
+            PathBuf::from("/fonts/other/Zed.ttf"),
+            PathBuf::from("/fonts/dejavu/DejaVuSans.ttf"),
+            PathBuf::from("/fonts/msttcore/arial.TTF"),
+        ];
+        let ranked = font_candidates(&["Arial.ttf", "DejaVuSans.ttf"], &files);
+        assert_eq!(ranked, [&files[2], &files[1], &files[0]]);
+    }
+
+    #[test]
+    fn font_search_finds_font_files_in_subfolders() {
+        let dir = std::env::temp_dir().join(format!("kh2-font-search-{}", std::process::id()));
+        let deep = dir.join("a").join("b");
+        std::fs::create_dir_all(&deep).unwrap();
+        std::fs::write(deep.join("x.TTF"), b"synthetic").unwrap();
+        std::fs::write(deep.join("y.otf"), b"synthetic").unwrap();
+        std::fs::write(deep.join("readme.txt"), b"synthetic").unwrap();
+        let mut found = Vec::new();
+        font_files(&dir, 2, &mut found);
+        assert_eq!(found, [deep.join("x.TTF"), deep.join("y.otf")]);
+        found.clear();
+        font_files(&dir, 1, &mut found);
+        assert!(found.is_empty());
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

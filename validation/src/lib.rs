@@ -1,5 +1,7 @@
 //! Read-only source identity. Detection is evidence, not build qualification.
 
+pub mod host;
+
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{

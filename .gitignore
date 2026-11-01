@@ -15,6 +15,7 @@
 !/rust-toolchain.toml
 !/.cargo/config.toml
 !/build.bat
+!/build.sh
 !/.github/workflows/*.yml
 !/.github/pull_request_template.md
 !/source/main/Cargo.toml

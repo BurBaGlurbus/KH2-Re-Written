@@ -14329,16 +14329,15 @@ pub fn launch_file_args(name: &str) -> Result<Vec<PathBuf>, Box<dyn std::error::
         options: Vec<String>,
     }
     // Search next to the checkout first (`.local/test-room/launch.json`, found
-    // from the executable in `target/<profile>/`), then LOCALAPPDATA.
+    // from the executable in `target/<profile>/`), then the local data folder.
     let mut candidates = Vec::new();
     if let Ok(exe) = std::env::current_exe() {
         for up in exe.ancestors().skip(1).take(4) {
             candidates.push(up.join(format!(".local/test-room/{name}.json")));
         }
     }
-    if let Some(local) = std::env::var_os("LOCALAPPDATA") {
-        candidates
-            .push(PathBuf::from(local).join(format!("KH2FinalRewrite/test-room-{name}.json")));
+    if let Some(local) = validation::host::local_data_root() {
+        candidates.push(local.join(format!("KH2FinalRewrite/test-room-{name}.json")));
     }
     let path = candidates.iter().find(|p| p.is_file()).ok_or_else(|| {
         format!(

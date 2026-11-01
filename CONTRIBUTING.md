@@ -4,11 +4,13 @@ This repository rewrites Kingdom Hearts II Final Mix for Windows, reading the ow
 
 ## Setup
 
-- Windows. The Rust toolchain is pinned in `rust-toolchain.toml` (Rust 1.99.0); rustup installs it on first use.
+- Windows, or Linux with the packages in [docs/LINUX.md](docs/LINUX.md) (not yet tested on a Linux machine). The Rust toolchain is pinned in `rust-toolchain.toml` (Rust 1.99.0); rustup installs it on first use.
 - Put the Cargo bin directory (`%USERPROFILE%\.cargo\bin`) on `PATH`.
 - Running the game needs your own legitimate Steam install of KH2 Final Mix. Nothing from it goes into the repository.
 
 ## Local builds and disk use
+
+On Linux, `./build.sh` does what `build.bat` does; see [docs/LINUX.md](docs/LINUX.md). The rest of this section describes Windows.
 
 Use `build.bat` for the optimized launcher with the optional `skate3` feature;
 it runs `powershell -NoProfile -File tools/Build-Launcher.ps1 -Skate3`. Without

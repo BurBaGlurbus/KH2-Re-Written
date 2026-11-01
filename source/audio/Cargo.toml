@@ -5,6 +5,10 @@ edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
 
+# Sound output where there is no waveOut; on Linux it links ALSA's libasound.
+[target.'cfg(not(windows))'.dependencies]
+cpal = { version = "=0.18.2", default-features = false }
+
 # The workspace forbids unsafe code. This crate only denies it: the one
 # module that calls the Windows waveOut API allows it, and nothing else may.
 [lints.rust]

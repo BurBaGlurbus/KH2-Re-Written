@@ -101,8 +101,9 @@ impl Store {
 }
 
 /// Where the original game keeps the saves of the Steam accounts that
-/// played it, if a "My Games" folder holding them exists.
-pub fn original_folder() -> Option<PathBuf> {
+/// played it, if a "My Games" folder holding them exists; `other_documents`
+/// are searched after the Windows profile's (Proton's, on Linux).
+pub fn original_folder(other_documents: &[PathBuf]) -> Option<PathBuf> {
     let mut roots = Vec::new();
     if let Some(p) = std::env::var_os("USERPROFILE") {
         roots.push(PathBuf::from(p).join("Documents"));
@@ -112,6 +113,7 @@ pub fn original_folder() -> Option<PathBuf> {
             roots.push(PathBuf::from(p).join("Documents"));
         }
     }
+    roots.extend_from_slice(other_documents);
     roots
         .into_iter()
         .map(|r| r.join("My Games").join(ORIGINAL_FOLDER).join("Steam"))

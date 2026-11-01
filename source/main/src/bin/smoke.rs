@@ -20,10 +20,9 @@ fn main() {
     let mut args = std::env::args().skip(1);
     let mut exit_after = None;
     let mut gamepad_control = false;
-    let mut log_path = PathBuf::from(
-        std::env::var_os("LOCALAPPDATA").expect("LOCALAPPDATA is required on Windows"),
-    )
-    .join("KH2FinalRewrite/logs/smoke.log");
+    let mut log_path = validation::host::local_data_root()
+        .expect("no local data folder is known")
+        .join("KH2FinalRewrite/logs/smoke.log");
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "--gamepad" => gamepad_control = true,

@@ -293,11 +293,14 @@ impl Skate {
 /// vgmstream decodes the disc's EA-XMA audio, as the Skate 3 engine's own
 /// setup does (owner's choice, 2026-10-11): the same pinned release, its
 /// SHA-256 checked against the digest GitHub publishes for the asset.
-#[cfg(feature = "skate3")]
-const VGMSTREAM_URL: &str =
-    "https://github.com/vgmstream/vgmstream/releases/download/r2117/vgmstream-win64.zip";
-#[cfg(feature = "skate3")]
+#[cfg(all(feature = "skate3", windows))]
+const VGMSTREAM_ZIP: &str = "vgmstream-win64.zip";
+#[cfg(all(feature = "skate3", windows))]
 const VGMSTREAM_SHA256: &str = "6c4a8a3813864fefed081bbd337dbc0ad93bf88e0b92f5db98d7ab258b22dc6c";
+#[cfg(all(feature = "skate3", not(windows)))]
+const VGMSTREAM_ZIP: &str = "vgmstream-linux.zip";
+#[cfg(all(feature = "skate3", not(windows)))]
+const VGMSTREAM_SHA256: &str = "2f98c77f756079f63fbd119939067f1ed461d77e70993bc4cc372736d859c84a";
 
 /// The vgmstream command-line decoder, downloaded once into `tools` and
 /// unpacked only after its checksum matches.
@@ -305,16 +308,19 @@ const VGMSTREAM_SHA256: &str = "6c4a8a3813864fefed081bbd337dbc0ad93bf88e0b92f5db
 fn vgmstream(tools: &std::path::Path) -> Result<std::path::PathBuf, String> {
     use sha2::Digest;
     let dir = tools.join("vgmstream-r2117");
-    let exe = dir.join("vgmstream-cli.exe");
+    let exe_name = format!("vgmstream-cli{}", std::env::consts::EXE_SUFFIX);
+    let exe = dir.join(&exe_name);
     if exe.is_file() {
         return Ok(exe);
     }
     std::fs::create_dir_all(tools).map_err(|e| e.to_string())?;
-    let zip = tools.join("vgmstream-win64.zip");
-    let status = std::process::Command::new("curl.exe")
+    let zip = tools.join(VGMSTREAM_ZIP);
+    let url =
+        format!("https://github.com/vgmstream/vgmstream/releases/download/r2117/{VGMSTREAM_ZIP}");
+    let status = std::process::Command::new(format!("curl{}", std::env::consts::EXE_SUFFIX))
         .args(["-sSLf", "-o"])
         .arg(&zip)
-        .arg(VGMSTREAM_URL)
+        .arg(url)
         .status()
         .map_err(|e| format!("curl: {e}"))?;
     if !status.success() {
@@ -332,15 +338,28 @@ fn vgmstream(tools: &std::path::Path) -> Result<std::path::PathBuf, String> {
     let staging = tools.join("vgmstream-r2117.tmp");
     let _ = std::fs::remove_dir_all(&staging);
     std::fs::create_dir_all(&staging).map_err(|e| e.to_string())?;
-    let status = std::process::Command::new("tar.exe")
-        .arg("-xf")
-        .arg(&zip)
-        .arg("-C")
-        .arg(&staging)
-        .status()
-        .map_err(|e| format!("tar: {e}"))?;
-    if !status.success() || !staging.join("vgmstream-cli.exe").is_file() {
+    // Windows' tar reads a zip; GNU tar does not.
+    let mut unpack = if cfg!(windows) {
+        let mut tar = std::process::Command::new("tar.exe");
+        tar.arg("-xf").arg(&zip).arg("-C").arg(&staging);
+        tar
+    } else {
+        let mut unzip = std::process::Command::new("unzip");
+        unzip.arg("-q").arg(&zip).arg("-d").arg(&staging);
+        unzip
+    };
+    let status = unpack.status().map_err(|e| format!("unpack: {e}"))?;
+    if !status.success() || !staging.join(&exe_name).is_file() {
         return Err("unpacking vgmstream failed".into());
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(
+            staging.join(&exe_name),
+            std::fs::Permissions::from_mode(0o755),
+        )
+        .map_err(|e| e.to_string())?;
     }
     std::fs::rename(&staging, &dir).map_err(|e| e.to_string())?;
     let _ = std::fs::remove_file(&zip);

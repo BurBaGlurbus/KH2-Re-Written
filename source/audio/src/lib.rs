@@ -1,11 +1,19 @@
 //! Sound output for the test room: a software mixer (safe) feeding the
-//! Windows waveOut device (the only FFI, in `winmm`). Clips arrive already
-//! decoded; voices are resampled linearly to the device rate.
+//! Windows waveOut device (the only FFI, in `winmm`) or, elsewhere, cpal's
+//! default output. Clips arrive already decoded; voices are resampled
+//! linearly to the device rate.
 use std::sync::{Arc, Mutex};
 
+#[cfg(not(windows))]
+mod cpal_device;
 pub mod memory;
 #[cfg(windows)]
 mod winmm;
+
+#[cfg(not(windows))]
+use cpal_device as device;
+#[cfg(windows)]
+use winmm as device;
 
 /// Device format: 16-bit stereo.
 pub const RATE: u32 = 48_000;
@@ -273,33 +281,24 @@ impl Mixer {
 /// The open device and its shared mixer. Dropping it stops playback.
 pub struct Output {
     pub mixer: Arc<Mutex<Mixer>>,
-    #[cfg(windows)]
-    _device: winmm::Device,
+    _device: device::Device,
 }
 
 impl Output {
     pub fn open() -> std::io::Result<Self> {
         let mixer = Arc::new(Mutex::new(Mixer::default()));
-        #[cfg(windows)]
-        {
-            let feed = mixer.clone();
-            let device = winmm::Device::open(RATE, move |buffer| {
-                if let Ok(mut m) = feed.lock() {
-                    m.mix(buffer);
-                } else {
-                    buffer.fill(0);
-                }
-            })?;
-            Ok(Self {
-                mixer,
-                _device: device,
-            })
-        }
-        #[cfg(not(windows))]
-        {
-            let _ = mixer;
-            Err(std::io::Error::other("no audio output on this platform"))
-        }
+        let feed = mixer.clone();
+        let device = device::Device::open(RATE, move |buffer| {
+            if let Ok(mut m) = feed.lock() {
+                m.mix(buffer);
+            } else {
+                buffer.fill(0);
+            }
+        })?;
+        Ok(Self {
+            mixer,
+            _device: device,
+        })
     }
 }
 
