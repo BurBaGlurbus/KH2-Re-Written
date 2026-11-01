@@ -259,8 +259,9 @@ pub fn requests(game: &mut Game, actors: &mut [enemy_gallery::GalleryActor]) {
         // FUN_1403aabe0's signals go to the mission's trigger 10.
         game.mission_signals.append(&mut a.signals);
         if !captures.is_empty() {
-            // [I] The partner (+0x2b0) the search offers range 25's command
-            // for is the object holding Sora's capture: its trigger 11 takes
+            // The partner (+0x2b0) the search offers range 25's command for
+            // is the object holding Sora's capture: FUN_1403c6cc0 →
+            // FUN_1403c65e0 writes it from the captor. Its trigger 11 takes
             // the command (M_EX770's handles 27 and 28).
             game.reaction.captor = Some(actor.id as u32);
         }
