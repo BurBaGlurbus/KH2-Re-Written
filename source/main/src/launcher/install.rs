@@ -1121,7 +1121,8 @@ mod tests {
             serde_json::json!({"world":"tt","area":9,"entrance":0x63,"story":[[0x800,0x895]],
                 "arrival":1})
         );
-        assert!(v.get("enemy").is_none() && v["hud"] == "h");
+        // The arena goes; the battle tables stay for the save it carries.
+        assert!(v.get("arena").is_none() && v.get("enemy").is_some() && v["hud"] == "h");
         // A jump by program id carries it as the three programs.
         let out = landing_room_config(&arena, "hb", 9, 0, Some([0x33; 3]), &[]).unwrap();
         let v: serde_json::Value = serde_json::from_slice(&fs::read(out).unwrap()).unwrap();
