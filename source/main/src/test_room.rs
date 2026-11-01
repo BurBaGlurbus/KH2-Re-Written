@@ -891,6 +891,7 @@ pub struct AreaTalk {
     pub sheet: Sheet,
     pub font: SystemFont,
     pub colour: u32,
+    pub palette: visual::dialogue::Palette,
     pub label: Vec<u8>,
 }
 
@@ -4451,11 +4452,13 @@ pub fn load(
                 (fi.0.as_str(), fi.1, fi.2),
                 b"evt\0",
             )?;
+            let system = read_archive(source, &config.system)?;
             let colour = hud::ftst_colour(
-                &read_archive(source, &config.system)?,
-                5,
+                &system,
+                visual::dialogue::WINDOW_COLOUR_ID,
                 area.world as usize,
             )?;
+            let palette = hud::ftst_palette(&system, area.world as usize)?;
             let label = hud::load_messages(
                 source,
                 &menu.messages.index,
@@ -4468,6 +4471,7 @@ pub fn load(
                 sheet,
                 font,
                 colour,
+                palette,
                 label,
             })
         }
@@ -5563,7 +5567,7 @@ pub fn spawn_field_npcs(
 
 /// The `--npc-tour`'s capture ticks and end.
 pub const NPC_TOUR_CAPTURES: [u64; 3] = [25, 45, 90];
-pub const NPC_TOUR_END: u64 = 120;
+pub const NPC_TOUR_END: u64 = 420;
 
 /// One tick of every townsperson, and the choice of whom Talk addresses:
 /// the nearest with a script whose reaction sphere holds Sora
@@ -5573,6 +5577,7 @@ pub fn field_npc_tick(
     mut game: ResMut<Game>,
     area: Option<ResMut<AreaRes>>,
     talk: Option<ResMut<Talk>>,
+    mut tour_poses: Local<HashMap<u16, Vec<Vec3>>>,
 ) {
     let (Some(mut area), Some(mut talk)) = (area, talk) else {
         return;
@@ -5585,10 +5590,15 @@ pub fn field_npc_tick(
         ..
     } = &mut *area;
     // The `--npc-tour`: at tick 30 Sora is put 30 units from the first
-    // townsperson, so the push shows.
+    // townsperson with a talk (else the first), so the push shows and the
+    // autoplay's Talk finds someone.
     if game.npc_tour
         && game.tick == 30
-        && let Some(n) = current.npcs.iter().find(|n| n.alive)
+        && let Some(n) = current
+            .npcs
+            .iter()
+            .find(|n| n.alive && n.talk != 0 && n.reaction == 0x1f)
+            .or_else(|| current.npcs.iter().find(|n| n.alive))
     {
         game.sora.player.position = [n.position.x + 30., n.position.y, n.position.z];
     }
@@ -5598,7 +5608,8 @@ pub fn field_npc_tick(
         && !talking
         && let Some(i) = *talk_npc
     {
-        current.npcs[i].after_talk(sora);
+        let anims = &source.kinds[current.npcs[i].kind].anims;
+        current.npcs[i].after_talk(anims, sora);
     }
     *was_talking = talking;
     if !talking {
@@ -5750,6 +5761,25 @@ pub fn field_npc_tick(
         let kind = &source.kinds[n.kind];
         n.tick(&kind.anims, sora, is_target, &mut random);
         n.update_look(kind, sora);
+        // The tour's motion log: the clock wrapping shows the loop, and the
+        // furthest a vertex moved since the last tick shows any pop.
+        if game.npc_tour {
+            let pose = n
+                .look_positions
+                .as_deref()
+                .unwrap_or_else(|| n.frame_positions(&kind.anims));
+            let jump = tour_poses.get(&n.serial).map_or(0., |last| {
+                last.iter()
+                    .zip(pose)
+                    .map(|(a, b)| a.distance(*b))
+                    .fold(0., f32::max)
+            });
+            events.push(serde_json::json!({"event":"npc_motion","tick":game.tick,
+                "serial":n.serial,"motion":n.ctl.motion,"clock":n.ctl.clock,
+                "blend":n.ctl.blend,"jump":jump,"act":n.act_name(),
+                "position":n.position.to_array()}));
+            tour_poses.insert(n.serial, pose.to_vec());
+        }
         if n.tick_fade() {
             events.push(serde_json::json!({"event":"npc_gone","serial":n.serial}));
         }
@@ -7406,8 +7436,8 @@ pub fn simulate(
             tour.attacks.contains(&tick),
         )
     } else if game.autoplay.is_some() {
-        if game.autoplay_end == AUTOPLAY_TALK_END {
-            // The talk room's unattended run stands still.
+        if game.autoplay_end == AUTOPLAY_TALK_END || game.npc_tour {
+            // The talk room's and the townspeople's unattended runs stand still.
             (Vec2::ZERO, false, false)
         } else {
             autoplay_input(tick)
@@ -8770,7 +8800,7 @@ pub fn simulate(
             "enemy":enemy,
             "npcs":area.as_deref().map(|a| a.current.npcs.iter().map(|n| serde_json::json!({
                 "kind":a.source.kinds[n.kind].name,"position":n.position.to_array(),"yaw":n.yaw,
-                "pose":format!("{:?}", n.pose),"talk":n.talk,"reaction":n.reaction,"alive":n.alive,"fade":n.fade,
+                "motion":n.ctl.motion,"talk":n.talk,"reaction":n.reaction,"alive":n.alive,"fade":n.fade,
                 "serial":n.serial,"point":n.entity,"act":n.act_name(),
                 "script":a.current.scripts.contains_key(&n.talk),
                 "target":a.source.kinds[n.kind].target.is_some()})).collect::<Vec<_>>())}),
@@ -9176,6 +9206,7 @@ pub struct NpcSource {
     pub font: SystemFont,
     pub lines: HashMap<u32, Vec<u8>>,
     pub colour: u32,
+    pub palette: visual::dialogue::Palette,
     pub label: Vec<u8>,
     pub offset: Vec3,
     pub yaw: f32,
@@ -9214,6 +9245,7 @@ pub struct Talk {
     pub font: SystemFont,
     pub lines: HashMap<u32, Vec<u8>>,
     pub colour: u32,
+    pub palette: visual::dialogue::Palette,
     /// The Talk label (message 0x81ea), for the slot when the command
     /// table's names lack it.
     pub label: Vec<u8>,
@@ -9324,7 +9356,9 @@ pub fn load_npc(
         &npc.script,
     )?;
     let lines = npc.script.iter().copied().zip(texts).collect();
-    let colour = hud::ftst_colour(&read_archive(source, &config.system)?, 5, npc.world)?;
+    let system = read_archive(source, &config.system)?;
+    let colour = hud::ftst_colour(&system, visual::dialogue::WINDOW_COLOUR_ID, npc.world)?;
+    let palette = hud::ftst_palette(&system, npc.world)?;
     let label = hud::load_messages(
         source,
         &menu.messages.index,
@@ -9343,6 +9377,7 @@ pub fn load_npc(
         font,
         lines,
         colour,
+        palette,
         label,
         offset: Vec3::from_array(npc.offset),
         yaw: npc.yaw,
@@ -9380,11 +9415,14 @@ pub fn talk_tick(mut game: ResMut<Game>, talk: Option<ResMut<Talk>>) {
     // Talk taken from the reaction slot this tick (reaction_command.rs: the
     // NPC's sphere, cmd 31, through the command manager's search).
     let rc = game.reaction.pressed_on(reaction_command::TALK).is_some();
-    let advance =
-        std::mem::take(&mut game.advance_queued) || (autoplay && AUTOPLAY_ADVANCE.contains(&tick));
+    // The townspeople's tour pages on through longer talks.
+    let advance = std::mem::take(&mut game.advance_queued)
+        || (autoplay && AUTOPLAY_ADVANCE.contains(&tick))
+        || (game.npc_tour && tick > AUTOPLAY_ADVANCE[0] && tick.is_multiple_of(60));
     // The talk motion (0x32) is absent from Axel's set, so he keeps idling.
     talk.tick += 1;
-    if talk.tick as usize >= talk.frames.len() {
+    // FUN_1403c6740: the clock wraps on reaching the motion's length.
+    if talk.tick as usize + 1 >= talk.frames.len() {
         talk.tick = talk.loop_start;
     }
     talk.dissolve = talk.dissolve.saturating_sub(1);
@@ -9433,7 +9471,8 @@ pub fn talk_tick(mut game: ResMut<Game>, talk: Option<ResMut<Talk>>) {
                             text,
                             talk.colour,
                             &talk.font.widths,
-                        );
+                        )
+                        .with_palette(talk.palette.clone());
                         game.event(serde_json::json!({"event":"talk_window","tick":tick,
                             "message":id,"size":window.size()}));
                         talk.current = Some(window);
@@ -14797,7 +14836,9 @@ pub fn run(
     } else if journal_tour {
         journal_tour::CAPTURES.to_vec()
     } else if npc_tour {
-        NPC_TOUR_CAPTURES.to_vec()
+        capture_at
+            .clone()
+            .unwrap_or_else(|| NPC_TOUR_CAPTURES.to_vec())
     } else if save_point_tour {
         reaction_command::SAVE_TOUR_CAPTURES.to_vec()
     } else if soak || room_survey {
@@ -14826,7 +14867,9 @@ pub fn run(
             .map(|t| t.captures.clone())
             .unwrap_or_else(|| {
                 if talk_room {
-                    AUTOPLAY_TALK_CAPTURES.to_vec()
+                    capture_at
+                        .clone()
+                        .unwrap_or_else(|| AUTOPLAY_TALK_CAPTURES.to_vec())
                 } else {
                     capture_at
                         .clone()
@@ -15267,6 +15310,7 @@ pub fn run(
                     font: n.font,
                     lines: n.lines,
                     colour: n.colour,
+                    palette: n.palette,
                     label: n.label,
                     script: n.script,
                     active: None,
@@ -15305,6 +15349,7 @@ pub fn run(
                 font: t.font,
                 lines: HashMap::new(),
                 colour: t.colour,
+                palette: t.palette,
                 label: t.label,
                 script: Vec::new(),
                 active: None,

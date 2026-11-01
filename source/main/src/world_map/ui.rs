@@ -265,8 +265,9 @@ impl Ui {
             colours: {
                 let system = library.read("03system.bin")?;
                 [
-                    hud::ftst_colour(&system, 5, 15).unwrap_or(0x80050520),
-                    hud::ftst_colour(&system, 6, 15).unwrap_or(0x80050520),
+                    hud::ftst_colour(&system, visual::dialogue::WINDOW_COLOUR_ID, 15)
+                        .unwrap_or(0x80f0f0f0),
+                    hud::ftst_colour(&system, 6, 15).unwrap_or(0x80f0f0f0),
                 ]
             },
             tables: [area, sys, journal],

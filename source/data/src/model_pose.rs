@@ -405,39 +405,6 @@ impl Skinning {
     }
 }
 impl Skinning {
-    /// Motion evaluation with the exe's head look-at (look-02 section 1):
-    /// `look(origin)` receives the look bone's animated world origin and
-    /// returns the world point to face and the blend weight.
-    pub fn sample_evaluated_look(
-        &self,
-        motion: &crate::motion::InterpolatedMotion,
-        frame: f32,
-        bone: usize,
-        look: impl FnOnce([f32; 3]) -> Option<([f32; 3], f32)>,
-    ) -> io::Result<(ModelPose, crate::motion_eval::Evaluated)> {
-        if motion.raw.is_some() {
-            return self.sample_evaluated(motion, frame);
-        }
-        let evaluated = crate::motion_eval::evaluate(&self.bones, motion, frame)?;
-        let mut matrices: Vec<Matrix> = evaluated.joints[..self.bones.len()]
-            .iter()
-            .map(|w| w.matrix())
-            .collect();
-        if bone < matrices.len() {
-            let m = &matrices[bone];
-            if let Some((point, weight)) = look([m[3][0], m[3][1], m[3][2]]) {
-                let parents: Vec<i32> = self.bones.iter().map(|b| b.header_i32[1]).collect();
-                apply_look(&mut matrices, &parents, bone, point, weight);
-            }
-        }
-        let pose = self.pose(
-            matrices,
-            PoseProfile::Legacy,
-            "motion_eval_ik_constraints_look_v1",
-        )?;
-        Ok((pose, evaluated))
-    }
-
     /// Skins evaluated joints (one per model bone, e.g. a blend of two
     /// evaluations) the way `sample_evaluated` skins its own.
     pub fn pose_from_worlds(&self, worlds: &[crate::motion_eval::World]) -> io::Result<ModelPose> {
@@ -447,6 +414,34 @@ impl Skinning {
             .map(|w| w.matrix())
             .collect();
         self.pose(matrices, PoseProfile::Legacy, "motion_eval_blend_v1")
+    }
+
+    /// `pose_from_worlds` with the exe's head look-at (look-02 section 1):
+    /// `look(origin)` receives the look bone's world origin and returns the
+    /// world point to face and the blend weight.
+    pub fn pose_from_worlds_look(
+        &self,
+        worlds: &[crate::motion_eval::World],
+        bone: usize,
+        look: impl FnOnce([f32; 3]) -> Option<([f32; 3], f32)>,
+    ) -> io::Result<ModelPose> {
+        let mut matrices: Vec<Matrix> = worlds
+            .iter()
+            .take(self.bones.len())
+            .map(|w| w.matrix())
+            .collect();
+        if bone < matrices.len() {
+            let m = &matrices[bone];
+            if let Some((point, weight)) = look([m[3][0], m[3][1], m[3][2]]) {
+                let parents: Vec<i32> = self.bones.iter().map(|b| b.header_i32[1]).collect();
+                apply_look(&mut matrices, &parents, bone, point, weight);
+            }
+        }
+        self.pose(
+            matrices,
+            PoseProfile::Legacy,
+            "motion_eval_ik_constraints_look_v1",
+        )
     }
 
     /// Full motion evaluation (IK helpers, constraints, IK chains and

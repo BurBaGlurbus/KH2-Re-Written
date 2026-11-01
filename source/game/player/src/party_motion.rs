@@ -235,6 +235,20 @@ impl Ctl {
         self.resolve(motion, blend, 0., field, clips)
     }
 
+    /// FUN_1403c86a0 with its frame argument (BDX trap 1,61): start `motion`
+    /// at `frame`.
+    pub fn start_at(
+        &mut self,
+        motion: u16,
+        blend: f32,
+        frame: f32,
+        field: bool,
+        clips: &dyn Clips,
+    ) -> bool {
+        self.queued = 0;
+        self.resolve(motion, blend, frame, field, clips)
+    }
+
     /// FUN_1403c6dc0: like start, but nothing when the slot already plays;
     /// walk and run keep the phase.
     pub fn change(&mut self, motion: u16, blend: f32, field: bool, clips: &dyn Clips) {

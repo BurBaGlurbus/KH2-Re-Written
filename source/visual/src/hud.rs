@@ -362,6 +362,31 @@ pub fn ftst_colour(
         .ok_or_else(|| "ftst colour absent".into())
 }
 
+/// Every 03system `ftst` colour of a world by id (FUN_1403ea860), for the
+/// text's code 0x04.
+pub fn ftst_palette(
+    system: &[u8],
+    world: usize,
+) -> Result<crate::dialogue::Palette, Box<dyn std::error::Error>> {
+    let table = bar::read_bar(system)?;
+    let e = table
+        .entries
+        .iter()
+        .find(|e| &e.name_bytes == b"ftst")
+        .ok_or("ftst absent")?;
+    let d = system
+        .get(e.offset as usize..e.offset as usize + e.size as usize)
+        .ok_or("ftst exceeds archive")?;
+    let word = |at: usize| {
+        d.get(at..at + 4)
+            .map(|w| u32::from_le_bytes(w.try_into().unwrap()))
+    };
+    let count = word(4).ok_or("ftst header")? as usize;
+    Ok((0..count)
+        .filter_map(|k| Some((word(8 + k * 0x50)?, word(8 + k * 0x50 + 4 + world * 4)?)))
+        .collect())
+}
+
 /// Encoded strings of a message archive (e.g. msg/<lang>/sys.bar) by id &
 /// 0x7fff, up to the terminating zero.
 /// Messages by id from a message archive; `None` for an absent id.

@@ -10,10 +10,18 @@
 //!   FUN_1403bbeb0 with the nine-slice box FUN_140193430.
 //! - Talk scripts: libretto ops (FUN_1403ec260).
 //!
+//! Colour: [Rewrite, the owner's choice] a window's text is drawn as the
+//! subtitles' WINDOW_CREDIT draws its own (FUN_1403bb520: font 4, colour id 3,
+//! white): program 3 (ps 026, FUN_1403e2d80), texel * colour, which keeps the
+//! black edge of the font's art. The executable's WINDOW_BASE uses font 3 and
+//! colour id 5 for the world (dark in Twilight Town, 0x80050520), whose program
+//! 5 (ps 027) would drop that edge.
+//!
 //! Layout units are the PS2 512x416 space; windows have no X origin, so
 //! they stay centred on a 16:9 canvas.
 use crate::gauge::Draw;
 use data::sprite_sequence::{Modifiers, Player, Quad, Sequence, color};
+use std::sync::Arc;
 
 /// Event font (font id 3) descriptor for international text: 24x32 glyph
 /// cells in a 512x512 plane (21 columns), reference height 24, line spacing
@@ -37,6 +45,20 @@ pub const ARROW_CLOSE: usize = 66;
 const TAIL_FACTORS: [f32; 4] = [-0.5, -0.15, 0.15, 0.5];
 /// se000 sound played on a page advance or close (FUN_1401dd170(0x18)).
 pub const ADVANCE_SOUND: u32 = 24;
+
+/// 03system `ftst` colours of the current world by id (FUN_1403ea860), for
+/// code 0x04.
+pub type Palette = Arc<[(u32, u32)]>;
+
+/// 03system `ftst` id of a window's text: see the module note.
+pub const WINDOW_COLOUR_ID: u32 = 3;
+
+/// `a` as the text's alpha scales it: min(255, base * a >> 7) on `colour`'s
+/// (FUN_1403b0280 cases 4 and 7).
+fn with_base_alpha(colour: u32, base: u32) -> u32 {
+    let alpha = ((base >> 24) * (colour >> 24)) >> 7;
+    alpha.min(0xff) << 24 | colour & 0xff_ffff
+}
 
 /// Total byte length of the code starting with `b` (0x1405c4cd0); 0x18 is
 /// unused and counted as one byte here.
@@ -195,6 +217,7 @@ pub struct Text {
     fade: f32,
     page_size: (i32, i32),
     pub colour: u32,
+    pub palette: Palette,
 }
 
 impl Text {
@@ -208,6 +231,7 @@ impl Text {
             fade: 0.,
             page_size: (0, 0),
             colour,
+            palette: Arc::from([]),
         };
         t.start_page(0, widths);
         t
@@ -260,7 +284,7 @@ impl Text {
         let left = (x - pw / 2) as f32;
         let top = (y - ph / 2) as f32;
         let mut s = Style::default();
-        let mut rgba = color(self.colour);
+        let mut word = self.colour;
         let mut out = Vec::new();
         let mut i = self.page;
         let mut cursor_y = top;
@@ -293,7 +317,13 @@ impl Text {
                     }
                     0x03 => {
                         s.apply(&self.bytes, i);
-                        rgba = color(self.colour);
+                        word = self.colour;
+                    }
+                    0x04 => {
+                        let id = self.bytes.get(i + 1).copied().unwrap_or(0) as u32;
+                        if let Some(&(_, c)) = self.palette.iter().find(|(k, _)| *k == id) {
+                            word = with_base_alpha(c, self.colour);
+                        }
                     }
                     0x07 => {
                         let c = u32::from_le_bytes(
@@ -302,7 +332,7 @@ impl Text {
                                 .and_then(|w| w.try_into().ok())
                                 .unwrap_or([0; 4]),
                         );
-                        rgba = color(c);
+                        word = with_base_alpha(c, self.colour);
                     }
                     0x0a..=0x0c => s.apply(&self.bytes, i),
                     0x14 => {
@@ -319,9 +349,11 @@ impl Text {
                             idx = 0x47;
                         }
                         previous = Some(idx);
-                        let mut c = rgba;
+                        // FUN_1403aff50: a glyph fading in has that alpha
+                        // alone, 0x80 being opaque.
+                        let mut c = color(word);
                         if self.fade > 0. && budget / self.fade < 1. {
-                            c[3] *= budget / self.fade;
+                            c[3] = budget / self.fade;
                         }
                         let bottom = cursor_y + BASELINE;
                         let (u, v) = (
@@ -419,6 +451,12 @@ impl TalkWindow {
         w.tail = None;
         w.position = [0x100, 0x30 + w.size.1 / 2];
         w
+    }
+
+    /// The world's colours for code 0x04.
+    pub fn with_palette(mut self, palette: Palette) -> Self {
+        self.text.palette = palette;
+        self
     }
 
     /// [Rewrite] A status line in the balloon (the LAN duel's "Waiting for
@@ -736,6 +774,59 @@ mod tests {
         assert_eq!(t.state, 2);
         assert!(t.arrow.is_some());
         assert_eq!(t.step(true), vec![ADVANCE_SOUND]);
+    }
+
+    #[test]
+    fn colour_codes_follow_the_world_table_and_the_text_alpha() {
+        let widths = [10u8; 200];
+        // A{04:0a}B{03}C{07:00 f0 f0 80}D, at half the opaque alpha for the
+        // base colour's scaling.
+        let text = [
+            0x21, 0x04, 0x0a, 0x22, 0x03, 0x23, 0x07, 0x00, 0xf0, 0xf0, 0x80, 0x24, 0x00,
+        ];
+        let mut t = Text::new(text.to_vec(), 0x40050520, &widths);
+        t.palette = Arc::from([(10, 0x802e00b8)]);
+        let g = t.draw(0, 0, &widths);
+        assert_eq!(g[0].rgba, color(0x40050520));
+        assert_eq!(g[1].rgba, color(0x402e00b8));
+        assert_eq!(g[2].rgba, color(0x40050520));
+        assert_eq!(g[3].rgba, color(0x40f0f000));
+        // An id the table lacks keeps the colour.
+        let mut t = Text::new(vec![0x04, 0x63, 0x21, 0], 0x80050520, &widths);
+        t.palette = Arc::from([(10, 0x802e00b8)]);
+        assert_eq!(t.draw(0, 0, &widths)[0].rgba, color(0x80050520));
+    }
+
+    #[test]
+    fn the_close_plays_tail_then_box_and_drops_the_text_with_the_box() {
+        let widths = [10u8; 200];
+        let seq = window_sequence();
+        let mut w = TalkWindow::new(&seq, vec![0x21, 0x00], 0x80050520, &widths);
+        for _ in 0..8 {
+            w.step(false);
+        }
+        assert_eq!(w.state, 2);
+        assert!(!w.glyphs.is_empty());
+        w.step(true);
+        assert_eq!(w.state, 3);
+        w.close();
+        assert_eq!(w.state, 4);
+        // The text stays through the tail's close (states 1 to 5).
+        w.step(false);
+        assert_eq!(w.state, 5);
+        assert!(!w.glyphs.is_empty());
+        // Then the box closes without it, and the window goes.
+        let mut guard = 0;
+        while w.state < 6 && guard < 8 {
+            w.step(false);
+            guard += 1;
+        }
+        assert_eq!(w.state, 6);
+        assert!(w.glyphs.is_empty());
+        for _ in 0..8 {
+            w.step(false);
+        }
+        assert!(w.deleted());
     }
 
     #[test]

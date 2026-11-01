@@ -9,6 +9,14 @@
 //! heading turns at 10° per tick toward the curve point ~5 units ahead, and
 //! the speed is the walk motion's root travel per tick.
 //!
+//! Motions run on the executable's controller (obj+0x158, `party_motion::Ctl`):
+//! FUN_1403c6740 advances one key per tick from 0 to the header's length,
+//! jumps from 0 straight to 2, wraps to the return frame at the length (holds
+//! there when the return frame is the end) and starts what is queued instead.
+//! The acts change motions through the script's `set_motion` (L1413) with a
+//! blend of 8 ticks, and root motion is the motion root's travel over the
+//! frames the clock covered (FUN_1403c8520).
+//!
 //! The other programs are variants of it (rtn-02): rtn_sit, rtn_lm and
 //! n_ex740_skate_r ([`Program::plain`]) have no turn-in-place motion, always
 //! walk on a route and turn to look only past 30°; n_ex690_skate_r and
@@ -21,11 +29,12 @@ use bevy::prelude::*;
 use data::{
     ard::{Entity as ArdEntity, WalkPath},
     model_inspection::{self, InspectionModel},
-    motion, object_collision,
+    motion, motion_eval, object_collision,
     objentry::ObjectEntry,
     path_lookup::Library,
     probe_source::ProbeSource,
 };
+use player::party_motion::{Clip, Clips, Ctl};
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -34,21 +43,29 @@ type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 /// One animation of a model: per-tick vertex positions (root removed), the
 /// loop start and the bone matrix of the talk-camera bone.
 pub struct Anim {
-    /// The motion and its time mapping, to evaluate the head look-at.
+    /// The motion and its first key, to evaluate the head look-at and blends.
     pub source: Option<AnimSource>,
+    /// One per tick from the first key to the end, the end included.
     pub frames: Vec<Vec<Vec3>>,
+    /// The return frame the clock wraps to, in ticks from the first key.
     pub loop_start: u32,
     pub bones: Vec<Option<Mat4>>,
-    /// Horizontal root travel per tick over one pass of the motion.
-    pub travel: f32,
+    /// The motion root's translation per tick, for root motion.
+    pub root: Vec<Vec3>,
 }
 
-/// A motion with its tick-to-key-time mapping.
+impl Anim {
+    /// The motion's length in ticks: the clock wraps on reaching it.
+    pub fn length(&self) -> u32 {
+        (self.frames.len() as u32).saturating_sub(1).max(1)
+    }
+}
+
+/// A motion with its first key: a tick is one key (the keys run at 60 a
+/// second, twice the declared frame rate).
 pub struct AnimSource {
     pub motion: Arc<motion::SelectedMotion>,
-    pub frame_start: f32,
-    /// Ticks per key-time unit (60 / fps).
-    pub scale: f32,
+    pub key_start: f32,
 }
 
 /// The head look-at shape (collision type 20): bone and the yaw/pitch
@@ -78,6 +95,33 @@ pub struct Anims {
     /// look_can_reach: the type-20 collision shape's yaw limit (radius in
     /// degrees), else 15° [npc-01 §5].
     pub look_limit: f32,
+}
+
+/// The kind's motions as the controller reads them (FUN_1403c7c50: an RTN
+/// set's motion id is its slot; it has no stances, so no motion 6).
+impl Clips for Anims {
+    fn clip(&self, motion: u16, _field: bool) -> Option<Clip> {
+        self.by_id(motion).map(|a| Clip {
+            slot: motion as usize,
+            length: a.length(),
+            loop_top: a.loop_start,
+        })
+    }
+
+    fn range(&self, _slot: usize, _kind: u8, _tick: u32) -> bool {
+        false
+    }
+}
+
+impl Anims {
+    fn by_id(&self, motion: u16) -> Option<&Anim> {
+        match motion {
+            MOTION_IDLE => Some(&self.idle),
+            MOTION_WALK => self.walk.as_ref(),
+            MOTION_TURN => self.turn.as_ref(),
+            s => self.extra.get(&s),
+        }
+    }
 }
 
 /// The AI program's family and the flags its OBJ_INIT sets (rtn-02 §2).
@@ -121,6 +165,10 @@ pub struct NpcKind {
     /// The type-0 (map collision) shape the meet test overlaps: centre
     /// height, radius, height (shape 0/3 ellipsoid, npc-01 section 3.5).
     pub body: [f32; 3],
+    /// Each bone's parent and whether it is a helper (bone +0xc bit 0), for
+    /// the motion blend.
+    parents: Vec<i32>,
+    helpers: Vec<bool>,
 }
 
 /// Motion slots of an RTN set: 0 R00A idle, 1 R10A walk, 129 R50A turn in
@@ -132,68 +180,53 @@ const LOOK_SHAPE: u8 = 20;
 const SLOT_IDLE: usize = 0;
 const SLOT_WALK: usize = 1;
 const SLOT_TURN: usize = 129;
+const MOTION_IDLE: u16 = SLOT_IDLE as u16;
+const MOTION_WALK: u16 = SLOT_WALK as u16;
+const MOTION_TURN: u16 = SLOT_TURN as u16;
+/// The blend of the script's motion changes (rtn_default's `set_motion`).
+const BLEND: f32 = 8.;
 
 pub(crate) fn build_anim(
     model: &InspectionModel,
     selected: &Arc<motion::SelectedMotion>,
     bone: Option<usize>,
 ) -> Result<Anim> {
-    let (frame_start, frame_end, fps, frame_return) = selected.motion.frame_window()?;
-    if !(1. ..=60.).contains(&fps) || !(0. ..frame_end).contains(&frame_start) {
-        return Err("NPC motion frame window outside profile".into());
-    }
-    let scale = 60. / fps;
-    let start = (frame_start * scale).round() as u32;
-    let end = (frame_end * scale).round() as u32 - start;
-    let loop_start = ((frame_return * scale).round() as u32).saturating_sub(start);
+    let (clip, key_start) = crate::test_room::clip_for(selected)?;
     // The frames are independent: evaluated on several threads, in order.
-    let (frames, bones): (Vec<Vec<Vec3>>, Vec<Option<Mat4>>) =
-        visual::par::map_indexed(end as usize + 1, |offset| {
-            let (pose, evaluated) = model
-                .skinning
-                // One 60 Hz tick advances 30/60 key-time units at 30 fps
-                // (R10A: 30 key units over 60 ticks, npc-01 motion table).
-                .sample_evaluated(&selected.motion, frame_start + offset as f32 / scale)?;
-            let r = Vec3::from_array(evaluated.root_translation);
-            let frame = pose
-                .position_bits
-                .iter()
-                .map(|p| Vec3::from_array(p.map(f32::from_bits)) - r)
-                .collect();
-            let bone = bone.and_then(|b| pose.matrix_bits.get(b)).map(|m| {
-                let mut m = Mat4::from_cols_array(&m.map(f32::from_bits));
-                m.w_axis -= r.extend(0.);
-                m
-            });
-            Ok::<_, std::io::Error>((frame, bone))
-        })?
-        .into_iter()
-        .unzip();
-    // Root motion per tick: the motion root record's translation (+0x20,
-    // the displacement of one pass) over the motion's length in ticks
-    // (header word 1) [npc-01 §3.7].
-    let root = &selected.motion.root.bytes;
-    let word = |at: usize| {
-        root.get(at..at + 4)
-            .map_or(0., |b| f32::from_le_bytes(b.try_into().unwrap()))
-    };
-    let ticks = selected
-        .motion
-        .interpolated_header_words
-        .get(1)
-        .map_or(0, |&t| t as i32)
-        .max(1);
-    let travel = word(0x20).hypot(word(0x28)) / ticks as f32;
+    let ticks = visual::par::map_indexed(clip.end as usize + 1, |offset| {
+        // One key per tick from the first (FUN_1403c8520 reads the motion at
+        // the clock): R00A's 120 ticks show its keys 0 to 120.
+        let (pose, evaluated) = model
+            .skinning
+            .sample_evaluated(&selected.motion, (key_start + offset as u32) as f32)?;
+        let r = Vec3::from_array(evaluated.root_translation);
+        let frame: Vec<Vec3> = pose
+            .position_bits
+            .iter()
+            .map(|p| Vec3::from_array(p.map(f32::from_bits)) - r)
+            .collect();
+        let bone = bone.and_then(|b| pose.matrix_bits.get(b)).map(|m| {
+            let mut m = Mat4::from_cols_array(&m.map(f32::from_bits));
+            m.w_axis -= r.extend(0.);
+            m
+        });
+        Ok::<_, std::io::Error>((frame, bone, r))
+    })?;
+    let (mut frames, mut bones, mut root) = (Vec::new(), Vec::new(), Vec::new());
+    for (f, b, r) in ticks {
+        frames.push(f);
+        bones.push(b);
+        root.push(r);
+    }
     Ok(Anim {
         source: Some(AnimSource {
             motion: Arc::clone(selected),
-            frame_start,
-            scale,
+            key_start: key_start as f32,
         }),
         frames,
-        loop_start,
+        loop_start: clip.loop_start,
         bones,
-        travel,
+        root,
     })
 }
 
@@ -308,7 +341,12 @@ impl NpcKind {
             .iter()
             .find(|e| e.kind == object_collision::REACTION)
             .copied();
+        let bones = &model.skinning.bones;
+        let parents = bones.iter().map(|b| b.header_i32[1]).collect();
+        let helpers = bones.iter().map(|b| b.header_i32[3] & 1 != 0).collect();
         Ok(Self {
+            parents,
+            helpers,
             reaction,
             name: model_name,
             program,
@@ -581,16 +619,6 @@ impl Lcg {
     }
 }
 
-/// Which motion an NPC plays.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum Pose {
-    Idle,
-    Walk,
-    Turn,
-    /// Another slot of the set (talk 50, zone actions 283..292).
-    Slot(u16),
-}
-
 /// A return-parameter record (16 bytes: zone, type, rate, entry, then
 /// arg04/arg08/arg0c) of the NPC's spawn point.
 #[derive(Clone, Copy, Debug)]
@@ -723,8 +751,8 @@ pub struct FieldNpc {
     /// Scene position and yaw (facing (sin yaw, cos yaw)).
     pub position: Vec3,
     pub yaw: f32,
-    pub pose: Pose,
-    pub frame: u32,
+    /// The motion controller (sys+0x158).
+    pub ctl: Ctl,
     pub route: Option<Route>,
     pub talk: u16,
     pub reaction: u16,
@@ -757,8 +785,18 @@ pub struct FieldNpc {
     look_weight: f32,
     look_yaw: f32,
     look_pitch: f32,
-    /// Vertex positions with the head turned (None: the cached frame).
+    /// Vertex positions with the head turned or a blend running (None: the
+    /// cached frame).
     pub look_positions: Option<Vec<Vec3>>,
+    /// What was last shown, for a blending switch to turn from.
+    shown: Shown,
+    /// The pose a running blend turns from.
+    blend_from: Shown,
+    blend_serial: u32,
+    /// The act has started its walking (path_move's first set_motion).
+    path_started: bool,
+    /// A talk holds it: the talk gesture has started.
+    held: bool,
     /// [`Program::plain`].
     plain: bool,
     /// Flag 4: the talk doesn't turn it to face Sora (FUN_140416eb0).
@@ -766,6 +804,17 @@ pub struct FieldNpc {
     cooldown: f32,
     current_zone: Option<usize>,
     act: Act,
+}
+
+/// A townsperson's pose: the joints (root removed) where they were evaluated,
+/// the vertices of a raw motion where there are no joints, else just the
+/// motion's frame.
+#[derive(Default)]
+struct Shown {
+    motion: u16,
+    frame: usize,
+    joints: Vec<motion_eval::World>,
+    vertices: Vec<Vec3>,
 }
 
 /// Ticks of a townsperson's pop-in and pop-out fade (DAT_140623bb4).
@@ -899,8 +948,7 @@ impl FieldNpc {
             kind,
             position,
             yaw,
-            pose: Pose::Idle,
-            frame: 0,
+            ctl: Ctl::default(),
             route,
             talk: entity.talk,
             reaction: entity.reaction,
@@ -923,6 +971,11 @@ impl FieldNpc {
             look_yaw: 0.,
             look_pitch: 0.,
             look_positions: None,
+            shown: Shown::default(),
+            blend_from: Shown::default(),
+            blend_serial: 0,
+            path_started: false,
+            held: false,
             plain: program.plain,
             keeps_facing: flags & 1 << 4 != 0,
             cooldown: 0.,
@@ -935,11 +988,6 @@ impl FieldNpc {
             if flags & 2 == 0 {
                 npc.position = r.start_point();
             }
-            npc.pose = if program.plain {
-                Pose::Walk
-            } else {
-                Pose::Turn
-            };
             npc.act = Act::Path;
         }
         npc
@@ -1098,12 +1146,29 @@ impl FieldNpc {
         self.cooldown = COOLDOWN;
     }
 
+    /// The script's `set_motion` (rtn_default L1413): walk to turn keeps the
+    /// walk's frame with no blend; turn to walk goes through idle with the
+    /// walk queued; any other asks FUN_1403c6dc0, which leaves a motion that
+    /// already plays alone.
+    fn set_motion(&mut self, anims: &Anims, motion: u16, blend: f32) {
+        let current = self.ctl.motion;
+        if current == MOTION_WALK && motion == MOTION_TURN {
+            let frame = self.ctl.frame();
+            self.ctl.start_at(MOTION_TURN, 0., frame, true, anims);
+        } else if current == MOTION_TURN && motion == MOTION_WALK {
+            self.ctl.change(MOTION_IDLE, blend, true, anims);
+            self.ctl.queue(MOTION_WALK, 0.);
+        } else {
+            self.ctl.change(motion, blend, true, anims);
+        }
+    }
+
     /// handle_irq (rtn_default).
-    fn handle(&mut self) {
+    fn handle(&mut self, anims: &Anims) {
         match self.irq.kind {
             IrqKind::Encounter => self.act = Act::Encounter(Phase::Wait(20)),
             IrqKind::Zone | IrqKind::Meet => {
-                self.pose = Pose::Slot(self.irq.motion);
+                self.set_motion(anims, self.irq.motion, BLEND);
                 self.act = Act::Action;
             }
             IrqKind::Stop => {
@@ -1114,8 +1179,9 @@ impl FieldNpc {
         }
     }
 
-    /// Talk end (FUN_140416d00 + after_talk): face Sora, wait 60 ticks.
-    pub fn after_talk(&mut self, sora: Vec3) {
+    /// Talk end (FUN_140416d00 + after_talk): the idle, a fixed one's own,
+    /// with no blend; face Sora, wait 60 ticks.
+    pub fn after_talk(&mut self, anims: &Anims, sora: Vec3) {
         let to = sora - self.position;
         self.yaw = to.x.atan2(to.z);
         self.irq = Irq::NONE;
@@ -1128,7 +1194,11 @@ impl FieldNpc {
         } else {
             Act::AfterTalk(60)
         };
-        self.pose = Pose::Idle;
+        let motion = match self.act {
+            Act::Fixed(s) => s,
+            _ => MOTION_IDLE,
+        };
+        self.ctl.start(motion, 0., true, anims);
     }
 
     /// The running act, for logs.
@@ -1137,6 +1207,7 @@ impl FieldNpc {
     }
 
     fn resume(&mut self) {
+        self.path_started = false;
         self.act = if self.route.is_some() {
             Act::Path
         } else {
@@ -1150,35 +1221,32 @@ impl FieldNpc {
         wrap(to.x.atan2(to.z) - self.yaw).abs() <= limit
     }
 
-    /// One tick of the AI. `held` = a talk is running with this NPC (the
-    /// caller owns its facing; the talk gesture plays).
+    /// One tick of the AI, then of the motion controller. `held` = a talk is
+    /// running with this NPC: the caller owns its facing, and the talk gesture
+    /// starts once (FUN_140400f90: FUN_1403c86a0(sys+0x158, 0x32, 0, 0); a set
+    /// without one keeps the motion it has).
     pub fn tick(&mut self, anims: &Anims, sora: Vec3, held: bool, rng: &mut Lcg) {
-        self.frame += 1;
+        // FUN_1403dacb0: a new townsperson starts on motion 0.
+        if self.ctl.clip.is_none() {
+            self.ctl.start(MOTION_IDLE, 0., true, anims);
+        }
         if held {
-            self.pose = if anims.extra.contains_key(&TALK_SLOT) {
-                Pose::Slot(TALK_SLOT)
-            } else {
-                Pose::Idle
-            };
+            if !self.held {
+                self.held = true;
+                self.ctl.start(TALK_SLOT, 0., true, anims);
+            }
             self.advance(anims);
             return;
         }
+        self.held = false;
         self.cooldown = (self.cooldown - 1.).max(0.);
         self.irq.timer = (self.irq.timer - 1.).max(0.);
         if !matches!(self.act, Act::Fixed(_)) {
             self.detect(sora, rng);
         }
-        let before = self.pose;
         match self.act {
-            Act::Fixed(slot) => {
-                self.pose = if slot == 0 {
-                    Pose::Idle
-                } else {
-                    Pose::Slot(slot)
-                };
-            }
+            Act::Fixed(slot) => self.set_motion(anims, slot, BLEND),
             Act::AfterTalk(n) => {
-                self.pose = Pose::Idle;
                 if n <= 1 {
                     if let Some(r) = self.route.as_mut() {
                         r.away_from(self.position, sora);
@@ -1189,7 +1257,7 @@ impl FieldNpc {
                 }
             }
             Act::Static => {
-                self.pose = Pose::Idle;
+                self.set_motion(anims, MOTION_IDLE, BLEND);
                 if self.position.distance(sora) <= LOOK_START {
                     self.act = Act::Look(10.);
                 }
@@ -1197,20 +1265,20 @@ impl FieldNpc {
             Act::Look(t) => {
                 let to = sora - self.position;
                 if self.position.distance(sora) >= LOOK_END {
-                    self.pose = Pose::Idle;
+                    self.set_motion(anims, MOTION_IDLE, BLEND);
                     self.act = Act::Static;
                 } else if self.plain {
                     // rtn_sit's look: idle, turning only past 30°.
-                    self.pose = Pose::Idle;
+                    self.set_motion(anims, MOTION_IDLE, BLEND);
                     if !self.can_reach(sora, PLAIN_LOOK_LIMIT) {
                         turn_toward(&mut self.yaw, to, LOOK_TURN);
                     }
                 } else if !self.can_reach(sora, anims.look_limit) {
                     turn_toward(&mut self.yaw, to, LOOK_TURN);
-                    self.pose = Pose::Turn;
+                    self.set_motion(anims, MOTION_TURN, BLEND);
                     self.act = Act::Look(10.);
                 } else if t <= 0. {
-                    self.pose = Pose::Idle;
+                    self.set_motion(anims, MOTION_IDLE, BLEND);
                     self.act = Act::Look(0.);
                 } else {
                     self.act = Act::Look(t - 1.);
@@ -1219,7 +1287,7 @@ impl FieldNpc {
             Act::Path => self.path_move(anims, sora),
             Act::Action => {
                 if self.pending() {
-                    self.handle();
+                    self.handle(anims);
                 }
                 if self.act == Act::Action {
                     if self.over(sora) {
@@ -1246,9 +1314,6 @@ impl FieldNpc {
             }
             Act::Encounter(phase) => self.encounter(phase, anims, sora),
         }
-        if self.pose != before {
-            self.frame = 0;
-        }
         self.advance(anims);
     }
 
@@ -1256,7 +1321,7 @@ impl FieldNpc {
         let to = sora - self.position;
         match phase {
             Phase::Wait(n) => {
-                self.pose = Pose::Idle;
+                self.set_motion(anims, MOTION_IDLE, BLEND);
                 self.act = if n <= 1 {
                     Act::Encounter(Phase::Face(20))
                 } else {
@@ -1267,7 +1332,7 @@ impl FieldNpc {
                 // The script's angle trap gets the same vector twice, so
                 // its motion choice is always idle [npc-01 §2.4].
                 turn_toward(&mut self.yaw, to, LOOK_TURN);
-                self.pose = Pose::Idle;
+                self.set_motion(anims, MOTION_IDLE, BLEND);
                 self.act = if n <= 1 {
                     Act::Encounter(Phase::Hold(10.))
                 } else {
@@ -1276,26 +1341,26 @@ impl FieldNpc {
             }
             Phase::Hold(t) => {
                 if self.over(sora) {
-                    self.pose = Pose::Idle;
+                    self.set_motion(anims, MOTION_IDLE, BLEND);
                     self.act = Act::Encounter(Phase::Finish(10));
                 } else if self.plain {
-                    self.pose = Pose::Idle;
+                    self.set_motion(anims, MOTION_IDLE, BLEND);
                     if !self.can_reach(sora, anims.look_limit) {
                         turn_toward(&mut self.yaw, to, LOOK_TURN);
                     }
                 } else if !self.can_reach(sora, anims.look_limit) {
                     turn_toward(&mut self.yaw, to, LOOK_TURN);
-                    self.pose = Pose::Turn;
+                    self.set_motion(anims, MOTION_TURN, BLEND);
                     self.act = Act::Encounter(Phase::Hold(10.));
                 } else if t <= 0. {
-                    self.pose = Pose::Idle;
+                    self.set_motion(anims, MOTION_IDLE, BLEND);
                     self.act = Act::Encounter(Phase::Hold(0.));
                 } else {
                     self.act = Act::Encounter(Phase::Hold(t - 1.));
                 }
             }
             Phase::Finish(n) => {
-                self.pose = Pose::Idle;
+                self.set_motion(anims, MOTION_IDLE, BLEND);
                 if n <= 1 {
                     if let Some(r) = self.route.as_mut() {
                         r.away_from(self.position, sora);
@@ -1311,6 +1376,12 @@ impl FieldNpc {
 
     /// The path_move act: steer along the route, walk or turn in place.
     fn path_move(&mut self, anims: &Anims, _sora: Vec3) {
+        if !self.path_started {
+            self.path_started = true;
+            // rtn_sit's path_move: the walk motion always.
+            let first = if self.plain { MOTION_WALK } else { MOTION_TURN };
+            self.set_motion(anims, first, BLEND);
+        }
         let Some(route) = self.route.as_mut() else {
             self.resume();
             return;
@@ -1319,62 +1390,84 @@ impl FieldNpc {
         let toward = route.target(self.position, LOOKAHEAD).unwrap_or(facing);
         // vector_angle_y(facing, target): wrap(atan2(t) − atan2(f)).
         let error = wrap(toward.x.atan2(toward.z) - facing.x.atan2(facing.z));
-        match self.pose {
-            // rtn_sit's path_move: the walk motion always.
-            _ if self.plain && anims.walk.is_some() => self.pose = Pose::Walk,
-            Pose::Walk => {
-                if (error > TURN_ABOVE || error < -TURN_ABOVE) && anims.turn.is_some() {
-                    self.pose = Pose::Turn;
+        if !self.plain {
+            if self.ctl.motion == MOTION_WALK {
+                if error > TURN_ABOVE || error < -TURN_ABOVE {
+                    self.set_motion(anims, MOTION_TURN, BLEND);
                 }
-            }
-            _ => {
-                if error > -WALK_BELOW && error < WALK_BELOW && anims.walk.is_some() {
-                    self.pose = Pose::Walk;
-                }
+            } else if error > -WALK_BELOW && error < WALK_BELOW {
+                self.set_motion(anims, MOTION_WALK, BLEND);
             }
         }
         turn_toward(&mut self.yaw, toward, PATH_TURN);
-        if self.pose == Pose::Walk
-            && let Some(walk) = &anims.walk
-        {
-            self.position += Vec3::new(self.yaw.sin(), 0., self.yaw.cos()) * walk.travel;
-        }
         if self.pending() {
-            self.handle();
+            self.handle(anims);
         }
     }
 
     fn anim<'a>(&self, anims: &'a Anims) -> &'a Anim {
-        match self.pose {
-            Pose::Walk => anims.walk.as_ref().unwrap_or(&anims.idle),
-            Pose::Turn => anims.turn.as_ref().unwrap_or(&anims.idle),
-            Pose::Slot(s) => anims.extra.get(&s).unwrap_or(&anims.idle),
-            Pose::Idle => &anims.idle,
+        anims.by_id(self.ctl.motion).unwrap_or(&anims.idle)
+    }
+
+    /// FUN_1403c6740 for one tick, and the root's travel over the frames the
+    /// clock covered, turned by the facing (FUN_1403c8520).
+    fn advance(&mut self, anims: &Anims) {
+        let step = self.ctl.advance(true, anims);
+        let (s, c) = self.yaw.sin_cos();
+        for &(motion, _, from, to) in &step.spans {
+            let Some(root) = anims.by_id(motion).map(|a| &a.root) else {
+                continue;
+            };
+            let at = |t: f32| root.get(t.max(0.) as usize).copied();
+            if let (Some(p), Some(m)) = (at(from), at(to)) {
+                let (dx, dz) = (m.x - p.x, m.z - p.z);
+                self.position += Vec3::new(dx * c + dz * s, 0., -dx * s + dz * c);
+            }
         }
     }
 
-    fn advance(&mut self, anims: &Anims) {
-        let a = self.anim(anims);
-        let len = a.frames.len() as u32;
-        if self.frame >= len {
-            self.frame = a.loop_start.min(len.saturating_sub(1));
-        }
+    /// The tick of the motion shown: its clock, or the frame it holds while a
+    /// blend runs.
+    fn shown_frame(&self, a: &Anim) -> usize {
+        (self.ctl.frame().max(0.) as usize).min(a.frames.len() - 1)
     }
 
     /// Current vertex positions.
     pub fn frame_positions<'a>(&self, anims: &'a Anims) -> &'a [Vec3] {
         let a = self.anim(anims);
-        &a.frames[(self.frame as usize).min(a.frames.len() - 1)]
+        &a.frames[self.shown_frame(a)]
     }
 
     /// The talk-camera bone matrix this tick.
     pub fn bone(&self, anims: &Anims) -> Option<Mat4> {
         let a = self.anim(anims);
-        a.bones
-            .get((self.frame as usize).min(a.bones.len().saturating_sub(1)))
-            .copied()
-            .flatten()
+        a.bones.get(self.shown_frame(a)).copied().flatten()
     }
+}
+
+/// One joint per model bone of `motion` at `key`, root removed; None for a
+/// raw motion, which has no joints.
+fn rootless_joints(
+    kind: &NpcKind,
+    motion: &motion::InterpolatedMotion,
+    key: f32,
+    root: Vec3,
+) -> Option<Vec<motion_eval::World>> {
+    let bones = &kind.model.skinning.bones;
+    let evaluated = motion_eval::evaluate(bones, motion, key).ok()?;
+    let joints = evaluated.joints.get(..bones.len())?;
+    Some(
+        joints
+            .iter()
+            .map(|w| {
+                let mut w = *w;
+                for (t, r) in w.translation.iter_mut().zip(root.to_array()) {
+                    *t -= r;
+                }
+                w
+            })
+            .collect(),
+    )
 }
 
 /// The meeting time (ce4..ce8, npc-01 section 2.4 timing table).
@@ -1457,15 +1550,103 @@ impl FieldNpc {
         )
     }
 
-    /// The head look-at for this tick (FUN_1403e4d80 / FUN_1403e5000 and
-    /// the anb evaluator's look branch, look-02): ramps the weight,
-    /// limits the aim to the type-20 shape's yaw/pitch at 5 and 3 degrees
-    /// per tick, and re-evaluates the pose with the head bone turned.
+    /// The pose for this tick where it is not a cached frame. A running blend
+    /// (FUN_1401c3a30 with FUN_1401c3970) turns the joints the switch left
+    /// behind toward the new motion's held frame by the controller's weight.
+    /// The head look-at (FUN_1403e4d80 / FUN_1403e5000 and the anb evaluator's
+    /// look branch, look-02) ramps its weight, limits the aim to the type-20
+    /// shape's yaw/pitch at 5 and 3 degrees per tick and turns the head bone.
     pub fn update_look(&mut self, kind: &NpcKind, sora: Vec3) {
         self.look_positions = None;
-        let Some(shape) = kind.look else { return };
+        let anim = self.anim(&kind.anims);
+        let frame = self.shown_frame(anim);
+        let weight = self.ctl.weight();
+        // A switch: what it left is what the blend turns from.
+        if self.ctl.serial != self.blend_serial {
+            self.blend_serial = self.ctl.serial;
+            self.blend_from = if weight.is_some() {
+                let mut from = std::mem::take(&mut self.shown);
+                if from.joints.is_empty()
+                    && from.vertices.is_empty()
+                    && let Some(old) = kind.anims.by_id(from.motion)
+                {
+                    let f = from.frame.min(old.frames.len() - 1);
+                    from.joints = old
+                        .source
+                        .as_ref()
+                        .and_then(|o| {
+                            rootless_joints(
+                                kind,
+                                &o.motion.motion,
+                                o.key_start + f as f32,
+                                old.root[f],
+                            )
+                        })
+                        .unwrap_or_default();
+                    if from.joints.is_empty() {
+                        from.vertices.clone_from(&old.frames[f]);
+                    }
+                }
+                from
+            } else {
+                Shown::default()
+            };
+        }
+        let mut now = Shown {
+            motion: self.ctl.motion,
+            frame,
+            ..Shown::default()
+        };
+        let aim = self.step_look_weight(kind);
+        if aim.is_some() || weight.is_some() {
+            let joints = anim.source.as_ref().and_then(|s| {
+                rootless_joints(
+                    kind,
+                    &s.motion.motion,
+                    s.key_start + frame as f32,
+                    anim.root[frame],
+                )
+            });
+            match (joints, weight) {
+                (Some(to), w) => {
+                    let joints = match w {
+                        Some(w) if self.blend_from.joints.len() == to.len() => {
+                            motion_eval::blend_poses_with_helpers(
+                                &kind.parents,
+                                &kind.helpers,
+                                &self.blend_from.joints,
+                                &to,
+                                w,
+                            )
+                        }
+                        _ => to,
+                    };
+                    self.look_positions = self.pose_with_look(kind, &joints, aim, sora);
+                    now.joints = joints;
+                }
+                // Raw-matrix motions have no joints: their vertices turn.
+                (None, Some(w)) if self.blend_from.vertices.len() == anim.frames[frame].len() => {
+                    now.vertices = self
+                        .blend_from
+                        .vertices
+                        .iter()
+                        .zip(&anim.frames[frame])
+                        .map(|(a, b)| a.lerp(*b, w))
+                        .collect();
+                    self.look_positions = Some(now.vertices.clone());
+                }
+                _ => {}
+            }
+        }
+        self.shown = now;
+    }
+
+    /// The look weight for this tick; its eased form, with the shape, while
+    /// the head is turned.
+    fn step_look_weight(&mut self, kind: &NpcKind) -> Option<(LookShape, f32, f32)> {
+        let shape = kind.look?;
         // Only while idling or turning in place (range trigger 0x20).
-        let allowed = matches!(self.pose, Pose::Idle | Pose::Turn);
+        let allowed = matches!(self.ctl.motion, MOTION_IDLE | MOTION_TURN);
         let target = if allowed && self.look_wanted() {
             1.
         } else {
@@ -1479,25 +1660,31 @@ impl FieldNpc {
             (self.look_weight - 1. / 20.).max(0.)
         };
         if self.look_weight <= 0. && self.look_yaw == 0. && self.look_pitch == 0. {
-            return;
+            return None;
         }
-        let anim = match self.pose {
-            Pose::Turn => kind.anims.turn.as_ref().unwrap_or(&kind.anims.idle),
-            _ => &kind.anims.idle,
-        };
-        let Some(src) = &anim.source else { return };
         let w = (1. - (std::f32::consts::PI * self.look_weight).cos()) / 2.;
-        let key = src.frame_start + self.frame as f32 / src.scale;
+        Some((shape, w, target))
+    }
+
+    /// The vertices of `joints` with the head bone turned, and the aim stepped
+    /// toward the clamped target for the next tick.
+    fn pose_with_look(
+        &mut self,
+        kind: &NpcKind,
+        joints: &[motion_eval::World],
+        aim: Option<(LookShape, f32, f32)>,
+        sora: Vec3,
+    ) -> Option<Vec<Vec3>> {
         let inverse = Quat::from_rotation_y(-self.yaw);
         let head = sora + Vec3::Y * SORA_OBJ[2];
         let (yaw_now, pitch_now) = (self.look_yaw, self.look_pitch);
         let desired = std::cell::Cell::new(None);
         let position = self.position;
-        let result = kind.model.skinning.sample_evaluated_look(
-            &src.motion.motion,
-            key,
-            shape.bone,
+        let pose = kind.model.skinning.pose_from_worlds_look(
+            joints,
+            aim.map_or(usize::MAX, |(shape, ..)| shape.bone),
             |origin| {
+                let (_, w, _) = aim?;
                 let origin = Vec3::from_array(origin);
                 let d = inverse * (head - position) - origin;
                 let horizontal = d.x.hypot(d.z);
@@ -1512,8 +1699,7 @@ impl FieldNpc {
                 Some(((origin + dir * dist).to_array(), w))
             },
         );
-        // Step the aim toward the clamped target for the next tick.
-        if let Some((yaw, pitch)) = desired.get() {
+        if let (Some((yaw, pitch)), Some((shape, _, target))) = (desired.get(), aim) {
             let (yaw, pitch) = if self.look_weight > 0. && target > 0. {
                 (
                     yaw.clamp(-shape.yaw, shape.yaw),
@@ -1527,15 +1713,13 @@ impl FieldNpc {
             self.look_yaw += (yaw - self.look_yaw).clamp(-YAW_RATE, YAW_RATE);
             self.look_pitch += (pitch - self.look_pitch).clamp(-PITCH_RATE, PITCH_RATE);
         }
-        if let Ok((pose, evaluated)) = result {
-            let r = Vec3::from_array(evaluated.root_translation);
-            self.look_positions = Some(
-                pose.position_bits
-                    .iter()
-                    .map(|p| Vec3::from_array(p.map(f32::from_bits)) - r)
-                    .collect(),
-            );
-        }
+        let pose = pose.ok()?;
+        Some(
+            pose.position_bits
+                .iter()
+                .map(|p| Vec3::from_array(p.map(f32::from_bits)))
+                .collect(),
+        )
     }
 
     fn facing(&self) -> Vec3 {
@@ -1575,7 +1759,7 @@ pub fn update_meets(
                 npcs[j].position,
                 npcs[j].irq.kind == IrqKind::Meet
                     && npcs[j].partner == Some(i)
-                    && npcs[j].pose != Pose::Slot(TALK_SLOT),
+                    && npcs[j].ctl.motion != TALK_SLOT,
             ),
             _ => (npcs[i].position, false),
         };
@@ -1734,17 +1918,20 @@ mod tests {
 
     #[test]
     fn walk_switches_to_turn_on_a_large_heading_error() {
+        // A motion whose root travels `travel` per tick.
         let anim = |frames: usize, travel: f32| Anim {
             frames: vec![vec![Vec3::ZERO]; frames],
             loop_start: 0,
             bones: vec![None; frames],
             source: None,
-            travel,
+            root: (0..frames)
+                .map(|t| Vec3::new(0., 0., t as f32 * travel))
+                .collect(),
         };
         let kind = Anims {
             idle: anim(1, 0.),
             walk: Some(anim(4, 1.0)),
-            turn: Some(anim(2, 0.)),
+            turn: Some(anim(60, 0.)),
             extra: HashMap::new(),
             look_limit: 0.26,
         };
@@ -1752,8 +1939,7 @@ mod tests {
             kind: 0,
             position: Vec3::ZERO,
             yaw: std::f32::consts::PI,
-            pose: Pose::Walk,
-            frame: 0,
+            ctl: Ctl::default(),
             route: Some(square(true)),
             talk: 0,
             reaction: 0,
@@ -1776,14 +1962,139 @@ mod tests {
             look_yaw: 0.,
             look_pitch: 0.,
             look_positions: None,
+            shown: Shown::default(),
+            blend_from: Shown::default(),
+            blend_serial: 0,
+            path_started: true,
+            held: false,
             plain: false,
             keeps_facing: false,
             cooldown: 0.,
             current_zone: None,
             act: Act::Path,
         };
+        // Walking when the route doubles back: the walk's frame carries over
+        // into the turn, with no blend.
+        npc.ctl.start(MOTION_WALK, 0., true, &kind);
+        npc.ctl.clock = 3.;
         npc.tick(&kind, Vec3::new(1e6, 0., 1e6), false, &mut Lcg(3));
-        assert_eq!(npc.pose, Pose::Turn);
+        assert_eq!(npc.ctl.motion, MOTION_TURN);
+        assert_eq!(npc.ctl.blend, 0.);
+        assert_eq!(npc.ctl.clock, 4.);
+    }
+
+    /// R30A's shape: 160 ticks, returning to tick 40.
+    fn gesture() -> Anims {
+        let anim = |frames: usize, top: u32| Anim {
+            frames: (0..frames)
+                .map(|t| vec![Vec3::new(t as f32, 0., 0.)])
+                .collect(),
+            loop_start: top,
+            bones: vec![None; frames],
+            source: None,
+            root: vec![Vec3::ZERO; frames],
+        };
+        Anims {
+            idle: anim(121, 0),
+            walk: None,
+            turn: None,
+            extra: HashMap::from([(TALK_SLOT, anim(161, 40))]),
+            look_limit: 0.26,
+        }
+    }
+
+    #[test]
+    fn a_held_talk_plays_its_whole_motion_and_returns_to_the_return_frame() {
+        let anims = gesture();
+        let entity = ArdEntity {
+            object: 1,
+            position: [0.; 3],
+            rotation: [0.; 3],
+            spawn_type: 0,
+            spawn_arg: 0,
+            serial: 0,
+            arg1: 0,
+            arg2: 1,
+            talk: 0,
+            respawn_delay: 0,
+            reaction: 0,
+            radius: 0,
+            required_count: 0,
+            raw: [0; 0x40],
+        };
+        let mut npc = FieldNpc::spawn(0, &entity, 0, None, Program::default(), &mut Lcg(1));
+        let far = Vec3::new(1e6, 0., 1e6);
+        let mut seen = Vec::new();
+        for _ in 0..170 {
+            npc.tick(&anims, far, true, &mut Lcg(3));
+            seen.push(npc.frame_positions(&anims)[0].x as u32);
+        }
+        // FUN_1403c6740: the first step from 0 lands on 2, one key per tick,
+        // and at the length the clock wraps to the return frame.
+        assert_eq!(&seen[..3], &[2, 3, 4]);
+        assert_eq!(seen[157], 159);
+        assert_eq!(seen[158], 40);
+        assert_eq!(seen[159], 41);
+        // Never the end frame's duplicate of the return frame.
+        assert!(seen.iter().all(|&f| f < 160));
+    }
+
+    #[test]
+    fn a_motion_missing_from_the_set_leaves_the_one_playing() {
+        let mut anims = gesture();
+        anims.extra.clear();
+        let mut ctl = Ctl::default();
+        ctl.start(MOTION_IDLE, 0., true, &anims);
+        ctl.start(TALK_SLOT, 0., true, &anims);
+        assert_eq!(ctl.motion, MOTION_IDLE);
+    }
+
+    #[test]
+    fn root_motion_follows_the_clock_across_the_wrap() {
+        let mut anims = gesture();
+        let frames = 11;
+        anims.walk = Some(Anim {
+            frames: vec![vec![Vec3::ZERO]; frames],
+            loop_start: 4,
+            bones: vec![None; frames],
+            source: None,
+            root: (0..frames)
+                .map(|t| Vec3::new(0., 0., 3. * t as f32))
+                .collect(),
+        });
+        let mut npc = FieldNpc::spawn(
+            0,
+            &ArdEntity {
+                object: 1,
+                position: [0.; 3],
+                rotation: [0.; 3],
+                spawn_type: 0,
+                spawn_arg: 0,
+                serial: 0,
+                arg1: 0,
+                arg2: 1,
+                talk: 0,
+                respawn_delay: 0,
+                reaction: 0,
+                radius: 0,
+                required_count: 0,
+                raw: [0; 0x40],
+            },
+            0,
+            None,
+            Program::default(),
+            &mut Lcg(1),
+        );
+        npc.yaw = 0.;
+        npc.ctl.start(MOTION_WALK, 0., true, &anims);
+        // 0 to 2, then 8 single steps to 10, where it wraps to 4.
+        for _ in 0..9 {
+            npc.advance(&anims);
+        }
+        assert_eq!(npc.ctl.clock, 4.);
+        assert!((npc.position.z - 30.).abs() < 1e-4, "{}", npc.position.z);
+        npc.advance(&anims);
+        assert!((npc.position.z - 33.).abs() < 1e-4, "{}", npc.position.z);
     }
 }
 
@@ -1824,12 +2135,15 @@ mod walk_tests {
         };
         entity.arg2 = 2;
         let mut npc = FieldNpc::spawn(0, &entity, 0, Some(&path), Program::default(), &mut rng);
+        // A motion whose root travels `travel` per tick.
         let anim = |frames: usize, travel: f32| Anim {
             frames: vec![vec![Vec3::ZERO]; frames],
             loop_start: 0,
             bones: vec![None; frames],
             source: None,
-            travel,
+            root: (0..frames)
+                .map(|t| Vec3::new(0., 0., t as f32 * travel))
+                .collect(),
         };
         let anims = Anims {
             idle: anim(2, 0.),
