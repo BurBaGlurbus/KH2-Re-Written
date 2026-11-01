@@ -12,8 +12,13 @@ Private evidence (outside the checkout): check logs in this session's scratch fo
 
 1. Audited the workspace for Windows-only paths, crates, process logic, fonts, audio, build scripts and CI.
 2. Fixed what code can fix, keeping each Windows path the same.
-3. Checked the Linux target from Windows. WSL is not installed (`wsl -l -v`) and Docker is not on `PATH`, so nothing was linked or run
-   on Linux.
+3. Checked the Linux target from Windows. WSL is not installed (`wsl -l -v`) and Docker is not on `PATH`, so nothing could be linked or
+   run on Linux from this PC.
+4. The owner confirmed pushing all 36 waiting commits (T312 to T333) and pushed them, with `5d74125` replacing 14 personal paths in `docs/`
+   with `%USERPROFILE%`. Older commits keep the old spelling, as decided.
+5. The first `linux` CI run failed one test, which was a bug in the test (below). `776109d` fixed it, and the next run passed.
+6. The project's coordinator session ran the build, smoke run and launcher on an Ubuntu 24.04 machine and reported the results. Those rows
+   are its report: the owner of this record did not see the runs, and their logs are not kept here.
 
 ## Blockers found, and the changes
 
@@ -28,7 +33,7 @@ Private evidence (outside the checkout): check logs in this session's scratch fo
 | Original saves and bindings found only under `%USERPROFILE%` | `save/src/store.rs:107`, `pc_controls.rs:18` | `install::game_documents`: the Proton prefix in each library, then `~/Documents`. `store::original_folder` takes them as an argument, since `save` has no dependencies |
 | Skate 3's vgmstream was the Windows zip, `curl.exe` and `tar.exe` | `skate.rs:298-342` | `vgmstream-linux.zip` with its own digest, `curl`, `unzip` and the executable bit |
 | `build.bat` and `tools/Build-Launcher.ps1` only | repository root | `build.sh` |
-| CI ran only on Windows | `.github/workflows/ci.yml` | A `linux` job with the same checks (not pushed) |
+| CI ran only on Windows | `.github/workflows/ci.yml` | A `linux` job with the same checks |
 | Test that runs the built launcher named only `KH2RW` on Linux | `install.rs:1399` | Also `KH2RW Launcher` |
 
 Windows-only code left as it is, already behind `cfg`: `windows_subsystem`, `CREATE_NO_WINDOW`, `K32EmptyWorkingSet` (T313's trim has no
@@ -64,27 +69,39 @@ was not executed.
 | Exact-case scan of 832 `include!`, `#[path]` and `mod` references against Git's file list | PASS: 0 wrong case, 0 names differing only by case, no backslash paths |
 | `sh -n build.sh` | PASS (syntax only) |
 | Unit tests of the Linux path logic, font search and ranking, on Windows | PASS |
-| Linking on Linux, `cargo test` on Linux, `build.sh`, smoke run | NOT RUN: no Linux machine, WSL or Docker here |
-| Game, launcher, Vulkan rendering, sound, gamepad on Linux | NOT RUN |
+| GitHub `linux` job on Ubuntu, `5d74125` ([run 41321805542](https://github.com/BurBaGlurbus/KH2-Re-Written/actions/runs/41321805542)) | FAIL: one test, `locked_frames_run_one_tick_each_and_stay_on_real_time` |
+| GitHub `linux` job on Ubuntu, `776109d` ([run 41328482482](https://github.com/BurBaGlurbus/KH2-Re-Written/actions/runs/41328482482)) | PASS: fmt, clippy, build, 1191 tests passed and 1 ignored; with Skate 3, clippy and 1213 tests passed and 1 ignored |
+| GitHub `check` job on Windows, same run | PASS |
+| `./build.sh` on Ubuntu 24.04 (4 cores), as reported | PASS: `target/release/KH2RW Launcher` in 11.5 minutes |
+| Smoke run on Ubuntu 24.04, Xvfb X11, Mesa llvmpipe, as reported | PASS: window opened, `clean_exit; frames=180`. Panics in winit's X11 start without `libxkbcommon-x11-0`, which `docs/LINUX.md` lists |
+| Launcher on the same setup, as reported | PASS for opening on "Select the game folder" with readable text |
+| Launcher input, folder browser, quick start guide | NOT RUN: xdotool keys did not reach it under bare Xvfb with no window manager |
+| Real KH2 install scan, title screen, test room, saves on Linux | NOT RUN |
+| Real GPU, Wayland, sound, gamepad on Linux | NOT RUN |
 | Skate 3 vgmstream on Linux | NOT RUN |
-| GitHub `linux` job | NOT RUN: not pushed, on the owner's standing rule |
+
+The failing test never set the fixed timestep, so it ran at Bevy's default 64 Hz under a 60 FPS cap, and ticks drifted past its bound of
+2. The game's apps all set 60 Hz, so the game was not affected. The test now sets 60 Hz too; no test was skipped.
 
 The stand-in is a script that answers every `pkg-config` question with `1.0.0`, plus `PKG_CONFIG_ALLOW_CROSS=1`. A check does not link, so
 this proves our Rust code and the dependencies' Rust code type-check for the target. It proves nothing about the C libraries.
 
 ## Uncertainty
 
-- The Linux path has never run, so a clean check says nothing about behavior there. `docs/LINUX.md` lists what to test, in order.
+- The game has never run on Linux. The smoke run needs no game files, and the launcher only reached its first screen, so these results say
+  nothing about rendering the game, sound or input. `docs/LINUX.md` lists what to test, in order.
+- llvmpipe is a software renderer, so a real GPU's Vulkan driver is still unproven.
 - Shaders and render targets were only exercised on the owner's Windows Vulkan driver. Mesa or another GPU may behave differently.
-- The Fedora and Arch package lists are not tested. The Debian/Ubuntu development packages will first be exercised by the CI job.
+- The Fedora and Arch package lists are not tested. The CI job installs only the Debian/Ubuntu development packages, not the full list.
 - cpal asks ALSA for a 512-frame period, the same period as `winmm`, with two periods against waveOut's four. That may crackle under load.
 - The launcher's layout was designed around Trebuchet and Segoe UI, and Linux fonts are wider.
 - `dependency-inventory.csv` stays the Windows inventory; a Linux release needs its own (`docs/release/provenance.md`).
 
 ## Verdict
 
-PASS for what can be done from Windows. BLOCKED on a Linux machine for "runs on Linux": no claim that it does.
+PASS for building, testing and opening a window on Ubuntu. BLOCKED on a Linux desktop with the game for "runs on Linux": no claim that it
+does.
 
 ## Next
 
-The owner, or the GitHub `linux` job once pushed, runs the list in `docs/LINUX.md`. Fix what the first real build and run find.
+On a Linux desktop with the game installed, the owner runs the list in `docs/LINUX.md`. Fix what the first real run finds.

@@ -1,9 +1,10 @@
 # Running on Linux
 
-KH2 Re:Written builds for Linux, and [T333](tasks/T333-linux-port.md) records how far that is proven. **Nothing has
-run on a Linux machine yet.** The code passes clippy for the Linux target from Windows, but the build has never been
-linked, the tests have never run there, and the game has never opened a window there. Expect to find problems on the
-first run; [what to test](#what-to-test-first) lists them in order.
+KH2 Re:Written builds for Linux, and [T333](tasks/T333-linux-port.md) records how far that is proven. It builds and
+passes every test on Ubuntu (1191, or 1213 with Skate 3). `./build.sh` builds the launcher, the smoke test opens a
+window and exits cleanly, and the launcher opens with readable text. Those runs had a virtual X11 display and software
+Vulkan. **The game itself has never run on Linux:** no real KH2 install, real GPU, Wayland, sound or gamepad has been
+tried. Expect to find problems there; [what to test](#what-to-test-first) lists them in order.
 
 No game files are distributed. You need your own Steam copy of Kingdom Hearts HD 1.5 + 2.5 ReMIX.
 
@@ -100,17 +101,17 @@ Run the launcher from a terminal to see these messages. A failed test's last lin
 
 | Was blocking | Fix | State |
 | --- | --- | --- |
-| Bevy had no X11 or Wayland backend, so no window could open | `x11` and `wayland` features on Linux only (`source/main/Cargo.toml`) | Compiles; not run |
-| Sound was waveOut only, so the game was silent | cpal device (`source/audio/src/cpal_device.rs`), ALSA on Linux | Compiles; not run |
-| Launcher refused to start without Windows fonts | Searches Linux's font folders (`launcher/paint.rs`) | Search is unit tested; not run on Linux |
-| Browse listed drive letters, so nothing appeared | Home, `/`, `/mnt`, `/media`, `/run/media` (`launcher.rs`) | Compiles; not run |
+| Bevy had no X11 or Wayland backend, so no window could open | `x11` and `wayland` features on Linux only (`source/main/Cargo.toml`) | Window opens under X11; Wayland not run |
+| Sound was waveOut only, so the game was silent | cpal device (`source/audio/src/cpal_device.rs`), ALSA on Linux | Builds on CI; not run |
+| Launcher refused to start without Windows fonts | Searches Linux's font folders (`launcher/paint.rs`) | Launcher opens with readable text |
+| Browse listed drive letters, so nothing appeared | Home, `/`, `/mnt`, `/media`, `/run/media` (`launcher.rs`) | Builds on CI; not run |
 | `%LOCALAPPDATA%` lookups | `validation::host::local_data_root`, XDG on Linux | Path logic unit tested |
 | Steam found only under Program Files | `validation::host::steam_roots`: native, Flatpak, Snap, XDG | Path logic unit tested |
 | Saves and bindings found only under `%USERPROFILE%` | `install::game_documents`: Proton prefix, then `~/Documents` | Prefix path unit tested |
 | vgmstream was the Windows zip, with `curl.exe` and `tar.exe` | Linux asset, its own digest, `curl`, `unzip`, executable bit (`skate.rs`) | Asset and digest verified; not run |
-| `build.bat` and `tools/Build-Launcher.ps1` are Windows only | `build.sh` | Syntax only; not run |
-| Smoke test required `LOCALAPPDATA` | `local_data_root` | Compiles; not run |
-| CI only ran on Windows | `linux` job in `.github/workflows/ci.yml` | Not pushed, so not run |
+| `build.bat` and `tools/Build-Launcher.ps1` are Windows only | `build.sh` | Built the release launcher on Ubuntu 24.04 |
+| Smoke test required `LOCALAPPDATA` | `local_data_root` | Smoke run exits cleanly on Ubuntu 24.04 |
+| CI only ran on Windows | `linux` job in `.github/workflows/ci.yml` | Passes on Ubuntu ([run](https://github.com/BurBaGlurbus/KH2-Re-Written/actions/runs/41328482482)) |
 
 These needed no change:
 
@@ -128,13 +129,20 @@ Kingdom Hearts: Connected has its own copy of the engine with the same blockers,
 
 ## What to test first
 
-1. `./build.sh --no-skate3` links. This has never happened.
-2. `cargo test --locked` passes on Linux.
-3. `cargo run -p main --locked -- --frames 180` opens a window and exits cleanly, with no game files needed.
-4. The launcher opens with readable text, finds the install or browses to it, and finishes the scan.
-5. The title screen and test room render correctly under Vulkan on your GPU. Compare colors, the HUD, effects and the
+Already passed on Ubuntu 24.04, with a virtual X11 display (Xvfb, no window manager) and software Vulkan (Mesa llvmpipe):
+`./build.sh`, `cargo test --locked`, the smoke run (`cargo run -p main --locked -- --frames 180`), and the launcher
+opening on "Select the game folder" with readable text. The smoke run panics without `libxkbcommon-x11-0`, which the
+package lists above include.
+
+Still to test, on a real desktop:
+
+1. `./build.sh` on your own machine, then open the launcher.
+2. The launcher takes your keyboard and mouse: the folder browser and the quick start guide have never been used.
+3. It finds your install or browses to it, and finishes the scan. No real KH2 install has been scanned on Linux.
+4. The title screen and test room render correctly under Vulkan on your GPU. Compare colors, the HUD, effects and the
    glow pass with Windows.
+5. The same on Wayland, if your desktop uses it.
 6. Sound plays without crackling. If it crackles, the 512-frame period in `cpal_device.rs` is the first thing to raise.
 7. A gamepad works, including its button layout.
 8. A save written on Linux loads, and the Proton save is found.
-9. `./build.sh`, then the Skate 3 first ride: the vgmstream download, then decoding the disc's sounds.
+9. The Skate 3 first ride: the vgmstream download, then decoding the disc's sounds.
