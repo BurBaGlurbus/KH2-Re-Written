@@ -166,6 +166,53 @@ fn fit_hd_regions(model: &mut InspectionModel, bank: &[u8]) {
 
 /// Reads every BOB model and the placement table of a map archive, with the
 /// map's remaster images for the models' textures.
+/// A model's own data starts after 0x90 bytes the runtime keeps for its object.
+const MODEL_DATA: usize = 0x90;
+
+/// A level container (the data's first word -1, FUN_1401c3330): u32 offsets
+/// from the data's +0x10, ending at 0, each to one level's whole model. The
+/// room draws the first, which the object's level byte +0x139 selects at 0 [I:
+/// its writer was not traced]; its texture numbers start at 0 (FUN_1401c3200
+/// counts only earlier levels). Any other payload is itself.
+fn level_payload(payload: &[u8]) -> &[u8] {
+    let word = |at: usize| -> Option<u32> {
+        Some(u32::from_le_bytes(
+            payload
+                .get(MODEL_DATA + at..MODEL_DATA + at + 4)?
+                .try_into()
+                .ok()?,
+        ))
+    };
+    if word(0) != Some(u32::MAX) {
+        return payload;
+    }
+    let Some(first) = word(0x10).filter(|&o| o != 0) else {
+        return payload;
+    };
+    let end = word(0x14)
+        .filter(|&o| o != 0)
+        .map_or(payload.len(), |o| MODEL_DATA + o as usize);
+    payload
+        .get(MODEL_DATA + first as usize..end)
+        .unwrap_or(payload)
+}
+
+/// A level container's texture bank (FUN_1401a5180: first i16 -1, u32 count at
+/// +4, u32 offsets at +8): the first level's, and how far in it starts.
+fn level_bank(bank: &[u8]) -> (&[u8], usize) {
+    let word = |at: usize| -> Option<usize> {
+        Some(u32::from_le_bytes(bank.get(at..at + 4)?.try_into().ok()?) as usize)
+    };
+    if bank.get(..2) == Some(&[0xff, 0xff])
+        && word(4).is_some_and(|n| n > 0)
+        && let Some(first) = word(8)
+        && let Some(rest) = bank.get(first..)
+    {
+        return (rest, first);
+    }
+    (bank, 0)
+}
+
 pub fn load(
     archive: &[u8],
     replacements: &[data::replacement_payload::ReplacementSample],
@@ -182,6 +229,7 @@ pub fn load(
             continue;
         }
         let Some(payload) = slice(e) else { continue };
+        let payload = level_payload(payload);
         // The next entries of the same name until the next type 4.
         let mut bank = None;
         let mut motions = None;
@@ -198,12 +246,21 @@ pub fn load(
                 _ => {}
             }
         }
-        let bank_arg = bank.and_then(|(b, off)| b.map(|b| (b, off, 0usize)));
-        let Ok(mut model) = model_inspection::model_from_payload(payload, bank_arg, replacements)
-        else {
-            // Keep indices aligned with the placement table.
-            models.push(None);
-            continue;
+        let bank_arg = bank.and_then(|(b, off)| {
+            b.map(|b| {
+                let (b, skip) = level_bank(b);
+                (b, off + skip, 0usize)
+            })
+        });
+        let mut model = match model_inspection::model_from_payload(payload, bank_arg, replacements)
+        {
+            Ok(m) => m,
+            Err(error) => {
+                eprintln!("Map object {i} rejected: {error}");
+                // Keep indices aligned with the placement table.
+                models.push(None);
+                continue;
+            }
         };
         if let Some((bank, ..)) = bank_arg {
             fit_hd_regions(&mut model, bank);
@@ -258,4 +315,35 @@ pub fn load(
         }
     }
     Ok(LoadedBobs { models, placements })
+}
+
+#[cfg(test)]
+mod level_tests {
+    use super::{MODEL_DATA, level_bank, level_payload};
+
+    #[test]
+    fn a_level_container_gives_its_first_model() {
+        let mut p = vec![0u8; MODEL_DATA];
+        p.extend(u32::MAX.to_le_bytes());
+        p.resize(MODEL_DATA + 0x10, 0);
+        p.extend(0x20u32.to_le_bytes());
+        p.extend(0x24u32.to_le_bytes());
+        p.extend(0u32.to_le_bytes());
+        p.resize(MODEL_DATA + 0x20, 0);
+        p.extend([1, 2, 3, 4, 5, 6]);
+        assert_eq!(level_payload(&p), &[1, 2, 3, 4]);
+        let plain = vec![7u8; MODEL_DATA + 8];
+        assert_eq!(level_payload(&plain), &plain[..]);
+    }
+
+    #[test]
+    fn a_level_container_gives_its_first_bank() {
+        let mut b = vec![0xff, 0xff, 0, 0];
+        b.extend(2u32.to_le_bytes());
+        b.extend(0x10u32.to_le_bytes());
+        b.extend(0x12u32.to_le_bytes());
+        b.extend([9, 8, 7]);
+        assert_eq!(level_bank(&b), (&[9u8, 8, 7][..], 0x10));
+        assert_eq!(level_bank(&[1, 2]), (&[1u8, 2][..], 0));
+    }
 }
