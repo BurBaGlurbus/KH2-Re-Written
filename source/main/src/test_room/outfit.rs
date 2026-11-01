@@ -4,7 +4,8 @@
 //!
 //! The list comes from the object table (`00objentry.bin`) and the files
 //! installed, not from a fixed list. A world costume's Drive forms come from
-//! its `memt` row, as FUN_140405190 picks them.
+//! its `memt` row, as FUN_140405190 picks them. Entering a room wears the
+//! place's bodies (`enter_place`), so a menu's choice lasts until then.
 //!
 //! The crown is a Final Mix costume rule (FUN_1403a9e20): the number of Proofs
 //! held picks a TEXA animation of the model (`CROWN_ANIMATIONS`), and
@@ -480,6 +481,37 @@ pub fn wears_crown(game: &Game) -> bool {
         .is_some_and(|set| crown_patch(set).is_some())
 }
 
+/// The bodies of the place the room entered (`AreaSource::members`,
+/// FUN_140405190 and FUN_1403c32e0's objects): Sora's, and each friend's where
+/// that character is in the room. The party that fights is fixed when the room
+/// starts, so a member who is not here stays out.
+pub fn enter_place(game: &mut Game, members: &crate::area::Members) {
+    drive_room::wear_place(game, members.player);
+    let Some(src) = game.party_reload.clone() else {
+        return;
+    };
+    for &object in &members.friends {
+        let Some(entry) = src
+            .objects
+            .iter()
+            .find(|o| o.object_id == u32::from(object))
+        else {
+            continue;
+        };
+        let Ok(character) = u8::try_from(entry.character) else {
+            continue;
+        };
+        let model = String::from_utf8_lossy(&entry.model_name).into_owned();
+        let worn = game
+            .party
+            .iter()
+            .any(|m| m.kind.member.character == character && m.kind.name == model);
+        if !worn {
+            party_room::wear(game, character, &model);
+        }
+    }
+}
+
 /// Wears `outfit` on its owner: Sora, or the party member of its section.
 pub fn wear(game: &mut Game, outfit: &Outfit) {
     match outfit.group.member() {
@@ -515,16 +547,94 @@ pub fn tour_stick(tick: u64) -> Vec2 {
     Vec2::new(0., way)
 }
 
-/// The unattended tour: each outfit in turn, then each crown on base Sora,
-/// then the debug menu's page this returns.
-pub fn tour(game: &mut Game) -> Option<usize> {
+/// A step of the unattended `--place-tour`: long enough for a warp's fades and
+/// its kit, or a Drive's motion.
+pub const PLACE_STEP: u64 = 480;
+/// The worlds it visits: Halloween and Christmas Town, Space Paranoids,
+/// Timeless River, Pride Lands, Atlantica and Twilight Town.
+const PLACE_WORLDS: [u8; 6] = [14, 17, 13, 10, 11, 2];
+
+/// One room of each different body the tour's worlds put Sora in.
+fn tour_places(area: &AreaRes) -> Vec<(u8, u8)> {
+    let mut seen = Vec::new();
+    let mut places = Vec::new();
+    for world in PLACE_WORLDS {
+        for &room in area.source.rooms(world) {
+            let player = area.source.members(world, room, &[]).player;
+            if !seen.contains(&player) {
+                seen.push(player);
+                places.push((world, room));
+            }
+        }
+    }
+    places
+}
+
+/// The unattended `--place-tour`: warps to each place, drives into Valor where
+/// the game has forms, reverts, and goes on; last, a warp in a form.
+fn place_tour(game: &mut Game, area: &mut AreaRes, step: usize) {
+    let places = tour_places(area);
+    let (at, part) = (step / 3, step % 3);
+    let tick = game.tick;
+    let Some(&(world, room)) = places.get(at) else {
+        // Last, a warp in a form: the form stays, on the new place's body.
+        match step - places.len() * 3 {
+            0 => {
+                game.sora.player.drive.refill();
+                drive_room::start_change(game, player::forms::VALOR);
+            }
+            1 => {
+                if let Some(&place) = places.first() {
+                    game.event(serde_json::json!({"event":"place_tour_warp","tick":tick,
+                        "world":place.0,"room":place.1,"form":true}));
+                    debug_menu::warp_to(area, (place.0, place.1, 0));
+                }
+            }
+            2 => drive_room::start_change(game, 0),
+            _ => {}
+        }
+        return;
+    };
+    let forms = !matches!(world, 10 | 11);
+    match part {
+        0 => {
+            let object = area.source.members(world, room, &[]).player;
+            game.event(serde_json::json!({"event":"place_tour_warp","tick":tick,
+                "world":world,"room":room,"object":object}));
+            if area.transition.is_none() && area.pending.is_none() {
+                debug_menu::warp_to(area, (world, room, 0));
+            }
+        }
+        1 if forms => {
+            game.sora.player.drive.refill();
+            drive_room::start_change(game, player::forms::VALOR);
+        }
+        2 if forms => drive_room::start_change(game, 0),
+        _ => {}
+    }
+}
+
+/// The unattended tours: each outfit in turn, then each crown on base Sora, then
+/// the debug menu's page this returns; or, with `--place-tour`, the places.
+pub fn tour(game: &mut Game, area: Option<&mut AreaRes>) -> Option<usize> {
     let t = game.tick.checked_sub(TOUR_START)?;
     let step = game.outfit_tour?;
+    let length = if game.place_tour {
+        PLACE_STEP
+    } else {
+        TOUR_STEP
+    };
     // Frames can land on a tick twice or skip one.
-    if t < step as u64 * TOUR_STEP {
+    if t < step as u64 * length {
         return None;
     }
     game.outfit_tour = Some(step + 1);
+    if game.place_tour {
+        if let Some(area) = area {
+            place_tour(game, area, step);
+        }
+        return None;
+    }
     let outfits = game.drive.as_ref().map(|d| d.src.outfits.clone())?;
     let tick = game.tick;
     if let Some(outfit) = outfits.get(step) {

@@ -253,6 +253,19 @@ impl FormSources {
             .ok_or_else(|| format!("form {form} object {id:#x} absent").into())
     }
 
+    /// What `outfit` is to wear the place's object `object`: none for base
+    /// Sora, so he keeps the room's own kit path.
+    fn place_outfit(&self, object: u16) -> Option<u32> {
+        let base = self.object(0).ok()?.object_id;
+        // The World Map's row names its cursor, which is no body of his.
+        let body = self
+            .objects
+            .iter()
+            .find(|o| o.object_id == u32::from(object))
+            .is_some_and(|o| matches!(o.character, 1 | 14));
+        (body && u32::from(object) != base).then_some(u32::from(object))
+    }
+
     /// Base Sora's model name.
     pub fn base_model(&self) -> &str {
         &self.base_object
@@ -691,6 +704,8 @@ pub struct DriveRt {
     /// what the last choice came to, for its notice.
     pub outfit: Option<u32>,
     outfit_pending: bool,
+    /// The change is the place's, not the menu's: no notice.
+    outfit_quiet: bool,
     pub outfit_result: Option<String>,
     /// Keyblades each kit shows: 0 (Antiform), 1 or 2.
     pub weapons: HashMap<u8, u8>,
@@ -784,6 +799,7 @@ impl DriveRt {
             models: HashMap::new(),
             outfit: None,
             outfit_pending: false,
+            outfit_quiet: false,
             outfit_result: None,
             main_weapon: KINGDOM_KEY,
             reweapon: None,
@@ -1119,6 +1135,20 @@ impl DriveRt {
             return Ok(false);
         };
         if *f != form {
+            // Another kit holds the load: when it ends it is kept, and this
+            // one takes its turn.
+            let other = *f;
+            let done = slot
+                .lock()
+                .map_err(|_| "form loader stopped".to_owned())?
+                .take();
+            if let Some(done) = done {
+                if let Ok(kit) = done {
+                    self.ready.insert(other, kit);
+                }
+                self.loading = None;
+                self.start_load(form);
+            }
             return Ok(false);
         }
         let built = slot
@@ -1147,6 +1177,47 @@ impl DriveRt {
     }
 }
 
+/// The room starts on the place's body: its kit is built here, with the
+/// session's load, and swaps in on the first tick.
+pub fn start_on_place(game: &mut Game, object: u16) {
+    let Some(d) = game.drive.as_mut() else { return };
+    let outfit = d.src.place_outfit(object);
+    if outfit.is_none() {
+        return;
+    }
+    d.outfit = outfit;
+    d.outfit_pending = true;
+    d.outfit_quiet = true;
+    let weapons = d.weapons_for(0);
+    match d.src.build(&d.source, 0, weapons, outfit) {
+        Ok(kit) => {
+            d.ready.insert(0, kit);
+            d.reweapon = Some(0);
+        }
+        Err(e) => {
+            eprintln!("The place's body failed to load: {e}");
+            d.outfit = None;
+            d.outfit_pending = false;
+        }
+    }
+}
+
+/// FUN_140405190's object for the place the room entered: Sora wears it, and a
+/// form in play is rebuilt on it (the form's column of the same `memt` row).
+/// A body from the debug menu lasts until here.
+pub fn wear_place(game: &mut Game, object: u16) {
+    let Some(d) = game.drive.as_mut() else { return };
+    let outfit = d.src.place_outfit(object);
+    if d.outfit == outfit {
+        return;
+    }
+    d.outfit = outfit;
+    d.outfit_pending = true;
+    d.outfit_quiet = true;
+    d.outfit_result = None;
+    d.keyblades_changed(d.main_weapon);
+}
+
 /// Wears `outfit` in base Sora's place, or base Sora again: a form in play
 /// ends, and the kit is rebuilt in the background and swapped in when ready.
 pub fn set_outfit(game: &mut Game, outfit: Option<u32>) {
@@ -1154,6 +1225,7 @@ pub fn set_outfit(game: &mut Game, outfit: Option<u32>) {
     let Some(d) = game.drive.as_mut() else { return };
     d.outfit = outfit;
     d.outfit_pending = true;
+    d.outfit_quiet = false;
     d.outfit_result = None;
     d.keyblades_changed(d.main_weapon);
 }
@@ -1574,13 +1646,14 @@ pub fn rebuild_weapons(game: &mut Game) {
                         if game.drive.as_mut().is_some_and(|d| {
                             let worn = d.outfit_pending;
                             d.outfit_pending = false;
-                            if worn {
+                            if worn && !d.outfit_quiet {
                                 d.outfit_result = Some("Outfit on".into());
                             }
                             worn
                         }) {
+                            // A form keeps its motion: its kit's set is the same.
                             let p = &mut game.sora.player;
-                            if !p.dead() {
+                            if !p.dead() && form == 0 {
                                 let airborne = p.in_air();
                                 p.arrive(0, airborne, &game.clips);
                                 game.action_started = game.tick;
@@ -1602,7 +1675,9 @@ pub fn rebuild_weapons(game: &mut Game) {
                     d.reweapon = None;
                     if d.outfit_pending {
                         d.outfit_pending = false;
-                        d.outfit_result = Some(format!("Outfit failed: {e}"));
+                        if !d.outfit_quiet {
+                            d.outfit_result = Some(format!("Outfit failed: {e}"));
+                        }
                         // The kit on screen stays, so its rebuild must too.
                         d.outfit = None;
                         d.keyblades_changed(d.main_weapon);
@@ -1696,6 +1771,7 @@ pub fn tick(game: &mut Game, abilities: Option<&[u16]>) {
         && game.ability_tour.is_none()
         && !game.magic_tour
         && !game.sephiroth_tour
+        && game.outfit_tour.is_none()
     {
         use player::limit_form::{INFINITY, STRIKE_RAID};
         match game.tick {
@@ -1770,8 +1846,9 @@ pub fn tick(game: &mut Game, abilities: Option<&[u16]>) {
         if target != 0 && frames == CHANGE_WAIT {
             d.after = Some((1., 0., 0));
         }
+        // A revert needs base Sora's kit, which a rebuild may have dropped.
         let ready = if target == 0 {
-            Ok(true)
+            d.loaded(0, &mut log)
         } else if frames < CHANGE_WAIT {
             Ok(false)
         } else {

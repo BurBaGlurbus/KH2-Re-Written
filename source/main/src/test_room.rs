@@ -1292,6 +1292,8 @@ pub struct Game {
     pub limit_form_tour: bool,
     /// The unattended `--outfit-tour` (outfit.rs): its next step.
     pub outfit_tour: Option<usize>,
+    /// That tour goes through the costume worlds (`--place-tour`).
+    pub place_tour: bool,
     /// The unattended `--party-items-tour` (party_items_tour.rs).
     pub party_items_tour: bool,
     /// The unattended `--party-camp-tour` (party_camp_tour.rs).
@@ -5442,6 +5444,7 @@ pub fn area_transition(
         *to = record;
     }
     party_room::follow_party_table(&mut game, next.world);
+    outfit::enter_place(&mut game, &next.members);
     area.current = next;
     // The old area's effects end with it; the new area's start next tick.
     game.fx_clear_map.push(None);
@@ -7493,6 +7496,8 @@ pub fn simulate(
         (Vec2::ZERO, false, false)
     } else if game.party_anim_tour {
         (party_anim_tour::stick(tick), false, false)
+    } else if game.place_tour {
+        (Vec2::ZERO, false, false)
     } else if game.outfit_tour.is_some() {
         (outfit::tour_stick(tick), false, false)
     } else if game.magic_tour {
@@ -14409,6 +14414,7 @@ pub fn run(
     let mut limit_tour = false;
     let mut limit_form_tour = false;
     let mut outfit_tour = None;
+    let mut place_tour = false;
     let mut party_items_tour = false;
     let mut party_camp_tour = false;
     let mut game_over_tour = false;
@@ -14493,6 +14499,10 @@ pub fn run(
             }
             Some("--autoplay") if autoplay.is_none() => autoplay = options.next().cloned(),
             Some("--outfit-tour") => outfit_tour = Some(0),
+            Some("--place-tour") => {
+                outfit_tour = Some(0);
+                place_tour = true;
+            }
             Some("--capture-at") if capture_at.is_none() => {
                 capture_at = Some(
                     options
@@ -15317,6 +15327,7 @@ pub fn run(
         limit_tour,
         limit_form_tour,
         outfit_tour,
+        place_tour,
         party_items_tour,
         party_camp_tour,
         party_limits: Arc::new(std::mem::take(&mut loaded.party_limits)),
@@ -15440,6 +15451,10 @@ pub fn run(
             "records":d.forms.records.iter().map(|r| serde_json::json!({"level":r.level,"keyblade":r.keyblade,
                 "abilities":r.abilities})).collect::<Vec<_>>(),"enemy_character":loaded.enemy_character}));
         game.drive = Some(d);
+        // The room's body is the place's (`memt`), from its first frame.
+        if let Some(area) = area_res.as_ref() {
+            drive_room::start_on_place(&mut game, area.current.members.player);
+        }
     }
     let output = if loaded.banks.numbers().is_empty() {
         None

@@ -2087,17 +2087,22 @@ fn act(
             if area.transition.is_some() || area.pending.is_some() {
                 return None;
             }
-            area.transition = Some(Transition {
-                stage: Stage::Closing,
-                iris: None,
-                fade: Fade::default(),
-                target: (world, room, 0),
-                job: start_area_job(&area.source, (world, room, 0)),
-            });
+            warp_to(area, (world, room, 0));
             menu.open = false;
             None
         }
     }
+}
+
+/// Starts the fade to `target`, a room with its entrance.
+pub fn warp_to(area: &mut AreaRes, target: (u8, u8, u8)) {
+    area.transition = Some(Transition {
+        stage: Stage::Closing,
+        iris: None,
+        fade: Fade::default(),
+        target,
+        job: start_area_job(&area.source, target),
+    });
 }
 
 /// The row to start on when a tab opens: on the preview, the motion now
@@ -2185,7 +2190,7 @@ pub fn tick(
         menu.notice = Some((result, NOTICE_FRAMES));
     }
     if game.outfit_tour.is_some()
-        && let Some(page) = outfit::tour(&mut game)
+        && let Some(page) = outfit::tour(&mut game, area.as_deref_mut())
     {
         menu.show_outfit_page(page);
     }
