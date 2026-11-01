@@ -35,7 +35,7 @@ pub fn lookup(table: u16, index: u16) -> Option<TrapFn> {
         (2, 31) => attack_dup,
         (2, 32) | (2, 33) => answer_zero,
         (2, 93) => damage_is_normal,
-        (4, 30) | (4, 55) => answer_zero,
+        (4, 30) => answer_zero,
         (6, 61) => obj_is_hook,
         (10, 24) | (10, 38) | (10, 50) => answer_zero,
         (10, 55) => searcher_check_hide_from_friend,
@@ -51,8 +51,8 @@ fn int(args: &mut Args, v: i32) {
 /// the enemies' scripts do hangs on it being more than 0: 1:196 FUN_14042e3d0
 /// the entrance (DAT_14071700a), 1:338 FUN_140431450 FUN_14040bb00's prize
 /// return, 1:361 FUN_1404312e0 FUN_1403c1be0's sheet level, 2:32 and 2:33 the
-/// damage record's attack row (+0xc, +0xe), 4:30 FUN_1403fb750's combo, 4:55
-/// FUN_140433570 the mission lock (DAT_142a10500), 10:24 and 10:38 and 10:50
+/// damage record's attack row (+0xc, +0xe), 4:30 FUN_1403fb750's combo, 10:24
+/// and 10:38 and 10:50
 /// a friend's ability, its attack's finish, its sheet's MP (+0x180).
 fn answer_zero(_: &mut Ctx<'_>, _: &mut Memory<'_>, args: &mut Args) -> Result<(), Fault> {
     int(args, 0);

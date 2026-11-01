@@ -183,7 +183,6 @@ pub fn lookup(table: u16, index: u16) -> Option<TrapFn> {
         (1, 165) => command_override,
         (0, 32) => screen_whitein,
         (1, 295) => camera_reset,
-        (1, 41) => signal_call,
         (0, 14) => progress_set_flag,
         (1, 32) => message_open,
         (1, 33) => message_close,
@@ -271,7 +270,6 @@ forward_traps! {
     command_override = "command_override", None, Some(2), None;
     screen_whitein = "func_screen_whitein", None, None, None;
     camera_reset = "camera_reset", None, None, None;
-    signal_call = "signal_call", None, None, None;
     progress_set_flag = "progress_set_flag", None, None, None;
     message_open = "message_open", None, None, None;
     message_close = "message_close", None, None, None;

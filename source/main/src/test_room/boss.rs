@@ -420,11 +420,11 @@ pub fn spawner(source: &Arc<data::probe_source::ProbeSource>) -> Option<summon::
 
 /// A mission an area's battle program registered (op 0x15, FUN_1403a3fa0 ->
 /// FUN_1403a2c30 loads `msn/<language>/<name>.bar`): its 48-byte record
-/// (BAR type 2) and the overlay events it names, run by the mission
-/// manager's per-frame task FUN_1403a35c0. The mission script (`ms_boss`)
-/// is not run: a boss's death signal (code 4) is what its trigger 10 turns
-/// into `trap_mission_dead_boss` (FUN_1404334d0), translated here.
+/// (BAR type 2), its script (type 3: `ms_boss` for most, with its own rule for
+/// others, AL03_MS103 counting two Lords) and the overlay events it names, run
+/// by the mission manager's per-frame task FUN_1403a35c0.
 pub struct Mission {
+    script: Option<Box<enemy_script::ScriptBrain>>,
     /// +0x04: flag bits (bit 0 forces battle style 2, FUN_1403ab690).
     pub flags: u16,
     /// +0x0d: the bonus the clear grants; +0x14 the clear sound.
@@ -434,8 +434,6 @@ pub struct Mission {
     /// third event ("re_deadboss2-0a", FUN_1403f4b10(2)).
     boss_event: Option<Overlay>,
     clear_event: Option<Overlay>,
-    /// `trap_mission_lock` (DAT_142a10500 bit 0): the death signal was taken.
-    pub locked: bool,
     /// FUN_1403a35c0's state after the clear started: 3 the boss overlay
     /// runs, 4 the clear overlay runs, 5 done (signal 0x10).
     pub state: u8,
@@ -579,6 +577,16 @@ impl Mission {
         };
         let record_index = table.entries.iter().position(|e| e.entry_type == 2)?;
         let rec = entry(record_index)?;
+        let script = table
+            .entries
+            .iter()
+            .position(|e| e.entry_type == 3)
+            .and_then(entry)
+            .map(|payload| enemy_script::ScriptBrain::mission(payload.to_vec()))
+            .transpose()
+            .map_err(|e| eprintln!("{name}: {e}"))
+            .ok()?
+            .map(Box::new);
         let u16_at = |o: usize| Some(u16::from_le_bytes(rec.get(o..o + 2)?.try_into().ok()?));
         let u32_at = |o: usize| Some(u32::from_le_bytes(rec.get(o..o + 4)?.try_into().ok()?));
         // Sub-records from +0x1c: {u16 kind, u16 count, count * 4 bytes}
@@ -601,12 +609,12 @@ impl Mission {
             Overlay::read(b.get(e.offset as usize..e.offset as usize + e.size as usize)?)
         });
         Some(Mission {
+            script,
             flags: u16_at(4)?,
             bonus: *rec.get(0xd)?,
             clear_sound: u32_at(0x14)?,
             boss_event,
             clear_event,
-            locked: false,
             state: 0,
         })
     }
@@ -639,7 +647,7 @@ impl Mission {
 pub fn mission_tick(
     mut game: ResMut<Game>,
     area: Option<Res<AreaRes>>,
-    gallery: Res<enemy_gallery::EnemyGallery>,
+    mut gallery: ResMut<enemy_gallery::EnemyGallery>,
 ) {
     if game.mission.is_none() && !game.mission_tried {
         game.mission_tried = true;
@@ -665,16 +673,48 @@ pub fn mission_tick(
     }
     let signals = std::mem::take(&mut game.mission_signals);
     let tick = game.tick;
-    for (code, arg) in signals {
-        // ms_boss trigger 10: code 4 (a boss died) locks the mission and
-        // runs `trap_mission_dead_boss(-1)` (FUN_1404334d0).
-        let start = game
-            .mission
+    for &(code, arg) in &signals {
+        game.event(serde_json::json!({"event":"mission_signal","tick":tick,"code":code,"arg":arg}));
+    }
+    // The mission's script: the signals reach its trigger 10, then its main
+    // thread and the threads it started run, with the fighters' objects in its
+    // list. Its calls come after.
+    if let Some(mut script) = game.mission.as_mut().and_then(|m| m.script.take()) {
+        let mut rng = game
+            .enemy
             .as_mut()
-            .is_some_and(|m| code == 4 && !std::mem::replace(&mut m.locked, true));
-        game.event(serde_json::json!({"event":"mission_signal","tick":tick,"code":code,"arg":arg,"clear":start}));
-        if start {
-            dead_boss(&mut game);
+            .map_or_else(Default::default, |e| std::mem::take(&mut e.rng));
+        let player = game.sora.player.position;
+        for actor in &mut gallery.actors {
+            if let Some(other) = enemy_battle::fighter_brain(actor) {
+                other.lend_objects(&mut script);
+            }
+        }
+        for (code, arg) in signals {
+            script.mission_signal(&game.world, player, &mut rng, code, arg);
+        }
+        let calls = script.mission_tick(&game.world, player, &mut rng);
+        for actor in &mut gallery.actors {
+            if let Some(other) = enemy_battle::fighter_brain(actor) {
+                other.take_back_objects(&mut script);
+            }
+        }
+        if let Some(e) = game.enemy.as_mut() {
+            e.rng = rng;
+        }
+        if let Some(fault) = script.fault.take() {
+            game.event(serde_json::json!({"event":"mission_fault","tick":tick,"fault":fault}));
+        }
+        if let Some(m) = game.mission.as_mut() {
+            m.script = Some(script);
+        }
+        for call in calls {
+            game.event(serde_json::json!({"event":"mission_call","tick":tick,
+                "call":format!("{call:?}")}));
+            // [U] The other calls' presentations are not carried out.
+            if let enemy::world::MissionCall::DeadBoss(_) = call {
+                dead_boss(&mut game);
+            }
         }
     }
     // FUN_1403a35c0's states 3 and 4. Each overlay's frame advances at the

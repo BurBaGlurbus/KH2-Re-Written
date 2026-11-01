@@ -428,6 +428,7 @@ impl Clip {
 }
 /// A motion set's clips, and for each hook table the set as that table leaves
 /// it: FUN_1403c8cd0 looks in the table first, then in the set.
+#[derive(Default)]
 pub struct Clips(HashMap<usize, Clip>, HashMap<i32, Clips>);
 impl Clips {
     pub fn hook(&self, hook: i32) -> Option<&Clips> {
@@ -1256,7 +1257,7 @@ impl BattleActor {
 }
 
 /// A fighter still in the fight, whose objects are in the engine's list.
-fn fighter_brain(
+pub(super) fn fighter_brain(
     actor: &mut super::enemy_gallery::GalleryActor,
 ) -> Option<&mut super::enemy_script::ScriptBrain> {
     let battle = actor.battle.as_mut().filter(|b| b.error.is_none())?;

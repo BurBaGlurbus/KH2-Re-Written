@@ -666,8 +666,103 @@ impl ScriptBrain {
         if setup.object_id != 0 {
             super::enemy_battle::register_fighter_kind(setup.entry_id, &clips);
         }
+        let mut brain = Self::fresh(setup, clips, payload, position);
+        // The spawner is there for OBJ_INIT's own `sysobj_appear` (M_EX870's).
+        brain.world.spawner = spawner;
+        match adopted {
+            Some(object) => brain.adopt(object, stats, sstm),
+            None => brain.build(position, yaw, stats, sstm, &mut ScriptRandom::default())?,
+        }
+        Ok(brain)
+    }
+
+    /// A mission's script (`msn/<language>/<name>.bar` type 3): it stands in the
+    /// engine's list, and the fighters lend it their objects as they do each
+    /// other.
+    pub fn mission(payload: Vec<u8>) -> Result<Self, String> {
+        let setup = ScriptSetup {
+            object_type: 0,
+            entry_id: 0,
+            sheets: None,
+            patn: Vec::new(),
+            spawn_serial: 0,
+            character: 0,
+            entry_flags: 0,
+            object_id: next_fighter_id(),
+        };
+        let clips = Arc::new(Clips::default());
+        let mut brain = Self::fresh(setup, clips, payload, [0.; 3]);
+        brain.fresh_world();
+        let id = brain.setup.object_id;
+        brain.object = Object::spawn_unit(id, &brain.payload, Sysobj::bare())
+            .map(Box::new)
+            .map_err(|e| format!("mission script rejected: {e:?}"))?;
+        Ok(brain)
+    }
+
+    /// A signal reaches the mission's trigger (FUN_1403aabe0 -> FUN_1403f4980).
+    pub fn mission_signal(
+        &mut self,
+        room: &RoomWorld,
+        player: Vec3,
+        rng: &mut ScriptRandom,
+        code: i32,
+        argument: i32,
+    ) {
+        self.world.rng.0 = rng.0;
+        let env = BrainEnv {
+            room: Some(room),
+            clips: ClipView {
+                base: &self.clips,
+                captured: &self.captured,
+            },
+            player,
+            player_yaw: self.player_yaw,
+            facts: self.facts,
+            commands: &self.commands,
+            fx: &self.fx,
+        };
+        let args = [
+            enemy::script::Slot::int(code),
+            enemy::script::Slot::int(argument),
+        ];
+        self.object
+            .fire(&mut self.world, &env, enemy::object::UNIT_SIGNAL, &args);
+        rng.0 = self.world.rng.0;
+        self.record_faults();
+    }
+
+    /// One update of a mission's script, and what it asked of the host.
+    pub fn mission_tick(
+        &mut self,
+        room: &RoomWorld,
+        player: Vec3,
+        rng: &mut ScriptRandom,
+    ) -> Vec<enemy::world::MissionCall> {
+        self.world.rng.0 = rng.0;
+        let env = BrainEnv {
+            room: Some(room),
+            clips: ClipView {
+                base: &self.clips,
+                captured: &self.captured,
+            },
+            player,
+            player_yaw: self.player_yaw,
+            facts: self.facts,
+            commands: &self.commands,
+            fx: &self.fx,
+        };
+        self.object.tick_main(&mut self.world, &env);
+        self.object.tick_threads(&mut self.world, &env);
+        self.drain_events();
+        rng.0 = self.world.rng.0;
+        self.record_faults();
+        std::mem::take(&mut self.world.mission.calls)
+    }
+
+    fn fresh(setup: ScriptSetup, clips: Arc<Clips>, payload: Vec<u8>, position: Vec3) -> Self {
         let id = setup.object_id;
-        let mut brain = Self {
+        Self {
             setup,
             world: EnemyWorld::default(),
             object: Box::new(Object::bare(id)),
@@ -707,14 +802,7 @@ impl ScriptBrain {
             sora_hp: Vec::new(),
             sora_mpdrive: Vec::new(),
             presentations: Vec::new(),
-        };
-        // The spawner is there for OBJ_INIT's own `sysobj_appear` (M_EX870's).
-        brain.world.spawner = spawner;
-        match adopted {
-            Some(object) => brain.adopt(object, stats, sstm),
-            None => brain.build(position, yaw, stats, sstm, &mut ScriptRandom::default())?,
         }
-        Ok(brain)
     }
 
     fn build(

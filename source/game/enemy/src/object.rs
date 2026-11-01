@@ -13,6 +13,10 @@ use crate::world::{Event, ObjId, Object, ScriptSpace, World, object_handle, run_
 /// Script trigger keys (OBJ_INIT, OBJ_MAIN, OBJ_DAMAGE, OBJ_FALL ...).
 pub const INIT: i32 = 0;
 pub const MAIN: i32 = 1;
+/// A mission script's main thread and the signal trigger
+/// (FUN_1403a2c30's scripts, `ms_boss`).
+pub const UNIT_MAIN: i32 = 3;
+pub const UNIT_SIGNAL: i32 = 10;
 pub const DAMAGE: i32 = 6;
 pub const FALL: i32 = 13;
 pub const LAND: i32 = 14;
@@ -100,6 +104,25 @@ impl Object {
             faults: Vec::new(),
         };
         obj.init_pending = true;
+        Ok(obj)
+    }
+
+    /// A mission's script: no OBJ_INIT, and UNIT_MAIN for its main thread.
+    pub fn spawn_unit(id: ObjId, payload: &[u8], sys: Sysobj) -> Result<Object, SpawnError> {
+        let mut obj = Self::spawn_later(id, payload, sys)?;
+        obj.init_pending = false;
+        let main = obj.script.instance.trigger(UNIT_MAIN);
+        if main > 0 {
+            obj.script.main = Some(Thread::with_sizes(
+                obj.script.stack_bytes,
+                obj.script.temp_bytes,
+                MAIN_SLOT,
+                main,
+                &[],
+            ));
+        } else {
+            obj.script.main_ended = true;
+        }
         Ok(obj)
     }
 

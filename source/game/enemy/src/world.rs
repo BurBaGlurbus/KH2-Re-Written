@@ -568,6 +568,8 @@ pub struct World {
         [crate::traps::target::BattleTarget; crate::traps::target::BATTLE_TARGET_SLOTS],
     /// The running limit (DAT_142a24cc0), when the host started one.
     pub limit: Option<crate::traps::limit::LimitState>,
+    /// A mission's script: its lock and what it asked of the host.
+    pub mission: MissionState,
     /// The host drives Sora's stand-in itself (a limit scene moves him):
     /// traps then read its own position and heading instead of the host's
     /// player.
@@ -661,6 +663,7 @@ impl Default for World {
             eh22: Eh22::default(),
             battle_targets: Default::default(),
             limit: None,
+            mission: MissionState::default(),
             player_scripted: false,
             hover_spec: [0.; 9],
             patn: Vec::new(),
@@ -1624,6 +1627,26 @@ impl Host for Machine<'_> {
             }
         }
     }
+}
+
+/// What a mission's script asked of the host (table 4).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MissionCall {
+    /// `trap_mission_complete`, and its argument.
+    Complete(i32),
+    /// `trap_mission_failed`.
+    Failed,
+    /// `trap_mission_dead_boss`, and its argument.
+    DeadBoss(i32),
+    /// `trap_mission_exit`, and its argument.
+    Exit(i32),
+}
+
+/// DAT_142a10500 bit 0 and the calls not yet carried out.
+#[derive(Clone, Debug, Default)]
+pub struct MissionState {
+    pub locked: bool,
+    pub calls: Vec<MissionCall>,
 }
 
 /// Run one thread of `obj`'s script to its next yield.
