@@ -36,6 +36,7 @@ pub fn lookup(table: u16, index: u16) -> Option<TrapFn> {
         (1, 358) => sheet_attack_level,
         (2, 0) => exec_damage,
         (4, 5) => mission_set_count,
+        (4, 20) => mission_decrement_count,
         (4, 41) => mission_add_count,
         (4, 50) => mission_warning_count,
         (4, 57) => mission_warning_gauge,
@@ -256,6 +257,7 @@ forward_traps! {
     sheet_attack_level = "sheet_set_attack_level", None, None, None;
     exec_damage = "enemy_exec_damage", Some(0), None, None;
     mission_set_count = "mission_set_count", None, None, None;
+    mission_decrement_count = "mission_decrement_count", None, None, None;
     mission_add_count = "mission_add_count", None, None, None;
     mission_warning_count = "mission_warning_count", None, None, None;
     mission_warning_gauge = "mission_warning_gauge", None, None, None;

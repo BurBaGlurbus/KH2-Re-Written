@@ -672,6 +672,7 @@ pub fn mission_tick(
         }
     }
     medal_tick(&mut game, &mut gallery);
+    reserved_signals(&mut game, &mut gallery);
     let signals = std::mem::take(&mut game.mission_signals);
     let tick = game.tick;
     for &(code, arg) in &signals {
@@ -712,9 +713,16 @@ pub fn mission_tick(
         for call in calls {
             game.event(serde_json::json!({"event":"mission_call","tick":tick,
                 "call":format!("{call:?}")}));
-            // [U] The other calls' presentations are not carried out.
-            if let enemy::world::MissionCall::DeadBoss(_) = call {
-                dead_boss(&mut game);
+            match call {
+                // [I] FUN_1404334c0 and FUN_1404334f0 have overlays and jumps
+                // of their own, not carried out: the fight ends as for a
+                // boss's death.
+                enemy::world::MissionCall::DeadBoss(_) | enemy::world::MissionCall::Complete(_) => {
+                    dead_boss(&mut game)
+                }
+                enemy::world::MissionCall::Exit(_) => game.mission_cleared = true,
+                // [U] thunk_FUN_1403a3800's sound, game-over overlays and jump.
+                enemy::world::MissionCall::Failed => game.mission_failed = true,
             }
         }
     }
@@ -835,6 +843,34 @@ pub fn mission_tick(
     if game.field_step {
         game.speed_carry -= 1.;
     }
+}
+
+/// FUN_1403aaf30, every frame: a signal reserved on an object goes out when its
+/// HP is down to its floor (kind 1). FUN_1403aabe0 then drops every reservation
+/// of that code. [U] Kind 0, on an HP rate (FUN_1403ab0c0), is not ported.
+fn reserved_signals(game: &mut Game, gallery: &mut enemy_gallery::EnemyGallery) {
+    let store = enemy_script::fighters_teamwork();
+    let Ok(mut team) = store.lock() else {
+        return;
+    };
+    if team.reserved.is_empty() {
+        return;
+    }
+    let mut fired = Vec::new();
+    for r in &team.reserved {
+        let down = gallery
+            .actors
+            .iter_mut()
+            .filter_map(enemy_battle::fighter_brain)
+            .find(|b| b.object_id() == r.object)
+            .is_some_and(|b| b.hp_at_floor());
+        if down {
+            fired.push((r.code, r.argument));
+        }
+    }
+    team.reserved
+        .retain(|r| !fired.iter().any(|&(code, _)| code == r.code));
+    game.mission_signals.extend(fired);
 }
 
 /// FUN_14040b9e0's reach: a flying medal arrives within this of its object.

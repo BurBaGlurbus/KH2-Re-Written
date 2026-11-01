@@ -284,6 +284,17 @@ pub struct Teamwork {
     pub keys: HashMap<i32, u32>,
     pub words: Vec<u32>,
     pub medals: Medals,
+    /// Signals waiting on an object's HP (the list at DAT_142a112b8).
+    pub reserved: Vec<ReservedSignal>,
+}
+
+/// A signal `signal_reserve_min_hp` holds back (FUN_1403ab150) until its object's
+/// HP is down to its floor (FUN_1403aaf30, kind 1).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ReservedSignal {
+    pub object: ObjId,
+    pub code: i32,
+    pub argument: i32,
 }
 
 /// The medals out in the room (FUN_14040b5a0's prize list) and Sora's count.

@@ -228,6 +228,20 @@ fn area_track(game: &mut Game, gallery: &enemy_gallery::EnemyGallery, checks: &m
 /// With `KH2RW_AREA_ENEMIES` the tour is the area's own enemies
 /// (`area_enemies`): their state at checkpoints and a verdict at the end
 /// (every placed actor fought without a fault).
+/// [Tour setup] `KH2RW_TOUR_CAST=<ticks>`: Sora casts Thunder, Blizzard and Fire
+/// in turn, one every that many ticks, for the fights that turn on magic
+/// (B_CA050's medals).
+pub fn cast(tick: u64) -> Option<u8> {
+    use player::magic;
+    let every = std::env::var("KH2RW_TOUR_CAST")
+        .ok()?
+        .parse::<u64>()
+        .ok()
+        .filter(|&n| n != 0)?;
+    tick.is_multiple_of(every)
+        .then(|| [magic::THUNDER, magic::BLIZZARD, magic::FIRE][(tick / every % 3) as usize])
+}
+
 /// [Tour setup] `KH2RW_TOUR_LOW=<tick>`: Sora stops falling, and at that tick
 /// each boss drops to 1 HP, so the run reaches its death and the mission's
 /// clear (a finisher must still land the last blow).
@@ -241,6 +255,10 @@ fn area_low(game: &mut Game, gallery: &mut enemy_gallery::EnemyGallery) {
     let v = &mut game.sora.vitals;
     if v.hp * 3 < v.target.max_hp {
         v.hp = v.target.max_hp;
+    }
+    let mp = &mut game.sora.player.mp;
+    if std::env::var_os("KH2RW_TOUR_CAST").is_some() && mp.cur * 2 < mp.max {
+        mp.cur = mp.max;
     }
     if game.tick >= at && game.tick.is_multiple_of(60) {
         for b in gallery.actors.iter_mut().filter_map(|a| a.battle.as_mut()) {

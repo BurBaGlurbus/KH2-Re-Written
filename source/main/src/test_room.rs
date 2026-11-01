@@ -1447,6 +1447,8 @@ pub struct Game {
     /// signals posted for it, and whether its clear has finished.
     pub mission: Option<boss::Mission>,
     pub mission_tried: bool,
+    /// `trap_mission_failed` ran: a boss fight's room ends (boss_fight.rs).
+    pub mission_failed: bool,
     pub mission_signals: Vec<(i32, i32)>,
     pub mission_cleared: bool,
     /// The game speed (DAT_140717424) a running overlay set, the share of a
@@ -8151,6 +8153,9 @@ pub fn simulate(
             game.sora.player.abilities.set(abilities::bit::COMBO_MASTER);
         }
         game.cure_target = magic_tour::cure_target(tick, game.magic_shift);
+    }
+    if game.enemy_battle_tour {
+        cast = cast.or_else(|| enemy_battle_tour::cast(tick));
     }
     if game.autoplay.is_some()
         && !game.enemy_battle_tour
@@ -15064,6 +15069,7 @@ pub fn run(
         scene_tint: [0x80; 3],
         mission: None,
         mission_tried: false,
+        mission_failed: false,
         mission_signals: Vec::new(),
         mission_cleared: false,
         game_speed: 1.,

@@ -275,3 +275,4 @@ Records through T128 retain historical commands and paths. See [the folder guide
 | [T319](T319-flying-objects-root-motion.md) | Flying objects move by their motions' root; the floor ray takes the body's class | PARTIAL: the Lords and Shadow Stalker clear in tours; other flyers not yet rerun |
 | [T320](T320-origin-shapes-engine-axes.md) | Shapes on an object's origin are in engine axes; Thresholder and Possessor reach their clear in a tour | PARTIAL: boss sweep running; ordinary enemies not rerun |
 | [T321](T321-port-royal-medals.md) | The Port Royal medals; a room of 32 actors | PARTIAL: natives translated and tested on synthetic objects; not yet seen in the fight |
+| [T322](T322-mission-natives-and-ends.md) | The missions' other natives and ends; a tour that casts magic | PARTIAL: sweeps on this build running; mission OBJ_DAMAGE not fired |

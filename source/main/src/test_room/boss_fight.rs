@@ -43,9 +43,14 @@ pub fn tick(
         Some(_) => game.mission_cleared,
         None => fight.down_at.is_some_and(|at| tick >= at + OUTRO_DELAY),
     };
-    if over {
+    if over || game.mission_failed {
         fight.ended = true;
-        game.event(serde_json::json!({"event":"boss_fight_won","tick":tick}));
+        let name = if over {
+            "boss_fight_won"
+        } else {
+            "boss_fight_failed"
+        };
+        game.event(serde_json::json!({"event":name,"tick":tick}));
         exit.write(AppExit::Success);
     }
 }

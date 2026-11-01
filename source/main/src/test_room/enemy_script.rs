@@ -708,6 +708,11 @@ impl ScriptBrain {
         self.object.id
     }
 
+    /// FUN_1403aaf30's test, kind 1: pool 0's HP is at or below its floor.
+    pub fn hp_at_floor(&self) -> bool {
+        self.object.sys.pool(0).is_some_and(|p| p.hp <= p.min)
+    }
+
     /// FUN_14040b9e0: a medal reached this object (+0xd1c).
     pub fn add_medal(&mut self, n: i32) {
         self.object.sys.medal += n;

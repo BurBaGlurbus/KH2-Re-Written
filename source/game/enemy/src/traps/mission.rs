@@ -3,13 +3,15 @@
 //! is the host's: it reads [`crate::world::MissionState::calls`].
 
 use crate::script::{Fault, Memory, Slot};
-use crate::world::{Ctx, Event, MissionCall, TrapFn};
+use crate::world::{Ctx, Event, MissionCall, ReservedSignal, TrapFn};
 
 type Args = [Slot; 16];
 
 pub fn lookup(table: u16, index: u16) -> Option<TrapFn> {
     Some(match (table, index) {
         (1, 41) => signal_call,
+        (1, 142) => signal_reserve_min_hp,
+        (1, 332) => is_battle_npc,
         (4, 3) => complete,
         (4, 11) => failed,
         (4, 16) => dead_boss,
@@ -26,6 +28,32 @@ fn signal_call(ctx: &mut Ctx<'_>, _: &mut Memory<'_>, args: &mut Args) -> Result
         code: args[0].as_int(),
         argument: args[1].as_int(),
     });
+    Ok(())
+}
+
+/// 1:142 FUN_14042fc80 -> FUN_1403ab150.
+fn signal_reserve_min_hp(
+    ctx: &mut Ctx<'_>,
+    m: &mut Memory<'_>,
+    args: &mut Args,
+) -> Result<(), Fault> {
+    let object = ctx.sys_of_ai(m, args[0].value)?;
+    let reserved = ReservedSignal {
+        object,
+        code: args[1].as_int(),
+        argument: args[2].as_int(),
+    };
+    if let Ok(mut team) = ctx.world.teamwork.lock() {
+        team.reserved.push(reserved);
+    }
+    Ok(())
+}
+
+/// 1:332 FUN_14042b2e0: +0x6c8 bit 16.
+fn is_battle_npc(ctx: &mut Ctx<'_>, _: &mut Memory<'_>, args: &mut Args) -> Result<(), Fault> {
+    let id = ctx.sys_of(args[0].value)?;
+    let flags = ctx.object(id)?.sys.class_flags;
+    args[0] = Slot::int((flags >> 16 & 1) as i32);
     Ok(())
 }
 
@@ -108,6 +136,41 @@ mod tests {
         assert_eq!(
             world.mission.calls,
             [MissionCall::DeadBoss(-1), MissionCall::Failed]
+        );
+    }
+
+    #[test]
+    fn a_reserved_signal_waits_in_the_shared_store() {
+        let mut world = World::default();
+        world.objects = vec![Some(Box::new(Object::bare(0)))];
+        let mut header = vec![0u8; 44];
+        header[..4].copy_from_slice(b"test");
+        for at in [16, 20, 24] {
+            header[at..at + 4].copy_from_slice(&64u32.to_le_bytes());
+        }
+        let mut inst = Instance::new(0, &header).unwrap();
+        let mut th = Thread::new(&inst, 0, 0, &[]);
+        let base = inst.work_base();
+        let mut memory = Memory::new(&mut inst, &mut th);
+        memory.write_u32(base + 4, crate::world::object_handle(0));
+        let mut args = [Slot::default(); 16];
+        args[0] = Slot::address(base);
+        args[1] = Slot::int(20);
+        args[2] = Slot::int(7);
+        let mut me = Object::bare(9);
+        let mut ctx = Ctx {
+            world: &mut world,
+            me: &mut me,
+            env: &NullEnv,
+        };
+        lookup(1, 142).unwrap()(&mut ctx, &mut memory, &mut args).unwrap();
+        assert_eq!(
+            world.teamwork.lock().unwrap().reserved,
+            [ReservedSignal {
+                object: 0,
+                code: 20,
+                argument: 7
+            }]
         );
     }
 
