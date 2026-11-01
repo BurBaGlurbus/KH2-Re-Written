@@ -898,7 +898,7 @@ impl Camp {
             }
             // Status: any new form or summon (FUN_14036aba0(-1)).
             4 => (self.data.status_new != 0)
-                .then(|| self.data.status_new & !self.data.status_seen == 0),
+                .then_some(self.data.status_new & !self.data.status_seen == 0),
             // Jiminy's Journal: always the pulsing badge.
             5 => self.data.journal_new.then_some(false),
             _ => None,
