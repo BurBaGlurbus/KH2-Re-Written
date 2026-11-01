@@ -140,7 +140,8 @@ fn party_body(object: &ObjectEntry, model: &str) -> Option<(Group, String)> {
         "P_LK020" | "P_LK030" => Some("Pride Lands"),
         "P_EX020_WM" | "P_EX030_WM" => Some("world map"),
         "P_EX020_ANGRY_NPC" => Some("angry"),
-        // Atlantica's stand-ins, and anything else the table adds.
+        "N_LM010_PLY" | "N_LM020_PLY" => Some("Atlantica"),
+        // Anything else the table adds.
         _ => return Some((group, model.to_owned())),
     };
     Some((

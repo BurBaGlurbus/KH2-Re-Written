@@ -46,7 +46,8 @@ Private evidence (outside the checkout): `%USERPROFILE%\kh2-outfit-research` (`t
 
 ## Uncertainty
 
-- `N_LM010_PLY` and `N_LM020_PLY` keep their raw names: what they are called in the game was not traced.
+- `N_LM010_PLY` and `N_LM020_PLY` are named Atlantica from their looks in captures: Donald with an octopus's lower body, Goofy with a
+  turtle's shell, and `memt`'s Atlantica row names them.
 - Worn party bodies are not drawn on the camp's own screens, which keep the bodies the room started with.
 - A world costume's Keyblade or weapon on a worn body was checked only by eye.
 - A Drive absorbs members as before; nothing checks that a costume's member matches the form's rule.
