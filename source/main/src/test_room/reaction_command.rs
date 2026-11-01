@@ -49,6 +49,15 @@ const SAVE_TOUR_MENU: [(u64, u64); 5] =
 
 /// The save point tour's file menu press at `tick`.
 pub fn save_tour_logical(tick: u64) -> u64 {
+    // Another route through the menu: `<tick>:<bits>,...` (the World Map row).
+    if let Ok(keys) = std::env::var("KH2RW_SAVE_TOUR_KEYS") {
+        return keys
+            .split(',')
+            .filter_map(|k| k.split_once(':'))
+            .filter(|(at, _)| at.parse() == Ok(tick))
+            .filter_map(|(_, bits)| bits.parse::<u64>().ok())
+            .fold(0, |acc, b| acc | b);
+    }
     SAVE_TOUR_MENU
         .iter()
         .filter(|(at, _)| *at == tick)
@@ -924,6 +933,22 @@ pub fn menu_reaction(game: &Game) -> Option<field_command_menu::Reaction> {
 /// (FUN_140418e30); while the heal sets a save point's pulse (+0xc08,
 /// FUN_140418f30) FUN_140418a00 keeps its element 2 running (se000 #29) and
 /// ends it once the pulse is gone. An area change ends them all.
+/// A save point's own object effects (`obj/SAVE_POINT.a.us`,
+/// `obj/WORLD_POINT.a.us`).
+fn point_pax(a: &AreaRes, k: usize) -> Option<Arc<data::object_effect::Pax>> {
+    if a.current.world_points.get(k).copied().unwrap_or(false) {
+        a.current
+            .world_point_pax
+            .clone()
+            .or_else(|| a.current.save_point_pax.clone())
+    } else {
+        a.current
+            .save_point_pax
+            .clone()
+            .or_else(|| a.current.world_point_pax.clone())
+    }
+}
+
 fn save_point_effects(
     game: &mut Game,
     state: &mut State,
@@ -938,10 +963,9 @@ fn save_point_effects(
         }
         state.glow_area = place;
         state.pulse = false;
-        if let Some(a) = area
-            && let Some(pax) = &a.current.save_point_pax
-        {
-            for &(at, _) in &a.current.save_points {
+        if let Some(a) = area {
+            for (k, &(at, _)) in a.current.save_points.iter().enumerate() {
+                let Some(pax) = point_pax(a, k) else { continue };
                 game.fx_queue.push(drive_fx::Placed {
                     req: drive_fx::FxRequest {
                         pax: pax.clone(),
@@ -957,15 +981,17 @@ fn save_point_effects(
             }
         }
     }
-    let point = offer
+    let index = offer
         .map(|o| o.candidate.target.owner)
         .filter(|&o| o >= SAVE_POINT)
-        .and_then(|o| area?.current.save_points.get((o - SAVE_POINT) as usize))
+        .map(|o| (o - SAVE_POINT) as usize);
+    let point = index
+        .and_then(|k| area?.current.save_points.get(k))
         .map(|&(at, _)| at);
     let pulse = healing && point.is_some();
     if pulse
         && !state.pulse
-        && let (Some(at), Some(pax)) = (point, area.and_then(|a| a.current.save_point_pax.clone()))
+        && let (Some(at), Some(pax)) = (point, area.zip(index).and_then(|(a, k)| point_pax(a, k)))
     {
         game.fx_queue.push(drive_fx::Placed {
             req: drive_fx::FxRequest {

@@ -13606,10 +13606,11 @@ pub fn save_menu_tick(
             }
         }
         let snapshot = game_save::capture(game, c, area);
+        let world_map = game_save::at_world_point(game, area);
         if let Some(f) = c.files.as_mut() {
             f.backend.set_snapshot(snapshot);
             let menu = save::menu::Menu::new(
-                save::menu::Kind::SavePoint { world_map: false },
+                save::menu::Kind::SavePoint { world_map },
                 &f.backend,
                 f.last_slot,
             );
@@ -13631,9 +13632,14 @@ pub fn save_menu_tick(
     };
     let pressed = crate::save_files::inputs(c.pad.pressed, c.pad.repeat);
     let layout = &f.menu.layout;
+    let mut to_world_map = false;
     for e in ui.frame(layout, &mut f.backend, &pressed) {
         match e {
             save::menu::Event::Sound(n) => sounds.push(n as u32),
+            save::menu::Event::JumpToWorldMap => {
+                to_world_map = true;
+                ui.close(layout);
+            }
             save::menu::Event::Saved { slot } => {
                 f.last_slot = Some(slot);
                 game.files_saved += 1;
@@ -13663,6 +13669,9 @@ pub fn save_menu_tick(
     if ui.is_finished() {
         f.ui = None;
         game.event(serde_json::json!({"event":"file_menu_closed","tick":tick}));
+    }
+    if to_world_map {
+        game_save::jump_to_world_map(game, c, area);
     }
     game.tick += 1;
     for n in sounds {
@@ -15137,6 +15146,7 @@ pub fn run(
         save: game_save::SaveState {
             items: std::mem::take(&mut loaded.item_rows),
             dump: save_dump,
+            args: args[..3].to_vec(),
             ..Default::default()
         },
         reaction_commands: None,
@@ -15544,7 +15554,7 @@ pub fn run(
             journal_save: Default::default(),
         };
         if let Some(image) = &load_image {
-            game_save::apply_camp(&mut camp, &game, image);
+            game_save::apply_camp(&mut camp, &game_save::CampContext::of(&game, image), image);
         }
         app.insert_resource(camp);
     }

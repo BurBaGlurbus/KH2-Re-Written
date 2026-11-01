@@ -24,6 +24,15 @@ pub struct WorldMapCamp {
     tick: u64,
     /// Sora's HP and MP at the start (00battle 'plrp', as the field's HUD).
     stats: (i32, i32),
+    /// The item table a save's stock is stored by, the level rows, the
+    /// weapons' abilities and the limit rows.
+    items: Vec<data::item_table::Item>,
+    levels: Vec<data::battle_tables::PlayerLevel>,
+    weapon_abilities: HashMap<u16, u16>,
+    limits: Vec<second_deck::LimitRow>,
+    /// A loaded save's numbers for the panels: HP, maximum HP, MP, maximum
+    /// MP, level and munny.
+    panel: Option<(i32, i32, i32, i32, i32, u32)>,
     /// This tick's records for the program's log.
     pub log: Vec<serde_json::Value>,
 }
@@ -120,6 +129,27 @@ pub fn load(
         settings,
         tick: 0,
         stats,
+        levels: (1..=99)
+            .filter_map(|l| {
+                data::battle_tables::player_level(bar_entry(&battle, b"lvup").ok()?, 1, l).ok()
+            })
+            .collect(),
+        weapon_abilities: {
+            let rows = data::item_table::read_stats(item).unwrap_or_default();
+            table
+                .iter()
+                .filter_map(|r| {
+                    let id = r.equipment_stats_id()?;
+                    let s = rows.iter().find(|s| s.id == id)?;
+                    Some((r.id, s.ability))
+                })
+                .collect()
+        },
+        limits: bar_entry(&battle, b"limt")
+            .map(second_deck::read_limits)
+            .unwrap_or_default(),
+        items: table.clone(),
+        panel: None,
         log: Vec::new(),
     })
 }
@@ -128,6 +158,42 @@ impl WorldMapCamp {
     /// The camp's and the journal's images as 2D sheets.
     pub fn upload(&mut self, frame: &mut Ui2dFrame, images: &mut Assets<Image>) {
         upload_camp_sheets(&mut self.c, frame, images);
+    }
+
+    /// A loaded save's camp (the world map starts on it, FUN_1402ed0e0).
+    pub fn apply_save(&mut self, image: &save::data::SaveData) {
+        let ctx = game_save::CampContext {
+            items: &self.items,
+            levels: &self.levels,
+            weapon_abilities: &self.weapon_abilities,
+            limits: &self.limits,
+            exp: image.u32_at(save::state::EXP),
+        };
+        game_save::apply_camp(&mut self.c, &ctx, image);
+        let p = save::state::Persistent::read(image);
+        let r = p.records[0];
+        if r.max_hp != 0 {
+            self.panel = Some((
+                i32::from(r.hp.min(r.max_hp)),
+                i32::from(r.max_hp),
+                i32::from(r.mp.min(r.max_mp)),
+                i32::from(r.max_mp),
+                i32::from(r.level.max(1)),
+                p.munny,
+            ));
+        }
+    }
+
+    /// What the camp changed, into the image the field starts on: with no
+    /// save behind the map, also Sora's record at the room's start.
+    pub fn write_save(&self, image: &mut save::data::SaveData) {
+        game_save::write_camp_save(
+            &self.c,
+            &self.items,
+            self.stats,
+            self.levels.first().copied(),
+            image,
+        );
     }
 
     /// A menu (camp, curtain or journal) holds the screen and the pad.
@@ -141,16 +207,17 @@ impl WorldMapCamp {
     fn data(&self, play_time: u32) -> pause_menu::Data {
         let c = &self.c;
         let (hp, mp) = self.stats;
+        let (hp, max_hp, mp, max_mp, level, munny) = self.panel.unwrap_or((hp, hp, mp, mp, 1, 0));
         let panels = pause_menu::Panels {
-            munny: 0,
+            munny,
             time_frames: play_time,
             members: vec![pause_menu::Member {
                 name: c.source.name.clone(),
-                level: 1,
+                level,
                 hp,
-                max_hp: hp,
+                max_hp,
                 mp,
-                max_mp: mp,
+                max_mp,
             }],
             labels: c.source.labels.clone(),
         };
@@ -160,9 +227,9 @@ impl WorldMapCamp {
             form_abilities: Vec::new(),
             form_weapon: None,
             hp,
-            max_hp: hp,
+            max_hp,
             mp,
-            max_mp: mp,
+            max_mp,
             party: Vec::new(),
             journal_tour: false,
         };

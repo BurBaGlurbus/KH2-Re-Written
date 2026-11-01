@@ -32,6 +32,9 @@ pub struct SaveState {
     pub dump: Option<PathBuf>,
     /// The room started from a loaded save.
     pub loaded: bool,
+    /// The room's install, manifest and config: what the world map's row
+    /// starts the world map with.
+    pub args: Vec<PathBuf>,
 }
 
 impl Default for SaveState {
@@ -45,6 +48,7 @@ impl Default for SaveState {
             world_tick: 0,
             dump: None,
             loaded: false,
+            args: Vec::new(),
         }
     }
 }
@@ -111,6 +115,15 @@ pub fn apply_progress(progress: &mut Progress, data: &SaveData) {
         })
         .collect();
     progress.restore_dsa_state(&dsa);
+}
+
+/// The story state into an image (the world map's hand-off starts here).
+pub fn story_image(progress: &Progress, base: &SaveData) -> SaveData {
+    let mut d = base.clone();
+    let mut p = Persistent::read(&d);
+    write_progress(progress, &mut p, &mut d);
+    p.write(&mut d);
+    d
 }
 
 fn write_progress(progress: &Progress, p: &mut Persistent, data: &mut SaveData) {
@@ -347,6 +360,81 @@ fn level_row(game: &Game, level: u8) -> Option<data::battle_tables::PlayerLevel>
         .copied()
 }
 
+/// The save point Sora stands at (the search offers only one at a time, the
+/// nearest is it).
+fn nearest_point(game: &Game, area: &AreaRes) -> Option<usize> {
+    let at = Vec3::from_array(game.sora.player.position);
+    area.current
+        .save_points
+        .iter()
+        .enumerate()
+        .min_by(|x, y| {
+            x.1.0
+                .distance_squared(at)
+                .total_cmp(&y.1.0.distance_squared(at))
+        })
+        .map(|(i, _)| i)
+}
+
+/// A WORLD_POINT's menu has the World Map row (FUN_1402eb490).
+pub fn at_world_point(game: &Game, area: Option<&AreaRes>) -> bool {
+    area.and_then(|a| {
+        let i = nearest_point(game, a)?;
+        a.current.world_points.get(i).copied()
+    })
+    .unwrap_or(false)
+}
+
+/// FUN_140154e20(-1, 0x80000000): the save holds the map and the entrance
+/// beside the world left; the world map starts on it as a program of its own
+/// (FUN_140152990 loads it in place).
+pub fn jump_to_world_map(game: &mut Game, c: &CampRes, area: Option<&AreaRes>) {
+    let mut image = capture(game, c, area);
+    let from = image.u8_at(field::WORLD);
+    let target = ::area::world_state::world_map_entry(from);
+    image.set_u8(field::WORLD, target.world);
+    image.set_u8(field::AREA, target.area);
+    image.set_u8(field::ENTRANCE, target.entrance);
+    image.seal();
+    let tick = game.tick;
+    game.event(
+        serde_json::json!({"event":"world_map_jump","tick":tick,"from":from,
+        "entrance":target.entrance}),
+    );
+    if let Some(path) = &game.save.dump
+        && let Err(e) = std::fs::write(path, image.bytes())
+    {
+        eprintln!("Save dump rejected: {e}");
+    }
+    game.limit = Some(tick);
+    if game.autoplay.is_some() {
+        return;
+    }
+    if let Err(e) = crate::save_files::write_handoff(&image) {
+        eprintln!("The world map could not start: {e}");
+        return;
+    }
+    let args = &game.save.args;
+    if let (Some(root), Some(manifest), Some(config), Ok(exe)) = (
+        args.first(),
+        args.get(1),
+        args.get(2),
+        std::env::current_exe(),
+    ) {
+        let started = std::process::Command::new(exe)
+            .arg("wm")
+            .args([root, manifest])
+            .arg("--field")
+            .arg(config)
+            .arg("--load-image")
+            .arg(crate::save_files::handoff_path())
+            .spawn();
+        if let Err(e) = started {
+            eprintln!("The world map could not start: {e}");
+        }
+    }
+}
+
 /// FUN_1402ed110's copy: the running game into the image.
 pub fn capture(game: &Game, c: &CampRes, area: Option<&AreaRes>) -> SaveData {
     let mut d = game.save.base.clone();
@@ -362,22 +450,11 @@ pub fn capture(game: &Game, c: &CampRes, area: Option<&AreaRes>) -> SaveData {
         p.world = world;
         p.area = area;
     }
-    if let Some(a) = area {
-        let at = Vec3::from_array(game.sora.player.position);
-        let nearest = a
-            .current
-            .save_points
-            .iter()
-            .enumerate()
-            .min_by(|x, y| {
-                x.1.0
-                    .distance_squared(at)
-                    .total_cmp(&y.1.0.distance_squared(at))
-            })
-            .map(|(i, _)| i);
-        if let Some(&entrance) = nearest.and_then(|i| a.current.save_entrances.get(i)) {
-            p.entrance = entrance;
-        }
+    if let Some(a) = area
+        && let Some(&entrance) =
+            nearest_point(game, a).and_then(|i| a.current.save_entrances.get(i))
+    {
+        p.entrance = entrance;
     }
     p.play_frames = game.save.play_frames(game.tick);
     p.world_frames = game.save.world_frames;
@@ -396,29 +473,14 @@ pub fn capture(game: &Game, c: &CampRes, area: Option<&AreaRes>) -> SaveData {
     } else {
         p.difficulty = c.game_mode;
     }
-    p.config = c.config_flags;
-    p.shortcuts = c.shortcuts;
-    p.no_charge = u32::from(c.no_charge);
     // Sora's record, with the numbers as bonus over the level's row.
     let sora = &game.sora;
     let v = &sora.vitals;
-    let e = &c.equipment;
     let row = level_row(game, v.level);
-    let abilities: [u16; 80] =
-        std::array::from_fn(|i| c.ability_slots.get(i).copied().unwrap_or(0));
     let over = |value: i32, base: u8| (value - i32::from(base)).clamp(0, 255) as u8;
     let mut record = p.records[0];
-    record.weapon = e.weapon;
-    record.second_weapon = e.secondary_weapon;
+    write_camp_record(c, &mut record);
     record.level = v.level;
-    record.armor_slots = e.armor.len() as u8;
-    record.accessory_slots = e.accessories.len() as u8;
-    record.item_slots = e.items.len() as u8;
-    record.armor = list(&e.armor);
-    record.accessories = list(&e.accessories);
-    record.items = list(&e.items);
-    record.originals = list(&e.originals);
-    record.abilities = abilities;
     record.mp = sora.player.mp.cur.clamp(0, 255) as u8;
     record.max_mp = sora.player.mp.max.clamp(0, 255) as u8;
     if game.enemy.is_some() {
@@ -469,35 +531,97 @@ pub fn capture(game: &Game, c: &CampRes, area: Option<&AreaRes>) -> SaveData {
     }
     // The stock (the battle's is the live one) and what the camp has seen.
     let stock = game.items.as_ref().map_or(&c.stock, |i| &i.stock);
-    write_stock(&game.save.items, stock, &mut d);
+    write_camp(c, &game.save.items, stock, &mut d);
+    d.seal();
+    d
+}
+
+/// Sora's gear and abilities as the camp holds them.
+fn write_camp_record(c: &CampRes, record: &mut Record) {
+    let e = &c.equipment;
+    record.weapon = e.weapon;
+    record.second_weapon = e.secondary_weapon;
+    record.armor_slots = e.armor.len() as u8;
+    record.accessory_slots = e.accessories.len() as u8;
+    record.item_slots = e.items.len() as u8;
+    record.armor = list(&e.armor);
+    record.accessories = list(&e.accessories);
+    record.items = list(&e.items);
+    record.originals = list(&e.originals);
+    record.abilities = std::array::from_fn(|i| c.ability_slots.get(i).copied().unwrap_or(0));
+}
+
+/// The world map's share: the camp, and with no save behind it Sora's record
+/// at the room's start.
+pub fn write_camp_save(
+    c: &CampRes,
+    items: &[Item],
+    stats: (i32, i32),
+    level_one: Option<data::battle_tables::PlayerLevel>,
+    d: &mut SaveData,
+) {
+    let mut record = Record::read(d, 0);
+    if record.max_hp == 0 {
+        record.hp = stats.0.clamp(0, 255) as u8;
+        record.max_hp = record.hp;
+        record.mp = stats.1.clamp(0, 255) as u8;
+        record.max_mp = record.mp;
+        record.level = 1;
+        if let Some(r) = level_one {
+            let n = &c.source.numbers;
+            let over = |value: i32, base: u8| (value - i32::from(base)).clamp(0, 255) as u8;
+            record.ap = over(n.ap, r.ap);
+            record.strength = over(n.strength, r.strength);
+            record.magic = over(n.magic, r.magic);
+            record.defense = over(n.defense, r.defense);
+        }
+    }
+    write_camp_record(c, &mut record);
+    record.write(d, 0);
+    write_camp(c, items, &c.stock, d);
+}
+
+/// What the camp keeps of the save: config, shortcuts, the stock, seen marks
+/// and the journal's. Shared by the room and the world map.
+pub fn write_camp(
+    c: &CampRes,
+    items: &[Item],
+    stock: &std::collections::BTreeMap<u16, u8>,
+    d: &mut SaveData,
+) {
+    let mut p = Persistent::read(d);
+    p.config = c.config_flags;
+    p.shortcuts = c.shortcuts;
+    p.no_charge = u32::from(c.no_charge);
+    p.write(d);
+    write_stock(items, stock, d);
     let mut seen = c.seen.clone();
     seen.extend(&c.starting);
-    write_bits(&mut d, state::SEEN_ITEMS, state::SEEN_ITEM_BYTES, &seen);
+    write_bits(d, state::SEEN_ITEMS, state::SEEN_ITEM_BYTES, &seen);
     d.set_u16(state::NOTICES_SEEN, c.memory.notices_seen);
     for (&character, (order, seen)) in &c.ability_marks {
-        write_ability_marks(&mut d, character, order, seen);
+        write_ability_marks(d, character, order, seen);
     }
     // The journal's seen rows.
-    write_bits(&mut d, state::SEEN_CHARS, 0x44, &c.seen_chars);
-    write_bits(&mut d, state::SEEN_LIMITS, 4, &c.seen_limits);
-    write_bits(&mut d, state::SEEN_MINIGAMES, 0xc, &c.seen_minigames);
-    write_bits(&mut d, state::SEEN_QUESTS, 0x18, &c.seen_quests);
-    write_bits(&mut d, state::SEEN_CHESTS, 0x40, &c.seen_chests);
-    write_bits(&mut d, state::SEEN_MAPS, 0x10, &c.seen_maps);
-    write_bits(&mut d, state::SEEN_REPORTS, 4, &c.seen_reports);
+    write_bits(d, state::SEEN_CHARS, 0x44, &c.seen_chars);
+    write_bits(d, state::SEEN_LIMITS, 4, &c.seen_limits);
+    write_bits(d, state::SEEN_MINIGAMES, 0xc, &c.seen_minigames);
+    write_bits(d, state::SEEN_QUESTS, 0x18, &c.seen_quests);
+    write_bits(d, state::SEEN_CHESTS, 0x40, &c.seen_chests);
+    write_bits(d, state::SEEN_MAPS, 0x10, &c.seen_maps);
+    write_bits(d, state::SEEN_REPORTS, 4, &c.seen_reports);
     let synthesis: Vec<u16> = c.seen_synthesis.iter().map(|&s| u16::from(s)).collect();
-    write_bits(&mut d, state::SEEN_SYNTHESIS, 4, &synthesis);
+    write_bits(d, state::SEEN_SYNTHESIS, 4, &synthesis);
     if let Some(j) = c.journal_source.as_ref() {
         let albums: Vec<i8> = j.albums.iter().map(|a| a.world).collect();
         let bits = per_world_bits(&albums, &c.seen_albums);
-        write_bits(&mut d, state::SEEN_ALBUMS, 0x40, &bits);
+        write_bits(d, state::SEEN_ALBUMS, 0x40, &bits);
         let stories: Vec<i8> = j.stories.iter().map(|s| s.world).collect();
         let bits = per_world_bits(&stories, &c.seen_story);
-        write_bits(&mut d, state::SEEN_STORY, 0x40, &bits);
+        write_bits(d, state::SEEN_STORY, 0x40, &bits);
     }
-    write_puzzles(&c.puzzles, &mut d);
+    write_puzzles(&c.puzzles, d);
     d.seal();
-    d
 }
 
 /// FUN_1402ed110's table at 0x1405ba910: the card backgrounds and the flags
@@ -598,6 +722,14 @@ pub fn apply_game(game: &mut Game, data: &SaveData) {
     game.save.world = Some(p.world);
     game.save.world_tick = 0;
     game.save.loaded = true;
+    if let Some(rt) = game.enemy.as_mut() {
+        rt.enabled = false;
+    }
+    // An image with no record for Sora (no game behind it) holds only the
+    // story: the room keeps its own numbers.
+    if p.records[0].max_hp == 0 {
+        return;
+    }
     game.config_flags = p.config;
     game.shortcuts = p.shortcuts;
     let r = p.records[0];
@@ -607,7 +739,6 @@ pub fn apply_game(game: &mut Game, data: &SaveData) {
     let row = level_row(game, r.level);
     let g = &mut *game;
     if let Some(rt) = g.enemy.as_mut() {
-        rt.enabled = false;
         rt.exp_total = p.exp;
         rt.munny = p.munny;
         rt.difficulty = match p.difficulty {
@@ -673,7 +804,11 @@ pub fn apply_game(game: &mut Game, data: &SaveData) {
         ..
     } = g;
     for m in party.iter_mut() {
-        let Some(r) = p.records.get(m.kind.character as usize - 1) else {
+        let Some(r) = p
+            .records
+            .get(m.kind.character as usize - 1)
+            .filter(|r| r.max_hp != 0)
+        else {
             continue;
         };
         apply_member(m, r);
@@ -707,16 +842,44 @@ fn equipment_of(r: &Record) -> pause_menu::items::Equipment {
     }
 }
 
+/// What the camp's half of a load reads besides the image.
+pub struct CampContext<'a> {
+    pub items: &'a [Item],
+    pub levels: &'a [data::battle_tables::PlayerLevel],
+    pub weapon_abilities: &'a HashMap<u16, u16>,
+    pub limits: &'a [second_deck::LimitRow],
+    /// The EXP the Status page counts from.
+    pub exp: u32,
+}
+
+impl<'a> CampContext<'a> {
+    pub fn of(game: &'a Game, data: &SaveData) -> Self {
+        Self {
+            items: &game.save.items,
+            levels: game.enemy.as_ref().map_or(&[], |rt| &rt.sora_levels),
+            weapon_abilities: &game.ability_source.equipment_abilities,
+            limits: game.second_deck.as_ref().map_or(&[], |d| &d.limits),
+            exp: game
+                .enemy
+                .as_ref()
+                .map_or(data.u32_at(state::EXP), |rt| rt.exp_total),
+        }
+    }
+}
+
 /// The same for what the camp keeps: its stock, gear, seen marks and the
 /// journal's numbers.
-pub fn apply_camp(c: &mut CampRes, game: &Game, data: &SaveData) {
+pub fn apply_camp(c: &mut CampRes, ctx: &CampContext, data: &SaveData) {
     let p = Persistent::read(data);
     let r = p.records[0];
+    if r.max_hp == 0 {
+        return;
+    }
     c.config_flags = p.config;
     c.game_mode = p.difficulty;
     c.shortcuts = p.shortcuts;
     c.no_charge = p.no_charge as u8;
-    c.stock = read_stock(&game.save.items, data);
+    c.stock = read_stock(ctx.items, data);
     c.starting.clear();
     c.seen = read_bits(data, state::SEEN_ITEMS, state::SEEN_ITEM_BYTES);
     c.equipment = equipment_of(&r);
@@ -729,8 +892,8 @@ pub fn apply_camp(c: &mut CampRes, game: &Game, data: &SaveData) {
                 .map(|m| (ch, m))
         })
         .collect();
-    let row = level_row(game, r.level);
-    let exp = game.enemy.as_ref().map_or(p.exp, |rt| rt.exp_total);
+    let row = ctx.levels.get(r.level.max(1) as usize - 1).copied();
+    let exp = ctx.exp;
     let n = &mut c.source.numbers;
     n.level = r.level.max(1);
     if let Some(row) = row {
@@ -740,12 +903,7 @@ pub fn apply_camp(c: &mut CampRes, game: &Game, data: &SaveData) {
         n.magic = i32::from(row.magic) + i32::from(r.magic);
         n.defense = i32::from(row.defense) + i32::from(r.defense);
     }
-    c.source.weapon_ability = game
-        .ability_source
-        .equipment_abilities
-        .get(&r.weapon)
-        .copied()
-        .unwrap_or(0);
+    c.source.weapon_ability = ctx.weapon_abilities.get(&r.weapon).copied().unwrap_or(0);
     c.seen_chars = read_bits(data, state::SEEN_CHARS, 0x44);
     c.seen_limits = read_bits(data, state::SEEN_LIMITS, 4);
     c.seen_minigames = read_bits(data, state::SEEN_MINIGAMES, 0xc);
@@ -764,7 +922,7 @@ pub fn apply_camp(c: &mut CampRes, game: &Game, data: &SaveData) {
         c.seen_story = per_world_rows(&stories, &read_bits(data, state::SEEN_STORY, 0x40));
     }
     c.puzzles = read_puzzles(data);
-    c.journal_save = JournalSave::read(data, game);
+    c.journal_save = JournalSave::read(data, ctx.limits);
 }
 
 /// The journal's numbers from the image: nothing in a new game.
@@ -781,22 +939,16 @@ pub struct JournalSave {
 }
 
 impl JournalSave {
-    pub fn read(data: &SaveData, game: &Game) -> Self {
-        let limit_counts = game
-            .second_deck
-            .as_ref()
-            .map(|deck| {
-                deck.limits
-                    .iter()
-                    .map(|l| {
-                        (
-                            l.command,
-                            data.u16_at(state::LIMIT_COUNTS + 2 * usize::from(l.id)),
-                        )
-                    })
-                    .collect()
+    pub fn read(data: &SaveData, limits: &[second_deck::LimitRow]) -> Self {
+        let limit_counts = limits
+            .iter()
+            .map(|l| {
+                (
+                    l.command,
+                    data.u16_at(state::LIMIT_COUNTS + 2 * usize::from(l.id)),
+                )
             })
-            .unwrap_or_default();
+            .collect();
         let minigames = (0..state::MINIGAME_COUNT)
             .map(|i| {
                 let at = state::MINIGAMES + i * 8;
@@ -820,16 +972,6 @@ impl JournalSave {
             story_flags: read_bits(data, state::FLAGS, state::FLAG_WORDS * 4),
         }
     }
-}
-
-/// `field` is used by the tour's verdict: what a card shows of an image.
-pub fn card(data: &SaveData) -> (u8, u8, u8, u32) {
-    (
-        data.u8_at(field::WORLD),
-        data.u8_at(field::AREA),
-        data.u8_at(field::PARTY + field::RECORD_LEVEL),
-        data.u32_at(field::MUNNY),
-    )
 }
 
 #[cfg(test)]

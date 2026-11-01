@@ -2676,6 +2676,7 @@ fn finish(
     mut exit: MessageWriter<AppExit>,
     mut closed: MessageReader<bevy::window::WindowCloseRequested>,
     keys: Res<ButtonInput<KeyCode>>,
+    camp: Res<CampHost>,
 ) {
     wm.frames = wm.frames.saturating_add(1);
     if let Some(dir) = wm.autoplay.clone()
@@ -2719,7 +2720,8 @@ fn finish(
                 serde_json::json!({"event":"jump","world":t.world,"area":t.area,"entrance":t.entrance})
             );
             if let Some(h) = &wm.field {
-                println!("{}", start_field(h, t, wm.autoplay.is_some()));
+                let image = landing_image(&wm, h, t, camp.0.as_ref());
+                println!("{}", start_field(h, t, wm.autoplay.is_some(), &image));
             }
         }
         exit.write(AppExit::Success);
@@ -2733,6 +2735,45 @@ struct FieldHandoff {
     root: PathBuf,
     manifest: PathBuf,
     story: Vec<[u32; 2]>,
+    /// The save the map started from, with the story its arrival left.
+    image: save::data::SaveData,
+    dump: Option<PathBuf>,
+}
+
+/// The save the field starts on (#143): what the map's arrival and the camp
+/// changed, the play times and the place the landing opens.
+fn landing_image(
+    wm: &WorldMap,
+    h: &FieldHandoff,
+    target: world_state::Target,
+    camp: Option<&crate::test_room::world_map_camp::WorldMapCamp>,
+) -> save::data::SaveData {
+    let mut d = h.image.clone();
+    let mut p = save::state::Persistent::read(&d);
+    p.world = target.world;
+    p.area = target.area;
+    p.entrance = target.entrance;
+    p.play_frames = wm.play_time;
+    p.world_frames = wm.world_times;
+    if let Some(w) = &wm.after_world {
+        for (to, from) in p.world_records.iter_mut().zip(&w.records) {
+            *to = [from.state, from.landing_set, from.value, from.flags];
+        }
+        p.symbol_slots = w.symbol_slots;
+        p.world_events = w.event_bits;
+        p.event_queue.clone_from(&w.queue);
+        p.episodes = w.episodes;
+        p.episodes_new = w.episodes_new;
+        p.draw_group_set = w.draw_group_set;
+        p.world_points = w.world_points;
+        p.menu_flags = w.menu_flags;
+    }
+    p.write(&mut d);
+    if let Some(c) = camp {
+        c.write_save(&mut d);
+    }
+    d.seal();
+    d
 }
 
 /// Writes the field config for `target` and, unless the run is unattended,
@@ -2744,6 +2785,7 @@ fn start_field(
     h: &FieldHandoff,
     target: world_state::Target,
     unattended: bool,
+    image: &save::data::SaveData,
 ) -> serde_json::Value {
     let Some(code) = ::area::progress::WORLDS.get(target.world as usize) else {
         return serde_json::json!({"event":"field_rejected","reason":"world outside the table"});
@@ -2763,12 +2805,20 @@ fn start_field(
         Ok(c) => c,
         Err(e) => return serde_json::json!({"event":"field_rejected","reason":e}),
     };
+    if let Some(path) = &h.dump
+        && let Err(e) = std::fs::write(path, image.bytes())
+    {
+        eprintln!("Save dump rejected: {e}");
+    }
     let started = !unattended
+        && crate::save_files::write_handoff(image).is_ok()
         && std::env::current_exe()
             .and_then(|exe| {
                 std::process::Command::new(exe)
                     .arg("room")
                     .args([&h.root, &h.manifest, &config])
+                    .arg("--load-image")
+                    .arg(crate::save_files::handoff_path())
                     .spawn()
             })
             .is_ok();
@@ -2808,6 +2858,9 @@ fn run(args: Vec<PathBuf>) -> Result<AppExit> {
     let mut seen: Vec<u32> = Vec::new();
     let mut play_time: u32 = 0;
     let mut world_times = [0u32; 19];
+    // A save to start from, and a file a landing's save also goes to (tests).
+    let mut load_image: Option<save::data::SaveData> = None;
+    let mut save_dump: Option<PathBuf> = None;
     let mut options = args[2..].iter();
     while let Some(option) = options.next() {
         let mut value = || -> Result<String> {
@@ -2849,6 +2902,11 @@ fn run(args: Vec<PathBuf>) -> Result<AppExit> {
             }
             // A test-room config whose sources the landing's field uses.
             Some("--field") => field = Some(PathBuf::from(value()?)),
+            Some("--load-image") => {
+                let path = PathBuf::from(value()?);
+                load_image = Some(crate::test_room::game_save::read_image(&path)?);
+            }
+            Some("--save-dump") => save_dump = Some(PathBuf::from(value()?)),
             // World-event bits to mark seen (FUN_1403deab0), as a save would
             // hold them.
             Some("--seen") => {
@@ -2889,8 +2947,28 @@ fn run(args: Vec<PathBuf>) -> Result<AppExit> {
             _ => return Err("unknown world map option".into()),
         }
     }
-    if story.is_empty() {
+    if story.is_empty() && load_image.is_none() {
         story.push(DEFAULT_STORY);
+    }
+    // A save's clock, and the world the player left (FUN_140154e20 keeps it
+    // as the entrance).
+    if let Some(image) = &load_image {
+        use save::slots::field as save_field;
+        let p = save::state::Persistent::read(image);
+        play_time = p.play_frames;
+        world_times = p.world_frames;
+        let world = image.u8_at(save_field::WORLD);
+        let left = if world == world_state::WORLD_MAP {
+            world_state::WORLD_MAP_ENTRANCES
+                .iter()
+                .find(|&&(e, _)| e == image.u8_at(save_field::ENTRANCE))
+                .map(|&(_, w)| w)
+        } else {
+            Some(world)
+        };
+        if let Some(code) = left.and_then(|w| ::area::progress::WORLDS.get(w as usize)) {
+            (*code).clone_into(&mut from);
+        }
     }
     let source = Arc::new(ProbeSource::bind_session(&args[0], &args[1])?);
     if let Some(dir) = &autoplay {
@@ -2904,6 +2982,9 @@ fn run(args: Vec<PathBuf>) -> Result<AppExit> {
     let from_world = ::area::progress::world_index(&from).ok_or("unknown world code")?;
     let target = world_state::world_map_entry(from_world);
     let mut src = AreaSource::open(Arc::clone(&source), &story)?;
+    if let Some(image) = &load_image {
+        crate::test_room::game_save::apply_progress(src.progress_mut(), image);
+    }
     let (room, mut loaded) = src
         .load(target.world, target.area, target.entrance, [-1; 3])
         .map_err(|e| format!("world map area: {e}"))?;
@@ -3133,6 +3214,13 @@ fn run(args: Vec<PathBuf>) -> Result<AppExit> {
             root: args[0].clone(),
             manifest: args[1].clone(),
             story: story.iter().map(|&(a, b)| [a, b]).collect(),
+            image: crate::test_room::game_save::story_image(
+                src.progress(),
+                load_image
+                    .as_ref()
+                    .unwrap_or(&save::data::SaveData::blank()),
+            ),
+            dump: save_dump,
         }),
         captures_taken: 0,
         capture_pending: false,
@@ -3448,6 +3536,12 @@ fn run(args: Vec<PathBuf>) -> Result<AppExit> {
         },
         None => None,
     };
+    let mut camp = camp;
+    if let (Some(c), Some(h)) = (camp.as_mut(), wm.field.as_ref())
+        && h.image.u8_at(save::slots::field::PARTY + 5) != 0
+    {
+        c.apply_save(&h.image);
+    }
     println!(
         "{}",
         serde_json::json!({"event":"camp_prepared","camp":camp.is_some()})

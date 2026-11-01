@@ -613,6 +613,7 @@ pub fn field_room_config(
         &[story],
         &format!("test-room-{world}"),
         0,
+        &["arena", "enemy", "spawn", "npc", "room_selection"],
     )
 }
 
@@ -711,6 +712,8 @@ pub fn landing_room_config(
         // The landing's jump is mode 1 (FUN_140152990(target, 1)): the
         // field fades in from black (FUN_1401561b0).
         1,
+        // The save it carries needs the battle tables.
+        &["arena", "spawn", "npc", "room_selection"],
     )
 }
 
@@ -724,6 +727,7 @@ fn write_field_config(
     story: &[[u32; 2]],
     name: &str,
     arrival: u8,
+    remove: &[&str],
 ) -> Result<PathBuf, String> {
     let bytes =
         read_limited(arena, CONFIG_LIMIT).map_err(|e| format!("{}: {e}", arena.display()))?;
@@ -732,8 +736,8 @@ fn write_field_config(
     let o = room
         .as_object_mut()
         .ok_or("The arena config is not an object.")?;
-    for key in ["arena", "enemy", "spawn", "npc", "room_selection"] {
-        o.remove(key);
+    for key in remove {
+        o.remove(*key);
     }
     let mut area =
         serde_json::json!({"world":world,"area":start.0,"entrance":start.1,"story":story});

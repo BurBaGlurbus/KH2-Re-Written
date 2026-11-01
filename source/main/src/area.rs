@@ -137,9 +137,14 @@ pub struct LoadedArea {
     /// Each save point's object argument 1 (`obj+0x9f8`): the entrance a save
     /// written there records (FUN_1403a8b10 case 0x37).
     pub save_entrances: Vec<u8>,
+    /// Each save point is a WORLD_POINT (0x239), whose menu has the World Map
+    /// row, or a SAVE_POINT (0x23a) (FUN_1403a8b10, FUN_1402eb490).
+    pub world_points: Vec<bool>,
     /// The save point object's effects (`obj/SAVE_POINT.a.us`) when the
     /// area has save points.
     pub save_point_pax: Option<Arc<data::object_effect::Pax>>,
+    /// The same of the WORLD_POINT object.
+    pub world_point_pax: Option<Arc<data::object_effect::Pax>>,
 }
 
 /// What the field and battle music slots must do on entering an area
@@ -444,11 +449,18 @@ impl AreaSource {
         timer.mark("area: collision and map effects");
         let save_points = self.save_points(&spawns);
         let save_entrances = self.save_entrances(&spawns);
+        let world_points = self.world_points(&spawns);
         let save_point_pax = if save_points.is_empty() {
             None
         } else {
             data::object_effect::read_file_pax(&mut self.library, "obj/SAVE_POINT.a.us")
                 .map(Arc::new)
+        };
+        let world_point_pax = if world_points.iter().any(|&w| w) {
+            data::object_effect::read_file_pax(&mut self.library, "obj/WORLD_POINT.a.us")
+                .map(Arc::new)
+        } else {
+            None
         };
         let player = Area::player_spawn(&spawns)
             .map(|s| {
@@ -477,7 +489,9 @@ impl AreaSource {
                 pax,
                 save_points,
                 save_entrances,
+                world_points,
                 save_point_pax,
+                world_point_pax,
             },
         ))
     }
@@ -488,8 +502,22 @@ impl AreaSource {
     fn is_save_point(&self, id: u32) -> bool {
         self.object_index.get(&id).is_some_and(|&i| {
             let o = &self.objects[i];
-            o.object_type == 7 && o.model_name.starts_with(b"SAVE_POINT")
+            o.object_type == 7
+                && (o.model_name.starts_with(b"SAVE_POINT")
+                    || o.model_name.starts_with(b"WORLD_POINT"))
         })
+    }
+
+    fn world_points(&self, spawns: &[Spawn]) -> Vec<bool> {
+        spawns
+            .iter()
+            .filter(|s| self.is_save_point(s.entity.object))
+            .map(|s| {
+                self.object_index
+                    .get(&s.entity.object)
+                    .is_some_and(|&i| self.objects[i].model_name.starts_with(b"WORLD_POINT"))
+            })
+            .collect()
     }
 
     fn save_entrances(&self, spawns: &[Spawn]) -> Vec<u8> {
