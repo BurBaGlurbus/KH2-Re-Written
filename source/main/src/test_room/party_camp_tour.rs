@@ -52,16 +52,25 @@ const STEPS: &[(u64, u64, bool)] = &[
     (SCREEN, R2, true),
     (SCREEN, CANCEL, false),
     (SCREEN, CANCEL, false),
-    // Abilities: Donald's preview, list, △ twice, popup's Well-Balanced.
+    // Abilities: Donald's preview (up from Sora: Goofy, then Donald; the
+    // forms sit between Sora and Donald), list, △ twice, popup's Well-Balanced.
     (SCREEN, UP, false),
     (20, DECIDE, false),
-    (SCREEN, DOWN, true),
-    (20, DECIDE, false),
+    (SCREEN, UP, false),
+    (20, UP, true),
+    (45, DECIDE, false),
     (SCREEN, TRIANGLE, true),
     (40, TRIANGLE, true),
     (40, DECIDE, true),
     (SCREEN, DOWN, false),
     (MOVE, DECIDE, true),
+    (SCREEN, R2, true),
+    (SCREEN, CANCEL, false),
+    // Up from Goofy past Donald: the last form's row, its view-only list.
+    (SCREEN, UP, false),
+    (20, UP, true),
+    (45, DECIDE, false),
+    (SCREEN, DOWN, true),
     (SCREEN, R2, true),
     (SCREEN, CANCEL, false),
     (SCREEN, CANCEL, false),

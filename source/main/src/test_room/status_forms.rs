@@ -2,6 +2,7 @@
 //! §2.4: FUN_140353020, FUN_140352350, FUN_140354340) and the numbers Sora's
 //! own row shows only once a form is obtained.
 use super::*;
+use pause_menu::abilities::{FormAbilities, MemberAbilities, new_marks};
 use player::forms::{self, FormLevel};
 
 /// Message tables at 0x1405bc0c0, 0x1405bc0a0 and 0x1405bbf88 and following.
@@ -26,6 +27,8 @@ const COMBAT_ROWS: [(u32, u32, usize); 7] = [
     (0xc565, 0xc57a, 3),
     (0xc566, 0xc57b, 3),
 ];
+/// Lion's row on the Abilities page (FUN_140361fc0).
+const LION_NAME: u32 = 0xb2ec;
 const SUMMON_NAME: u32 = 0xc5b1;
 const SUMMON_HELP: u32 = 0xc5b0;
 /// The Summon rows 0..3 and 10..13 (0x1405bc010, 0x1405bc04c).
@@ -60,6 +63,8 @@ const SUMMON_EXP: usize = 0x36e4;
 pub const ALL_SEEN: u16 = 0x1ff;
 /// Pride Lands and Atlantica hide the forms (0x1405bac00 [I: worlds]).
 const NO_FORMS: [u8; 2] = [10, 11];
+/// FUN_140364920: Lion's row in the Pride Lands.
+const LION_WORLD: u8 = 10;
 
 /// The texts, read when the camp's sources load.
 #[derive(Default)]
@@ -68,7 +73,7 @@ pub struct Texts(HashMap<u32, Vec<u8>>);
 impl Texts {
     /// Every message id this module shows.
     pub fn ids() -> Vec<u32> {
-        let mut ids = vec![SUMMON_NAME, SUMMON_HELP];
+        let mut ids = vec![SUMMON_NAME, SUMMON_HELP, LION_NAME];
         ids.extend(FORM_NAMES);
         ids.extend(FORM_HELPS);
         ids.extend(FORM_STAT_HELPS.iter().flatten());
@@ -217,6 +222,65 @@ pub fn numbers(game: &Game, c: &CampRes, world: u8) -> Numbers {
         }
     }
     out
+}
+
+/// The Abilities page's form rows when the camp opens: the owned forms
+/// outside the worlds that hide them (FUN_1402fc500), then Lion in the Pride
+/// Lands (FUN_140361fc0), with FUN_140368ed0's marks over each record's slots.
+pub fn ability_forms(game: &Game, c: &CampRes, world: u8) -> Vec<FormAbilities> {
+    let Some(d) = game.drive.as_ref() else {
+        return Vec::new();
+    };
+    let mut rows = Vec::new();
+    if !NO_FORMS.contains(&world) {
+        for form in [
+            forms::VALOR,
+            forms::WISDOM,
+            forms::LIMIT,
+            forms::MASTER,
+            forms::FINAL,
+        ] {
+            if let (true, Some(r)) = (d.forms.owned[form as usize], d.forms.record(form)) {
+                // FUN_1402fc860: these three hold a Keyblade of their own.
+                let weapon = matches!(form, forms::VALOR | forms::MASTER | forms::FINAL)
+                    .then(|| game.ability_source.equipment_abilities.get(&r.keyblade))
+                    .flatten();
+                rows.push((form, r.abilities.to_vec(), weapon.copied().unwrap_or(0)));
+            }
+        }
+    }
+    if world == LION_WORLD {
+        let at = save::state::FORMS + 6 * save::state::FORM_BYTES + 8;
+        let image = &game.save.base;
+        let slots = (0..save::state::FORM_ABILITY_SLOTS)
+            .map(|k| image.u16_at(at + k * 2))
+            .collect();
+        rows.push((7, slots, 0));
+    }
+    let texts = &c.source.status_texts;
+    rows.into_iter()
+        .map(|(bit, slots, weapon_ability)| {
+            let name = if bit == 7 {
+                texts.get(LION_NAME)
+            } else {
+                texts.get(FORM_NAMES[bit as usize - 1])
+            };
+            let (mut order, mut seen) = c.form_marks.get(&bit).cloned().unwrap_or_default();
+            let new = new_marks(&mut order, &mut seen, &slots, 48);
+            FormAbilities {
+                bit,
+                name,
+                own: MemberAbilities {
+                    slots,
+                    weapon_ability,
+                    order,
+                    new,
+                    seen,
+                    ..MemberAbilities::default()
+                },
+            }
+        })
+        .collect()
 }
 
 /// The rows of `bits` 1..=6 in list order.

@@ -892,6 +892,7 @@ impl Camp {
                     .abilities
                     .members
                     .iter()
+                    .chain(self.data.abilities.forms.iter().map(|f| &f.own))
                     .filter_map(abilities::MemberAbilities::any_badge)
                     .collect();
                 (!marks.is_empty()).then(|| marks.iter().all(|&s| s))
@@ -1085,7 +1086,7 @@ impl Camp {
             State::NoEffect | State::ThrowAway => {
                 (&ui.choices, RowGroupsFor::Fixed(items::CHOICE_ROWS))
             }
-            State::AbilityChars => (&self.ability_ui.chars, RowGroupsFor::Top),
+            State::AbilityChars => (&self.ability_ui.chars, RowGroupsFor::AbilityChars),
             State::AbilityList => (&self.ability_ui.list.list, RowGroupsFor::None),
             State::AbilityPopup(_) => (&self.ability_ui.popup, RowGroupsFor::None),
             State::Party => (&self.party_ui.cards, RowGroupsFor::None),
@@ -1116,6 +1117,7 @@ impl Camp {
                     FORM_ROWS
                 })
             }
+            RowGroupsFor::AbilityChars => Some(self.ability_row_groups(row)),
             RowGroupsFor::Fixed(g) => Some(g),
             RowGroupsFor::None => None,
         }
@@ -2840,6 +2842,7 @@ enum Cut {
 enum RowGroupsFor {
     Top,
     Status,
+    AbilityChars,
     Fixed(RowGroups),
     None,
 }

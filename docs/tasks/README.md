@@ -277,3 +277,4 @@ Records through T128 retain historical commands and paths. See [the folder guide
 | [T321](T321-port-royal-medals.md) | The Port Royal medals; a room of 32 actors | PARTIAL: natives translated and tested on synthetic objects; not yet seen in the fight |
 | [T322](T322-mission-natives-and-ends.md) | The missions' other natives and ends; a tour that casts magic | PARTIAL: sweeps on this build running; mission OBJ_DAMAGE not fired |
 | [T328](T328-all-worlds-on-the-map.md) | Every world open on the map; the doors between worlds; each world's party | PARTIAL: 12 of 12 landings and 72 of 73 places load; no comparison with the installed game; computers' menus not built |
+| [T334](T334-abilities-form-rows.md) | The camp's Abilities lists the Drive forms and Lion: view-only lists, marks saved (issue #161) | PASS in the room for the forms; Lion's row NOT RUN. |

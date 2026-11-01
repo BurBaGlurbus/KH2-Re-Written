@@ -124,6 +124,7 @@ pub fn load(
             files: None,
             steam_root: std::path::PathBuf::new(),
             ability_marks: HashMap::new(),
+            form_marks: HashMap::new(),
             journal_save: Default::default(),
             status_seen: status_forms::ALL_SEEN,
         },
@@ -225,7 +226,7 @@ impl WorldMapCamp {
         let side = CampSide {
             gear: player::equipment_stats::Totals::start(0, 0, 0, 0),
             form_slots: Vec::new(),
-            form_abilities: Vec::new(),
+            ability_forms: Vec::new(),
             form_weapon: None,
             hp,
             max_hp,

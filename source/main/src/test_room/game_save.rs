@@ -730,6 +730,9 @@ pub fn write_camp(
     for (&character, (order, seen)) in &c.ability_marks {
         write_ability_marks(d, character, order, seen);
     }
+    for (&form, (order, seen)) in &c.form_marks {
+        write_form_marks(d, form, order, seen);
+    }
     // The journal's seen rows.
     write_bits(d, state::SEEN_CHARS, 0x44, &c.seen_chars);
     write_bits(d, state::SEEN_LIMITS, 4, &c.seen_limits);
@@ -813,6 +816,45 @@ fn write_ability_marks(d: &mut SaveData, character: u8, order: &[u16], seen: &[b
         let b = d.u8_at(at);
         d.set_u8(at, if on { b | bit } else { b & !bit });
     }
+}
+
+/// A form's block in the lists and seen bits: Lion (7) shares block 5, where
+/// Antiform would sit (FUN_14036a0b0).
+fn form_block(form: u8) -> usize {
+    if form == 7 { 5 } else { form as usize - 1 }
+}
+
+/// A form's list and seen bits (save+0x4798 + 0x60·block, bit 0x30·block of
+/// +0x424c).
+fn write_form_marks(d: &mut SaveData, form: u8, order: &[u16], seen: &[bool]) {
+    let block = form_block(form);
+    for i in 0..48 {
+        d.set_u16(
+            state::ORDER_FORMS + state::ORDER_PARTY_BYTES * block + i * 2,
+            order.get(i).copied().unwrap_or(0),
+        );
+        let n = 0x30 * block + i;
+        let at = state::SEEN_FORM_ABILITIES + n / 8;
+        let bit = 1 << (n % 8);
+        let on = seen.get(i).copied().unwrap_or(false);
+        let b = d.u8_at(at);
+        d.set_u8(at, if on { b | bit } else { b & !bit });
+    }
+}
+
+fn read_form_marks(d: &SaveData, form: u8) -> (Vec<u16>, Vec<bool>) {
+    let block = form_block(form);
+    let order: Vec<u16> = (0..48)
+        .map(|i| d.u16_at(state::ORDER_FORMS + state::ORDER_PARTY_BYTES * block + i * 2))
+        .take_while(|&id| id != 0)
+        .collect();
+    let seen = (0..order.len())
+        .map(|i| {
+            let n = 0x30 * block + i;
+            d.u8_at(state::SEEN_FORM_ABILITIES + n / 8) >> (n % 8) & 1 != 0
+        })
+        .collect();
+    (order, seen)
 }
 
 fn read_ability_marks(d: &SaveData, character: u8) -> Option<(Vec<u16>, Vec<bool>)> {
@@ -1024,6 +1066,11 @@ pub fn apply_camp(c: &mut CampRes, ctx: &CampContext, data: &SaveData) {
                 .map(|m| (ch, m))
         })
         .collect();
+    c.form_marks = [1u8, 2, 3, 4, 5, 7]
+        .into_iter()
+        .map(|f| (f, read_form_marks(data, f)))
+        .filter(|(_, (order, _))| !order.is_empty())
+        .collect();
     let row = ctx.levels.get(r.level.max(1) as usize - 1).copied();
     let exp = ctx.exp;
     let n = &mut c.source.numbers;
@@ -1223,6 +1270,20 @@ mod tests {
         assert_eq!(back.completed, 0x21);
         assert!(back.tutorial);
         assert_eq!(back.slots, save.slots);
+    }
+
+    #[test]
+    fn form_marks_sit_in_each_forms_block() {
+        let mut d = SaveData::blank();
+        write_form_marks(&mut d, 2, &[7, 8], &[true, false]);
+        write_form_marks(&mut d, 7, &[9], &[true]);
+        assert_eq!(d.u16_at(state::ORDER_FORMS + 0x60 + 2), 8);
+        assert_eq!(d.u16_at(state::ORDER_FORMS + 5 * 0x60), 9);
+        // Bit 0x30 of +0x424c, and bit 0x30·5 for Lion.
+        assert_eq!(d.u8_at(state::SEEN_FORM_ABILITIES + 6), 1);
+        assert_eq!(d.u8_at(state::SEEN_FORM_ABILITIES + 30), 1);
+        assert_eq!(read_form_marks(&d, 2), (vec![7, 8], vec![true, false]));
+        assert_eq!(read_form_marks(&d, 7), (vec![9], vec![true]));
     }
 
     #[test]

@@ -12411,6 +12411,8 @@ pub struct CampRes {
     /// (save+0x4278 / +0x41f8 for Sora, +0x4318 / +0x4204 for the party),
     /// by character id (Sora 1).
     pub ability_marks: HashMap<u8, (Vec<u16>, Vec<bool>)>,
+    /// The same for the forms and Lion (save+0x4798, +0x424c), by form bit.
+    pub form_marks: HashMap<u8, (Vec<u16>, Vec<bool>)>,
     /// The journal's numbers a loaded save holds.
     pub journal_save: game_save::JournalSave,
     /// The forms' and Summons' seen bits (save+0x4274).
@@ -12913,20 +12915,14 @@ pub fn camp_tick(
             .collect()
         })
         .unwrap_or_default();
-    let form_abilities: Vec<u16> = form_slots
-        .iter()
-        .map(|s| {
-            game.ability_source
-                .equipment_abilities
-                .get(&s.1)
-                .copied()
-                .unwrap_or(0)
-        })
-        .collect();
     let side = CampSide {
         gear,
         form_slots,
-        form_abilities,
+        ability_forms: status_forms::ability_forms(
+            &game,
+            c,
+            area.as_deref().map_or(0, |a| a.current.world),
+        ),
         form_weapon,
         hp,
         max_hp,
@@ -13011,6 +13007,10 @@ pub fn camp_tick(
                     c.ability_marks
                         .insert(character, (a.order.clone(), a.seen.clone()));
                 }
+            }
+            for f in &menu.data.abilities.forms {
+                c.form_marks
+                    .insert(f.bit, (f.own.order.clone(), f.own.seen.clone()));
             }
             c.shortcuts = menu.data.customize.shortcuts;
             if let Some(e) = menu.data.items.equipment.first() {
@@ -13315,7 +13315,7 @@ pub fn camp_tick(
 pub struct CampSide {
     pub gear: player::equipment_stats::Totals,
     pub form_slots: Vec<(u8, u16)>,
-    pub form_abilities: Vec<u16>,
+    pub ability_forms: Vec<pause_menu::abilities::FormAbilities>,
     pub form_weapon: Option<u16>,
     pub hp: i32,
     pub max_hp: i32,
@@ -13472,7 +13472,7 @@ pub fn camp_data(
         status: status_numbers,
         gear,
         form_slots,
-        form_abilities,
+        ability_forms,
         form_weapon,
         hp,
         max_hp,
@@ -13511,7 +13511,6 @@ pub fn camp_data(
             slots: c.ability_slots.clone(),
             ap_max: n.ap,
             weapon_ability: c.source.weapon_ability,
-            form_weapon_abilities: form_abilities.clone(),
             ..Default::default()
         },
     );
@@ -13610,6 +13609,7 @@ pub fn camp_data(
         },
         abilities: pause_menu::abilities::AbilitiesData {
             members: ability_members,
+            forms: ability_forms.clone(),
             texts: c.source.abilities.clone(),
         },
         party_help: c.source.party_help.clone(),
@@ -15810,6 +15810,7 @@ pub fn run(
             files: None,
             steam_root: args[0].clone(),
             ability_marks: HashMap::new(),
+            form_marks: HashMap::new(),
             journal_save: Default::default(),
             status_seen: status_forms::ALL_SEEN,
         };

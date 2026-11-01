@@ -7,8 +7,9 @@
 //! is built from the member's 80 ability slots (bit 15 = equipped) and its
 //! weapon's ability; a party member's action abilities carry their use
 //! frequency (icons, the △ cycle and the four-row popup), and L2 / R2 step
-//! through the members (FUN_14035f130). Drive forms, Lion and the NEW!
-//! marks' producer are not built.
+//! through the character rows (FUN_14035f130). A Drive form's or Lion's row
+//! shows Sora's equipped supports and weapon, the form's weapon and its own
+//! abilities, view only (FUN_140360920, FUN_140361200, FUN_140360cb0).
 use super::items::{Grid, ItemInfo};
 use super::*;
 
@@ -61,9 +62,6 @@ pub struct MemberAbilities {
     pub slots: Vec<u16>,
     pub ap_max: i32,
     pub weapon_ability: u16,
-    /// The abilities of the Valor, Master and Final Form weapons
-    /// (FUN_140361200 lists each owned form's own weapon too), 0 = none.
-    pub form_weapon_abilities: Vec<u16>,
     /// A party member's frequencies (record +0xf5, 31 bytes, indexed by
     /// FUN_1401dc060); empty for Sora.
     pub frequency: Vec<u8>,
@@ -115,13 +113,14 @@ impl MemberAbilities {
 /// record's slots that the obtained-order list lacks are appended (up to
 /// `cap`, 80 for Sora and 48 for the party), each position whose seen bit
 /// is clear is new, and a listed ability no longer in the slots is marked
-/// seen.
+/// seen. A list already full at the start gains no new marks.
 pub fn new_marks(
     order: &mut Vec<u16>,
     seen: &mut Vec<bool>,
     slots: &[u16],
     cap: usize,
 ) -> Vec<bool> {
+    let full = order.len() >= cap;
     for &s in slots {
         let id = s & 0x7fff;
         if id == 0 {
@@ -135,7 +134,7 @@ pub fn new_marks(
         }
     }
     seen.resize(order.len(), false);
-    let new: Vec<bool> = seen.iter().map(|&s| !s).collect();
+    let new: Vec<bool> = seen.iter().map(|&s| !full && !s).collect();
     for (i, &id) in order.iter().enumerate() {
         if !slots.iter().any(|&s| s & 0x7fff == id) {
             seen[i] = true;
@@ -164,16 +163,28 @@ pub struct AbilityTexts {
     pub triangle: Vec<u8>,
 }
 
+/// A Drive form's or Lion's character row (FUN_140361fc0): bit 1..=5 of
+/// FUN_1402fc500, 7 for Lion. `own` holds the form record's 24 slots, the
+/// form's weapon's ability (FUN_1402fc860: Valor, Master, Final) and the marks
+/// of its list (save+0x4798 + 0x60·block, seen +0x424c; Lion uses block 5).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct FormAbilities {
+    pub bit: u8,
+    pub name: Vec<u8>,
+    pub own: MemberAbilities,
+}
+
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct AbilitiesData {
     pub members: Vec<MemberAbilities>,
+    pub forms: Vec<FormAbilities>,
     pub texts: AbilityTexts,
 }
 
 /// A work-area entry (8 B at +0xc): id, equipped, source slot (None = the
 /// weapon), category 0 Action / 1 Growth / 2 Support / 3 Weapons, AP cost,
-/// the record's kind and a party action ability's frequency (+6; None =
-/// 0xff).
+/// the record's kind, a party action ability's frequency (+6; None = 0xff)
+/// and whether its NEW! mark is the form's (+7 bit 7).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Entry {
     pub id: u16,
@@ -183,6 +194,7 @@ pub struct Entry {
     pub cost: i32,
     pub kind: u8,
     pub freq: Option<u8>,
+    pub form_own: bool,
 }
 
 /// The frequency table (customize table 4, 0x1405bc1f0): icon and value of
@@ -236,22 +248,77 @@ pub fn entries(table: &[ItemInfo], m: &MemberAbilities) -> Vec<Entry> {
             cost: (param >> 8) as i32,
             kind,
             freq,
+            form_own: false,
         });
     }
-    for ability in std::iter::once(m.weapon_ability).chain(m.form_weapon_abilities.iter().copied())
-    {
-        if ability != 0 {
+    out.extend(weapon_entry(m.weapon_ability));
+    sorted(table, out)
+}
+
+/// FUN_140361200's entry for a weapon's ability.
+fn weapon_entry(ability: u16) -> Option<Entry> {
+    (ability != 0).then_some(Entry {
+        id: ability,
+        equipped: true,
+        slot: None,
+        cat: 3,
+        cost: 0,
+        kind: 0,
+        freq: None,
+        form_own: false,
+    })
+}
+
+/// FUN_140360920 for a form's row: Sora's equipped supports, his weapon, the
+/// form's weapon (FUN_140361200) and the form's own slots at no cost
+/// (FUN_140360cb0).
+pub fn form_entries(
+    table: &[ItemInfo],
+    sora: &MemberAbilities,
+    form: &FormAbilities,
+) -> Vec<Entry> {
+    let record = |id: u16| table.iter().find(|r| r.id == id);
+    let mut out = Vec::new();
+    for (s, &v) in sora.slots.iter().enumerate() {
+        let id = v & 0x7fff;
+        let param = record(id).map_or(0, |r| r.param);
+        if id != 0 && v & 0x8000 != 0 && param as u8 == 0 {
             out.push(Entry {
-                id: ability,
+                id,
                 equipped: true,
-                slot: None,
-                cat: 3,
-                cost: 0,
+                slot: Some(s),
+                cat: category(0),
+                cost: (param >> 8) as i32,
                 kind: 0,
                 freq: None,
+                form_own: false,
             });
         }
     }
+    out.extend(weapon_entry(sora.weapon_ability));
+    out.extend(weapon_entry(form.own.weapon_ability));
+    for (s, &v) in form.own.slots.iter().enumerate() {
+        let id = v & 0x7fff;
+        if id != 0 {
+            let kind = record(id).map_or(0, |r| r.param) as u8;
+            out.push(Entry {
+                id,
+                equipped: v & 0x8000 != 0,
+                slot: Some(s),
+                cat: category(kind),
+                cost: 0,
+                kind,
+                freq: None,
+                form_own: true,
+            });
+        }
+    }
+    sorted(table, out)
+}
+
+/// FUN_1403632f0: exchange sort by category, then by item-table position
+/// inside a category; weapons keep their place.
+fn sorted(table: &[ItemInfo], mut out: Vec<Entry>) -> Vec<Entry> {
     let n = out.len();
     for a in 0..n {
         for b in a + 1..n {
@@ -298,6 +365,9 @@ pub(super) struct Ui {
     texts: Vec<Id>,
     entries: Vec<Entry>,
     member: usize,
+    /// The form row on show (index into `AbilitiesData::forms`); `member` is
+    /// Sora then.
+    form: Option<usize>,
     // 0x10.
     pub(super) list: Grid,
     rows: Vec<Id>,
@@ -372,7 +442,67 @@ impl Camp {
             .get(self.ability_ui.member)
             .cloned()
             .unwrap_or_default();
-        self.ability_ui.entries = entries(&self.data.items.table, &m);
+        let form = self
+            .ability_ui
+            .form
+            .and_then(|f| self.data.abilities.forms.get(f));
+        self.ability_ui.entries = match form {
+            Some(f) => form_entries(&self.data.items.table, &m, f),
+            None => entries(&self.data.items.table, &m),
+        };
+    }
+
+    /// The character list's row count: Sora, the forms and Lion, the party
+    /// (+0x6 of the work area).
+    fn ability_rows(&self) -> usize {
+        self.data.panels.members.len().max(1) + self.data.abilities.forms.len()
+    }
+
+    /// The row's form, when it is one (`isForm` of camp-06 §1.3).
+    fn row_form(&self, row: usize) -> Option<usize> {
+        (1..=self.data.abilities.forms.len())
+            .contains(&row)
+            .then(|| row - 1)
+    }
+
+    /// The row's party slot: Sora for a form's row.
+    fn row_member(&self, row: usize) -> usize {
+        match self.row_form(row) {
+            Some(_) => 0,
+            None if row == 0 => 0,
+            None => row - self.data.abilities.forms.len(),
+        }
+    }
+
+    /// FUN_140362ca0's target for a party slot.
+    pub(super) fn ability_row_of(&self, member: usize) -> usize {
+        if member == 0 {
+            0
+        } else {
+            member + self.data.abilities.forms.len()
+        }
+    }
+
+    fn select_ability_row(&mut self, row: usize) {
+        self.ability_ui.form = self.row_form(row);
+        self.ability_ui.member = self.row_member(row);
+    }
+
+    /// The row's name (FUN_14035f130's tab text).
+    fn ability_row_name(&self, row: usize) -> Vec<u8> {
+        match self.row_form(row) {
+            Some(f) => self.data.abilities.forms[f].name.clone(),
+            None => self.data.panels.members[self.row_member(row)].name.clone(),
+        }
+    }
+
+    /// The row's art: 0x1405bad78 for a form or Lion, else the top level's.
+    pub(super) fn ability_row_groups(&self, row: usize) -> RowGroups {
+        if self.row_form(row).is_some() {
+            FORM_ROWS
+        } else {
+            TOP_ROWS
+        }
     }
 
     /// FUN_1403035b0: the top-right banner (G237 → 238), right-aligned.
@@ -409,48 +539,42 @@ impl Camp {
         self.state = State::AbilityChars;
         self.substate = 0;
         self.create_tab(seq, 0);
-        let names: Vec<Vec<u8>> = self
-            .data
-            .panels
-            .members
-            .iter()
-            .map(|m| m.name.clone())
-            .collect();
-        let n = names.len().max(1);
-        if let Some(m) = member
-            && m != self.memory.ability_char
-        {
-            self.memory.ability_list = (0, 0);
-            self.memory.ability_char = m;
+        let n = self.ability_rows();
+        if let Some(m) = member {
+            let row = self.ability_row_of(m);
+            if row != self.memory.ability_char {
+                self.memory.ability_list = (0, 0);
+                self.memory.ability_char = row;
+            }
         }
         let cursor = self.memory.ability_char.min(n - 1);
         let pitch = seq.groups[TOP_ROWS.appear].text_position_x as f32;
         let mut rows = Vec::new();
-        for (i, name) in names.into_iter().enumerate() {
-            let queued = if i == cursor {
-                TOP_ROWS.selected
-            } else {
-                TOP_ROWS.idle
-            };
-            let t = self.row_text(name);
+        for i in 0..n {
+            let g = self.ability_row_groups(i);
+            let queued = if i == cursor { g.selected } else { g.idle };
+            let t = self.row_text(self.ability_row_name(i));
             let r = self
                 .sprites
-                .create(seq, PRIO_ROW, ART, TOP_ROWS.appear, Some(queued), Some(t));
+                .create(seq, PRIO_ROW, ART, g.appear, Some(queued), Some(t));
             self.sprites.get_mut(r).offset = [0., pitch * i as f32];
-            self.closers.push((r, TOP_ROWS.close));
+            self.closers.push((r, g.close));
             rows.push(r);
         }
         // A character row's NEW! badge at row base + (100, 0) (camp-06
         // §2.3): any new ability, dim once all are seen.
         self.ability_ui.char_badges.clear();
         for (i, &r) in rows.iter().enumerate() {
-            let group = self
-                .data
-                .abilities
-                .members
-                .get(i)
-                .and_then(MemberAbilities::any_badge)
-                .map_or(BLANK, |seen| items::BADGE[seen as usize]);
+            let marks = match self.row_form(i) {
+                Some(f) => self.data.abilities.forms[f].own.any_badge(),
+                None => self
+                    .data
+                    .abilities
+                    .members
+                    .get(self.row_member(i))
+                    .and_then(MemberAbilities::any_badge),
+            };
+            let group = marks.map_or(BLANK, |seen| items::BADGE[seen as usize]);
             let b = self
                 .sprites
                 .create(seq, PRIO_ROW + 1, ART, group, None, None);
@@ -497,7 +621,7 @@ impl Camp {
             self.ability_ui.bars.push(l);
             self.ability_ui.texts.push(v);
         }
-        self.ability_ui.member = cursor;
+        self.select_ability_row(cursor);
         self.ability_preview(seq);
         self.ability_chars_mask();
         if self.entry_enabled(0) {
@@ -513,7 +637,7 @@ impl Camp {
     /// FUN_1403642a0: the cursor character's equipped abilities, row-major
     /// in two columns; the panel is not drawn when there are none.
     fn ability_preview(&mut self, seq: &Sequence) {
-        self.ability_ui.member = self.ability_ui.chars.cursor;
+        self.select_ability_row(self.ability_ui.chars.cursor);
         self.rebuild_entries();
         for k in 0..self.ability_ui.bars.len() {
             let (l, v) = (self.ability_ui.bars[k], self.ability_ui.texts[k]);
@@ -554,16 +678,17 @@ impl Camp {
         }
     }
 
-    /// FUN_140363770 in 0xf.
+    /// FUN_140363770 in 0xf: 0xbb8c on a form's row, else 0xbb8b.
     fn ability_chars_help(&mut self, seq: &Sequence) {
-        let h = self.data.abilities.texts.help[0].clone();
+        let form = self.row_form(self.ability_ui.chars.cursor).is_some();
+        let h = self.data.abilities.texts.help[form as usize].clone();
         self.show_help(seq, h);
     }
 
     fn close_ability_chars(&mut self, seq: &Sequence) {
         self.close_opt(seq, self.ability_ui.panel, STATUS_PANEL[2]);
-        for &r in &self.ability_ui.chars.rows.clone() {
-            self.close_opt(seq, Some(r), TOP_ROWS.close);
+        for (i, &r) in self.ability_ui.chars.rows.clone().iter().enumerate() {
+            self.close_opt(seq, Some(r), self.ability_row_groups(i).close);
         }
     }
 
@@ -590,7 +715,7 @@ impl Camp {
                         self.memory.entry = 0;
                         let label = self.entry_label(0);
                         self.tab_text(0, label);
-                        let slot = self.memory.ability_char;
+                        let slot = self.row_member(self.memory.ability_char);
                         self.enter_items(seq, Some(slot));
                     }
                     _ => self.enter_ability_list(seq),
@@ -616,11 +741,8 @@ impl Camp {
                 self.sprites.set(seq, p, STATUS_PANEL[1], None);
             }
             for (i, &r) in self.ability_ui.chars.rows.clone().iter().enumerate() {
-                let g = if i == prev {
-                    TOP_ROWS.selected
-                } else {
-                    TOP_ROWS.idle
-                };
+                let g = self.ability_row_groups(i);
+                let g = if i == prev { g.selected } else { g.idle };
                 self.sprites.set(seq, r, g, None);
             }
             if let Some(b) = self.banner
@@ -665,8 +787,8 @@ impl Camp {
             Pick::Row(r) => {
                 self.hide_help(seq);
                 self.close_ability_chars(seq);
-                let name = self.data.panels.members[r].name.clone();
-                self.pending_tab_text[1] = Some(name);
+                self.select_ability_row(r);
+                self.pending_tab_text[1] = Some(self.ability_row_name(r));
                 self.pending = Some(State::AbilityList);
                 self.substate = 2;
             }
@@ -697,6 +819,7 @@ impl Camp {
     /// Equip's SQUARE).
     pub(super) fn enter_ability_list_for(&mut self, seq: &Sequence, member: usize) {
         self.ability_ui.member = member;
+        self.ability_ui.form = None;
         self.enter_ability_list(seq);
     }
 
@@ -811,7 +934,13 @@ impl Camp {
             banner.extend(self.data.abilities.texts.items_banner.clone());
         }
         self.show_banner(seq, banner);
-        if self.alive_opt(self.ability_ui.gauge) {
+        if self.ability_ui.form.is_some() {
+            // A form's list has no AP gauge.
+            let gone = self.ability_ui.gauge.take();
+            self.kill_opt(gone);
+            self.ability_ui.gain = None;
+            self.ability_ui.now = None;
+        } else if self.alive_opt(self.ability_ui.gauge) {
             self.sprites
                 .set(seq, self.ability_ui.gauge.unwrap(), GAUGE[1], None);
         } else {
@@ -826,12 +955,27 @@ impl Camp {
     /// cursor change), before the rows are skinned again.
     fn see_cursor_ability(&mut self) {
         let member = self.ability_ui.member;
-        if let Some(e) = self.cursor_entry()
-            && e.slot.is_some()
-            && let Some(m) = self.data.abilities.members.get_mut(member)
-        {
+        let form = self.ability_ui.form;
+        let Some(e) = self.cursor_entry().filter(|e| e.slot.is_some()) else {
+            return;
+        };
+        let marks = match form.filter(|_| e.form_own) {
+            Some(f) => self.data.abilities.forms.get_mut(f).map(|f| &mut f.own),
+            None => self.data.abilities.members.get_mut(member),
+        };
+        if let Some(m) = marks {
             m.see(e.id);
         }
+    }
+
+    /// The entry's NEW! state (FUN_140363db0, camp-06 §1.5).
+    fn entry_badge(&self, e: &Entry) -> Option<bool> {
+        e.slot?;
+        let marks = match self.ability_ui.form.filter(|_| e.form_own) {
+            Some(f) => &self.data.abilities.forms.get(f)?.own,
+            None => self.data.abilities.members.get(self.ability_ui.member)?,
+        };
+        marks.badge(e.id)
     }
 
     fn cursor_entry(&self) -> Option<Entry> {
@@ -846,7 +990,7 @@ impl Camp {
     fn ability_list_mask(&mut self) {
         let n = self.ability_ui.entries.len();
         let mut mask = 0x73 | 0x3000 | 0xc000;
-        if self.cursor_entry().is_some_and(|e| e.cost != 0) {
+        if self.ability_ui.form.is_none() && self.cursor_entry().is_some_and(|e| e.cost != 0) {
             mask |= 0x200;
         }
         // SELECT: the Abilities notice (category 2).
@@ -924,7 +1068,7 @@ impl Camp {
                 .set(seq, nm, if dim { GREY } else { WHITE }, None);
             let name = self.ability_name(e);
             self.set_text(nm, name);
-            if e.cost != 0 {
+            if e.cost != 0 && self.ability_ui.form.is_none() {
                 let ct = self.ability_ui.costs[j];
                 self.sprites.set(seq, ct, AP_CELL, None);
                 self.set_text(ct, encode_number(&e.cost.to_string()));
@@ -934,12 +1078,7 @@ impl Camp {
                 self.set_text(self.ability_ui.freqs[j], frequency_glyph(f));
             }
             // The NEW! badge (camp-06 §1.5); the weapon's ability has none.
-            let member = self.ability_ui.member;
-            if let (Some(&b), Some(seen)) = (
-                self.ability_ui.badges.get(j),
-                e.slot
-                    .and_then(|_| self.data.abilities.members.get(member)?.badge(e.id)),
-            ) {
+            if let (Some(&b), Some(seen)) = (self.ability_ui.badges.get(j), self.entry_badge(e)) {
                 self.sprites.set(seq, b, items::BADGE[seen as usize], None);
             }
         }
@@ -1058,8 +1197,9 @@ impl Camp {
             }
         };
         self.sprites.get_mut(f).offset = row_offset;
-        let toggles =
-            self.state == State::AbilityList && self.cursor_entry().is_some_and(|e| e.cost != 0);
+        let toggles = self.state == State::AbilityList
+            && self.ability_ui.form.is_none()
+            && self.cursor_entry().is_some_and(|e| e.cost != 0);
         if toggles {
             if !self.alive_opt(self.ability_ui.bubble) {
                 let mut t = Text::new(self.data.abilities.texts.triangle.clone(), TEXT_SIZE);
@@ -1165,14 +1305,15 @@ impl Camp {
         // FUN_140361620.
         let room = (self.ap_max() - used(&self.ability_ui.entries)).max(0);
         let fits = |e: &Entry| e.equipped || e.cost <= room;
+        let form = self.ability_ui.form.is_some();
         let valid = match pick {
-            Pick::Next | Pick::Previous => self.data.panels.members.len() > 1,
+            Pick::Next | Pick::Previous => self.ability_rows() > 1,
             Pick::Triangle => self.cursor_entry().is_some_and(|e| fits(&e)),
             Pick::Row(r) => self
                 .ability_ui
                 .entries
                 .get(r)
-                .is_some_and(|e| e.cost != 0 && fits(e)),
+                .is_some_and(|e| e.cost != 0 && !form && fits(e)),
             _ => true,
         };
         if let Some(s) = pick_sound(pick, moved, valid) {
@@ -1222,8 +1363,8 @@ impl Camp {
                 }
                 // FUN_14035f130: the next / previous character row.
                 Pick::Next | Pick::Previous => {
-                    let n = self.data.panels.members.len();
-                    let m = self.ability_ui.member;
+                    let n = self.ability_rows();
+                    let m = self.memory.ability_char.min(n - 1);
                     let next = if pick == Pick::Next {
                         (m + 1) % n
                     } else {
@@ -1231,8 +1372,8 @@ impl Camp {
                     };
                     self.memory.ability_char = next;
                     self.memory.ability_list = (0, 0);
-                    self.ability_ui.member = next;
-                    self.pending_tab_text[1] = Some(self.data.panels.members[next].name.clone());
+                    self.select_ability_row(next);
+                    self.pending_tab_text[1] = Some(self.ability_row_name(next));
                     self.hide_help(seq);
                     self.close_tab(seq, 1);
                     self.close_ability_list(seq, false);
@@ -1500,6 +1641,50 @@ mod tests {
         // Guard 2 + Combo Plus 1 (the weapon costs nothing).
         assert_eq!(used(&e), 3);
         assert!(e.iter().all(|e| e.freq.is_none()));
+    }
+
+    #[test]
+    fn a_forms_row_lists_soras_supports_and_its_own_abilities() {
+        let info = |id, param| ItemInfo {
+            id,
+            kind: ABILITY_TYPE,
+            param,
+            ..ItemInfo::default()
+        };
+        // 0xa2 Support cost 1, 0x52 Action cost 2, 0x5e Growth cost 2.
+        let table = vec![info(0xa2, 0x100), info(0x52, 0x202), info(0x5e, 0x203)];
+        let sora = MemberAbilities {
+            slots: vec![0xa2 | 0x8000, 0x52 | 0x8000, 0xa2],
+            weapon_ability: 0x99,
+            ..MemberAbilities::default()
+        };
+        let form = FormAbilities {
+            bit: 1,
+            name: Vec::new(),
+            own: MemberAbilities {
+                slots: vec![0x5e | 0x8000, 0x52, 0],
+                weapon_ability: 0x98,
+                ..MemberAbilities::default()
+            },
+        };
+        let e = form_entries(&table, &sora, &form);
+        // Action, Growth, Support, then the two weapons; an unequipped
+        // support and Sora's action stay out.
+        let ids: Vec<u16> = e.iter().map(|e| e.id).collect();
+        assert_eq!(ids, vec![0x52, 0x5e, 0xa2, 0x99, 0x98]);
+        assert_eq!(e[0].slot, Some(1));
+        assert!(e[0].form_own && !e[0].equipped && e[0].cost == 0);
+        assert!(e[1].form_own && e[1].equipped);
+        assert!(!e[2].form_own && e[2].cost == 1);
+        assert_eq!(e[3].slot, None);
+    }
+
+    #[test]
+    fn a_full_list_marks_nothing_new() {
+        let (mut order, mut seen) = (vec![1, 2], vec![false, true]);
+        let new = new_marks(&mut order, &mut seen, &[1, 2, 3], 2);
+        assert_eq!(order, vec![1, 2]);
+        assert_eq!(new, vec![false, false]);
     }
 
     #[test]

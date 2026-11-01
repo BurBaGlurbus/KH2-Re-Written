@@ -107,6 +107,10 @@ pub const SEEN_ABILITY_BYTES: usize = 8;
 pub const ORDER_SORA: usize = 0x4278;
 pub const ORDER_PARTY: usize = 0x4318;
 pub const ORDER_PARTY_BYTES: usize = 0x60;
+/// The forms' obtained-order lists, 48 ids per block (`+0x60 * (form - 1)`,
+/// Lion's block 5) and their seen bits (FUN_140368ed0, FUN_14036a0b0).
+pub const ORDER_FORMS: usize = 0x4798;
+pub const SEEN_FORM_ABILITIES: usize = 0x424c;
 /// The tutorial notices seen (FUN_140304e50 rows).
 pub const NOTICES_SEEN: usize = 0x4270;
 /// The forms' (bits 0..4) and Summons' (5..8) seen bits (FUN_14036a260).

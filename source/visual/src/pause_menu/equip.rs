@@ -981,9 +981,10 @@ impl Camp {
         self.tab_text(0, self.entry_label(1));
         let name = self.data.panels.members[member].name.clone();
         self.tab_text(1, name);
-        if self.memory.ability_char != member {
+        let row = self.ability_row_of(member);
+        if self.memory.ability_char != row {
             self.memory.ability_list = (0, 0);
-            self.memory.ability_char = member;
+            self.memory.ability_char = row;
         }
         self.enter_ability_list_for(seq, member);
     }
@@ -1441,20 +1442,28 @@ impl Camp {
         if let Some(slot) = self.data.equip.totals.get_mut(m) {
             *slot = t;
         }
-        let form_abilities: Vec<u16> = self
+        // The form weapons' abilities show on the forms' Abilities rows.
+        let form_abilities: Vec<(u8, u16)> = self
             .data
             .items
             .equipment
             .get(m)
-            .map(|e| e.forms.clone())
-            .unwrap_or_default()
-            .iter()
-            .map(|&id| self.item_stats(id).map_or(0, |s| s.ability))
-            .collect();
+            .map(|e| {
+                e.form_ids
+                    .iter()
+                    .zip(&e.forms)
+                    .map(|(&f, &id)| (f, self.item_stats(id).map_or(0, |s| s.ability)))
+                    .collect()
+            })
+            .unwrap_or_default();
+        for (bit, ability) in form_abilities {
+            if let Some(f) = self.data.abilities.forms.iter_mut().find(|f| f.bit == bit) {
+                f.own.weapon_ability = ability;
+            }
+        }
         if let Some(a) = self.data.abilities.members.get_mut(m) {
             a.ap_max = t.ap;
             a.weapon_ability = ability;
-            a.form_weapon_abilities = form_abilities;
         }
     }
 
