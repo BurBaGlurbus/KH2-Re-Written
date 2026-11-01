@@ -1407,6 +1407,10 @@ pub struct Game {
     pub command_presses: Vec<u16>,
     /// Items a chest gave, for its window (FUN_140159550).
     pub treasure_boxes: Vec<u16>,
+    /// A big chest's item, for dk::TREASURE_EVENT_INFO (FUN_1401595b0).
+    pub treasure_events: Vec<u16>,
+    /// The field's decide press this tick.
+    pub decide_now: bool,
     /// A chest's reaction was taken (reaction_command.rs).
     pub chest_wanted: Option<usize>,
     /// The unattended `--chest-tour`.
@@ -1481,6 +1485,8 @@ pub struct Game {
     /// A running mission overlay's camera (scene transform, field of view)
     /// and its `SeqBlur` weight with the event frame it belongs to.
     pub overlay_camera: Option<boss::OverlayView>,
+    /// A big chest's event camera.
+    pub chest_camera: Option<boss::OverlayView>,
     pub overlay_blur: Option<(f32, i32)>,
     /// The voice bank of each battle enemy object (objentry id).
     pub enemy_voice_banks: HashMap<u32, u16>,
@@ -7623,6 +7629,7 @@ pub fn simulate(
         game.attack_queued = false;
         (stick, queued.0, queued.1)
     };
+    game.decide_now = decide;
     // Field talk locks control (player+0xdc8 → +0x40 bit 0); an area
     // change zeroes the pad while DAT_142a10500 is set (FUN_1403b2340).
     // Riding the skateboard hands the pad to the Skate 3 skater.
@@ -10361,12 +10368,36 @@ pub fn hud_tick(
         let ipic = c.source.picture_sequence.clone();
         hud.treasure.push_box(r.name.clone(), picture, ipic);
     }
+    // FUN_140158ee0: the name, the description and the picture.
+    for id in std::mem::take(&mut game.treasure_events) {
+        let Some(c) = camp.as_ref() else { continue };
+        let Some(r) = c.source.items.table.iter().find(|r| r.id == id) else {
+            continue;
+        };
+        let picture = c.picture_source.as_ref().and_then(|s| {
+            let path = format!("itempic/item-{:03}.imd", r.picture);
+            visual::menu_screen::load_imgd(s, PICTURE_INDEX, &path)
+                .ok()
+                .flatten()
+        });
+        hud.treasure.push_event(
+            r.name.clone(),
+            r.description.clone(),
+            picture,
+            c.source.picture_sequence.clone(),
+        );
+    }
+    let confirm = game.decide_now || (game.autoplay.is_some() && game.tick.is_multiple_of(300));
     let Hud {
         sheets, treasure, ..
     } = &mut *hud;
     // FUN_140159ed0, FUN_140159970: se000 #10 as a window starts.
     if treasure.update(&sheets[0].sequence) {
         game.sound_queue.push((SE_TREASURE, "treasure_window"));
+    }
+    // FUN_140158ee0 and FUN_140159ae0: #10, and #24 at the confirm.
+    for id in treasure.update_event(&sheets[0].sequence, confirm) {
+        game.sound_queue.push((id, "treasure_event"));
     }
     // A party limit's gauge and combo counter (FUN_1403d96d0 shows them,
     // FUN_1403d8f40 hides them).
@@ -11703,7 +11734,7 @@ pub fn camera_control(
     // An extension's cameras, under a mission's.
     let extra_view = (hooks().camera_view)(&game, fov).or(rig.extra_view);
 
-    let (pose, fov) = match game.overlay_camera.or(extra_view) {
+    let (pose, fov) = match game.overlay_camera.or(game.chest_camera).or(extra_view) {
         Some(v) => {
             let mut eye = v.eye;
             if v.collision {
@@ -15556,6 +15587,8 @@ pub fn run(
         defeated_keys: Vec::new(),
         command_presses: Vec::new(),
         treasure_boxes: Vec::new(),
+        treasure_events: Vec::new(),
+        decide_now: false,
         chest_wanted: None,
         chest_tour,
         sound_frame: None,
@@ -15595,6 +15628,7 @@ pub fn run(
         battle_won: false,
         camera_watch: None,
         overlay_camera: None,
+        chest_camera: None,
         overlay_blur: None,
         screen_fade: Fade::default(),
         enemy_voice_banks: HashMap::new(),

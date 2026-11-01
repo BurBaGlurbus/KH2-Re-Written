@@ -33,6 +33,8 @@ pub struct ChestKind {
     pub pax: Option<Arc<data::object_effect::Pax>>,
     /// The `.a.us` holds an event `00`: a big chest (FUN_140402460 +0xbf8).
     pub big: bool,
+    /// That event's script (`re_f_ex040-00`).
+    pub event: Option<Vec<u8>>,
 }
 
 impl ChestKind {
@@ -127,14 +129,15 @@ impl ChestKind {
             });
         let effect_file = format!("obj/{model_name}.a.us");
         let pax = data::object_effect::read_file_pax(library, &effect_file).map(Arc::new);
-        let big = library
-            .read(&effect_file)
-            .ok()
-            .and_then(|b| {
-                let table = data::bar::read_bar(&b).ok()?;
-                Some(table.entries.iter().any(|e| e.entry_type == 22))
-            })
-            .unwrap_or(false);
+        let event = library.read(&effect_file).ok().and_then(|b| {
+            let table = data::bar::read_bar(&b).ok()?;
+            let e = table.entries.iter().find(|e| e.entry_type == 22)?;
+            Some(
+                b.get(e.offset as usize..e.offset as usize + e.size as usize)?
+                    .to_vec(),
+            )
+        });
+        let big = event.is_some();
         Ok(ChestKind {
             model,
             closed: closed_pose,
@@ -146,6 +149,7 @@ impl ChestKind {
             body,
             pax,
             big,
+            event,
         })
     }
 }

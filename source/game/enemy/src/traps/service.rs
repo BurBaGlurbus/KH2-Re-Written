@@ -122,6 +122,7 @@ pub fn lookup(table: u16, index: u16) -> Option<TrapFn> {
         (1, 327) => prize_get_all,
         (1, 342) => prize_appear_num,
         (1, 362) => treasure_get,
+        (1, 296) => tutorial_open,
         (1, 359) => hook_command_image,
         (1, 360) => reset_command_image,
         (1, 365) => command_disable_group,
@@ -311,6 +312,8 @@ forward_traps! {
     prize_get_all = "prize_get_all_tr", Some(0), None, None;
     prize_appear_num = "prize_appear_num", None, None, Some(0);
     treasure_get = "treasure_get", None, None, None;
+    // FUN_1404316e0 makes a menu::TutorialWidget; the room has none.
+    tutorial_open = "trap_tutorial_open", None, None, None;
     hook_command_image = "obj_hook_command_image", Some(0), None, None;
     reset_command_image = "obj_reset_command_image", Some(0), None, None;
     command_disable_group = "command_disable_group", None, None, None;

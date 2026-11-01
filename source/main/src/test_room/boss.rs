@@ -545,6 +545,20 @@ enum Anchor {
 }
 
 impl Overlay {
+    /// An overlay based on a fixed place (a big chest's event, FUN_1403db2f0).
+    pub fn at(bytes: &[u8], yaw: f32, place: Vec3) -> Option<Self> {
+        let mut o = Self::read(bytes)?;
+        o.anchor = Some((yaw, place));
+        o.frame = Some(0.);
+        Some(o)
+    }
+
+    /// The view at event frame `frame`, None once it has ended.
+    pub fn view_at(&mut self, frame: f32) -> Option<OverlayView> {
+        self.frame = Some(frame);
+        self.camera()
+    }
+
     fn read(bytes: &[u8]) -> Option<Self> {
         let commands = data::event_script::read(bytes).ok()?;
         let mut speeds = Vec::new();

@@ -16,6 +16,9 @@ const SMALL_BLEND: f32 = 8.;
 /// degrees a tick [I: the parameter's unit].
 const TURN_TICKS: u32 = 12;
 const TURN_RATE: f32 = 15. * std::f32::consts::PI / 180.;
+/// The big chest's event: its frames run at half the tick rate (90 frames over
+/// the 180-frame clip), and op 0x3b at frame 75 opens the window.
+const EVENT_WINDOW_TICK: u32 = 150;
 /// The effect owner of the chests' effects.
 const CHEST_FX: u8 = 0xf5;
 
@@ -87,6 +90,7 @@ pub fn tick(
     }
     let sora = Vec3::from_array(game.sora.player.position);
     let mut at = sora;
+    game.chest_camera = None;
     for k in 0..area.current.chests.len() {
         let chest = &area.current.chests[k];
         if chest.state == ChestState::Unread {
@@ -126,6 +130,18 @@ pub fn tick(
                     });
                 }
             }
+            // FUN_1403db2f0: the big chest's event, based on the chest.
+            if chest.kind.big
+                && let Some(view) = event_view(chest, t)
+            {
+                game.chest_camera = Some(view);
+            }
+            if chest.kind.big
+                && t == EVENT_WINDOW_TICK
+                && let Some(item) = chest.item
+            {
+                game.treasure_events.push(item);
+            }
             if t < TURN_TICKS && !chest.kind.big {
                 let to = chest.position - sora;
                 let target = to.x.atan2(to.z);
@@ -145,6 +161,15 @@ pub fn tick(
     }
     game.sora.player.position[0] = at.x;
     game.sora.player.position[2] = at.z;
+}
+
+/// The big chest's event camera at this tick of its opening. [I] FUN_1403ad270's
+/// state 2 reads the chest's +0x808, whose half turn from the scene yaw is
+/// fitted to the view it gives; +0x808 was not read.
+fn event_view(chest: &Chest, tick: u32) -> Option<boss::OverlayView> {
+    let bytes = chest.kind.event.as_deref()?;
+    boss::Overlay::at(bytes, chest.yaw + std::f32::consts::PI, chest.position)?
+        .view_at(tick as f32 / 2.)
 }
 
 /// FUN_1404025c0 and FUN_1403a1b60.
@@ -194,7 +219,10 @@ fn open(game: &mut Game, chest: &mut Chest, camp: Option<&mut CampRes>) {
         }
     }
     // FUN_1403a1b20 hands it to the box window, which waits out Sora's motion.
-    game.treasure_boxes.push(item);
+    // A big chest's waits in the ring for its event's op 0x3b.
+    if !big {
+        game.treasure_boxes.push(item);
+    }
     game.event(
         serde_json::json!({"event":"chest_open","tick":tick,"object":chest.object,
         "item":item,"bit":chest.bit,"big":big,"capture":played}),

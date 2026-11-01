@@ -288,3 +288,4 @@ Records through T128 retain historical commands and paths. See [the folder guide
 | [T342](T342-party-row-presets-and-held-members.md) | The party row keeps a swap through op 0x0f; members a form holds are locked (issue #34, parts) | PARTIAL: unit tests and a regression run; guests still open. |
 | [T343](T343-enemy-level-from-story.md) | The enemy level from `btlv`; `dsa` op 2's second message (issue #162, parts) | PASS in the room's log; the flag tail waits for #25. |
 | [T344](T344-story-events-from-the-field.md) | An area's story events start from the field, behind `KH2RW_STORY_EVENTS` (issue #25) | PARTIAL: the first hop runs in parts; the mission after it stops on a missing native. |
+| [T345](T345-big-chest-event-and-window.md) | The big chest's event camera and window; the mission's tutorial native (issues #67, #25, parts) | PASS in the room; the camera's half turn is fitted. |
