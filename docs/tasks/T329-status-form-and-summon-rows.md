@@ -8,7 +8,7 @@ read.
 Private evidence (outside the checkout): `research\playable-room-20261008\camp-04\status-config-spec.md` Â§2.2 to Â§2.5,
 `research\issues-20261031\g\c1\`, `c2.txt`, `c3\` (FUN_140369520, FUN_14036aba0, FUN_14036ab00, FUN_14036a260, FUN_1403e87f0,
 FUN_1403e88f0, FUN_1403e8a00, FUN_14040d680, FUN_140353f10 and the tables at 0x1405bbf88..0x1405bc0c0); runs `c7`, `c8` under
-`C:\Users\ANIMA\kh2-issues-out\s79\`.
+`%USERPROFILE%\kh2-issues-out\s79\`.
 
 ## What the executable does
 

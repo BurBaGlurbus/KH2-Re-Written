@@ -6,7 +6,7 @@ Issue #28 (pause menu item). Gate: development of the event player; no final gat
 `3c837ac`, package 0.1.2. Source: the selected Steam KH2FM build, validated each run; the install was only read.
 
 Private evidence (outside the checkout): `research\playable-room-20261008\cutscene-01\audio\audio-spec.md` §5 (pause
-during events); runs in `C:\Users\ANIMA\kh2-issues-out\` (`ev-pause1`, `ev-pause2`).
+during events); runs in `%USERPROFILE%\kh2-issues-out\` (`ev-pause1`, `ev-pause2`).
 
 ## What the executable does (audio-spec §5)
 

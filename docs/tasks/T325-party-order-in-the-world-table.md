@@ -6,7 +6,7 @@ plus this change, package 0.1.2. Source: the selected Steam KH2FM build, validat
 
 Private evidence (outside the checkout): `research\playable-room-20261008\camp-08\party-spec.md` §1, §3, §6 and its decompiles;
 `research\issues-20261031\g\a2\` (FUN_1402fc360, FUN_1403e2e20, FUN_1403e3670, FUN_1403e3680); runs `c1`, `c2` under
-`C:\Users\ANIMA\kh2-issues-out\s79\`.
+`%USERPROFILE%\kh2-issues-out\s79\`.
 
 ## What the executable does
 

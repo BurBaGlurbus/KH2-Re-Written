@@ -7,7 +7,7 @@ edits were in the shared folder. Source: the selected Steam KH2FM build, validat
 headless on a private read-only project copy (plain Ghidra, no MCP).
 
 Private evidence (outside the checkout): `%LOCALAPPDATA%\KH2FinalRewrite\research\npc-talk-20261101` (decompiles `g\m1`, `g\t1`, `g\t2`,
-`g\f4`), older `playable-room-20261008\tt-world-01\npc-01`, `dialogue-01`, `text-codes-01`; runs in `C:\Users\ANIMA\kh2-npctalk` (`b0`,
+`g\f4`), older `playable-room-20261008\tt-world-01\npc-01`, `dialogue-01`, `text-codes-01`; runs in `%USERPROFILE%\kh2-npctalk` (`b0`,
 `n1`, `t2`, `t3`).
 
 ## What was wrong

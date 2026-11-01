@@ -8,7 +8,7 @@ read-only project copy (plain Ghidra, no MCP).
 
 Private evidence (outside the checkout): `%LOCALAPPDATA%\KH2FinalRewrite\research\issues-20261031\g\` (decompiles of
 FUN_1402ed110, FUN_1402ed0e0, FUN_1403a05f0, FUN_1402e5000, FUN_1403c1d90, FUN_1403a1410, FUN_1403e8380, FUN_1403edca0,
-FUN_140368ed0, FUN_1403e2e20, the table at 0x1405ba910); runs under `C:\Users\ANIMA\kh2-issues-out\s79\`.
+FUN_140368ed0, FUN_1403e2e20, the table at 0x1405ba910); runs under `%USERPROFILE%\kh2-issues-out\s79\`.
 
 ## What the executable does
 

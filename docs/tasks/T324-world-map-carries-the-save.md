@@ -6,7 +6,7 @@ local `main` after `2817929` plus this change, package 0.1.2. Source: the select
 install was only read.
 
 Private evidence (outside the checkout): `research\save-20261016\out\callers-4950\` (FUN_1403a8b10), runs `w1`, `w2`, `w3`, `p1`
-under `C:\Users\ANIMA\kh2-issues-out\s79\`.
+under `%USERPROFILE%\kh2-issues-out\s79\`.
 
 ## What the executable does
 

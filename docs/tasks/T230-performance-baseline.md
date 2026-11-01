@@ -7,7 +7,7 @@ gate inferred. Prerequisites: T110 (area transitions and load times), T127 (mesh
 Build identity: branch `perf/high-fps` from local `main` at `36c97bb`, package 0.1.2, Rust 1.99.0
 Windows MSVC. Source: the selected Steam KH2FM build, validated at each run; the install was only read.
 
-Private evidence: `C:\Users\ANIMA\kh2-perf-out\` — `base-room-1`, `base-room-2`, `base-room-vsync`,
+Private evidence: `%USERPROFILE%\kh2-perf-out\` — `base-room-1`, `base-room-2`, `base-room-vsync`,
 `base-tt-1`, `base-tt-2` (frame CSVs, run logs, stderr), `trace-room-1`, `trace-tt-1` (Chrome traces and
 `summary-all.txt`). Criterion output in the worktree's ignored `target/criterion/`.
 

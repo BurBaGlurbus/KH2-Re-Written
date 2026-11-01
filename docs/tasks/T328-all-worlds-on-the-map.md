@@ -7,7 +7,7 @@ the `skate3` feature. Source: the selected Steam KH2FM build, validated each run
 a private read-only project copy (plain Ghidra, no MCP).
 
 Private evidence (outside the checkout): decompiles under `%LOCALAPPDATA%\KH2FinalRewrite\research\worlds-20261101\g`, runs and scan
-tools under `C:\Users\ANIMA\kh2-wmall-out` (`links.txt`, `wm0`, `l1`, `g2`, `s2`, `tools`).
+tools under `%USERPROFILE%\kh2-wmall-out` (`links.txt`, `wm0`, `l1`, `g2`, `s2`, `tools`).
 
 ## What the executable does
 

@@ -5,7 +5,7 @@ Issues #86 / #144 (world map symbols); T172 recorded `WM_SYMBOL_CA` as untexture
 model texture reader; no final gate is inferred. Prerequisites: T172. Build identity: local `main` after `1fa5051`,
 package 0.1.2. Source: the selected Steam KH2FM build, validated each run; the install was only read.
 
-Private evidence (outside the checkout): runs in `C:\Users\ANIMA\kh2-issues-out\` (`wm1`, `wm-ca1`, `ca-model2`).
+Private evidence (outside the checkout): runs in `%USERPROFILE%\kh2-issues-out\` (`wm1`, `wm-ca1`, `ca-model2`).
 
 ## What was wrong
 

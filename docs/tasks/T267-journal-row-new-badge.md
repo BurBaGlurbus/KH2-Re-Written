@@ -8,7 +8,7 @@ the selected Steam KH2FM build, validated each run; the install was only read.
 Private evidence (outside the checkout): decompiles `research\ghidra-kh2-a3\camp-04\` (FUN_140345420, FUN_140346b30),
 `research\ghidra-kh2-a1\camp-02\` (FUN_140305dc0, FUN_140304ea0, FUN_140306790), `research\ghidra-kh2-a1\jm-03\`
 (FUN_1403489e0, FUN_140348400, FUN_140346950, FUN_1403479d0, FUN_140346ed0, FUN_1403450d0, FUN_140345210);
-journal-01 spec §3.6, camp-01 spec §3.3. Runs in `C:\Users\ANIMA\kh2-issues-out\` (`i161-badge2`, `i161-journal2`).
+journal-01 spec §3.6, camp-01 spec §3.3. Runs in `%USERPROFILE%\kh2-issues-out\` (`i161-badge2`, `i161-journal2`).
 
 ## What the executable does
 

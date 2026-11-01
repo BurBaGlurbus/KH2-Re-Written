@@ -6,7 +6,7 @@ T323. Build identity: local `main` after `1972788` plus this change, package 0.1
 each run; the install was only read.
 
 Private evidence (outside the checkout): `research\issues-20261031\g\b1\` (FUN_1403c1190, FUN_1404014a0, FUN_1404016b0),
-`research\party-1to1-20261023\form-effects-spec.md` §1.2, §1.4; runs `c3`, `c4`, `f1`, `f2` under `C:\Users\ANIMA\kh2-issues-out\s79\`.
+`research\party-1to1-20261023\form-effects-spec.md` §1.2, §1.4; runs `c3`, `c4`, `f1`, `f2` under `%USERPROFILE%\kh2-issues-out\s79\`.
 
 ## What the executable does
 

@@ -1,7 +1,7 @@
 # Performance baseline (T230)
 
 Recorded 2026-10-25 on branch `perf/high-fps` from local `main` at `36c97bb`, before any optimization.
-Raw records (frame CSVs, run logs, Chrome traces) stay private in `C:\Users\ANIMA\kh2-perf-out\`; only
+Raw records (frame CSVs, run logs, Chrome traces) stay private in `%USERPROFILE%\kh2-perf-out\`; only
 aggregate numbers are here.
 
 ## Setup

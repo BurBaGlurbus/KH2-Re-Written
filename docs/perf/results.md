@@ -6,7 +6,7 @@ Both executables are `--release --features skate3,perf-diag` builds made the sam
 the baseline commit `16cec02` (an exported copy of that tree), "after" from local `main` at `1b92156`.
 The runs alternated before/after, three of each per scene; Roblox was open throughout, so single runs
 swing (one "after" room run averaged 93 FPS, the next two 207 and 195). The tables give the median of the
-three runs. Raw frame records stay private in `C:\Users\ANIMA\kh2-perf-out\fin-*`.
+three runs. Raw frame records stay private in `%USERPROFILE%\kh2-perf-out\fin-*`.
 
 ## Field play (ticks 0–1800)
 

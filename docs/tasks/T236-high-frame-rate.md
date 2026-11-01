@@ -12,7 +12,7 @@ validated at each run; the install was only read.
 The commits of this work say "T231" in their messages; that number was taken on `main` by the BAR
 round-trip work meanwhile, so this record is T236.
 
-Private evidence: `C:\Users\ANIMA\kh2-perf-out\` (frame records, run logs, captures and Chrome traces:
+Private evidence: `%USERPROFILE%\kh2-perf-out\` (frame records, run logs, captures and Chrome traces:
 `cap*`, `lim*`, `det*`, `e*`, `h*`, `t*`, `q*`, `trace-*`, `ab*`, `fin-*`, `overlay-*`).
 
 ## What changed
