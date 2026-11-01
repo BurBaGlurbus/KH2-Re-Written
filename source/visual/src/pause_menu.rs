@@ -2755,7 +2755,13 @@ impl Camp {
         }
         let n = self.data.panels.members.len();
         let members = (0..n.min(3))
-            .map(|i| (self.party_ui.model_of(i), model_offset(i, n), s.ctx_color[3]))
+            .map(|i| {
+                (
+                    self.party_ui.model_of(i),
+                    model_offset(i, n),
+                    s.ctx_color[3],
+                )
+            })
             .collect();
         Some((PRIO_MODEL, members))
     }
