@@ -4070,6 +4070,19 @@ pub fn load(
     });
     // A fight's objects name the motions Sora is captured into, so the area's
     // spawns come before his kit.
+    let base_external = {
+        let mut m = limit_source.motions(1);
+        m.extend(summon::capture_motions(source, &battle));
+        m.extend(boss::capture_motions(
+            source,
+            early_area.iter().flat_map(|(_, _, a)| {
+                let standing = a.spawns.iter().map(|s| s.entity.object);
+                let groups = a.state.objects.iter();
+                standing.chain(groups.flat_map(|o| o.point.entities.iter().map(|e| e.object)))
+            }),
+        ));
+        m
+    };
     let kit = character_kit::load_kit(
         source,
         character_kit::KitInputs {
@@ -4102,20 +4115,7 @@ pub fn load(
                 summon::CALL_MOTION,
                 summon::APPEAR_MOTION,
             ],
-            external: {
-                let mut m = limit_source.motions(1);
-                m.extend(summon::capture_motions(source, &battle));
-                m.extend(boss::capture_motions(
-                    source,
-                    early_area.iter().flat_map(|(_, _, a)| {
-                        let standing = a.spawns.iter().map(|s| s.entity.object);
-                        let groups = a.state.objects.iter();
-                        standing
-                            .chain(groups.flat_map(|o| o.point.entities.iter().map(|e| e.object)))
-                    }),
-                ));
-                m
-            },
+            external: base_external.clone(),
         },
     )?;
     timer.mark("Sora's kit");
@@ -4137,6 +4137,7 @@ pub fn load(
     .inspect_err(|e| eprintln!("Drive forms unavailable: {e}"))
     .ok()
     .map(|mut f| {
+        f.base_external = base_external;
         f.system_pax = system_pax.map(Arc::new);
         f.texcommon = texcommon;
         f.prize_pax = prize_pax.map(Arc::new);

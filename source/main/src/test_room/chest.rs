@@ -196,20 +196,19 @@ fn open(game: &mut Game, chest: &mut Chest, camp: Option<&mut CampRes>) {
     };
     // FUN_1403c3f00, into the stock; a full stock loses the item while the bit
     // and the window still happen.
-    let counts = match game.items.as_mut() {
-        Some(i) => Some(&mut i.stock),
-        None => None,
-    };
     let mut camp = camp;
-    let counts = match (counts, camp.as_mut()) {
-        (Some(c), _) => Some(c),
-        (None, Some(c)) => Some(&mut c.stock),
-        _ => None,
-    };
-    if let Some(stock) = counts {
-        let n = stock.entry(item).or_insert(0);
-        *n = n.saturating_add(1).min(99);
+    match (game.items.as_mut(), camp.as_mut()) {
+        (Some(i), _) => {
+            i.give(item);
+        }
+        (None, Some(c)) => {
+            let n = c.stock.entry(item).or_insert(0);
+            *n = n.saturating_add(1).min(99);
+        }
+        _ => {}
     }
+    let Game { save, .. } = game;
+    game_save::note_obtained(&mut save.base, &save.items, item);
     if chest.bit != 0 {
         let at = state::CHESTS + chest.bit as usize / 8;
         let b = game.save.base.u8_at(at);
@@ -225,7 +224,8 @@ fn open(game: &mut Game, chest: &mut Chest, camp: Option<&mut CampRes>) {
     }
     game.event(
         serde_json::json!({"event":"chest_open","tick":tick,"object":chest.object,
-        "item":item,"bit":chest.bit,"big":big,"capture":played}),
+        "item":item,"bit":chest.bit,"big":big,"capture":played,
+        "slots":game.items.as_ref().map(|i| i.slots.clone())}),
     );
 }
 

@@ -4,20 +4,20 @@ use serde::Serialize;
 use sha2::{Digest, Sha256};
 use std::io;
 
-#[derive(Debug, Serialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
 pub struct RangeTrigger {
     pub start_frame: i16,
     pub end_frame: i16,
     pub trigger: u8,
     pub parameters: Vec<i16>,
 }
-#[derive(Debug, Serialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
 pub struct FrameTrigger {
     pub frame: i16,
     pub trigger: u8,
     pub parameters: Vec<i16>,
 }
-#[derive(Debug, Serialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
 pub struct MotionTriggers {
     pub declared_frame_offset: i16,
     pub sequential_frame_offset: usize,
@@ -87,7 +87,7 @@ pub fn read(bytes: &[u8]) -> io::Result<MotionTriggers> {
     })
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Clone, Debug, Serialize)]
 pub struct SelectedTriggers {
     pub bar_ordinal: usize,
     pub sha256: String,

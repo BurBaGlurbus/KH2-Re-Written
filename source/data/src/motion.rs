@@ -417,6 +417,7 @@ impl InterpolatedMotion {
     }
 }
 
+#[derive(Clone)]
 pub struct SelectedMotion {
     pub slot: usize,
     pub sha256: String,

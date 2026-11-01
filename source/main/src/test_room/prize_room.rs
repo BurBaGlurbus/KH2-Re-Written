@@ -7,6 +7,8 @@ use player::enemy_prizes::{self, Orb};
 /// The owner the prize heal effect (system element 6) runs under, so its
 /// release ends only it.
 pub const HEAL_OWNER: u8 = 0xf7;
+/// [I] A dropped box against the map's walls.
+const BOX_RADIUS: f32 = 30.;
 
 /// One line of the unattended log.
 pub fn log_event(log: &mut Option<std::fs::File>, record: serde_json::Value) {
@@ -45,6 +47,7 @@ pub fn tour(game: &mut Game) {
         enemy,
         world,
         party,
+        log,
         ..
     } = game;
     let Some(rt) = enemy.as_mut() else { return };
@@ -99,6 +102,42 @@ pub fn tour(game: &mut Game) {
                 ));
             }
         }
+    }
+    // A box thrown at the nearest wall, which stops it.
+    if tick == 30 {
+        let from = [at[0], at[1] + 40., at[2]];
+        let wall = (0..16)
+            .filter_map(|k| {
+                let a = k as f32 * std::f32::consts::TAU / 16.;
+                let (s, c) = a.sin_cos();
+                let to = [from[0] + 1500. * s, from[1], from[2] + 1500. * c];
+                let hit = world.line_hit(from, to)?;
+                Some((Vec3::from(hit).distance(Vec3::from(from)), s, c, hit))
+            })
+            .min_by(|a, b| a.0.total_cmp(&b.0));
+        if let (Some((_, s, c, hit)), Some(style)) = (wall, enemy_prizes::box_style(0)) {
+            let id = rt.next_drop;
+            rt.next_drop += 1;
+            let at = [hit[0] - 120. * s, hit[1] + 40., hit[2] - 120. * c];
+            let mut d = enemy_prizes::ItemDrop::spawn(id, 280, style, at, [0.5; 4]);
+            d.velocity = [6. * s, 15., 6. * c];
+            log_event(
+                log,
+                serde_json::json!({"event":"box_thrown","tick":tick,"id":id,"wall":hit,"from":at}),
+            );
+            rt.drops.push(d);
+        }
+    }
+    if tick == 135 {
+        let boxes: Vec<_> = rt
+            .drops
+            .iter()
+            .map(|d| (d.id, d.rested, d.position))
+            .collect();
+        log_event(
+            log,
+            serde_json::json!({"event":"boxes","tick":tick,"boxes":boxes}),
+        );
     }
     if tick == 140 {
         for orb in rt
@@ -175,19 +214,46 @@ pub fn tick(game: &mut Game, tick: u64) {
         let floor = world
             .floor(drop.position[0], drop.position[2], drop.position[1] + 30.)
             .unwrap_or(0.);
+        let before = drop.position;
         if let Some(id) = drop.tick(floor) {
             sound_queue.push((id, "box_bounce"));
         }
+        // [I] The map's walls stop it, as its object's map body does; the
+        // radius is the box's own size.
+        let (dx, dz) = (drop.position[0] - before[0], drop.position[2] - before[2]);
+        let moved = dx.hypot(dz);
+        if moved > 1e-3 {
+            let (s, c) = (dx / moved, dz / moved);
+            let y = before[1] + BOX_RADIUS;
+            let from = [before[0], y, before[2]];
+            let to = [
+                drop.position[0] + s * BOX_RADIUS,
+                y,
+                drop.position[2] + c * BOX_RADIUS,
+            ];
+            if let Some(hit) = world.line_hit(from, to) {
+                drop.position[0] = hit[0] - s * BOX_RADIUS;
+                drop.position[2] = hit[2] - c * BOX_RADIUS;
+                drop.velocity[0] = 0.;
+                drop.velocity[2] = 0.;
+                log_event(
+                    log,
+                    serde_json::json!({"event":"box_wall","tick":tick,"id":drop.id,"at":hit}),
+                );
+            }
+        }
         if !player.dead() && drop.collected_by(body) {
             if let Some(i) = items.as_mut() {
-                let n = i.stock.entry(drop.item).or_insert(0);
-                *n = n.saturating_add(1).min(99);
+                i.give(drop.item);
             }
+            game_save::note_obtained(&mut save.base, &save.items, drop.item);
             drop.take_off(anchor);
             sound_queue.push((enemy_prizes::BOX_FLY_SOUND, "box_fly"));
             log_event(
                 log,
-                serde_json::json!({"event":"item_pickup","tick":tick,"item":drop.item}),
+                serde_json::json!({"event":"item_pickup","tick":tick,"item":drop.item,
+                    "slots":items.as_ref().map(|i| i.slots.clone()),
+                    "stock":items.as_ref().and_then(|i| i.stock.get(&drop.item).copied())}),
             );
         }
         true

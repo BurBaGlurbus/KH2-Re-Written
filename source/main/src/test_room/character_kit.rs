@@ -13,6 +13,8 @@ use data::{model_inspection, motion, object_collision, probe_source::ProbeSource
 use player::{Action, AttackStep, Clip, Clips, Params};
 use std::{collections::HashMap, sync::Arc};
 
+/// A motion from another file: its clip id, the body's and the weapon's.
+pub type KitMotion = (u16, motion::SelectedMotion, Option<motion::SelectedMotion>);
 /// What a kit is built from.
 pub struct KitInputs<'a> {
     /// The form (obj+0xde0) this kit plays: 0 for base Sora.
@@ -70,7 +72,7 @@ pub struct KitInputs<'a> {
     pub scripted: Vec<u16>,
     /// Scripted motions from other files (the party limits' own sets): id,
     /// the motion and its Keyblade motion.
-    pub external: Vec<(u16, motion::SelectedMotion, Option<motion::SelectedMotion>)>,
+    pub external: Vec<KitMotion>,
 }
 
 /// A Keyblade's attack spheres by collision group: offset, radius.

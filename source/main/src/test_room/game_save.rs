@@ -247,6 +247,15 @@ fn write_progress(progress: &Progress, p: &mut Persistent, data: &mut SaveData) 
     }
 }
 
+/// FUN_1403c3f00's tail: a non-key item's bit at save+0x3d88 (rec +0x12).
+pub fn note_obtained(base: &mut SaveData, items: &[Item], item: u16) {
+    if let Some(r) = items.iter().find(|r| r.id == item && r.flags & 1 == 0) {
+        let at = state::OBTAINED_ITEMS + r.slot as usize / 8;
+        let b = base.u8_at(at);
+        base.set_u8(at, b | 1 << (r.slot % 8));
+    }
+}
+
 /// FUN_1403c4720 over the table: the count of every item the image holds.
 /// Type 0x13 has no count.
 pub fn read_stock(items: &[Item], data: &SaveData) -> std::collections::BTreeMap<u16, u8> {

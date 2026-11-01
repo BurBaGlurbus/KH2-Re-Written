@@ -65,7 +65,8 @@ pub fn load_images(
         .filter(|e| e.name_hash == name_hash)
         .ok_or("2LD archive entry mismatch")?;
     let archive = original_payload::read_original(&mut checked.reader, entry)?.bytes;
-    let hd = replacement_payload::read_all_replacements(&mut checked.reader, entry)?;
+    // A face file holds more images than one model's limit (jmface_heart: 69).
+    let hd = replacement_payload::read_map_replacements(&mut checked.reader, entry)?;
     checked.verify_unchanged()?;
     let table = bar::read_bar(&archive)?;
     let images: Vec<_> = table

@@ -23,11 +23,7 @@ static CAPTURES: std::sync::OnceLock<Vec<(u32, Vec<usize>)>> = std::sync::OnceLo
 static CHEST_OBJECTS: std::sync::OnceLock<Vec<(bool, u32)>> = std::sync::OnceLock::new();
 
 /// A motion in Sora's kit: clip id, body motion, Keyblade motion.
-type KitMotion = (
-    u16,
-    data::motion::SelectedMotion,
-    Option<data::motion::SelectedMotion>,
-);
+use super::character_kit::KitMotion;
 /// The chests' captures: clip id and the slot's archive.
 static CHEST_CLIPS: std::sync::OnceLock<Vec<(u16, Vec<u8>)>> = std::sync::OnceLock::new();
 

@@ -70,6 +70,28 @@ pub struct ItemRt {
 }
 
 impl ItemRt {
+    /// FUN_1403c4d50 + FUN_1403c3f00 for Sora: a consumable takes the first
+    /// empty item slot whose auto-reload item is empty or the same; anything
+    /// else counts in the stock, up to 99. False when nothing was added.
+    pub fn give(&mut self, item: u16) -> bool {
+        let consumable = self.src.items.get(&item).is_some_and(|i| i.kind == 0);
+        if consumable {
+            let free = (0..self.slots.len()).find(|&k| {
+                self.slots[k] == 0 && self.originals.get(k).is_none_or(|&o| o == 0 || o == item)
+            });
+            if let Some(k) = free {
+                self.slots[k] = item;
+                return true;
+            }
+        }
+        let n = self.stock.entry(item).or_insert(0);
+        if *n >= 99 {
+            return false;
+        }
+        *n += 1;
+        true
+    }
+
     pub fn new(
         src: ItemSource,
         slots: Vec<u16>,
@@ -278,5 +300,37 @@ pub fn tick(game: &mut Game, tick: u64) {
     // The battle state drops once the enemy cannot be hit.
     if enemy.as_ref().is_some_and(|e| !e.enemy.targetable()) {
         rt.reload();
+    }
+}
+
+#[cfg(test)]
+mod give_tests {
+    use super::*;
+
+    #[test]
+    fn a_consumable_takes_an_empty_slot_first_then_the_stock() {
+        let mut items = HashMap::new();
+        items.insert(
+            1,
+            ItemInfo {
+                kind: 0,
+                amount: 0,
+                command: 1,
+                effect: 0,
+            },
+        );
+        let src = ItemSource {
+            items,
+            box_styles: HashMap::new(),
+        };
+        let mut rt = ItemRt::new(src, vec![5, 0, 0], vec![0, 2, 1], BTreeMap::new());
+        // Slot 1 reloads item 2: the first free one is slot 2.
+        assert!(rt.give(1));
+        assert_eq!(rt.slots, [5, 0, 1]);
+        assert!(rt.give(1));
+        assert_eq!(rt.stock.get(&1), Some(&1));
+        // Not a consumable: the stock, capped.
+        rt.stock.insert(9, 99);
+        assert!(!rt.give(9));
     }
 }

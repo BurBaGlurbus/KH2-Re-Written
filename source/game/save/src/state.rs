@@ -89,6 +89,8 @@ pub const CHESTS: usize = 0x23ac;
 /// FUN_1403a1590, both read and raised only once story flag 0x2d0 is set).
 pub const COMMAND_USES: usize = 0x3948;
 pub const COMMAND_USE_COUNT: usize = 0x40;
+/// A non-key item's bit once obtained (FUN_1403c3f00: `DAT_1409ad638`).
+pub const OBTAINED_ITEMS: usize = 0x3d88;
 /// `btlv` row bits (FUN_1403ee4a0: `DAT_1409acfd4`).
 pub const BATTLE_BITS: usize = 0x3724;
 /// FUN_14039ac70: the counters run once this story flag is set.

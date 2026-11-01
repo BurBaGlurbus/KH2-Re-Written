@@ -54,6 +54,9 @@ pub struct FormSources {
     /// Base Sora's object name (form 0), whose kit a Keyblade change
     /// rebuilds.
     base_object: String,
+    /// The motions from other files in his kit (limits, summons, captures): a
+    /// rebuilt kit keeps them.
+    pub base_external: Vec<character_kit::KitMotion>,
     /// `memt` row 0 (FUN_140405190): the object id of each form.
     pub form_objects: [u16; 7],
     /// `memt`, whose other rows hold a world costume's forms.
@@ -180,6 +183,7 @@ impl FormSources {
         Ok(FormSources {
             objects: objects.to_vec(),
             base_object: base_object.to_owned(),
+            base_external: Vec::new(),
             form_objects,
             memt: memt.to_vec(),
             sklt,
@@ -606,6 +610,12 @@ impl FormSources {
                         .chain(241..=248)
                         .chain([player::WALL_RECOIL_AIR])
                         .collect()
+                } else if form == 0 && !worn {
+                    vec![
+                        player::WALL_RECOIL_AIR,
+                        summon::CALL_MOTION,
+                        summon::APPEAR_MOTION,
+                    ]
                 } else {
                     vec![player::WALL_RECOIL_AIR]
                 },
@@ -613,6 +623,8 @@ impl FormSources {
                 // form's capture variant was not traced.
                 external: if worn {
                     boss::chest_clips()
+                } else if form == 0 {
+                    self.base_external.clone()
                 } else {
                     Vec::new()
                 },
