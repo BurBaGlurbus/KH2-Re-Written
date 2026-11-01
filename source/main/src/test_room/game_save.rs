@@ -648,8 +648,17 @@ pub fn capture(game: &Game, c: &CampRes, area: Option<&AreaRes>) -> SaveData {
         write_background(&mut d, game.tick, |flag| progress.test(flag));
     }
     // The stock (the battle's is the live one) and what the camp has seen.
-    let stock = game.items.as_ref().map_or(&c.stock, |i| &i.stock);
-    write_camp(c, &game.save.items, stock, &mut d);
+    let mut stock = game.items.as_ref().map_or(&c.stock, |i| &i.stock).clone();
+    // A form is owned through its item (FUN_1403c4720 of FUN_1403c3ef0), which
+    // the room's Drive keeps apart from the stock.
+    if let Some(drive) = game.drive.as_ref() {
+        for (f, item) in player::forms::FORM_ITEMS.iter().enumerate().skip(1) {
+            if drive.forms.owned[f] {
+                stock.entry(*item).or_insert(1);
+            }
+        }
+    }
+    write_camp(c, &game.save.items, &stock, &mut d);
     d.seal();
     d
 }
@@ -717,6 +726,7 @@ pub fn write_camp(
     seen.extend(&c.starting);
     write_bits(d, state::SEEN_ITEMS, state::SEEN_ITEM_BYTES, &seen);
     d.set_u16(state::NOTICES_SEEN, c.memory.notices_seen);
+    d.set_u16(state::STATUS_SEEN, c.status_seen);
     for (&character, (order, seen)) in &c.ability_marks {
         write_ability_marks(d, character, order, seen);
     }
@@ -1006,6 +1016,7 @@ pub fn apply_camp(c: &mut CampRes, ctx: &CampContext, data: &SaveData) {
     c.equipment = equipment_of(&r);
     c.ability_slots = r.abilities.to_vec();
     c.memory.notices_seen = data.u16_at(state::NOTICES_SEEN);
+    c.status_seen = data.u16_at(state::STATUS_SEEN);
     c.ability_marks = (1..=13u8)
         .filter_map(|ch| {
             read_ability_marks(data, ch)

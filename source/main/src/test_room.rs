@@ -122,6 +122,7 @@ pub mod settings_room;
 pub mod shortcut_menu;
 pub mod soak_tour;
 pub mod spell_fx;
+pub mod status_forms;
 pub mod summon;
 pub mod summon_tour;
 pub mod victim_hit;
@@ -2533,6 +2534,8 @@ pub struct CampSource {
     pub abilities: pause_menu::abilities::AbilityTexts,
     pub weapon_ability: u16,
     pub party_help: [Vec<u8>; 3],
+    /// The Status rows of the forms and Summons.
+    pub status_texts: status_forms::Texts,
     pub customize: pause_menu::customize::CustomizeTexts,
     pub equip_texts: pause_menu::equip::EquipTexts,
     pub equip_stats: Vec<pause_menu::equip::ItemStats>,
@@ -3124,6 +3127,8 @@ pub fn load_camp_source(
         .zip(stat_texts.chunks(2))
         .map(|(&(bit, _, _, style), t)| (bit, t[0].clone(), t[1].clone(), style))
         .collect();
+    let status_ids = status_forms::Texts::ids();
+    let status_texts = status_forms::Texts::new(&status_ids, msg(&status_ids)?);
     let config_ids: Vec<u32> = CAMP_CONFIG
         .iter()
         .flat_map(|(label, choices, helps)| {
@@ -12384,6 +12389,8 @@ pub struct CampRes {
     pub ability_marks: HashMap<u8, (Vec<u16>, Vec<bool>)>,
     /// The journal's numbers a loaded save holds.
     pub journal_save: game_save::JournalSave,
+    /// The forms' and Summons' seen bits (save+0x4274).
+    pub status_seen: u16,
 }
 
 /// FUN_140368ed0 at the camp's start for one member: its order list and
@@ -12899,6 +12906,7 @@ pub fn camp_tick(
         max_mp,
         party,
         journal_tour: game.journal_tour,
+        status: status_forms::numbers(&game, c, area.as_deref().map_or(0, |a| a.current.world)),
         party_locked: {
             let world = area.as_deref().map_or(0, |a| a.current.world);
             let row = game_save::world_party(&game.save.party_table, world);
@@ -12916,7 +12924,8 @@ pub fn camp_tick(
             .filter(|(_, s)| s.is_some())
             .map(|(&id, _)| id)
             .collect();
-        sounds = menu.frame(layout, c.pad.pressed, c.pad.repeat, tick as u32);
+        let time = game.save.play_frames(tick);
+        sounds = menu.frame(layout, c.pad.pressed, c.pad.repeat, time);
         game.tick += 1;
         // The settings pages apply as they change.
         if let Some(s) = &menu.data.settings {
@@ -12962,6 +12971,7 @@ pub fn camp_tick(
             game.config_flags = c.config_flags;
             c.stock = menu.data.items.counts.clone();
             c.seen = menu.data.items.seen.clone();
+            c.status_seen = menu.data.status_seen;
             // The obtained-order lists and seen bits stay with each
             // character (a Party swap reorders the camp's pages).
             for (i, a) in menu.data.abilities.members.iter().enumerate() {
@@ -13288,6 +13298,8 @@ pub struct CampSide {
     pub journal_tour: bool,
     /// Party slots that cannot be picked (FUN_1403e37c0).
     pub party_locked: Vec<bool>,
+    /// The Status list's forms and Summons.
+    pub status: status_forms::Numbers,
 }
 
 pub fn party_source(c: &CampRes, character: u8) -> Option<&PartyCampSource> {
@@ -13429,6 +13441,7 @@ pub fn camp_data(
 ) -> pause_menu::Data {
     let CampSide {
         party_locked: _,
+        status: status_numbers,
         gear,
         form_slots,
         form_abilities,
@@ -13481,7 +13494,8 @@ pub fn camp_data(
     let value = |bit: usize| -> String {
         match bit {
             0 => format!("{}", n.level),
-            1 | 7 => "0".into(),
+            1 => format!("{}", status_numbers.exp),
+            7 => format!("{}", status_numbers.bonus_levels),
             2 => format!("{}", n.next_exp),
             3 => format!("{hp}/{max_hp}"),
             4 => format!("{mp}/{max_mp}"),
@@ -13502,6 +13516,7 @@ pub fn camp_data(
             value: pause_menu::encode_number(&value(*bit)),
         });
     }
+    status_forms::sora_rows(&c.source.status_texts, status_numbers, &mut stats);
     // The party members after Sora (status bits 7.., party order).
     let pages: Vec<_> = party
         .iter()
@@ -13514,6 +13529,10 @@ pub fn camp_data(
         help: c.source.help.clone(),
         stats,
     }];
+    status.extend(status_forms::entries(
+        &c.source.status_texts,
+        status_numbers,
+    ));
     let mut equipments = vec![equipment];
     let mut ability_members = vec![sora_abilities.clone()];
     let sora_totals = pause_menu::equip::Totals {
@@ -13567,6 +13586,8 @@ pub fn camp_data(
         },
         party_help: c.source.party_help.clone(),
         party_locked: side.party_locked.clone(),
+        status_new: status_numbers.new & !c.status_seen,
+        status_seen: c.status_seen,
         equip: pause_menu::equip::EquipData {
             stats: c.source.equip_stats.clone(),
             totals,
@@ -15748,6 +15769,7 @@ pub fn run(
             steam_root: args[0].clone(),
             ability_marks: HashMap::new(),
             journal_save: Default::default(),
+            status_seen: status_forms::ALL_SEEN,
         };
         if let Some(image) = &load_image {
             game_save::apply_camp(&mut camp, &game_save::CampContext::of(&game, image), image);

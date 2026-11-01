@@ -74,6 +74,8 @@ const STEPS: &[(u64, u64, bool)] = &[
     (20, UP, true),
     (20, DECIDE, true),
     (SCREEN, CANCEL, false),
+    // Up from Donald: the last form's row.
+    (SCREEN, UP, true),
     (SCREEN, CANCEL, false),
     // Items: Donald → Equip, his weapon list, the second staff, R2 to Goofy.
     (SCREEN, UP, false),

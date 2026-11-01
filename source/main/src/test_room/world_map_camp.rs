@@ -125,6 +125,7 @@ pub fn load(
             steam_root: std::path::PathBuf::new(),
             ability_marks: HashMap::new(),
             journal_save: Default::default(),
+            status_seen: status_forms::ALL_SEEN,
         },
         settings,
         tick: 0,
@@ -233,6 +234,7 @@ impl WorldMapCamp {
             party: Vec::new(),
             journal_tour: false,
             party_locked: Vec::new(),
+            status: Default::default(),
         };
         camp_data(c, panels, None, &self.settings, &side)
     }
@@ -324,6 +326,7 @@ impl WorldMapCamp {
                 c.memory = menu.memory;
                 c.config_flags = menu.data.config_flags;
                 c.stock = menu.data.items.counts.clone();
+                c.status_seen = menu.data.status_seen;
                 c.seen = menu.data.items.seen.clone();
                 c.shortcuts = menu.data.customize.shortcuts;
                 if let Some(e) = menu.data.items.equipment.first() {

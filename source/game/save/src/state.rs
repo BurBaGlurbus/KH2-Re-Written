@@ -109,6 +109,8 @@ pub const ORDER_PARTY: usize = 0x4318;
 pub const ORDER_PARTY_BYTES: usize = 0x60;
 /// The tutorial notices seen (FUN_140304e50 rows).
 pub const NOTICES_SEEN: usize = 0x4270;
+/// The forms' (bits 0..4) and Summons' (5..8) seen bits (FUN_14036a260).
+pub const STATUS_SEEN: usize = 0x4274;
 /// The journal block `J` and its seen bits (FUN_140345420).
 pub const JOURNAL: usize = 0x4c38;
 pub const SEEN_CHARS: usize = JOURNAL;

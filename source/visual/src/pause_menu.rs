@@ -39,6 +39,8 @@ const HELP_PARENTS: [usize; 3] = [39, 40, 41];
 const PRIO_FRAME: u32 = 0x7533;
 const PRIO_PANEL: u32 = 0x753b;
 const PRIO_ROW: u32 = 0x753c;
+/// The Status rows' NEW! badges (FUN_140353020).
+const PRIO_STATUS_BADGE: u32 = 0x7541;
 /// The top rows' NEW! badges (camp-01 §3.3).
 const PRIO_ROW_BADGE: u32 = 0x753d;
 const PRIO_BAR: u32 = 0x753d;
@@ -270,6 +272,10 @@ pub struct Data {
     pub party_help: [Vec<u8>; 3],
     /// Party slots that cannot be picked (FUN_1403e37c0).
     pub party_locked: Vec<bool>,
+    /// The Status rows' new bits of this camp (FUN_140369520: forms 0..4,
+    /// summons 5..8) and the seen bits (save+0x4274).
+    pub status_new: u16,
+    pub status_seen: u16,
     pub customize: customize::CustomizeData,
     pub equip: equip::EquipData,
     /// 03system.bin `ipic`: the item pictures' sequence (FUN_1403b0c90).
@@ -689,6 +695,8 @@ pub struct Camp {
     status_list: MenuList,
     /// Status entry index per list row.
     status_rows: Vec<usize>,
+    /// The NEW! badges of the Status rows.
+    status_badges: Vec<Id>,
     panel: Option<Id>,
     labels: Vec<Id>,
     values: Vec<Id>,
@@ -764,6 +772,7 @@ impl Camp {
             closers: vec![(munny, MUNNY[2]), (time, TIME[2])],
             status_list: MenuList::default(),
             status_rows: Vec::new(),
+            status_badges: Vec::new(),
             panel: None,
             labels: Vec::new(),
             values: Vec::new(),
@@ -887,6 +896,9 @@ impl Camp {
                     .collect();
                 (!marks.is_empty()).then(|| marks.iter().all(|&s| s))
             }
+            // Status: any new form or summon (FUN_14036aba0(-1)).
+            4 => (self.data.status_new != 0)
+                .then(|| self.data.status_new & !self.data.status_seen == 0),
             // Jiminy's Journal: always the pulsing badge.
             5 => self.data.journal_new.then_some(false),
             _ => None,
@@ -1495,6 +1507,7 @@ impl Camp {
             .position(|e| e.bit == self.memory.status_bit)
             .unwrap_or(0);
         let mut rows = Vec::new();
+        self.status_badges.clear();
         for (i, e) in self.data.status.clone().iter().enumerate() {
             let g = if e.bit == 0 || e.bit > 6 {
                 TOP_ROWS
@@ -1508,10 +1521,24 @@ impl Camp {
                 .create(seq, PRIO_STATUS_ROW, ART, g.appear, Some(queued), Some(t));
             self.sprites.get_mut(r).offset = [0., pitch * i as f32];
             self.closers.push((r, g.close));
+            // FUN_140353020: the badge at the row group's (100, 0).
+            let group = self
+                .status_badge(e.bit)
+                .map_or(BLANK, |seen| items::BADGE[seen as usize]);
+            let b = self
+                .sprites
+                .create(seq, PRIO_STATUS_BADGE, ART, group, None, None);
+            self.child(b, r);
+            self.sprites.get_mut(b).offset = [
+                seq.groups[g.idle].light_position_x as f32,
+                seq.groups[g.idle].text_position_y as f32,
+            ];
+            self.status_badges.push(b);
             rows.push(r);
         }
         self.status_rows = (0..self.data.status.len()).collect();
         self.status_list = MenuList::new(rows, cursor);
+        self.status_seen(seq);
         let panel = self.sprites.create(
             seq,
             PRIO_STATUS_PANEL,
@@ -1548,6 +1575,32 @@ impl Camp {
         self.layout_status_panel(seq);
         let help = self.data.status[cursor].help.clone();
         self.show_help(seq, help);
+    }
+
+    /// A form or Summon row's NEW! badge: `Some(all seen)`.
+    fn status_badge(&self, bit: u8) -> Option<bool> {
+        let (new, seen) = (self.data.status_new, self.data.status_seen);
+        match bit {
+            1..=5 => {
+                let m = 1 << (bit - 1);
+                (new & m != 0).then_some(seen & m != 0)
+            }
+            6 => (new & 0x1e0 != 0).then_some(new & 0x1e0 & !seen == 0),
+            _ => None,
+        }
+    }
+
+    /// FUN_140353f10 in 0x17: the cursor resting on a form sees it.
+    fn status_seen(&mut self, seq: &Sequence) {
+        let i = self.status_list.cursor;
+        let bit = self.data.status[self.status_rows[i]].bit;
+        if !(1..=5).contains(&bit) || self.data.status_new >> (bit - 1) & 1 == 0 {
+            return;
+        }
+        self.data.status_seen |= 1 << (bit - 1);
+        if let Some(&b) = self.status_badges.get(i) {
+            self.sprites.set(seq, b, items::BADGE[1], None);
+        }
     }
 
     /// FUN_1403540b0: labels and values of the cursor character, compacted
@@ -1653,6 +1706,7 @@ impl Camp {
             self.layout_status_panel(seq);
             let help = self.data.status[cursor_entry].help.clone();
             self.show_help(seq, help);
+            self.status_seen(seq);
         }
         match pick {
             Pick::Start => {
@@ -1804,6 +1858,19 @@ impl Camp {
         let entry = &self.data.status[self.status_rows[self.status_list.cursor]];
         let col = self.column;
         let cursor = self.columns[col].cursor;
+        // FUN_140353f10 in 0x18: Summon's right column sees that summon.
+        if entry.bit == 6
+            && col == 1
+            && let Some(k) = entry.stats[10..20]
+                .iter()
+                .enumerate()
+                .filter(|(_, s)| s.is_some())
+                .nth(cursor)
+                .map(|(k, _)| k)
+        {
+            self.data.status_seen |= 1 << (5 + k);
+        }
+        let entry = &self.data.status[self.status_rows[self.status_list.cursor]];
         let help = entry.stats[col * 10..col * 10 + 10]
             .iter()
             .flatten()
