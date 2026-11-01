@@ -46,8 +46,6 @@ pub fn lookup(table: u16, index: u16) -> Option<TrapFn> {
         (1, 192) => is_motion_cancel,
         (1, 224) => is_action_air,
         (1, 254) => is_ride,
-        (1, 265) => set_medal,
-        (1, 266) => get_medal,
         (1, 272) => is_dead,
         (1, 319) => is_sora,
         (1, 323) => count_entry,
@@ -545,21 +543,6 @@ fn is_ride(ctx: &mut Ctx<'_>, m: &mut Memory<'_>, args: &mut Args) -> Result<(),
     let id = ctx.sys_of_ai(m, args[0].value)?;
     let riding = ctx.object(id)?.sys.rider != 0;
     flag(args, riding);
-    Ok(())
-}
-
-/// 1:265 FUN_14042e110: +0xd1c.
-fn set_medal(ctx: &mut Ctx<'_>, m: &mut Memory<'_>, args: &mut Args) -> Result<(), Fault> {
-    let id = ctx.sys_of_ai(m, args[0].value)?;
-    ctx.object(id)?.sys.medal = args[1].as_int();
-    Ok(())
-}
-
-/// 1:266 FUN_14042e140: +0xd1c.
-fn get_medal(ctx: &mut Ctx<'_>, m: &mut Memory<'_>, args: &mut Args) -> Result<(), Fault> {
-    let id = ctx.sys_of_ai(m, args[0].value)?;
-    let v = ctx.object(id)?.sys.medal;
-    int(args, v);
     Ok(())
 }
 

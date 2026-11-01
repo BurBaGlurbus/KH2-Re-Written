@@ -12,6 +12,7 @@ pub mod gimmick;
 pub mod homing;
 pub mod limit;
 pub mod math;
+pub mod medal;
 pub mod mission;
 pub mod object;
 pub mod presentation;
@@ -48,6 +49,7 @@ pub fn lookup(table: u16, index: u16) -> Option<TrapFn> {
         .or_else(|| route::lookup(table, index))
         .or_else(|| presentation::lookup(table, index))
         .or_else(|| mission::lookup(table, index))
+        .or_else(|| medal::lookup(table, index))
         .or_else(|| service::lookup(table, index))
         .or_else(|| gimmick::lookup(table, index))
         .or_else(|| state::lookup(table, index))

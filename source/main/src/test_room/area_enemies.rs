@@ -9,7 +9,7 @@
 //! Spawn arguments 1 and 2 place an entity at a free point around Sora or
 //! within its radius (FUN_1403f3fa0, or FUN_1403f4080 for an objentry with
 //! +0x48 bit 3). [I] The ring search draws from this module's own engine
-//! generator; the room holds 16 actors at most.
+//! generator; the room holds 32 actors at most.
 use super::*;
 
 /// How long the tour stays in one group point's zone.

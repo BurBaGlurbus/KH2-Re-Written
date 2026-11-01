@@ -703,6 +703,16 @@ impl ScriptBrain {
         Ok(brain)
     }
 
+    /// Its object's id in the engine's list.
+    pub fn object_id(&self) -> u32 {
+        self.object.id
+    }
+
+    /// FUN_14040b9e0: a medal reached this object (+0xd1c).
+    pub fn add_medal(&mut self, n: i32) {
+        self.object.sys.medal += n;
+    }
+
     /// A signal reaches the mission's trigger (FUN_1403aabe0 -> FUN_1403f4980).
     pub fn mission_signal(
         &mut self,

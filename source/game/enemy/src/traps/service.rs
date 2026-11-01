@@ -79,8 +79,6 @@ pub fn lookup(table: u16, index: u16) -> Option<TrapFn> {
         (4, 35) => score_type,
         (4, 36) => score_score,
         (1, 355) => player_can_capture_form,
-        (1, 341) => prize_num_ca,
-        (1, 339) => prize_vacuum_ca,
         (7, 33) => enemy_summon_entry,
         (1, 316) | (8, 8) => host_vector,
         (0, 54) => effect_dir,
@@ -118,11 +116,9 @@ pub fn lookup(table: u16, index: u16) -> Option<TrapFn> {
         (1, 271) => enable_anmatr_effect,
         (1, 268) => action_lightcycle,
         (6, 62) => carpet_idle,
-        (1, 267) => scatter_medal,
         (1, 278) => scatter_prize,
         (1, 279) | (1, 363) | (6, 1) => prize_appear,
         (1, 327) => prize_get_all,
-        (1, 340) => prize_vacuum_range,
         (1, 342) => prize_appear_num,
         (1, 362) => treasure_get,
         (1, 359) => hook_command_image,
@@ -308,11 +304,9 @@ forward_traps! {
     enable_anmatr_effect = "obj_motion_enable_anmatr_effect", Some(0), None, None;
     action_lightcycle = "obj_action_lightcycle", Some(0), None, None;
     carpet_idle = "obj_carpet_obj_idle", Some(0), None, None;
-    scatter_medal = "obj_scatter_medal", Some(0), None, None;
     scatter_prize = "obj_scatter_prize_tr", Some(0), None, None;
     prize_appear = "prize_appear", None, None, Some(0);
     prize_get_all = "prize_get_all_tr", Some(0), None, None;
-    prize_vacuum_range = "prize_vacuum_range_ca", Some(0), None, None;
     prize_appear_num = "prize_appear_num", None, None, Some(0);
     treasure_get = "treasure_get", None, None, None;
     hook_command_image = "obj_hook_command_image", Some(0), None, None;
@@ -799,8 +793,6 @@ host_value_traps! {
     score_type = "score_type", Some(0);
     score_score = "score_score", Some(0);
     player_can_capture_form = "player_can_capture_form", None;
-    prize_num_ca = "prize_num_ca", None;
-    prize_vacuum_ca = "prize_vacuum_ca", Some(2);
 
     mission_get_count = "mission_get_count", None;
     mission_get_timer_second = "mission_get_timer_second", None;

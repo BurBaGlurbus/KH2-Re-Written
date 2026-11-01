@@ -12,7 +12,7 @@ use data::{model_pose::ModelPose, motion, motion_eval, probe_source::ProbeSource
 use std::sync::Arc;
 use visual::area_fog::{AddFogged, FogMaterial};
 
-pub const MAX_ACTORS: usize = 16;
+pub const MAX_ACTORS: usize = 32;
 /// The playback speeds the preview steps through.
 pub const SPEEDS: [f32; 9] = [0.1, 0.25, 0.5, 0.75, 1., 1.5, 2., 3., 4.];
 const MAX_PENDING: usize = 32;

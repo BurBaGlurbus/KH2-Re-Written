@@ -1051,7 +1051,12 @@ pub fn tick(
     // each prize's centre.
     if let (Some((dpd, prize)), Some(rt)) = (&fx.prize, game.enemy.as_ref()) {
         let mut list = Vec::new();
-        for orb in &rt.orbs {
+        let store = super::enemy_script::fighters_teamwork();
+        let team = store.lock();
+        let medals = team
+            .iter()
+            .flat_map(|t| t.medals.prizes.iter().map(|m| &m.orb));
+        for orb in rt.orbs.iter().chain(medals) {
             let Some(frame) = prize.frame(orb.kind, orb.age, orb.seed) else {
                 continue;
             };

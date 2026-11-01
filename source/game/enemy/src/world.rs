@@ -283,6 +283,21 @@ pub const SHOUT_QUEUE: usize = 64;
 pub struct Teamwork {
     pub keys: HashMap<i32, u32>,
     pub words: Vec<u32>,
+    pub medals: Medals,
+}
+
+/// The medals out in the room (FUN_14040b5a0's prize list) and Sora's count.
+#[derive(Debug, Default)]
+pub struct Medals {
+    pub prizes: Vec<Medal>,
+    pub player: i32,
+}
+
+/// A medal falling or flying (FUN_14040c1f0) to an object.
+#[derive(Clone, Copy, Debug)]
+pub struct Medal {
+    pub orb: player::enemy_prizes::Orb,
+    pub target: Option<ObjId>,
 }
 
 /// A light a script made (`light_create`, FUN_1403f6f80): a 0x28-byte block

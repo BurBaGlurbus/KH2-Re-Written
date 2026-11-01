@@ -671,6 +671,7 @@ pub fn mission_tick(
             }
         }
     }
+    medal_tick(&mut game, &mut gallery);
     let signals = std::mem::take(&mut game.mission_signals);
     let tick = game.tick;
     for &(code, arg) in &signals {
@@ -834,6 +835,65 @@ pub fn mission_tick(
     if game.field_step {
         game.speed_carry -= 1.;
     }
+}
+
+/// FUN_14040b9e0's reach: a flying medal arrives within this of its object.
+const MEDAL_REACH: f32 = 100.;
+/// FUN_14040b9e0: its speed toward the object (DAT_140623bc8) and the share of
+/// its velocity it keeps (DAT_1406239f8).
+const MEDAL_SPEED: f32 = 20.;
+const MEDAL_KEEP: f32 = 0.1;
+
+/// The medals of the Grim Reaper's fight. A free one falls as a prize does and
+/// Sora collects it when it has landed; a flying one homes on its object
+/// (FUN_14040b9e0) and adds to its count there. [I] Sora's collecting them by
+/// the ordinary prizes' rule: FUN_14040b8b0 hands them to the player's vt+0x160,
+/// which is not traced.
+pub fn medal_tick(game: &mut Game, gallery: &mut enemy_gallery::EnemyGallery) {
+    let store = enemy_script::fighters_teamwork();
+    let Ok(mut team) = store.lock() else {
+        return;
+    };
+    if team.medals.prizes.is_empty() {
+        return;
+    }
+    let sora = game.sora.player.position;
+    let draw = game.sora.player.abilities.draw;
+    let medals = std::mem::take(&mut team.medals.prizes);
+    let mut kept = Vec::with_capacity(medals.len());
+    for mut m in medals {
+        let Some(target) = m.target else {
+            let [x, y, z] = m.orb.position;
+            let floor = game.world.floor(x, z, y + 30.).unwrap_or(0.);
+            m.orb.tick(floor);
+            if m.orb.collected_by(sora, draw) && !game.sora.player.dead() {
+                team.medals.player += 1;
+            } else {
+                kept.push(m);
+            }
+            continue;
+        };
+        m.orb.age = m.orb.age.saturating_add(1);
+        let brain = gallery
+            .actors
+            .iter_mut()
+            .filter_map(enemy_battle::fighter_brain)
+            .find(|b| b.object_id() == target);
+        let Some(brain) = brain else {
+            continue;
+        };
+        let to = Vec3::from_array(brain.position()) - Vec3::from_array(m.orb.position);
+        if to.length() < MEDAL_REACH {
+            brain.add_medal(1);
+            continue;
+        }
+        let v = to.normalize_or_zero() * MEDAL_SPEED;
+        let velocity = v.lerp(Vec3::from_array(m.orb.velocity), MEDAL_KEEP);
+        m.orb.velocity = velocity.to_array();
+        m.orb.position = (Vec3::from_array(m.orb.position) + velocity).to_array();
+        kept.push(m);
+    }
+    team.medals.prizes = kept;
 }
 
 /// FUN_1404334d0 (`trap_mission_dead_boss`): the bonus, the clear sound, the
