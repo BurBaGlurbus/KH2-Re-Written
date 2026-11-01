@@ -22,6 +22,24 @@ pub struct EventEntry {
     pub opt: bool,
 }
 
+/// FUN_1403f60d0: the entry a signal picks. Its signal and arg both equal wins at
+/// once; otherwise the last with the signal where either arg is negative.
+pub fn find_entry(events: &[EventEntry], signal: i32, arg: i32) -> Option<usize> {
+    let mut found = None;
+    for (i, e) in events.iter().enumerate() {
+        if e.signal != signal {
+            continue;
+        }
+        if e.spawn_id == arg {
+            return Some(i);
+        }
+        if arg < 0 || e.spawn_id < 0 {
+            found = Some(i);
+        }
+    }
+    found
+}
+
 /// A registered spawn set (list `DAT_142a10010`).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Registered {
@@ -346,6 +364,29 @@ fn event_entry(a: &[u32]) -> Result<EventEntry, ard::ArdError> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_signal_picks_the_equal_arg_first_then_the_last_open_one() {
+        let e = |signal, spawn_id| EventEntry {
+            signal,
+            spawn_id,
+            event: None,
+            jump: None,
+            flag: None,
+            e0c: None,
+            party: None,
+            party_reset: None,
+            preload: Vec::new(),
+            mode: None,
+            opt: false,
+        };
+        let list = [e(1, 58), e(0, -1), e(0, -1), e(1, 7), e(2, 3)];
+        assert_eq!(find_entry(&list, 1, 7), Some(3));
+        assert_eq!(find_entry(&list, 0, 0), Some(2));
+        assert_eq!(find_entry(&list, 1, 9), None);
+        assert_eq!(find_entry(&list, 1, -1), Some(3));
+        assert_eq!(find_entry(&list, 5, 0), None);
+    }
+
     use super::*;
     use data::ard::tag;
 

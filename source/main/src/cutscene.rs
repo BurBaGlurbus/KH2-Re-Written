@@ -67,6 +67,9 @@ struct Event {
     finished: bool,
     voices_started: usize,
     autoplay: Option<PathBuf>,
+    /// `--then-room`: the room's arguments (Steam root, manifest, config) when
+    /// a story event ends (FUN_1403a46e0's target, field side).
+    then_room: Option<[PathBuf; 3]>,
     captures: Vec<f32>,
     captures_taken: usize,
     capture_pending: bool,
@@ -1006,10 +1009,21 @@ fn finish(
         );
     }
     let captures_done = event.captures_taken >= event.captures.len();
-    if closed.read().count() > 0 || (event.finished && (event.autoplay.is_none() || captures_done))
-    {
+    let window_closed = closed.read().count() > 0;
+    if window_closed || (event.finished && (event.autoplay.is_none() || captures_done)) {
         for line in event.log.drain(..) {
             println!("{line}");
+        }
+        if !window_closed
+            && let (Some(room), Ok(exe)) = (&event.then_room, std::env::current_exe())
+            && let Err(e) = std::process::Command::new(exe)
+                .arg("room")
+                .args(room)
+                .arg("--load-image")
+                .arg(crate::save_files::handoff_path())
+                .spawn()
+        {
+            eprintln!("The field could not start after the event: {e}");
         }
         exit.write(AppExit::Success);
     }
@@ -1017,7 +1031,7 @@ fn finish(
 
 fn run(args: Vec<PathBuf>) -> Result<AppExit, Box<dyn std::error::Error>> {
     if args.len() < 2 {
-        return Err("usage: kh2fm event <Steam-root> <manifest> [--event tt:19:613] [--load-only] [--bg-mask <hex>] [--autoplay <new-capture-dir> [--pause-at <frame>]] [--captures f1,f2,...]".into());
+        return Err("usage: kh2fm event <Steam-root> <manifest> [--event tt:19:613] [--load-only] [--bg-mask <hex>] [--autoplay <new-capture-dir> [--pause-at <frame>]] [--captures f1,f2,...] [--then-room <config>]".into());
     }
     // The GPU device starts while the data decodes (used by the app below).
     let early_renderer = crate::early_renderer::EarlyRenderer::start();
@@ -1027,6 +1041,7 @@ fn run(args: Vec<PathBuf>) -> Result<AppExit, Box<dyn std::error::Error>> {
         name: "613".into(),
     };
     let mut load_only = false;
+    let mut then_room = None;
     let mut bg_mask = u64::MAX;
     let mut autoplay = None;
     let mut pause_at = None;
@@ -1038,6 +1053,10 @@ fn run(args: Vec<PathBuf>) -> Result<AppExit, Box<dyn std::error::Error>> {
         match option.to_str() {
             Some("--load-only") => load_only = true,
             Some("--autoplay") => autoplay = options.next().cloned(),
+            Some("--then-room") => {
+                let config = options.next().cloned().ok_or("room config absent")?;
+                then_room = Some([args[0].clone(), args[1].clone(), config]);
+            }
             Some("--pause-at") => {
                 pause_at = Some(
                     options
@@ -1163,6 +1182,7 @@ fn run(args: Vec<PathBuf>) -> Result<AppExit, Box<dyn std::error::Error>> {
         finished: false,
         voices_started: 0,
         autoplay,
+        then_room,
         captures,
         captures_taken: 0,
         capture_pending: false,

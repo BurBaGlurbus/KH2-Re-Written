@@ -178,6 +178,17 @@ fn signal_jump(
                 .rev()
                 .find(|e| e.signal == signal && e.spawn_id < 0)
         })?;
+    entry_jump(entry, program_areas)
+}
+
+/// What firing an event entry (FUN_1403f61a0) leaves to its caller.
+pub struct Fired {
+    pub event: Option<(u32, i16)>,
+    pub flag: Option<i16>,
+}
+
+/// FUN_1403a4bd0's reading of an entry's jump: kinds 1, 2 and 4.
+fn entry_jump(entry: &EventEntry, program_areas: &[Vec<(u16, u16)>]) -> Option<SignalJump> {
     let [kind, world, area, entrance, program, _] = entry.jump?;
     match kind {
         1 => Some(SignalJump::Field {
@@ -905,6 +916,30 @@ impl AreaSource {
 
     pub fn signal_jump(&self, events: &[EventEntry], signal: i32) -> Option<SignalJump> {
         signal_jump(events, &self.program_areas, signal)
+    }
+
+    pub fn entry_jump(&self, entry: &EventEntry) -> Option<SignalJump> {
+        entry_jump(entry, &self.program_areas)
+    }
+
+    /// FUN_1403f61a0: the entry's flag, if unset, with its script; the menu
+    /// flag; the entry is used up.
+    pub fn fire_entry(&mut self, events: &mut [EventEntry], index: usize) -> Fired {
+        let entry = &mut events[index];
+        entry.signal = -1;
+        let flag = entry.flag.filter(|&f| f >= 0);
+        if let Some(f) = flag
+            && !self.progress.test(f as u32)
+        {
+            self.progress.set(f as u32);
+        }
+        if let Some(f) = entry.e0c.filter(|&f| f >= 0) {
+            self.progress.set_menu_flag(f as u32);
+        }
+        Fired {
+            event: entry.event,
+            flag,
+        }
     }
 
     /// FUN_1403a5920: the room's command-layout digit, arif row byte +0x34

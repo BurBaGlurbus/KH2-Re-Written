@@ -125,6 +125,7 @@ pub mod shortcut_menu;
 pub mod soak_tour;
 pub mod spell_fx;
 pub mod status_forms;
+pub mod story_events;
 pub mod summon;
 pub mod summon_tour;
 pub mod victim_hit;
@@ -16186,7 +16187,13 @@ impl Plugin for RoomPlugin {
                         sephiroth::tick,
                         boss_fight::tick,
                         enemy_tour::tick,
-                        (field_npc_tick, chest::tick, chest::count_journal).chain(),
+                        (
+                            field_npc_tick,
+                            chest::tick,
+                            chest::count_journal,
+                            story_events::tick,
+                        )
+                            .chain(),
                         talk_tick,
                         effects_tick.in_set(RoomSet::EffectsTick),
                         drive_fx::tick.in_set(RoomSet::DriveFxTick),
