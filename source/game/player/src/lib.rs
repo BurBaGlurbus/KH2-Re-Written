@@ -1251,6 +1251,21 @@ impl Player {
         }
         self.connected = true;
         self.combo.step = self.combo.step.saturating_sub(1);
+        self.bounce_back(sstm, clips)
+    }
+
+    /// The guard's bounce (FUN_1403d61d0's last branch → FUN_1403d4650 with
+    /// its defaults): the same recoil, with the combo left alone.
+    pub fn guard_bounce(&mut self, sstm: &actor_physics::Sstm, clips: &Clips) -> Option<Action> {
+        if self.dead() {
+            return None;
+        }
+        self.bounce_back(sstm, clips)
+    }
+
+    /// FUN_1403d4650 (motion -1, strength -1): on the ground motion 0x29 and a
+    /// slide of 50 backward, in the air motion 0x2b and the hop.
+    fn bounce_back(&mut self, sstm: &actor_physics::Sstm, clips: &Clips) -> Option<Action> {
         let back = [-self.yaw.sin(), -self.yaw.cos()];
         if self.in_air() {
             if !self.play_motion(WALL_RECOIL_AIR, 0., clips) {
@@ -5158,6 +5173,16 @@ mod tests {
         player.combo.step = 0;
         player.wall_recoil(&sstm(), &c);
         assert_eq!(player.combo.step, 0);
+    }
+
+    #[test]
+    fn the_guard_bounce_recoils_and_leaves_the_combo_alone() {
+        let c = clips();
+        let mut player = Player::new([0., 0., 0.], 0.);
+        player.combo.step = 2;
+        assert_eq!(player.guard_bounce(&sstm(), &c), Some(Action::WallRecoil));
+        assert_eq!(player.combo.step, 2);
+        assert!(!player.connected);
     }
 
     #[test]

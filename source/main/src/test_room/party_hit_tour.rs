@@ -55,6 +55,10 @@ enum Case {
     KoHit {
         member: usize,
     },
+    /// The member at 2 HP with Second Chance, struck: 1 HP and no KO.
+    SecondChance {
+        member: usize,
+    },
     /// A claw on the member's shield.
     Shield {
         member: usize,
@@ -121,6 +125,8 @@ const CASES: &[Case] = &[
     Case::KoHit { member: DONALD },
     Case::Wait(60),
     Case::KoHit { member: GOOFY },
+    Case::Wait(60),
+    Case::SecondChance { member: GOOFY },
     Case::Wait(60),
     Case::Shield { member: GOOFY },
     Case::Wait(60),
@@ -397,6 +403,45 @@ pub fn drive(game: &mut Game, tick: u64) {
                 } else if tick > state.mark + PATIENCE {
                     done = true;
                 }
+            }
+            2 => done = free(game, member) && tick > state.mark + 20,
+            _ => {}
+        },
+        Case::SecondChance { member } => match state.stage {
+            0 if free(game, member) => {
+                stage(game, member, Some(false));
+                party_room::set_hp(game, member, 2);
+                if let Some(m) = game.party.get_mut(member) {
+                    m.abilities.set(127);
+                }
+                let placed = party_room::probe_claw(game, member, CLAW, false);
+                log(
+                    game,
+                    tick,
+                    index,
+                    "second_chance_hit",
+                    serde_json::json!({"member":member,"placed":placed}),
+                );
+                state.stage = 1;
+                state.mark = tick;
+            }
+            1 if tick > state.mark + 30 => {
+                let (hp, down) = game
+                    .party
+                    .get(member)
+                    .map_or((0, false), |m| (m.hp, m.down()));
+                log(
+                    game,
+                    tick,
+                    index,
+                    "second_chance_result",
+                    serde_json::json!({"member":member,"hp":hp,"down":down}),
+                );
+                if let Some(m) = game.party.get_mut(member) {
+                    m.abilities.clear(127);
+                }
+                state.stage = 2;
+                state.mark = tick;
             }
             2 => done = free(game, member) && tick > state.mark + 20,
             _ => {}

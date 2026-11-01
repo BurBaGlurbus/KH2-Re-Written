@@ -38,6 +38,8 @@ pub mod motion {
     /// The guard bounce (`FUN_1403d4650`, motion -1): ground and air.
     pub const BOUNCE: u16 = 41;
     pub const BOUNCE_AIR: u16 = 43;
+    /// `FUN_1403d61d0`: the grounded guard's recoil.
+    pub const GUARD_RECOIL: u16 = 42;
     /// The land motion of the mode-1 landing (`obj+0x11c` = 5, set by
     /// `FUN_1403cbec0`), played after an air flinch.
     pub const LAND: u16 = 5;
@@ -107,6 +109,8 @@ impl Rates {
     }
 }
 
+/// `FUN_1403d61d0`: the recoil's slide.
+const GUARD_RECOIL_SLIDE: f32 = 200.;
 /// `DAT_1405b532c`: the bounce's slide strength (-1 selects it).
 const BOUNCE_SLIDE: f32 = 50.;
 
@@ -343,6 +347,23 @@ pub fn bounce(
         motion,
         tick: 0,
         knock: Knock::new([-forward[0], 0., -forward[1]], BOUNCE_SLIDE, 0.),
+        blow: None,
+        sstm: *sstm,
+        sampler: Sampler::default(),
+        air: None,
+    })
+}
+
+/// `FUN_1403d61d0`'s recoil: motion 42, a slide of 200 away from `toward`.
+pub fn guard_recoil(toward: [f32; 2], sstm: &Sstm, has: &dyn Fn(u16) -> bool) -> Option<Reaction> {
+    if !has(motion::GUARD_RECOIL) {
+        return None;
+    }
+    Some(Reaction {
+        phase: Phase::Bounce,
+        motion: motion::GUARD_RECOIL,
+        tick: 0,
+        knock: Knock::new([-toward[0], 0., -toward[1]], GUARD_RECOIL_SLIDE, 0.),
         blow: None,
         sstm: *sstm,
         sampler: Sampler::default(),
@@ -664,6 +685,14 @@ mod tests {
         assert_eq!(done_at, Some(58));
         // The slide carries the member along the hit (toward -z).
         assert!(pos[2] < -30.);
+    }
+
+    #[test]
+    fn the_guard_recoil_slides_away_from_the_attacker() {
+        let s = sstm();
+        let r = guard_recoil([1., 0.], &s, &ALL).unwrap();
+        assert_eq!((r.phase, r.motion), (Phase::Bounce, motion::GUARD_RECOIL));
+        assert!(guard_recoil([1., 0.], &s, &|_| false).is_none());
     }
 
     #[test]

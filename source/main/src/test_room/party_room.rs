@@ -2132,7 +2132,16 @@ fn take_hit<W: player::World>(
     };
     let damage = combat::damage_with(src.attacker, &attack, &m.target(), &state);
     let before = m.hp;
-    m.hp = combat::apply_damage(m.hp, 0, m.max_hp, damage, false);
+    // FUN_1401b0260 → FUN_1403d6670: the member's own Second Chance and Once
+    // More, read before this hit's reaction.
+    let veto = combat::kill_veto(
+        m.abilities.has(127),
+        m.abilities.has(128),
+        m.hp,
+        0,
+        party_hit::motion::is_damage(m.follower.motion()),
+    );
+    m.hp = combat::apply_damage(m.hp, 0, m.max_hp, damage, veto);
     // FUN_1403d2eb0: HP 0 runs vt+0xb0 (FUN_1403c33d0): the dead bit and
     // the revive timer, PRTY word 6.
     let ko = before > 0 && m.hp == 0;
@@ -2233,17 +2242,23 @@ pub fn receive<W: player::World>(
             retired.push(claw.instance);
             let guarding = guard_row(gatkp)?;
             let contact = g + (claw.centre - g).normalize_or_zero() * gr;
-            // FUN_1403d61d0: effect 13 at the guard's surface, and unless a
-            // refact field is 2 the bounce (motion 41, slide 50).
+            // FUN_1403d61d0: a refact field of 2 passes with effect 13. On
+            // the ground with a refact field the member takes the recoil and
+            // effect 12 (11 is the player character's); otherwise effect 13
+            // and the bounce.
+            let (s, t) = (guarding.refact_self, rows[0].refact_other);
+            let kind = m.kind.clone();
+            let sstm = kind.sstm;
+            let has = |mo: u16| kind.motions.contains_key(&mo);
+            let recoil = s != 2 && t != 2 && (s != 0 || t != 0) && !m.follower.airborne(world);
             effect_queue.push(EffectRequest::System {
-                id: 13,
+                id: if recoil { 12 } else { 13 },
                 at: contact,
             });
-            if guarding.refact_self != 2 && rows[0].refact_other != 2 {
-                let kind = m.kind.clone();
-                let sstm = kind.sstm;
-                m.follower
-                    .bounce(&sstm, world, &|mo| kind.motions.contains_key(&mo));
+            if recoil {
+                m.follower.guard_recoil([-toward.x, -toward.z], &sstm, &has);
+            } else if s != 2 && t != 2 {
+                m.follower.bounce(&sstm, world, &has);
             }
             log_event(
                 log,

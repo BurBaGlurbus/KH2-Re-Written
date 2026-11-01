@@ -1311,6 +1311,20 @@ impl Follower {
         Some(r.motion)
     }
 
+    /// The guard's recoil (`FUN_1403d61d0`): the member faces the attacker
+    /// (`toward`) and slides 200 away on motion 42.
+    pub fn guard_recoil(
+        &mut self,
+        toward: [f32; 2],
+        sstm: &Sstm,
+        has: &dyn Fn(u16) -> bool,
+    ) -> Option<u16> {
+        let r = party_hit::guard_recoil(toward, sstm, has)?;
+        self.yaw = toward[0].atan2(toward[1]);
+        self.begin_reaction(r);
+        Some(r.motion)
+    }
+
     fn begin_reaction(&mut self, r: party_hit::Reaction) {
         self.attack = None;
         self.air = None;

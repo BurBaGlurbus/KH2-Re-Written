@@ -872,6 +872,9 @@ pub fn tick(game: &mut Game, actors: &mut [GalleryActor], tick: u64) {
                                     id: 13,
                                     at: contact,
                                 });
+                                if player.guard_bounce(&battle.assets.sstm, clips).is_some() {
+                                    *action_started = tick;
+                                }
                             }
                             if rows[0].refact_self != 2
                                 && rows[0].reflect_motion != 0
@@ -1013,7 +1016,7 @@ pub fn tick(game: &mut Game, actors: &mut [GalleryActor], tick: u64) {
             } else {
                 0
             };
-            let veto = combat::sora_veto(ab.has(127), ab.has(128), vitals.hp, 0, damage_motion);
+            let veto = combat::kill_veto(ab.has(127), ab.has(128), vitals.hp, 0, damage_motion);
             let hp_before = vitals.hp;
             vitals.hp =
                 combat::apply_damage(vitals.hp, 0, vitals.target.max_hp, damage, veto && counted);

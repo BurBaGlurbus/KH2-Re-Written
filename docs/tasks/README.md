@@ -278,3 +278,5 @@ Records through T128 retain historical commands and paths. See [the folder guide
 | [T322](T322-mission-natives-and-ends.md) | The missions' other natives and ends; a tour that casts magic | PARTIAL: sweeps on this build running; mission OBJ_DAMAGE not fired |
 | [T328](T328-all-worlds-on-the-map.md) | Every world open on the map; the doors between worlds; each world's party | PARTIAL: 12 of 12 landings and 72 of 73 places load; no comparison with the installed game; computers' menus not built |
 | [T334](T334-abilities-form-rows.md) | The camp's Abilities lists the Drive forms and Lion: view-only lists, marks saved (issue #161) | PASS in the room for the forms; Lion's row NOT RUN. |
+| [T335](T335-world-point-touched.md) | A world point marks its area when the area loads (issue #143, one item) | PASS for the item; the live chain is still to be played by hand. |
+| [T336](T336-party-kill-veto-ko-voice-guard.md) | The party's Second Chance and Once More, Sora's KO voice, the guard's bounce and recoil (issues #51, #67, parts) | PARTIAL: tours cover the veto and the voice; the guard branches only in unit tests. |

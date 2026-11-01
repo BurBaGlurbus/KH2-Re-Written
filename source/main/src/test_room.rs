@@ -5434,6 +5434,10 @@ pub fn area_transition(
         .place_name(next.world, next.area)
         .map(|t| (t.clone(), 120));
     area.bg_mask = next.state.setup.bg_mask;
+    if next.world_points.contains(&true) {
+        let (world, number) = (next.world, next.area);
+        area.source.progress_mut().enter_world_point(world, number);
+    }
     let tick = game.tick;
     game.save.note_world(next.world, tick);
     // ARD op 0x0f (FUN_1403a24c0 → FUN_1403e31f0) writes the world's table.
@@ -9817,9 +9821,17 @@ pub fn sora_sounds(game: &mut Game) {
         };
         v.scan = Some((key.0, key.1, raw));
         if !anti {
+            // FUN_1403d5dc0 asks for voice 2 as Sora dies; FUN_1403ce580 keeps
+            // a higher priority's request, so the DEAD motion's voice 1 on
+            // the same tick (vtbl priority 3 against 4) gives way [I].
+            let dying = game.sora.player.dead() && from.is_none();
+            if dying && let Some(id) = v.pick(1, 2) {
+                game.sound_queue.push((id, "voice"));
+            }
             for &(at, n) in &clip.voices {
                 if from.is_none_or(|f| at > f)
                     && at <= raw
+                    && !(dying && at == 0)
                     && let Some(id) = v.pick(1, n)
                 {
                     game.sound_queue.push((id, "voice"));
@@ -11075,11 +11087,14 @@ pub fn combat_tick(game: &mut Game, tick: u64) {
             vitals.invulnerable = 80.;
             "guard"
         } else {
-            // Bounce (motion 41 + slide 50) is not loaded in this room.
+            // FUN_1403d61d0's last branch: the bounce.
             effect_queue.push(EffectRequest::System {
                 id: 13,
                 at: contact,
             });
+            if player.guard_bounce(&rt.enemy.sstm, clips).is_some() {
+                *action_started = tick;
+            }
             "bounce"
         };
         if claw_row.refact_self != 2 && claw_row.reflect_motion != 0 {
@@ -11198,7 +11213,7 @@ pub fn combat_tick(game: &mut Game, tick: u64) {
             0
         };
         // FUN_1403d6670: Second Chance (ability 127) and Once More (128).
-        let veto = combat::sora_veto(ab.has(127), ab.has(128), vitals.hp, 0, in_damage_motion);
+        let veto = combat::kill_veto(ab.has(127), ab.has(128), vitals.hp, 0, in_damage_motion);
         vitals.hp =
             combat::apply_damage(vitals.hp, 0, vitals.target.max_hp, damage, veto && counted);
 
@@ -14909,8 +14924,13 @@ pub fn run(
         .area
         .as_ref()
         .and_then(|(_, a)| room_ambient(&loaded.step_info, a.world, a.area));
-    let area_res = loaded.area.map(|(source, mut current)| {
+    let area_res = loaded.area.map(|(mut source, mut current)| {
         let here = (current.world, current.area, current.state.entrance);
+        if current.world_points.contains(&true) {
+            source
+                .progress_mut()
+                .enter_world_point(current.world, current.area);
+        }
         AreaRes {
             music: Some(std::mem::take(&mut current.music)),
             rendered: current.npcs.len(),

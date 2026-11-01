@@ -335,10 +335,11 @@ pub fn apply_damage(cur: i32, floor: i32, max: i32, d: i32, veto: bool) -> i32 {
     (cur - d).clamp(floor, max)
 }
 
-/// Sora's kill veto (FUN_1403d6670): Second Chance (ability 127) leaves 1 HP
-/// from anything above 1; Once More (ability 128) holds at 1 HP while a
-/// damage motion (10-39) plays.
-pub fn sora_veto(
+/// The kill veto of every player class (FUN_1403d6670, Sora and the members
+/// alike): Second Chance (ability 127) leaves 1 HP from anything above 1; Once
+/// More (ability 128) holds at 1 HP while a damage motion (10-39) plays. The
+/// two start no effect and no sound.
+pub fn kill_veto(
     second_chance: bool,
     once_more: bool,
     cur: i32,
@@ -742,10 +743,10 @@ mod tests {
         // A veto leaves floor + 1.
         assert_eq!(apply_damage(3, 0, 20, 10, true), 1);
         assert_eq!(apply_damage(3, 0, 20, 10, false), 0);
-        assert!(sora_veto(true, false, 5, 0, false));
-        assert!(!sora_veto(true, false, 1, 0, false));
-        assert!(sora_veto(false, true, 1, 0, true));
-        assert!(!sora_veto(false, true, 1, 0, false));
+        assert!(kill_veto(true, false, 5, 0, false));
+        assert!(!kill_veto(true, false, 1, 0, false));
+        assert!(kill_veto(false, true, 1, 0, true));
+        assert!(!kill_veto(false, true, 1, 0, false));
     }
 
     #[test]
