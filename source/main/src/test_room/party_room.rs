@@ -802,12 +802,21 @@ pub fn load(
     // The battle stance's slots (variant order 0, 1, 3, 2) and the field
     // stance's (3, 2, 1, 0): FUN_1403c7c50 with DAT_1405c5d38, for a
     // player-type object holding its weapon.
-    let actor_motions = motion::read_motion_ids_optional(source, &selection(name)?, &wanted)?;
+    // The object's own set (entry +0x28): the world's bodies share a member's
+    // (P_EX020_TR plays P_EX020.mset).
+    let motion_set = objects
+        .iter()
+        .find(|o| o.model_name == name.as_bytes())
+        .map(|o| String::from_utf8_lossy(&o.animation_name).into_owned())
+        .and_then(|n| n.strip_suffix(".mset").map(str::to_owned))
+        .unwrap_or_else(|| name.to_owned());
+    let actor_motions =
+        motion::read_motion_ids_optional(source, &selection(&motion_set)?, &wanted)?;
     let field_motions = motion::read_motion_ids_optional(
         source,
         &motion::MotionSetSelection {
             battle: false,
-            ..selection(name)?
+            ..selection(&motion_set)?
         },
         &wanted,
     )?;
@@ -816,7 +825,7 @@ pub fn load(
         &motion::MotionSetSelection {
             battle: false,
             has_weapon: false,
-            ..selection(name)?
+            ..selection(&motion_set)?
         },
         &wanted,
     )?;
@@ -838,8 +847,13 @@ pub fn load(
     // [I] one without a motion set of its own plays the base weapon's (the
     // weapon objects' entries name no set).
     let weapon_name = weapon_object.map_or_else(|| base_weapon.clone(), str::to_owned);
+    // [I] A world's weapon (W_EX020_TR) plays the member's (W_EX020).
+    let plain_weapon = base_weapon
+        .rsplit_once('_')
+        .map_or(base_weapon.as_str(), |(head, _)| head);
     let weapon_selection = selection(&weapon_name)
         .or_else(|_| selection(&base_weapon))
+        .or_else(|_| selection(plain_weapon))
         .ok();
     let mut weapon = None;
     let mut spheres: HashMap<u8, Vec<(Vec3, f32)>> = HashMap::new();

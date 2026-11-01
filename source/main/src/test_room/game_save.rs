@@ -502,6 +502,56 @@ pub fn jump_to_world_map(game: &mut Game, c: &CampRes, area: Option<&AreaRes>) {
     }
 }
 
+/// A door to another world (FUN_1403a46e0 → FUN_140152990): the save holds the
+/// place and the field starts on it as a program of its own, as a landing does
+/// (`world_map::start_field`). Unattended runs write the config and the dump
+/// and stop there.
+pub fn jump_to_field(
+    game: &mut Game,
+    c: &CampRes,
+    area: Option<&AreaRes>,
+    (world, number, entrance): (u8, u8, u8),
+) {
+    game.door_out = None;
+    let mut image = capture(game, c, area);
+    image.set_u8(field::WORLD, world);
+    image.set_u8(field::AREA, number);
+    image.set_u8(field::ENTRANCE, entrance);
+    image.seal();
+    let tick = game.tick;
+    if let Some(path) = &game.save.dump
+        && let Err(e) = std::fs::write(path, image.bytes())
+    {
+        eprintln!("Save dump rejected: {e}");
+    }
+    game.limit = Some(tick);
+    let args = game.save.args.clone();
+    let config = ::area::progress::WORLDS
+        .get(world as usize)
+        .zip(args.get(2))
+        .and_then(|(code, arena)| {
+            crate::launcher::landing_room_config(arena, code, number, entrance, None, &[])
+                .map_err(|e| eprintln!("The next world could not start: {e}"))
+                .ok()
+        });
+    let started = game.autoplay.is_none()
+        && crate::save_files::write_handoff(&image).is_ok()
+        && match (args.first(), args.get(1), &config, std::env::current_exe()) {
+            (Some(root), Some(manifest), Some(config), Ok(exe)) => std::process::Command::new(exe)
+                .arg("room")
+                .args([root, manifest, config])
+                .arg("--load-image")
+                .arg(crate::save_files::handoff_path())
+                .spawn()
+                .is_ok(),
+            _ => false,
+        };
+    game.event(
+        serde_json::json!({"event":"field_jump","tick":tick,"world":world,"area":number,
+        "entrance":entrance,"started":started}),
+    );
+}
+
 /// FUN_1402ed110's copy: the running game into the image.
 pub fn capture(game: &Game, c: &CampRes, area: Option<&AreaRes>) -> SaveData {
     let mut d = game.save.base.clone();

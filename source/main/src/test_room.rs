@@ -1429,6 +1429,8 @@ pub struct Game {
     pub save_menu_wanted: bool,
     /// A gate's reaction was taken: `LoadedArea::gates` index.
     pub gate_wanted: Option<usize>,
+    /// The other world a door is fading out to.
+    pub door_out: Option<(u8, u8, u8)>,
     /// Files the save point's menu wrote this run, and the world and area
     /// of the save point last used.
     pub files_saved: u32,
@@ -5298,6 +5300,10 @@ pub fn area_transition(
     let Some((world, number, entrance)) = area.pending else {
         return;
     };
+    // A door to another world starts a new program instead.
+    if game.door_out.is_some() {
+        return;
+    }
     // The screen stays black until the worker has decoded the area.
     let job = match area.transition.as_mut().map(|t| t.job.take()) {
         Some(Some(job)) if !job.is_finished() => {
@@ -8600,6 +8606,13 @@ pub fn simulate(
                 }
             }
         }
+        // A door's fade to black is done: the next world opens (game_save.rs).
+        if let (Some(a), Some(c)) = (area.as_deref_mut(), camp.as_deref())
+            && a.pending.is_some()
+            && let Some(place) = game.door_out
+        {
+            game_save::jump_to_field(&mut game, c, Some(&*a), place);
+        }
         // A gate's reaction was taken (reaction_command.rs).
         if let (Some(a), Some(k)) = (area.as_deref_mut(), game.gate_wanted.take())
             && a.transition.is_none()
@@ -8622,12 +8635,23 @@ pub fn simulate(
                 }) => {
                     let mut fade = Fade::default();
                     fade.fade_out(15, false);
+                    // A room's party is settled at its start, so another
+                    // world starts as a landing does (T324).
+                    let new_world =
+                        world != a.current.world && programs == [-1; 3] && camp.is_some();
+                    if new_world {
+                        game.door_out = Some((world, place, entrance));
+                    }
                     a.transition = Some(Transition {
                         stage: Stage::Black,
                         iris: None,
                         fade,
                         target: (world, place, entrance),
-                        job: start_area_job_with(&a.source, (world, place, entrance), programs),
+                        job: (!new_world)
+                            .then(|| {
+                                start_area_job_with(&a.source, (world, place, entrance), programs)
+                            })
+                            .flatten(),
                     });
                 }
                 Some(crate::area::SignalJump::WorldMap(_)) => {
@@ -15299,6 +15323,7 @@ pub fn run(
         flow_queued: false,
         save_menu_wanted: false,
         gate_wanted: None,
+        door_out: None,
         files_saved: 0,
         save_place: None,
         save: game_save::SaveState {

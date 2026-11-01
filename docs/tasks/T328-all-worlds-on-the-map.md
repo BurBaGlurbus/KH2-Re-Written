@@ -44,17 +44,22 @@ tools under `C:\Users\ANIMA\kh2-wmall-out` (`links.txt`, `wm0`, `l1`, `g2`, `s2`
 - `data::member_table` (`MemberTable`, `apply_preset`), `AreaSource::members`: a field room's party comes from the place, and op 0x0f
   writes the world's table (`game.save.party_table`, T325).
 - `KH2RW_TOUR_GATE=<tick>` stands Sora at the area's first gate and presses Triangle.
+- `game_save::jump_to_field`: a door to another world fades out, writes the save and starts the field on it. `party_room::load` plays
+  the object's own motion set (entry +0x28), which the worlds' bodies share with the member.
 
 ## Checks
 
 | Check | Result |
 | --- | --- |
-| `cargo fmt --all --check`, `cargo clippy --all-targets --locked -- -D warnings`, `cargo test --locked` | see the commit's run below |
+| `cargo clippy --all-targets --locked -- -D warnings`, `cargo test --locked` (1,180 passed at the first commit), `cargo build --locked`, smoke `--frames 180` | PASS |
+| `cargo fmt --all --check` | PASS on these files. Fails on two older lines outside this change, `save/src/state.rs` and `visual/src/pause_menu.rs`, which another session had open and uncommitted |
 | Synthetic tests: `finish_story`, `story_ranges`, `member_table`, `signal_jump` | PASS |
 | `wm --all-worlds` (`wm0`): 12 symbols drawn and reacting, routes 1-9 open, no event queued | PASS |
 | Landing through the map's own menu on each of the 12 symbols, then the field on the save it hands over (`l1`) | PASS: 12 of 12 fields load with Sora placed |
 | 73 places in the field: all 54 world points, each world's default landing, wi00 / po00 / tr00 at their door entrances (`s2`) | PASS except eh11, which has no such entrance (see above) |
-| Doors (`g2`): dc04 and dc05 to wi00, hb13 to po00, hb05 to tr00, tr08 to hb05 | PASS with the press path, new area entered |
+| Doors (`g2`, in place): dc04 and dc05 to wi00, hb13 to po00, hb05 to tr00, tr08 to hb05 | PASS with the press path, new area entered |
+| Doors (`d1`, second commit): the same jumps write the save and config, and the field opens on them with that world's party | PASS, with the second room started by the run script, not by the door |
+| Party per world (`s3`): nm08 P_EX020_XM / P_EX030_XM, nm01 Jack in Santa's body, tr01 Tron and P_EX030_TR, ca10 Sparrow, lk04 P_LK020 / P_LK030 | PASS: loaded and following, faces in the HUD |
 | Doors po00, wi00, tr00, tr05 | NOT RUN to the jump: the tour's teleport leaves Sora unable to take the command there. The offers show (po00, wi00) or the entry is absent from that program (tr00, tr05: see below) |
 | Side by side with the installed game | NOT RUN: no save on this PC reaches the map |
 | A hand-played flight, landing and return | NOT RUN |
@@ -68,8 +73,11 @@ tools under `C:\Users\ANIMA\kh2-wmall-out` (`links.txt`, `wm0`, `l1`, `g2`, `s2`
   enemies. tr00 and tr05's last event programs have no signal 60, so F_TR010 offers nothing there.
 - [I] With no op 0x0f in an area's programs and no save, the party takes preset 1 (Donald and Goofy). The exe keeps the last one per
   world in the save.
-- A room's party is chosen when the process starts, so a door to another world keeps the members of the first. [I] Going through the
-  world map is right, a door is not yet.
+- A room's party is chosen when the process starts, so a door to another world (the second commit) ends the room and starts a new one,
+  as a landing does: the window closes and opens. Exits within a world keep the room. tt40's and eh01's exits to each other still load in
+  place and keep the first world's party.
+- N_LM010_PLY and N_LM020_PLY (Atlantica's members) refuse to load: SKLT has no entry for them, so Sora is alone there.
+- [I] A world's weapon object with no motion set plays the member's (W_EX020_TR plays W_EX020).
 - A signal entry's event (FUN_1403ac350) and flag (FUN_1403f61a0) are not carried out; the jump is.
 - F_EX000's other placements only show a message (a book, a sign): they are not offered yet, since their window needs the talk camera's
   owner.
