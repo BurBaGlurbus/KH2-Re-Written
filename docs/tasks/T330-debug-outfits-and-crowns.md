@@ -53,8 +53,8 @@ Private evidence (outside the checkout): `%USERPROFILE%\kh2-outfit-research` (`t
   look (red shorts, yellow shoes); what the game calls it was not traced. The `P_EX120_NPC_*` tints are named from their look.
 - Bodies made for a scene or a ride play whatever their set holds, so many of their motions are stand-ins. They load and answer the
   stick; their motions are not meant to fit field play.
-- Lion and Mermaid Sora have other skeletons. Their Keyblade joint falls back to objentry +7 where SKLT's lies outside the skeleton;
-  the Keyblade's place on them was not compared with the game.
+- Lion and Mermaid Sora have other skeletons. T331 corrects how a worn body's Keyblade joint is found; the Keyblade's place on them
+  was not compared with the game.
 - What marks the camp's own model is unchanged: the camp keeps showing its base model while an outfit is worn.
 
 ## Verdict

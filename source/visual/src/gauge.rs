@@ -282,6 +282,11 @@ impl Gauge {
         self.elements[i].hidden = false;
     }
 
+    /// The face sheet was replaced: the face restarts on its new sequence.
+    pub fn face_changed(&mut self, sheets: &[&Sequence]) {
+        self.set_face(sheets, FACE[self.state]);
+    }
+
     fn set_face(&mut self, sheets: &[&Sequence], group: usize) {
         let Some(face) = sheets.get(1) else { return };
         let i = self.find(Id::Face);

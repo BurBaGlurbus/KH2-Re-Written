@@ -403,6 +403,8 @@ pub struct MemberRt {
     /// rebuild for another one while it loads.
     pub weapon_item: u16,
     pub reload: Option<(u16, std::thread::JoinHandle<Result<PartyKind, String>>)>,
+    /// The rebuild is another body (`wear`), so the body is spawned again too.
+    pub rebody: bool,
     /// The HUD event the gauge has not read yet (0 none, 1-3 hit, 4 heal;
     /// FUN_1403d60c0 and FUN_1403d2eb0 post it).
     pub event: u8,
@@ -809,9 +811,52 @@ pub fn load(
         .find(|o| o.model_name == name.as_bytes())
         .map(|o| String::from_utf8_lossy(&o.animation_name).into_owned())
         .and_then(|n| n.strip_suffix(".mset").map(str::to_owned))
-        .unwrap_or_else(|| name.to_owned());
-    let actor_motions =
+        .filter(|n| library.find(&format!("obj/{n}.mset")).is_some())
+        .unwrap_or_else(|| {
+            // A scene body with no set of its own plays its member's.
+            if library.find(&format!("obj/{name}.mset")).is_some() {
+                name.to_owned()
+            } else if name.starts_with("P_EX020") {
+                "P_EX020".to_owned()
+            } else if name.starts_with("P_EX030") {
+                "P_EX030".to_owned()
+            } else {
+                name.to_owned()
+            }
+        });
+    // A scene body whose set cannot walk (the world map's) plays its member's.
+    let motion_set = {
+        let complete =
+            motion::read_motion_ids_optional(source, &selection(&motion_set)?, &MOTIONS)?
+                .iter()
+                .all(Option::is_some);
+        match name.get(..7) {
+            Some(member @ ("P_EX020" | "P_EX030")) if !complete => member.to_owned(),
+            _ => motion_set,
+        }
+    };
+    let mut actor_motions =
         motion::read_motion_ids_optional(source, &selection(&motion_set)?, &wanted)?;
+    // Atlantica's bodies swim and have no walk: a required motion they lack
+    // becomes the set's first [test-room choice; they are worn from the debug
+    // menu, and the game runs that world on its own rules].
+    if name.starts_with("N_LM") {
+        let stand_in = (0..256u16).find_map(|id| {
+            let set = selection(&motion_set).ok()?;
+            let found = motion::read_motion_ids_optional(source, &set, &[id]).ok()?;
+            found.into_iter().next().flatten().map(|_| id)
+        });
+        if let Some(id) = stand_in {
+            for (i, slot) in actor_motions.iter_mut().enumerate() {
+                if slot.is_none() && MOTIONS.contains(&wanted[i]) {
+                    *slot =
+                        motion::read_motion_ids_optional(source, &selection(&motion_set)?, &[id])?
+                            .pop()
+                            .flatten();
+                }
+            }
+        }
+    }
     let field_motions = motion::read_motion_ids_optional(
         source,
         &motion::MotionSetSelection {
@@ -976,12 +1021,13 @@ pub fn load(
         .find(|o| o.model_name == name.as_bytes())
         .map_or(character, |o| usize::from(o.weapon_joint));
     let sk = sklt::read(bar_entry(system, b"sklt")?)?;
-    let entry = sk
+    // Beast, Jack and Simba hold nothing (bone -1): no hand, the identity. So
+    // do Atlantica's bodies, which SKLT has no row for.
+    let hand_bone = sk
         .iter()
         .find(|e| e.character_id as usize == skeleton)
-        .ok_or_else(|| format!("SKLT has no entry for skeleton {skeleton}"))?;
-    // Beast, Jack and Simba hold nothing (bone -1): no hand, the identity.
-    let hand_bone = usize::try_from(entry.primary_bone).unwrap_or(usize::MAX);
+        .and_then(|e| usize::try_from(e.primary_bone).ok())
+        .unwrap_or(usize::MAX);
     let mut motions = HashMap::new();
     for (i, selected) in actor_motions.iter().enumerate() {
         let Some(selected) = selected else {
@@ -1326,8 +1372,48 @@ pub fn start_reweapon(
     m.reload = Some((item, handle));
 }
 
+/// Rebuilds a member's kind on the body `model` (the debug menu's Outfits
+/// page); `swap_weapons` puts it in place. Its records and level stay the
+/// member's.
+pub fn wear(game: &mut Game, character: u8, model: &str) {
+    let (Some(src), limits) = (game.party_reload.clone(), game.party_limits.clone()) else {
+        return;
+    };
+    let Some(m) = game
+        .party
+        .iter_mut()
+        .find(|m| m.kind.member.character == character)
+    else {
+        return;
+    };
+    let name: &'static str = Box::leak(model.to_owned().into_boxed_str());
+    let item = m.save.weapon;
+    let weapon = (item != 0)
+        .then(|| weapon_object(&src, name, item))
+        .flatten();
+    let member = m.kind.member;
+    let handle = std::thread::spawn(move || {
+        let mut library = Library::open(&src.source).map_err(|e| e.to_string())?;
+        load(
+            &src.source,
+            &mut library,
+            &src.system,
+            bar_entry(&src.battle, b"lvup").unwrap_or(&[]),
+            bar_entry(&src.battle, b"plrp").unwrap_or(&[]),
+            &src.objects,
+            name,
+            member,
+            limits.motions(member.character),
+            weapon.as_deref(),
+        )
+        .map_err(|e| e.to_string())
+    });
+    m.rebody = true;
+    m.reload = Some((item, handle));
+}
+
 /// A rebuilt kind takes the member's place, and its weapon meshes are
-/// spawned again (the body is the same model).
+/// spawned again (the body too when it is another model).
 #[allow(clippy::too_many_arguments)]
 pub fn swap_weapons(
     mut commands: Commands,
@@ -1347,9 +1433,11 @@ pub fn swap_weapons(
         let Some((item, handle)) = m.reload.take() else {
             continue;
         };
+        let rebody = std::mem::take(&mut m.rebody);
         let mut kind = match handle.join() {
             Ok(Ok(kind)) => kind,
             Ok(Err(e)) => {
+                eprintln!("{}: rebuild failed: {e}", m.kind.name);
                 events.push(serde_json::json!({"event":"party_weapon_error","tick":tick,
                     "member":m.kind.name,"item":item,"error":e}));
                 continue;
@@ -1362,11 +1450,42 @@ pub fn swap_weapons(
         // FUN_1403d7c70: a new weapon object starts hidden (FUN_1403ef750).
         m.weapon_draw = Default::default();
         for (e, part) in &parts {
-            if part.member == i && part.weapon {
+            if part.member == i && (part.weapon || rebody) {
                 commands.entity(e).despawn();
             }
         }
         let root = roots.iter().find(|(_, r)| r.0 == i).map(|(e, _)| e);
+        if rebody {
+            // The old body's motion may not be in the new kind.
+            m.follower.attack = None;
+            m.cast = None;
+            let pose = m
+                .kind
+                .motions
+                .get(&0)
+                .and_then(|idle| idle.posed(&m.kind.model, 0));
+            if let (Some(root), Some((pose, _))) = (root, pose) {
+                for (ordinal, entity) in spawn_model(
+                    &mut commands,
+                    &m.kind.model,
+                    &pose,
+                    root,
+                    &mut meshes,
+                    &mut materials,
+                    &mut images,
+                ) {
+                    if let Some(entity) = entity {
+                        commands.entity(entity).insert(PartyPart {
+                            member: i,
+                            ordinal,
+                            weapon: false,
+                        });
+                    }
+                }
+            }
+            events.push(serde_json::json!({"event":"party_body","tick":tick,
+                "member":m.kind.name,"parts":m.kind.model.parts.len()}));
+        }
         let pose = m
             .kind
             .motions

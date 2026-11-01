@@ -253,6 +253,11 @@ impl FormSources {
             .ok_or_else(|| format!("form {form} object {id:#x} absent").into())
     }
 
+    /// Base Sora's model name.
+    pub fn base_model(&self) -> &str {
+        &self.base_object
+    }
+
     /// The object form `form` shows while `outfit` is worn: the outfit, and
     /// for a form the column of the outfit's `memt` row (FUN_140405190: u32
     /// version, u32 count, 0x34-byte rows, the member's object at +0x10 and
@@ -427,21 +432,23 @@ impl FormSources {
             }))
         };
         let weapon_motion_set = weapon_set(0)?;
-        // Weapon joints: the room's Sora's, or a worn body's character's
-        // (SKLT), else its objentry +7 where SKLT's lie outside its skeleton.
+        // Weapon joints: the room's Sora's, or a worn body's SKLT row, found by
+        // its object entry's byte +7 (FUN_1403d7620) or else its character.
+        // A body with none in its skeleton holds the Keyblade at the room's.
         let joints = if worn {
             let row = self
                 .sklt
                 .iter()
-                .find(|e| u32::from(object.character) == e.character_id);
+                .find(|e| e.character_id == u32::from(object.weapon_joint))
+                .or_else(|| {
+                    self.sklt
+                        .iter()
+                        .find(|e| e.character_id == u32::from(object.character))
+                });
             let primary = row
                 .and_then(|e| usize::try_from(e.primary_bone).ok())
-                .unwrap_or(self.weapon_joint);
-            let primary = if primary < bones {
-                primary
-            } else {
-                usize::from(object.weapon_joint).min(bones.saturating_sub(1))
-            };
+                .filter(|&j| j < bones)
+                .unwrap_or(self.weapon_joint.min(bones.saturating_sub(1)));
             let second = row
                 .map_or(self.second_joint, |e| {
                     usize::try_from(e.secondary_bone).ok()
@@ -1041,6 +1048,17 @@ impl DriveRt {
     /// battle flag is set.
     pub fn revert_usable(&self) -> bool {
         self.active && self.change.is_none() && !(self.form == forms::ANTI && self.battle.on)
+    }
+
+    /// The model of the kit on screen, whose face the gauge shows.
+    pub fn shown_model(&self) -> Option<String> {
+        let object = self.src.kit_object(self.shown, self.outfit).ok()?;
+        Some(String::from_utf8_lossy(&object.model_name).into_owned())
+    }
+
+    /// The installed source, for a load off the main thread.
+    pub fn source(&self) -> Arc<ProbeSource> {
+        Arc::clone(&self.source)
     }
 
     fn start_load(&mut self, form: u8) {

@@ -15253,6 +15253,7 @@ pub fn run(
                 abilities: Default::default(),
                 weapon_item: 0,
                 reload: None,
+                rebody: false,
                 ko_fx: false,
                 cast_motion: 0,
                 reflected: false,
@@ -16047,7 +16048,13 @@ impl Plugin for RoomPlugin {
                 )
                     .chain(),
             )
-            .add_systems(Update, outfit::crown.after(drive_room::present));
+            .add_systems(
+                Update,
+                (
+                    outfit::crown.after(drive_room::present),
+                    outfit::hud_faces.before(RoomSet::Finish),
+                ),
+            );
     }
 }
 

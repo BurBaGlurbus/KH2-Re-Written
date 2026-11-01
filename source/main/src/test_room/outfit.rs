@@ -1,6 +1,6 @@
-//! The debug menu's Outfits and Crown pages: every Sora and Roxas object the
-//! install has, worn live in place of base Sora, and the crown on Sora's
-//! model. A development aid; the choice of outfit is not a game rule.
+//! The debug menu's Outfits and Crown pages: every Sora, Roxas, Donald and
+//! Goofy object the install has, worn live, and the crown on Sora's model. A
+//! development aid; the choice of outfit is not a game rule.
 //!
 //! The list comes from the object table (`00objentry.bin`) and the files
 //! installed, not from a fixed list. A world costume's Drive forms come from
@@ -12,6 +12,10 @@
 //! crown's own texture page, whose last image is empty. Only models with those
 //! animations have a crown: base Sora, his forms and his scene bodies, not the
 //! world costumes or Roxas.
+//!
+//! A gauge's face is the object's own (FUN_14017e980 → FUN_1403b57b0: the type
+//! 0x18 image named `face` in the object's archive), so a form or a costume
+//! changes the HUD's icon with the object (`hud_faces`).
 use super::*;
 use data::model_inspection_textures::{
     ImageIdentity, InspectionTextures, TextureMode, TexturePlay,
@@ -36,9 +40,20 @@ pub enum Group {
     Scene,
     Event,
     Roxas,
+    Donald,
+    Goofy,
 }
 
 impl Group {
+    /// The party member wearing this section's bodies (objentry +0x4c).
+    pub fn member(self) -> Option<u8> {
+        match self {
+            Self::Donald => Some(2),
+            Self::Goofy => Some(3),
+            _ => None,
+        }
+    }
+
     pub fn label(self) -> &'static str {
         match self {
             Self::Sora => "Sora and Drive forms",
@@ -50,6 +65,8 @@ impl Group {
             Self::Scene => "Rides and scene bodies",
             Self::Event => "Cutscene models",
             Self::Roxas => "Roxas",
+            Self::Donald => "Donald",
+            Self::Goofy => "Goofy",
         }
     }
 }
@@ -101,10 +118,44 @@ fn family(rest: &str) -> Option<(Group, String)> {
     ))
 }
 
+/// A Donald or Goofy body: its section and name. Character ids 2 and 3 name the
+/// bodies that fight beside Sora, and the rest are the same members' scene
+/// bodies.
+fn party_body(object: &ObjectEntry, model: &str) -> Option<(Group, String)> {
+    let (group, name) = match object.character {
+        2 => (Group::Donald, "Donald"),
+        3 => (Group::Goofy, "Goofy"),
+        _ => match model {
+            "P_EX020_ANGRY_NPC" | "P_EX020_WM" => (Group::Donald, "Donald"),
+            "P_EX030_WM" => (Group::Goofy, "Goofy"),
+            _ => return None,
+        },
+    };
+    let place = match model {
+        "P_EX020" | "P_EX030" => None,
+        "P_EX020_NM" | "P_EX030_NM" => Some("Halloween Town"),
+        "P_EX020_XM" | "P_EX030_XM" => Some("Christmas Town"),
+        "P_EX020_TR" | "P_EX030_TR" => Some("Space Paranoids"),
+        "P_WI020" | "P_WI030" => Some("Timeless River"),
+        "P_LK020" | "P_LK030" => Some("Pride Lands"),
+        "P_EX020_WM" | "P_EX030_WM" => Some("world map"),
+        "P_EX020_ANGRY_NPC" => Some("angry"),
+        // Atlantica's stand-ins, and anything else the table adds.
+        _ => return Some((group, model.to_owned())),
+    };
+    Some((
+        group,
+        place.map_or_else(|| name.to_owned(), |p| format!("{name}, {p}")),
+    ))
+}
+
 /// The section and the friendly name of a model the page lists, or `None` for
 /// a model that is not a body of Sora or Roxas. A model with no known name
 /// shows its raw name; its model code is always in the value column.
 fn describe(object: &ObjectEntry, model: &str) -> Option<(Group, String)> {
+    if let Some(body) = party_body(object, model) {
+        return Some(body);
+    }
     if let Some(rest) = model.strip_prefix("P_EX100") {
         let rest = rest.strip_prefix('_').unwrap_or(rest);
         if let Some((group, name)) = family(rest) {
@@ -333,6 +384,92 @@ pub fn crown_level(game: &Game, camp: Option<&CampRes>) -> usize {
     proofs_held(|id| stock.and_then(|s| s.get(&id)).copied().unwrap_or(0))
 }
 
+/// The faces on the HUD: the body each gauge shows, and a body's face still
+/// loading, for Sora and his two members.
+#[derive(Default)]
+pub struct FaceLoads {
+    shown: [Option<String>; 3],
+    loading: [Option<FaceLoad>; 3],
+}
+
+type FaceLoad = (String, std::thread::JoinHandle<Option<hud::Sheet>>);
+
+/// Reads the `face` sheet of `model`'s own archive, if it has one.
+fn load_face(source: &ProbeSource, model: &str) -> Option<hud::Sheet> {
+    let library = data::path_lookup::Library::open(source).ok()?;
+    let found = library.find(&format!("obj/{model}.a.us"))?;
+    hud::load(source, found.index, found.ordinal, found.name_hash, b"face").ok()
+}
+
+/// Puts a loaded face on Sora's gauge (0) or a member's (1, 2).
+fn install_face(hud: &mut Hud, slot: usize, face: hud::Sheet) {
+    if slot == 0 {
+        if let Some(sheet) = hud.sheets.get_mut(1) {
+            *sheet = face;
+            let sequences: Vec<_> = hud.sheets.iter().map(|s| &s.sequence).collect();
+            hud.gauge.face_changed(&sequences);
+        }
+    } else {
+        let member = slot - 1;
+        match hud.friend_faces[member] {
+            Some(at) => hud.sheets[at] = face,
+            None => {
+                hud.friend_faces[member] = Some(hud.sheets.len());
+                hud.sheets.push(face);
+            }
+        }
+        // A gauge holds its face's sheet from when it is made: made again.
+        hud.friends[member] = None;
+    }
+    hud.updated = true;
+}
+
+/// Keeps each gauge's face on the body its owner wears now: a Drive form, a
+/// costume or a body from the Outfits page. A body with no `face` of its own
+/// keeps the last one. Loaded on a thread, like the kits.
+pub fn hud_faces(mut hud: Option<ResMut<Hud>>, game: Res<Game>, mut faces: Local<FaceLoads>) {
+    let (Some(hud), Some(d)) = (hud.as_mut(), game.drive.as_ref()) else {
+        return;
+    };
+    let faces = &mut *faces;
+    let wants = [
+        d.shown_model(),
+        game.party.first().map(|m| m.kind.name.to_owned()),
+        game.party.get(1).map(|m| m.kind.name.to_owned()),
+    ];
+    for (slot, want) in wants.into_iter().enumerate() {
+        let Some(want) = want else { continue };
+        // The room started on these.
+        let shown = faces.shown[slot].get_or_insert_with(|| {
+            if slot == 0 {
+                d.src.base_model().to_owned()
+            } else {
+                want.clone()
+            }
+        });
+        if faces.loading[slot]
+            .as_ref()
+            .is_some_and(|(_, handle)| handle.is_finished())
+            && let Some((model, handle)) = faces.loading[slot].take()
+        {
+            let face = handle.join().ok().flatten();
+            // Another body may have been chosen while this one loaded.
+            if model == want {
+                *shown = model;
+                if let Some(face) = face {
+                    install_face(hud, slot, face);
+                }
+            }
+        }
+        if *shown != want && faces.loading[slot].is_none() {
+            let source = d.source();
+            let model = want.clone();
+            faces.loading[slot] =
+                Some((want, std::thread::spawn(move || load_face(&source, &model))));
+        }
+    }
+}
+
 /// Whether the model on screen can wear a crown.
 pub fn wears_crown(game: &Game) -> bool {
     game.drive
@@ -340,6 +477,14 @@ pub fn wears_crown(game: &Game) -> bool {
         .and_then(|d| d.models.get(&d.shown))
         .and_then(|(actor, ..)| actor.textures.as_ref())
         .is_some_and(|set| crown_patch(set).is_some())
+}
+
+/// Wears `outfit` on its owner: Sora, or the party member of its section.
+pub fn wear(game: &mut Game, outfit: &Outfit) {
+    match outfit.group.member() {
+        Some(character) => party_room::wear(game, character, &outfit.model),
+        None => drive_room::set_outfit(game, Some(outfit.object_id)),
+    }
 }
 
 /// Ticks each outfit gets in the unattended `--outfit-tour`: it loads, then
@@ -386,15 +531,19 @@ pub fn tour(game: &mut Game) -> Option<usize> {
             serde_json::json!({"event":"outfit_tour_row","tick":tick,"step":step,
             "model":outfit.model,"label":outfit.label}),
         );
-        drive_room::set_outfit(game, Some(outfit.object_id));
+        wear(game, outfit);
     } else if let Some(level) = step.checked_sub(outfits.len()).filter(|&l| l < TOUR_CROWNS) {
         if level == 0 {
             drive_room::set_outfit(game, None);
         }
         game.cheats.crown = Some(level as u8);
         game.event(serde_json::json!({"event":"outfit_tour_crown","tick":tick,"level":level}));
+    } else if step == outfits.len() + TOUR_CROWNS {
+        // A real Drive: the gauge's face follows the form.
+        game.sora.player.drive.refill();
+        drive_room::start_change(game, player::forms::VALOR);
     } else {
-        return step.checked_sub(outfits.len() + TOUR_CROWNS);
+        return step.checked_sub(outfits.len() + TOUR_CROWNS + 1);
     }
     None
 }
@@ -427,7 +576,8 @@ mod tests {
             object(1, "P_EX110", 14),
             object(2, "P_EX100_NM_BTLF", 1),
             object(3, "P_EX100", 1),
-            object(4, "P_EX020", 2),
+            object(4, "P_EX020_NM", 2),
+            object(8, "M_EX020", 1001),
             object(5, "P_EX100_XM", 1),
             object(6, "M_EX950_CARD", 1),
             object(7, "P_EX100_UNKNOWN", 1),
@@ -448,6 +598,7 @@ mod tests {
                 ),
                 ("P_EX100_UNKNOWN", "P_EX100_UNKNOWN", Group::Scene),
                 ("P_EX110", "Roxas", Group::Roxas),
+                ("P_EX020_NM", "Donald, Halloween Town", Group::Donald),
             ]
         );
     }

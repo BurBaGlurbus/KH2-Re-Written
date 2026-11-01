@@ -455,7 +455,7 @@ impl Action {
                 Page::Items => "Change item stock and spell levels.",
                 Page::Forms => "Change into a Drive form, or revert.",
                 Page::Growth => "Change the levels of Sora's growth abilities.",
-                Page::Outfits => "Wear any Sora or Roxas model the install has.",
+                Page::Outfits => "Wear any Sora, Roxas, Donald or Goofy model the install has.",
                 Page::Crown => "The Final Mix crown: it follows the Proofs Sora holds.",
                 Page::Roster(Category::Heartless) => "Pick a Heartless to summon in front of Sora.",
                 Page::Roster(Category::Nobody) => "Pick a Nobody to summon in front of Sora.",
@@ -483,7 +483,7 @@ impl Action {
             Self::Form(_) => "Change into this form with a full gauge.",
             Self::Growth(_) => "Left/Right change the level. Equip it in the pause menu.",
             Self::Outfit(None) => "Back to base Sora and the room's own forms.",
-            Self::Outfit(Some(_)) => "Wear this model. The menu closes while it loads.",
+            Self::Outfit(Some(_)) => "Wear this model; its HUD icon follows. The menu closes.",
             Self::Crown(None) => "The game's rule: one Proof copper, two silver, all three gold.",
             Self::Crown(Some(_)) => "Show this crown. World costumes and Roxas have none.",
             Self::Summon(_) => "Summon this enemy in front of Sora.",
@@ -1072,7 +1072,7 @@ const HELP: &[(&str, &[(&str, &str)])] = &[
         "Pages",
         &[
             ("Sora", "Restore, level, cheats, items"),
-            ("Outfits", "Any Sora or Roxas model"),
+            ("Outfits", "Sora, Roxas, Donald, Goofy"),
             ("Crown", "Copper, silver, gold crown"),
             ("Enemies", "Battle enemy, summon, preview"),
             ("Enemy Preview", "Play and inspect motions"),
@@ -1458,7 +1458,7 @@ fn rows(
                 } else {
                     Vec::new()
                 },
-                ..row("Default", Action::Outfit(None), free)
+                ..row("Default Sora", Action::Outfit(None), free)
             }];
             let mut heading = None;
             for outfit in &d.src.outfits {
@@ -1466,13 +1466,28 @@ fn rows(
                     heading = Some(outfit.group);
                     list.push(section(outfit.group.label()));
                 }
+                // A member's rows need that member in the room.
+                let owner = outfit.group.member().map(|character| {
+                    game.party
+                        .iter()
+                        .find(|m| m.kind.member.character == character)
+                });
+                let (worn, usable) = match owner {
+                    None => (d.outfit == Some(outfit.object_id), free),
+                    Some(None) => (false, false),
+                    Some(Some(m)) => (m.kind.name == outfit.model, m.reload.is_none()),
+                };
                 list.push(Row {
-                    value: text(&if d.outfit == Some(outfit.object_id) {
+                    value: text(&if worn {
                         "Worn".to_owned()
                     } else {
                         outfit.model.replace('_', " ")
                     }),
-                    ..row(&outfit.label, Action::Outfit(Some(outfit.object_id)), free)
+                    ..row(
+                        &outfit.label,
+                        Action::Outfit(Some(outfit.object_id)),
+                        usable,
+                    )
                 });
             }
             list
@@ -1964,8 +1979,15 @@ fn act(
             drive_room::rebuild_abilities(game, None);
             Some("Growth level changed. Equip it in Abilities".into())
         }
-        Action::Outfit(outfit) => {
-            drive_room::set_outfit(game, outfit);
+        Action::Outfit(chosen) => {
+            let outfit = chosen.and_then(|id| {
+                let d = game.drive.as_ref()?;
+                d.src.outfits.iter().find(|o| o.object_id == id).cloned()
+            });
+            match outfit {
+                Some(outfit) => outfit::wear(game, &outfit),
+                None => drive_room::set_outfit(game, None),
+            }
             menu.open = false;
             Some("Loading the outfit".into())
         }
