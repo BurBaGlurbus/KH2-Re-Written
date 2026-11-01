@@ -89,6 +89,8 @@ pub const CHESTS: usize = 0x23ac;
 /// FUN_1403a1590, both read and raised only once story flag 0x2d0 is set).
 pub const COMMAND_USES: usize = 0x3948;
 pub const COMMAND_USE_COUNT: usize = 0x40;
+/// `btlv` row bits (FUN_1403ee4a0: `DAT_1409acfd4`).
+pub const BATTLE_BITS: usize = 0x3724;
 /// FUN_14039ac70: the counters run once this story flag is set.
 pub const COUNTERS_FLAG: u32 = 0x2d0;
 /// FUN_1403a1520's most, for a kill.

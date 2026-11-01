@@ -649,6 +649,7 @@ impl Progress {
     /// (FUN_1403f0ea0), FUN_1403a5540's world point, the triggered world
     /// events (FUN_1403df1b0) and FUN_1403f2190's world points.
     pub(crate) fn after_flag(&mut self, flag: u32) {
+        self.note_battle_flag(flag);
         if self.world_tables.is_some() {
             self.run_links();
         }

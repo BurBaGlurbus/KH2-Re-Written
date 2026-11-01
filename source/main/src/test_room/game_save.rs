@@ -100,23 +100,44 @@ pub fn world_party(table: &[[u8; 4]; 19], world: u8) -> [u8; 4] {
     }
 }
 
-/// FUN_1403e37c0: slot 0 always, else bit 7. FUN_140400880's runtime list has
-/// no producer traced [U].
-pub fn party_locked(row: &[u8; 4], slot: usize) -> bool {
-    slot == 0 || row.get(slot).is_some_and(|b| b & 0x80 != 0)
+/// A member's type in the row, from its character id.
+pub fn character_type(character: u8) -> u8 {
+    match character {
+        2 => 1,
+        3 => 2,
+        _ => 3,
+    }
+}
+
+/// FUN_1403e31f0 over a world's row: an unset row starts as FUN_1403e2e10's new
+/// one, and members already in the row keep their order.
+pub fn row_with_presets(row: [u8; 4], presets: &[u32]) -> [u8; 4] {
+    let start = if row == [0; 4] {
+        data::member_table::NEW_RECORD
+    } else {
+        row
+    };
+    presets
+        .iter()
+        .fold(start, |r, &p| data::member_table::apply_preset(r, p))
+}
+
+/// FUN_1403e37c0: slot 0 always, else bit 7, else a member FUN_140400880's list
+/// holds: the Drive form or Summon that took it out of the field
+/// (FUN_140400990, FUN_140400a30). `absent` holds those members' types.
+pub fn party_locked(row: &[u8; 4], slot: usize, absent: &[u8]) -> bool {
+    slot == 0
+        || row
+            .get(slot)
+            .is_some_and(|&b| b & 0x80 != 0 || absent.contains(&party_type(b)))
 }
 
 /// FUN_14036b460 between the room's two members: the world table takes the
 /// camp's order when both active slots changed.
 pub fn write_party_order(row: &mut [u8; 4], order: &[u8]) {
-    let type_of = |character: u8| match character {
-        2 => 1,
-        3 => 2,
-        _ => 3,
-    };
     if let [a, b] = order
-        && type_of(*a) != party_type(row[1])
-        && type_of(*b) != party_type(row[2])
+        && character_type(*a) != party_type(row[1])
+        && character_type(*b) != party_type(row[2])
     {
         row.swap(1, 2);
     }
@@ -173,6 +194,9 @@ pub fn apply_progress(progress: &mut Progress, data: &SaveData) {
     w.draw_group_set = p.draw_group_set;
     w.world_points = p.world_points;
     w.menu_flags = p.menu_flags;
+    for (i, word) in progress.battle_bits.iter_mut().enumerate() {
+        *word = data.u32_at(state::BATTLE_BITS + i * 4);
+    }
     let dsa: Vec<[u16; 2]> = (0..progress.dsa_state().len())
         .map(|i| {
             [
@@ -214,6 +238,9 @@ fn write_progress(progress: &Progress, p: &mut Persistent, data: &mut SaveData) 
     p.draw_group_set = w.draw_group_set;
     p.world_points = w.world_points;
     p.menu_flags = w.menu_flags;
+    for (i, &word) in progress.battle_bits.iter().enumerate() {
+        data.set_u32(state::BATTLE_BITS + i * 4, word);
+    }
     for (i, e) in progress.dsa_state().iter().enumerate() {
         data.set_u16(state::DSA + i * 4, e[0]);
         data.set_u16(state::DSA + i * 4 + 2, e[1]);
@@ -1198,6 +1225,25 @@ mod tests {
     }
 
     #[test]
+    fn a_preset_keeps_a_swapped_row_and_a_member_held_is_locked() {
+        // Sora, Goofy, Donald after a swap; preset 1 names the same members.
+        let preset = u32::from_le_bytes([0, 1, 2, 0x12]);
+        assert_eq!(
+            row_with_presets([0, 2, 1, 0x12], &[preset]),
+            [0, 2, 1, 0x12]
+        );
+        assert_eq!(
+            row_with_presets([0; 4], &[preset]),
+            data::member_table::apply_preset(data::member_table::NEW_RECORD, preset)
+        );
+        let row = [0, 1, 2, 0x12];
+        assert!(party_locked(&row, 0, &[]));
+        assert!(!party_locked(&row, 1, &[]));
+        assert!(party_locked(&row, 1, &[1]));
+        assert!(party_locked(&[0, 0x81, 2, 0x12], 1, &[]));
+    }
+
+    #[test]
     fn the_world_table_takes_a_swap_and_gives_the_order() {
         let mut row = ROOM_PARTY;
         // Goofy, then Donald: both active slots changed.
@@ -1210,7 +1256,9 @@ mod tests {
         assert_eq!(row, [0, 2, 1, 0x12]);
         // A guest in the reserve slot; Goofy locked stays with his bit.
         let mut row = [0, 1, 2 | 0x80, 3];
-        assert!(party_locked(&row, 0) && party_locked(&row, 2) && !party_locked(&row, 1));
+        assert!(
+            party_locked(&row, 0, &[]) && party_locked(&row, 2, &[]) && !party_locked(&row, 1, &[])
+        );
         write_party_order(&mut row, &[3, 2]);
         assert_eq!(row, [0, 2 | 0x80, 1, 3]);
         // No table yet: the room's.

@@ -17,6 +17,30 @@ pub fn world_index(code: &str) -> Option<u8> {
 /// Areas per world in the save's program table (`world * 0x40 + area`).
 pub const AREAS_PER_WORLD: usize = 0x40;
 
+/// A 00battle.bin `btlv` record (0x20 bytes): its bit, the story flag that sets
+/// it (FUN_1403ee4a0) and what it adds to each world's enemy level.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct BattleRow {
+    pub bit: u32,
+    pub flag: u32,
+    pub levels: [u8; 19],
+}
+
+/// `btlv`: u32 version, u32 count, the records from +8.
+pub fn read_battle_rows(bytes: &[u8]) -> Option<Vec<BattleRow>> {
+    let count = u32::from_le_bytes(bytes.get(4..8)?.try_into().ok()?) as usize;
+    (0..count)
+        .map(|k| {
+            let r = bytes.get(8 + k * 0x20..8 + (k + 1) * 0x20)?;
+            Some(BattleRow {
+                bit: u32::from_le_bytes(r[0..4].try_into().ok()?),
+                flag: u32::from_le_bytes(r[4..8].try_into().ok()?),
+                levels: r[8..27].try_into().ok()?,
+            })
+        })
+        .collect()
+}
+
 /// The save table entry FUN_140152e80 guards (`DAT_1409a9f2c`, index
 /// (0x1409a9f2c − 0x1409a98c0) / 6 = world 4 (hb) area 18): a map program
 /// of 1 is not replaced by 3 there.
@@ -52,6 +76,9 @@ pub struct Progress {
     /// The world map tables; without them the link table and the world
     /// events are not run.
     pub(crate) world_tables: Option<Arc<WorldTables>>,
+    battle_rows: Vec<BattleRow>,
+    /// save+0x3724: which `btlv` rows count.
+    pub battle_bits: Vec<u32>,
     /// Flag scripts by world index (00progress.bin BAR entries named by
     /// world code).
     scripts: Vec<Option<Vec<u8>>>,
@@ -75,6 +102,8 @@ impl Progress {
             arif_set: [0; 19],
             world: WorldState::default(),
             world_tables: None,
+            battle_rows: Vec::new(),
+            battle_bits: Vec::new(),
             scripts,
             skipped: Vec::new(),
             dsa: Vec::new(),
@@ -91,6 +120,61 @@ impl Progress {
 
     pub fn world_tables(&self) -> Option<&WorldTables> {
         self.world_tables.as_deref()
+    }
+
+    /// 00battle.bin 'btlv' (FUN_1403f4c30 → FUN_1403ee490).
+    pub fn set_battle_rows(&mut self, rows: Vec<BattleRow>) {
+        let words = rows
+            .iter()
+            .map(|r| r.bit as usize / 32 + 1)
+            .max()
+            .unwrap_or(0);
+        self.battle_bits.resize(words, 0);
+        self.battle_rows = rows;
+    }
+
+    /// FUN_1403ee4a0: a row's bit stays once its story flag has been set, also
+    /// when a script clears the flag again.
+    pub(crate) fn note_battle_flag(&mut self, flag: u32) {
+        for r in &self.battle_rows {
+            if r.flag == flag
+                && let Some(w) = self.battle_bits.get_mut(r.bit as usize / 32)
+            {
+                *w |= 1 << (r.bit % 32);
+            }
+        }
+    }
+
+    /// FUN_1403ee560: the worlds' levels, byte sums over the rows whose bit is
+    /// set.
+    pub fn battle_sums(&self) -> [u8; 19] {
+        let mut sums = [0u8; 19];
+        for r in &self.battle_rows {
+            let on = self
+                .battle_bits
+                .get(r.bit as usize / 32)
+                .is_some_and(|w| w >> (r.bit % 32) & 1 != 0);
+            if on {
+                for (s, l) in sums.iter_mut().zip(r.levels) {
+                    *s = s.wrapping_add(l);
+                }
+            }
+        }
+        sums
+    }
+
+    /// FUN_1403ee1d0 at the end of the area loader: the area's op 0x1e level,
+    /// else the world's sum; 0 becomes 1.
+    pub fn battle_level(&self, op: u32, world: u8) -> u32 {
+        let level = if op != 0 {
+            op
+        } else {
+            self.battle_sums()
+                .get(world as usize)
+                .copied()
+                .map_or(0, u32::from)
+        };
+        level.max(1)
     }
 
     /// FUN_140418c20 / FUN_140418e30: a world point object marks the point
@@ -306,6 +390,10 @@ impl Progress {
                             3 | 5 => 0,
                             _ => 0xffff,
                         };
+                        // FUN_14039b0e4: op 2 also stores the second message.
+                        if op == 2 {
+                            e[1] = words.get(2).copied().unwrap_or(0);
+                        }
                     }
                 }
                 1 => {
@@ -380,6 +468,32 @@ impl Progress {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn the_enemy_level_sums_the_rows_a_flag_has_set_and_stays() {
+        let mut bytes = vec![0u8; 8];
+        bytes[4] = 2;
+        for (bit, flag, level) in [(1u32, 0x10u32, 3u8), (33, 0x11, 4)] {
+            let mut r = [0u8; 0x20];
+            r[0..4].copy_from_slice(&bit.to_le_bytes());
+            r[4..8].copy_from_slice(&flag.to_le_bytes());
+            r[8 + 2] = level;
+            bytes.extend(r);
+        }
+        let rows = read_battle_rows(&bytes).unwrap();
+        let mut p = Progress::new(Vec::new());
+        p.set_battle_rows(rows);
+        assert_eq!(p.battle_bits.len(), 2);
+        // Nothing set yet: floor 1. An op 0x1e level wins.
+        assert_eq!(p.battle_level(0, 2), 1);
+        assert_eq!(p.battle_level(80, 2), 80);
+        p.note_battle_flag(0x10);
+        p.note_battle_flag(0x11);
+        p.note_battle_flag(0x12);
+        assert_eq!(p.battle_bits, [2, 2]);
+        assert_eq!(p.battle_level(0, 2), 7);
+        assert_eq!(p.battle_level(0, 3), 1);
+    }
+
     use super::*;
 
     /// A world script table with scripts for slots 0 and 1.

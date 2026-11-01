@@ -5502,18 +5502,25 @@ pub fn area_transition(
         .place_name(next.world, next.area)
         .map(|t| (t.clone(), 120));
     area.bg_mask = next.state.setup.bg_mask;
+    // FUN_1403ee1d0 at the end of the area loader.
+    if let Some(rt) = game.enemy.as_mut() {
+        rt.battle_level =
+            area.source
+                .progress()
+                .battle_level(next.state.setup.battle_level, next.world) as u16;
+    }
     if next.world_points.contains(&true) {
         let (world, number) = (next.world, next.area);
         area.source.progress_mut().enter_world_point(world, number);
     }
     let tick = game.tick;
     game.save.note_world(next.world, tick);
-    // ARD op 0x0f (FUN_1403a24c0 → FUN_1403e31f0) writes the world's table.
-    if let (Some(record), Some(to)) = (
-        next.members.record,
-        game.save.party_table.get_mut(next.world as usize),
-    ) {
-        *to = record;
+    // ARD op 0x0f (FUN_1403a24c0 → FUN_1403e31f0) works on the world's row, so
+    // a Party swap survives it.
+    if next.members.record.is_some()
+        && let Some(to) = game.save.party_table.get_mut(next.world as usize)
+    {
+        *to = game_save::row_with_presets(*to, &next.members.presets);
     }
     party_room::follow_party_table(&mut game, next.world);
     outfit::enter_place(&mut game, &next.members);
@@ -13071,7 +13078,15 @@ pub fn camp_tick(
         party_locked: {
             let world = area.as_deref().map_or(0, |a| a.current.world);
             let row = game_save::world_party(&game.save.party_table, world);
-            (0..4).map(|k| game_save::party_locked(&row, k)).collect()
+            let absent: Vec<u8> = game
+                .party
+                .iter()
+                .filter(|m| m.stored)
+                .map(|m| game_save::character_type(m.kind.character))
+                .collect();
+            (0..4)
+                .map(|k| game_save::party_locked(&row, k, &absent))
+                .collect()
         },
     };
     // The menu chain (menu mode 10, FUN_14031aac0): the camp; deciding a
@@ -15793,6 +15808,7 @@ pub fn run(
         let setup = &a.current.state.setup;
         game.event(serde_json::json!({"event":"area_start","world":a.current.world,
             "area":a.current.area,"programs":a.current.programs,
+            "enemy_level":a.source.progress().battle_level(setup.battle_level, a.current.world),
             "bob_models":a.current.bobs.models.len(),
             "bobs_unread":a.current.bobs.models.iter().filter(|m| m.is_none()).count(),
             "members":format!("{:x?}", a.current.members),
@@ -15831,15 +15847,14 @@ pub fn run(
             sora_target_radius: e.sora_target_radius,
             enabled: !game.enemy_battle_tour && !game.sephiroth && !game.boss_fight,
             // FUN_1403ee1d0 at the end of the area loader: the area's op
-            // 0x1e level when it gives one (hb01 btl 75: 80). [U] With none
-            // the executable sums the story's `btlv` rows; the config's
-            // level stands in.
-            battle_level: area_res
-                .as_ref()
-                .map(|a| a.current.state.setup.battle_level)
-                .and_then(|l| u16::try_from(l).ok())
-                .filter(|&l| l > 0)
-                .unwrap_or(e.battle_level),
+            // 0x1e level when it gives one (hb01 btl 75: 80), else the story's
+            // `btlv` sum. With no area the config's level stands in.
+            battle_level: area_res.as_ref().map_or(e.battle_level, |a| {
+                a.source
+                    .progress()
+                    .battle_level(a.current.state.setup.battle_level, a.current.world)
+                    as u16
+            }),
             clips: e.clips,
             body: e.body,
             targets: e.targets,

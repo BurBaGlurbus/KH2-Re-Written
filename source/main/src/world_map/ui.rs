@@ -105,25 +105,6 @@ pub struct Prepared {
     pub battle_level: Option<u8>,
 }
 
-/// 00battle.bin 'btlv' (FUN_1403f4c30 → FUN_1403ee490): 0x20-byte records
-/// {u32 bit, u32 story flag, 19 per-world levels from +8}. FUN_1403ee4a0
-/// sets a record's bit when its story flag is set; FUN_1403ee1d0 sums the
-/// levels of the records whose bit is set (byte sums).
-fn battle_levels(bytes: &[u8], flag_set: impl Fn(u32) -> bool) -> Option<[u8; 19]> {
-    let count = u32::from_le_bytes(bytes.get(4..8)?.try_into().ok()?) as usize;
-    let mut sums = [0u8; 19];
-    for k in 0..count {
-        let r = bytes.get(8 + k * 0x20..8 + (k + 1) * 0x20)?;
-        let flag = u32::from_le_bytes(r[4..8].try_into().ok()?);
-        if flag_set(flag) {
-            for (w, s) in sums.iter_mut().enumerate() {
-                *s = s.wrapping_add(r[8 + w]);
-            }
-        }
-    }
-    Some(sums)
-}
-
 /// What one Gummi route's info panel and menu show.
 pub struct PreparedRoute {
     pub texts: MenuTexts,
@@ -232,12 +213,8 @@ impl Ui {
                 journal_table::read_stories(s).ok()
             })
             .unwrap_or_default();
-        let levels = library.read("00battle.bin").ok().and_then(|b| {
-            let t = bar::read_bar(&b).ok()?;
-            let e = t.entries.iter().find(|e| &e.name_bytes == b"btlv")?;
-            let s = b.get(e.offset as usize..e.offset as usize + e.size as usize)?;
-            battle_levels(s, |f| src.progress().test(f))
-        });
+        // FUN_1403ee560: the bits, not the flags: a cleared flag still counts.
+        let levels = Some(src.progress().battle_sums());
         let mut ui = Self {
             layout,
             font,

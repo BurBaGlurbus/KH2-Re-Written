@@ -285,3 +285,5 @@ Records through T128 retain historical commands and paths. See [the folder guide
 | [T339](T339-partner-field-m-ex770-runs.md) | The partner field's writer traced; M_EX770 fights in a room; Twilight Town's enemies run on the map (issues #138, #26) | PASS for the trace and runs; command 28 not reached; standing enemies stay behind their switch. |
 | [T340](T340-map-object-level-containers.md) | Map objects that are level containers: first level's model and textures (issue #22) | PASS: read in tr02; drawn only at level 0, not looked at in a capture. |
 | [T341](T341-journal-slain-and-command-counts.md) | Character Files' Slain counts and reaction rows, and their counters (issues #69, #79) | PASS for the pages on a crafted save; raising covered by reading only. |
+| [T342](T342-party-row-presets-and-held-members.md) | The party row keeps a swap through op 0x0f; members a form holds are locked (issue #34, parts) | PARTIAL: unit tests and a regression run; guests still open. |
+| [T343](T343-enemy-level-from-story.md) | The enemy level from `btlv`; `dsa` op 2's second message (issue #162, parts) | PASS in the room's log; the flag tail waits for #25. |

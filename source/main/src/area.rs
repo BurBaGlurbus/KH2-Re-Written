@@ -154,8 +154,10 @@ pub struct Members {
     pub player: u16,
     pub friends: Vec<u16>,
     /// The world's member bytes (save +0x3534 + 4 × world) after the area's
-    /// op 0x0f, when it has one.
+    /// op 0x0f, when it has one, starting from a new row.
     pub record: Option<[u8; 4]>,
+    /// The op's presets: FUN_1403e31f0 applies them over the world's own row.
+    pub presets: Vec<u32>,
 }
 
 /// FUN_1403f60d0(signal, 0): the area's entry for the signal (an entry with no
@@ -296,6 +298,15 @@ impl AreaSource {
                 progress_bytes.get(e.offset as usize..e.offset as usize + e.size as usize)
         {
             progress.set_dsa(b);
+        }
+        // 00battle.bin 'btlv': what the story adds to each world's enemy level.
+        if let Some(rows) = library.read("00battle.bin").ok().and_then(|b| {
+            let table = data::bar::read_bar(&b).ok()?;
+            let e = table.entries.iter().find(|e| e.name_bytes == *b"btlv")?;
+            let bytes = b.get(e.offset as usize..e.offset as usize + e.size as usize)?;
+            progress::read_battle_rows(bytes)
+        }) {
+            progress.set_battle_rows(rows);
         }
         // The world map tables (FUN_14039acd0, FUN_1403f1470, FUN_1403f2250):
         // with them a flag set also runs the link table and marks world
@@ -840,12 +851,13 @@ impl AreaSource {
                 .filter_map(|&p| self.members.presets.get(p as usize).copied())
                 .collect()
         };
-        for preset in presets {
+        for &preset in &presets {
             record = member_table::apply_preset(record, preset);
         }
         let object = |byte: u8| objects.get((byte & 0x1f) as usize).copied().unwrap_or(0);
         Members {
             record: (!party_set.is_empty()).then_some(record),
+            presets,
             player: object(record[0]),
             friends: record[1..]
                 .iter()
