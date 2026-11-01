@@ -389,6 +389,10 @@ pub struct MemberRt {
     pub item_fired: bool,
     /// The member's character record (abilities, item slots, frequencies).
     pub save: party_members::Save,
+    /// The record's ability record (stats+0x1d0, FUN_1404014a0 and the
+    /// abilities its equipment gives through FUN_1403c1190), rebuilt with
+    /// `gear`.
+    pub abilities: player::abilities::Abilities,
     /// The weapon object's own state: hidden, shown or fading in.
     pub weapon_draw: party_motion::WeaponDraw,
     /// What the record's weapon, armor and accessories add to its status
@@ -1435,8 +1439,13 @@ fn enemy_centre(rt: &EnemyRuntime) -> Vec3 {
 }
 
 /// A member's attacker terms: Strength and Magic of its level row, a
-/// player-type owner.
-fn attacker(kind: &PartyKind, gear: &player::equipment_stats::Totals) -> combat::AttackerStats {
+/// player-type owner, its element percents (FUN_1403c12f0's stats +0x218..;
+/// Fire, Blizzard and Thunder Boost, as Donald's staves give).
+fn attacker(
+    kind: &PartyKind,
+    gear: &player::equipment_stats::Totals,
+    abilities: &player::abilities::Abilities,
+) -> combat::AttackerStats {
     combat::AttackerStats {
         strength: kind.strength + i32::from(gear.strength),
         magic: kind.magic + i32::from(gear.magic),
@@ -1444,9 +1453,26 @@ fn attacker(kind: &PartyKind, gear: &player::equipment_stats::Totals) -> combat:
         min: 1,
         mods: combat::AttackerMods {
             player_type: true,
+            element_percent: abilities.element.map(i32::from),
             ..combat::AttackerMods::default()
         },
     }
+}
+
+/// FUN_1403c1d90 for a member: its weapon, armor and accessories (their stat
+/// rows' abilities, FUN_1403c1190), then its equipped slots (FUN_1404014a0).
+pub fn member_abilities(
+    source: &AbilitySource,
+    save: &party_members::Save,
+) -> player::abilities::Abilities {
+    let take = |list: &[u16; 8], n: u8| list[..usize::from(n).min(8)].to_vec();
+    let equipment = pause_menu::items::Equipment {
+        weapon: save.weapon,
+        armor: take(&save.armor, save.armor_slots),
+        accessories: take(&save.accessories, save.accessory_slots),
+        ..Default::default()
+    };
+    source.build_with_form(&save.abilities, &equipment, None)
 }
 
 /// Starts a cast the tour orders: the spell's act against the enemy, on the
@@ -2750,19 +2776,12 @@ pub fn tick(game: &mut Game, tick: u64) {
             {
                 m.item_fired = true;
                 if m.save.take(item) {
-                    // [I] The user's Item Boost is built from its equipped
-                    // Item Boosts as Sora's is (abilities +0x54).
-                    let boosts = m
-                        .save
-                        .abilities
-                        .iter()
-                        .filter(|&&v| v == 0x8000 | 0x19b)
-                        .count() as u16;
+                    // The user's Item Boost (abilities +0x54).
                     party_items.push(PendingItem {
                         delay: ITEM_DELAY,
                         item,
                         target,
-                        boost: boosts.wrapping_mul(kind.item_boost_rate),
+                        boost: m.abilities.item_boost,
                     });
                     // FUN_1403f6b30's first update: system element 0 at the
                     // user.
@@ -2933,13 +2952,13 @@ pub fn tick(game: &mut Game, tick: u64) {
                     v.previous.map(Vec3::from_array),
                 )],
                 moving: None,
-                stats: attacker(&kind, &m.gear),
+                stats: attacker(&kind, &m.gear, &m.abilities),
                 origin: Vec3::from_array(m.follower.position),
                 spell: true,
                 pax: kind.pax.clone(),
             });
             if let Some(rt) = enemy.as_mut() {
-                let stats = attacker(&kind, &m.gear);
+                let stats = attacker(&kind, &m.gear, &m.abilities);
                 if let Some((at, dir, effect)) = land_volume(
                     rt,
                     index,
@@ -3048,7 +3067,7 @@ pub fn tick(game: &mut Game, tick: u64) {
                         v.previous.map(Vec3::from_array),
                     )],
                     moving: v.moving.map(Vec3::from_array),
-                    stats: attacker(&kind, &m.gear),
+                    stats: attacker(&kind, &m.gear, &m.abilities),
                     origin: Vec3::from_array(pos),
                     spell: true,
                     pax: kind.pax.clone(),
@@ -3078,7 +3097,7 @@ pub fn tick(game: &mut Game, tick: u64) {
                 }
             }
             if let Some(rt) = enemy.as_mut() {
-                let stats = attacker(&kind, &m.gear);
+                let stats = attacker(&kind, &m.gear, &m.abilities);
                 for v in &out.volumes {
                     let key = KEY_BASE | 1 << 47 | (v.key & 0x7fff_ffff_ffff);
                     if let Some((at, dir, effect)) = land_volume(
@@ -3155,7 +3174,7 @@ pub fn tick(game: &mut Game, tick: u64) {
                         .map(|&(c, radius)| (at + turn * c, radius, radius, None))
                         .collect(),
                     moving: None,
-                    stats: attacker(&kind, &m.gear),
+                    stats: attacker(&kind, &m.gear, &m.abilities),
                     origin: at,
                     spell: false,
                     pax: kind.weapon_pax.clone(),
@@ -3216,7 +3235,7 @@ pub fn tick(game: &mut Game, tick: u64) {
                 0.,
                 m.follower.yaw.cos(),
             ));
-            let stats = attacker(&kind, &m.gear);
+            let stats = attacker(&kind, &m.gear, &m.abilities);
             if let Some(damage) =
                 rt.enemy
                     .hit_by(dir.to_array(), high, &attack, &stats, rt.difficulty, false)
@@ -3348,7 +3367,7 @@ pub fn tick(game: &mut Game, tick: u64) {
     for (slot, atkp, healer) in heals {
         let Some((stats, healer_name)) = party
             .get(healer)
-            .map(|m| (attacker(&m.kind, &m.gear), m.kind.name))
+            .map(|m| (attacker(&m.kind, &m.gear, &m.abilities), m.kind.name))
         else {
             continue;
         };

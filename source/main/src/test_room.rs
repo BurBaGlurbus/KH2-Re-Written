@@ -360,6 +360,8 @@ pub enum EffectRequest {
         contact: Vec3,
         direction: Vec3,
         own: bool,
+        /// A window of the form's second Keyblade: its own container.
+        second: bool,
     },
     /// An enemy attack landing on Sora (FUN_1403d1b40 with the attacker's
     /// own container): `object` is the attacker's objentry id (0 = the
@@ -5394,6 +5396,15 @@ pub fn area_transition(
     game.map_fx_pending = true;
     game.cleanups.push(cleanup::Scope::RoomChange);
     party_room::room_loaded(&mut game);
+    // FUN_140405630 with spawn reason 0: an object an area load builds while
+    // Sora is in a form plays the arrival motion 0x35 and its elements.
+    if let Some(form) = game.drive.as_ref().filter(|d| d.active).map(|d| d.form)
+        && (1..=6).contains(&form)
+    {
+        let g = &mut *game;
+        g.sora.player.arrive(form, false, &g.clips);
+        g.event(serde_json::json!({"event":"form_arrival","tick":tick,"form":form}));
+    }
     trim.after_load();
     if let Some(t) = area.transition.as_mut() {
         t.stage = Stage::Opening;
@@ -8872,6 +8883,7 @@ pub fn effects_tick(
                 contact,
                 direction,
                 own,
+                second,
             } => {
                 // The attack's owner holds the container (ATTACK+0x28): the
                 // weapon object for a Keyblade window, Sora's shown kit for
@@ -8880,6 +8892,8 @@ pub fn effects_tick(
                     game.drive
                         .as_ref()
                         .and_then(|d| d.paxes.get(&d.shown).cloned())
+                } else if second {
+                    game.weapon2_pax.clone().or_else(|| fx.weapon.clone())
                 } else {
                     fx.weapon.clone()
                 };
@@ -10750,6 +10764,7 @@ pub fn combat_tick(game: &mut Game, tick: u64) {
                         contact,
                         direction: dir,
                         own: key.is_none() && (instance >> 5) & 3 == 2,
+                        second: key.is_none() && (instance >> 5) & 3 == 1,
                     }),
                 }
             }
@@ -12949,6 +12964,7 @@ pub fn camp_tick(
                     // FUN_1402fc760 → FUN_1403c2100: the record's status
                     // totals follow its equipment.
                     rt.gear = ability_source.gear(e, None);
+                    rt.abilities = party_room::member_abilities(ability_source, &rt.save);
                     // A new staff or shield: the member's weapon object.
                     if let Some(src) = party_reload.as_ref() {
                         party_room::start_reweapon(src, party_limits, rt);
@@ -12981,7 +12997,8 @@ pub fn camp_tick(
                     "originals": m.save.originals.to_vec(),
                     "abilities": m.save.abilities.iter().filter(|&&v| v != 0).copied().collect::<Vec<_>>(),
                     "weapon": m.save.weapon, "hp": m.hp, "mp": m.mp.cur,
-                    "gear": [m.gear.strength, m.gear.magic, m.gear.defense]})).collect();
+                    "gear": [m.gear.strength, m.gear.magic, m.gear.defense],
+                    "element": m.abilities.element})).collect();
                 game.event(serde_json::json!({"event":"camp_party","tick":tick,"members":records}));
             }
             // Items used in the camp change the room's HP / MP.
@@ -15088,6 +15105,7 @@ pub fn run(
                 fx_at: None,
                 record: combat::HitRecord::new(true),
                 gear: player::equipment_stats::Totals::start(0, 0, 0, 0),
+                abilities: Default::default(),
                 weapon_item: 0,
                 reload: None,
                 ko_fx: false,
@@ -15240,6 +15258,16 @@ pub fn run(
     };
     game.event(loaded.summary);
     game.refresh_gear();
+    {
+        let Game {
+            party,
+            ability_source,
+            ..
+        } = &mut game;
+        for m in party.iter_mut() {
+            m.abilities = party_room::member_abilities(ability_source, &m.save);
+        }
+    }
     game.event(serde_json::json!({"event":"ability_inventory","slots":game.ability_slots,
         "ap_budget":game.ability_source.inventory.ap,"growth_tiers":game.ability_source.inventory.growth}));
     let drop_view = item_drop_view::load(&source);

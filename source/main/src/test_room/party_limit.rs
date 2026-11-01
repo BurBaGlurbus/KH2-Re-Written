@@ -1608,6 +1608,7 @@ fn land_attacks(game: &mut Game, run: &mut Running, strikes: &[Strike], tick: u6
                     contact: at,
                     direction,
                     own: true,
+                    second: false,
                 });
             }
             let p = &mut game.sora.player;

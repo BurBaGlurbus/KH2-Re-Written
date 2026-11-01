@@ -719,6 +719,7 @@ pub fn landing_room_config(
 
 /// Writes `<name>.json` beside the arena config: its actor, HUD, menu and
 /// sound sources with a field area in place of the arena and its enemy.
+#[allow(clippy::too_many_arguments)]
 fn write_field_config(
     arena: &Path,
     world: &str,

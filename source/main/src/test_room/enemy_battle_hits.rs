@@ -578,6 +578,9 @@ pub fn tick(game: &mut Game, actors: &mut [GalleryActor], tick: u64) {
                             contact,
                             direction,
                             own: v.member.is_none() && v.magic.is_none() && (v.key >> 5) & 3 == 2,
+                            second: v.member.is_none()
+                                && v.magic.is_none()
+                                && (v.key >> 5) & 3 == 1,
                         }),
                     }
                 }

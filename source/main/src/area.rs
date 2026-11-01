@@ -83,6 +83,8 @@ pub struct AreaSource {
     /// Loaded townsperson models (kept across area changes) by objentry id.
     pub kinds: Vec<NpcKind>,
     kind_index: HashMap<u32, usize>,
+    /// Every kind's AI program by that index (a fork holds no older kinds).
+    kind_programs: Vec<crate::npcs::Program>,
     /// Index of `kinds[0]` (nonzero in a fork, whose new kinds follow the
     /// ones its parent already holds).
     kind_base: usize,
@@ -295,6 +297,7 @@ impl AreaSource {
             object_index,
             kinds: Vec::new(),
             kind_index: HashMap::new(),
+            kind_programs: Vec::new(),
             kind_base: 0,
             rng: ScriptRandom::default(),
             language: "us",
@@ -313,6 +316,7 @@ impl AreaSource {
             object_index: self.object_index.clone(),
             kinds: Vec::new(),
             kind_index: self.kind_index.clone(),
+            kind_programs: self.kind_programs.clone(),
             kind_base: self.kind_base + self.kinds.len(),
             rng: self.rng,
             place_names: HashMap::new(),
@@ -331,6 +335,7 @@ impl AreaSource {
         debug_assert_eq!(fork.kind_base, self.kind_base + self.kinds.len());
         self.kinds.extend(fork.kinds);
         self.kind_index = fork.kind_index;
+        self.kind_programs = fork.kind_programs;
         self.rng = fork.rng;
         self.last_pair = fork.last_pair;
     }
@@ -731,6 +736,7 @@ impl AreaSource {
         for (id, kind) in missing.into_iter().zip(loaded) {
             match kind {
                 Ok(kind) => {
+                    self.kind_programs.push(kind.program);
                     self.kinds.push(kind);
                     self.kind_index
                         .insert(id, self.kind_base + self.kinds.len() - 1);
@@ -785,7 +791,7 @@ impl AreaSource {
                 kind,
                 s,
                 i,
-                self.kinds[kind].program,
+                self.kind_programs[kind],
                 &mut random,
             ));
         }

@@ -882,6 +882,7 @@ pub fn apply_game(game: &mut Game, data: &SaveData) {
         };
         apply_member(m, r);
         m.gear = ability_source.gear(&equipment_of(r), None);
+        m.abilities = party_room::member_abilities(ability_source, &m.save);
         if let Some(src) = party_reload.as_ref() {
             party_room::start_reweapon(src, party_limits, m);
         }
