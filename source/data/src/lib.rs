@@ -14,6 +14,7 @@ pub mod enemy_actions;
 pub mod event_script;
 pub mod font;
 pub mod font_cell;
+pub mod gummi_stage;
 pub mod gummi_table;
 pub mod hd_image;
 pub mod image_structure;
