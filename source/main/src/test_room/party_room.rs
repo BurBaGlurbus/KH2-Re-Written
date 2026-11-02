@@ -878,7 +878,7 @@ pub fn load(
     )?;
     // The base weapon object: the first of the WENT set the object entry's
     // neo-moveset selects (Donald's and Goofy's sets go on with the staves
-    // and shields an item equips). Ping's is Mulan's W_MU000.
+    // and shields an item equips).
     let base_weapon = objects
         .iter()
         .find(|o| o.model_name == name.as_bytes())
@@ -890,18 +890,38 @@ pub fn load(
             String::from_utf8(e.model_name.clone()).ok()
         })
         .unwrap_or_else(|| format!("W_{}", &name[2..]));
-    // An equipped staff or shield names its own object (`weapon_object`);
-    // [I] one without a motion set of its own plays the base weapon's (the
-    // weapon objects' entries name no set).
+    // An equipped staff or shield names its own object (`weapon_object`),
+    // which only picks the model.
     let weapon_name = weapon_object.map_or_else(|| base_weapon.clone(), str::to_owned);
-    // [I] A world's weapon (W_EX020_TR) plays the member's (W_EX020).
-    let plain_weapon = base_weapon
-        .rsplit_once('_')
-        .map_or(base_weapon.as_str(), |(head, _)| head);
-    let weapon_selection = selection(&weapon_name)
-        .or_else(|_| selection(&base_weapon))
-        .or_else(|_| selection(plain_weapon))
-        .ok();
+    // FUN_1403ef750, as for Sora: the set is the body's `wmst` row, whichever
+    // weapon it holds; an empty row (Beast, Jack, Simba) plays none.
+    let moveset = objects
+        .iter()
+        .find(|o| o.model_name == name.as_bytes())
+        .map(|o| usize::from(o.neo_moveset))
+        .filter(|&m| m != 0);
+    let weapon_selection = match (moveset, bar_entry(system, b"wmst").ok()) {
+        (Some(m), Some(wmst)) => {
+            data::weapon_entry::motion_set_name(wmst, m, 0).and_then(|n| selection(&n).ok())
+        }
+        // [I] A body with no row (the debug Outfits page, room only): the
+        // weapon's own set, the base weapon's, or the name before its last `_x`.
+        _ => {
+            let plain = base_weapon
+                .rsplit_once('_')
+                .map_or(base_weapon.as_str(), |(head, _)| head);
+            selection(&weapon_name)
+                .or_else(|_| selection(&base_weapon))
+                .or_else(|_| selection(plain))
+                .ok()
+        }
+    };
+    eprintln!(
+        "Party {name}: weapon {weapon_name}, motion set {:?}",
+        moveset.and_then(|m| {
+            data::weapon_entry::motion_set_name(bar_entry(system, b"wmst").ok()?, m, 0)
+        })
+    );
     let mut weapon = None;
     let mut spheres: HashMap<u8, Vec<(Vec3, f32)>> = HashMap::new();
     let mut weapon_motions: HashMap<usize, motion::SelectedMotion> = HashMap::new();

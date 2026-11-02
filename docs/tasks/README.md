@@ -292,3 +292,4 @@ Records through T128 retain historical commands and paths. See [the folder guide
 | [T346](T346-items-to-slots-box-walls-kit-motions.md) | Items into Sora's slots, boxes stop at walls, a Keyblade change keeps his other motions, Heartless faces (issues #79, #67, #69, parts) | PASS in the room; the box's wall stop is inferred. |
 | [T347](T347-program-chain-live.md) | The chain between programs runs for real and under the launcher; a world map file loads onto the map (issues #143, #79, #32) | PASS unattended; no person has clicked through it. |
 | [T348](T348-journal-model-pages.md) | The Character Files' model pages; the NEW labels' place settled (issue #69) | PASS in the room; all 338 rows load; no comparison with the installed game. |
+| [T349](T349-party-weapon-motion-set.md) | A party weapon's motion set comes from the body's `wmst` row (issue #51) | PASS in the room. |

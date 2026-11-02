@@ -426,12 +426,8 @@ impl FormSources {
         // wmst row set × 2 + slot; an empty name (Antiform) leaves the
         // weapon without motions and unattached.
         let set_index = rules.neo_moveset as usize;
-        let wmst_name = |slot: usize| -> Option<String> {
-            let at = (set_index * 2 + slot) * 0x20;
-            let raw = self.wmst.get(at..at + 0x20)?;
-            let end = raw.iter().position(|&b| b == 0).unwrap_or(raw.len());
-            (end > 0).then(|| String::from_utf8_lossy(&raw[..end]).into_owned())
-        };
+        let wmst_name =
+            |slot: usize| data::weapon_entry::motion_set_name(&self.wmst, set_index, slot);
         let weapon_set = |slot: usize| -> Result<Option<motion::MotionSetSelection>, String> {
             let Some(n) = wmst_name(slot) else {
                 return Ok(None);

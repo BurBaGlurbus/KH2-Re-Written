@@ -16,6 +16,15 @@ fn word(bytes: &[u8], at: usize) -> io::Result<u32> {
         .ok_or_else(|| invalid("WENT entry out of range"))
 }
 
+/// FUN_1403ef750: the name of weapon slot `slot`'s motion set (`obj/%s.mset`):
+/// `wmst` row set x 2 + slot. An empty row leaves the weapon without motions.
+pub fn motion_set_name(wmst: &[u8], set: usize, slot: usize) -> Option<String> {
+    let at = (set * 2 + slot) * 0x20;
+    let raw = wmst.get(at..at + 0x20)?;
+    let end = raw.iter().position(|&b| b == 0).unwrap_or(raw.len());
+    (end > 0).then(|| String::from_utf8_lossy(&raw[..end]).into_owned())
+}
+
 /// One WENT set: pointers (4-byte units) at the start, each to a set of
 /// `size` words, the first being `size` itself. Returns the entries after it.
 pub fn set(went: &[u8], index: usize) -> io::Result<Vec<u32>> {
@@ -59,6 +68,17 @@ mod tests {
         words.iter().flat_map(|w| w.to_le_bytes()).collect()
     }
 
+    #[test]
+    fn a_motion_set_comes_from_the_row_of_the_set_and_slot() {
+        let mut wmst = vec![0u8; 0x20 * 6];
+        wmst[(2 * 2) * 0x20..(2 * 2) * 0x20 + 7].copy_from_slice(b"W_EX020");
+        assert_eq!(
+            super::motion_set_name(&wmst, 2, 0).as_deref(),
+            Some("W_EX020")
+        );
+        assert_eq!(super::motion_set_name(&wmst, 2, 1), None);
+        assert_eq!(super::motion_set_name(&wmst, 40, 0), None);
+    }
     #[test]
     fn a_set_lists_its_entries_after_the_size_word() {
         let t = table();
