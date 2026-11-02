@@ -188,6 +188,8 @@ pub enum Phase {
     Event,
     /// The white-out holds while the set loads (states 3 to 5).
     Load,
+    /// Tinker Bell stands Sora up (FUN_1403fcec0 state 2); no list.
+    Reraise,
     /// The list is open.
     Screen,
     /// Continue chosen: the black fade-out.
@@ -422,6 +424,12 @@ pub fn tick(
         }
     }
     let res_real = res.real;
+    // `KH2RW_TOUR_DEFEAT=<tick>`: Sora falls then, in a tour of another kind.
+    if std::env::var("KH2RW_TOUR_DEFEAT").is_ok_and(|t| t.parse() == Ok(game.tick)) {
+        let Game { sora, clips, .. } = &mut *game;
+        sora.vitals.hp = 0;
+        sora.player.die(clips);
+    }
     if res.tour && game.tour_defeat_due() {
         let Game {
             sora, clips, enemy, ..
@@ -473,7 +481,28 @@ pub fn tick(
                 .map(|f| (f.frame as f32, f.duration as u32));
             r.event_tick(fade);
         }
-        Phase::Load => r.load_tick(),
+        Phase::Load => {
+            r.load_tick();
+            // FUN_140404d60 chose the summon's revive at the fall.
+            if r.phase == Phase::Screen && summon::tink_ready(&game) {
+                r.phase = Phase::Reraise;
+                // [I] FUN_140155790 isn't read: the white comes off here.
+                r.white = Fade::default();
+                if let Err(e) = summon::start_reraise(&mut game, &gallery) {
+                    game.event(serde_json::json!({"event":"sora_reraise_failed","error":e}));
+                    r.phase = Phase::Screen;
+                }
+            }
+        }
+        Phase::Reraise => {
+            r.steps = true;
+            if game.sora.vitals.hp > 0 {
+                *rt = None;
+                let tick = game.tick;
+                game.event(serde_json::json!({"event":"game_over_end","tick":tick}));
+                return;
+            }
+        }
         Phase::Screen => {
             let seq = &src.pause.layout.sequences[0];
             let menu = r.menu.get_or_insert_with(|| {

@@ -80,7 +80,8 @@ pub fn capture_motions(
 )> {
     let mut out = Vec::new();
     let mut captures = Vec::new();
-    let mut wanted = vec![enemy_battle::SEPHIROTH];
+    // Tinker Bell's revive of Sora captures him too.
+    let mut wanted = vec![enemy_battle::SEPHIROTH, u32::from(summon::TINKER_BELL)];
     for object in objects {
         if !wanted.contains(&object) {
             wanted.push(object);

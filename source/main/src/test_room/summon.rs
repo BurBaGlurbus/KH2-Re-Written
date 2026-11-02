@@ -162,10 +162,42 @@ pub struct Summoned {
     /// Sora is held (player +0x120 bits 0x104) until the summon is out.
     pub holds_sora: bool,
     pub actor: Option<Actor>,
+    /// DAT_1409acdd7: Peter Pan's Tinker Bell hasn't revived Sora yet.
+    pub tink: bool,
+    /// The summon itself while P_EX340 plays `reraise`.
+    pub aside: Option<Actor>,
     /// The members FUN_1403e6fa0 sent away.
     pub stored: Vec<usize>,
     /// Render identity of this summon.
     pub serial: u64,
+}
+
+/// FUN_1403de320: Peter Pan is out with Tinker Bell ready.
+pub fn tink_ready(game: &Game) -> bool {
+    game.summon
+        .as_ref()
+        .is_some_and(|s| s.tink && s.actor.is_some())
+}
+
+/// FUN_1403fcec0 state 2: Sora on the floor, the one use spent, and objentry
+/// 0x4f4 (P_EX340) plays its act `reraise`.
+pub fn start_reraise(game: &mut Game, gallery: &EnemyGallery) -> Result<(), String> {
+    let Some(mut s) = game.summon.take() else {
+        return Err("no summon".into());
+    };
+    s.tink = false;
+    let mut row = s.row;
+    row.object = TINKER_BELL;
+    let spawned = spawn(game, &row, b"reraise", gallery);
+    let result = match spawned {
+        Ok(actor) => {
+            s.aside = s.actor.replace(actor);
+            Ok(())
+        }
+        Err(e) => Err(e),
+    };
+    game.summon = Some(s);
+    result
 }
 
 /// The summon state the deck reads (FUN_1403de250).
@@ -248,6 +280,8 @@ pub fn start(game: &mut Game, command: u16, tick: u64) -> Result<(), String> {
         appear,
         holds_sora: true,
         actor: None,
+        tink: command == PETER_PAN,
+        aside: None,
         stored: stored.clone(),
         serial: game.summon_serial,
     });
@@ -544,6 +578,8 @@ pub fn capture_motions(
 /// Genie's and Peter Pan's summon commands (FUN_1403de460).
 pub const GENIE: u16 = 0x59;
 pub const PETER_PAN: u16 = 0x132;
+/// P_EX340 (FUN_1403fcec0).
+pub const TINKER_BELL: u16 = 0x4f4;
 
 /// FUN_1403de460's pick: the 69069 generator, `state / ((n − 1 + 2³²) /
 /// n)`.
@@ -657,7 +693,12 @@ pub fn tick(mut game: ResMut<Game>, gallery: Res<EnemyGallery>, rig: Res<super::
     if s.actor.is_none() && s.state == state::OUT {
         s.wait -= 1.;
         if s.wait <= 0. {
-            match spawn(game, &s, &gallery) {
+            let act = if s.appear {
+                b"appear".as_slice()
+            } else {
+                b"appear_skip".as_slice()
+            };
+            match spawn(game, &s.row, act, &gallery) {
                 Ok(actor) => {
                     s.actor = Some(actor);
                     s.holds_sora = false;
@@ -763,6 +804,18 @@ pub fn tick(mut game: ResMut<Game>, gallery: Res<EnemyGallery>, rig: Res<super::
         if let Some(form) = a.brain.genie_form.take() {
             game.summon_form = form;
             game.event(serde_json::json!({"event":"genie_form","tick":tick,"form":form}));
+        }
+        // `reraise` captures Sora: motion 252, then idle.
+        if s.aside.is_some() {
+            let captures = std::mem::take(&mut a.brain.sora_captures);
+            let pushed = std::mem::take(&mut a.brain.sora_pushed);
+            super::boss::play_on_sora(game, u32::from(TINKER_BELL), &captures, &pushed);
+        }
+        // FUN_1403aa8d0: the dead bit clears and HP gains its maximum.
+        if std::mem::take(&mut a.brain.reraises) > 0 {
+            game.sora.player.revive();
+            game.sora.vitals.hp = game.sora.vitals.target.max_hp;
+            game.event(serde_json::json!({"event":"sora_reraise","tick":tick}));
         }
         // FUN_1403c2040: Stitch's MP special fills Sora's MP and ends a
         // charge.
@@ -941,6 +994,10 @@ pub fn tick(mut game: ResMut<Game>, gallery: Res<EnemyGallery>, rig: Res<super::
             s = game.summon.take().expect("summon kept");
         }
     }
+    // The act over, the summon comes back.
+    if s.aside.is_some() && s.actor.as_ref().is_none_or(Actor::gone) {
+        s.actor = s.aside.take();
+    }
     if s.state == state::LEAVING && s.actor.as_ref().is_none_or(Actor::gone) {
         finish(game, s, tick);
         return;
@@ -979,14 +1036,20 @@ fn play_effects(game: &mut Game, a: &mut Actor) {
 
 /// FUN_1403de610's spawn: the object's kind, clips and script at the
 /// placement, a summon on Sora's side, act `appear_skip`.
-fn spawn(game: &mut Game, s: &Summoned, gallery: &EnemyGallery) -> Result<Actor, String> {
+fn spawn(
+    game: &mut Game,
+    row: &SummonRow,
+    act: &[u8],
+    gallery: &EnemyGallery,
+) -> Result<Actor, String> {
+    let command = row.command;
     let source = gallery.source.clone();
     let mut library = data::path_lookup::Library::open(&source).map_err(|e| e.to_string())?;
     let objects = objentry::read(&library.read("00objentry.bin").map_err(|e| e.to_string())?)
         .map_err(|e| e.to_string())?;
     let object = objects
         .iter()
-        .find(|o| o.object_id == u32::from(s.row.object))
+        .find(|o| o.object_id == u32::from(row.object))
         .ok_or("summon object absent from objentry")?;
     let entry = plain_entry(&source, object).map_err(|e| e.to_string())?;
     let kind = Arc::new(load_entry_kind(&source, &entry).map_err(|e| e.to_string())?);
@@ -1012,7 +1075,7 @@ fn spawn(game: &mut Game, s: &Summoned, gallery: &EnemyGallery) -> Result<Actor,
     let mut rng = ScriptRandom::default();
     // The `appear` event starts the summon at Sora's position
     // (FUN_1403b5b40); the skip places it (FUN_1403f3fa0).
-    let at = if s.appear {
+    let at = if act != b"appear_skip" {
         game.sora.player.position
     } else {
         placement(
@@ -1051,7 +1114,7 @@ fn spawn(game: &mut Game, s: &Summoned, gallery: &EnemyGallery) -> Result<Actor,
     let row = game
         .summons
         .as_ref()
-        .and_then(|t| t.rows.iter().position(|r| r.object == s.row.object));
+        .and_then(|t| t.rows.iter().position(|r| r.object == row.object));
     if let Some(row) = row {
         brain.set_captured(
             CAPTURE_SLOTS
@@ -1070,7 +1133,7 @@ fn spawn(game: &mut Game, s: &Summoned, gallery: &EnemyGallery) -> Result<Actor,
                 .collect(),
         );
     }
-    if s.command == GENIE {
+    if command == GENIE {
         brain.set_genie_form(genie_form_command(game.summon_form));
     }
     if std::env::var_os("KH2_SUMMON_TRACE").is_some() {
@@ -1081,11 +1144,7 @@ fn spawn(game: &mut Game, s: &Summoned, gallery: &EnemyGallery) -> Result<Actor,
     brain.fx.drawn = true;
     brain.fx.anchor = Some(player::magic::Anchor::Summon);
     brain.fx.key_base = super::enemy_script::SUMMON_FX_KEY;
-    brain.start_act(if s.appear {
-        b"appear".as_slice()
-    } else {
-        b"appear_skip".as_slice()
-    });
+    brain.start_act(act);
     let models = objects
         .iter()
         .map(|o| {

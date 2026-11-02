@@ -561,6 +561,8 @@ pub struct ScriptBrain {
     pub enemy_strikes: Vec<(usize, [i32; 2], u64, Option<Vec3>)>,
     /// Stitch's MP specials not yet carried out (FUN_1403c2040 on Sora).
     pub mp_refills: u32,
+    /// Trap 1:277 ran: Tinker Bell stands Sora up (FUN_1403aa8d0).
+    pub reraises: u32,
     /// Genie's new form number (FUN_1403ddfb0) for the host to keep.
     pub genie_form: Option<u8>,
     /// The summon's limit while it runs (its own script as the program).
@@ -813,6 +815,7 @@ impl ScriptBrain {
             strikes: Vec::new(),
             enemy_strikes: Vec::new(),
             mp_refills: 0,
+            reraises: 0,
             genie_form: None,
             limit: None,
             commands: CommandWindows::new(),
@@ -1379,6 +1382,10 @@ impl ScriptBrain {
                     name: "stitch_mp_refill",
                     ..
                 } => self.mp_refills += 1,
+                Event::Service {
+                    name: "obj_reraise",
+                    ..
+                } => self.reraises += 1,
                 Event::Service {
                     name: "genie_form",
                     words,
