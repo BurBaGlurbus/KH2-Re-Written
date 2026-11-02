@@ -2575,6 +2575,38 @@ fn present_effects(
     );
 }
 
+/// The Journal's model pages, as in the room.
+#[allow(clippy::too_many_arguments)]
+fn journal_model_present(
+    mut commands: Commands,
+    mut slot: ResMut<crate::test_room::journal_model::JournalModelSlot>,
+    mut host: ResMut<CampHost>,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<FogMaterial>>,
+    mut images: ResMut<Assets<Image>>,
+    mut frame: ResMut<Ui2dFrame>,
+    mut cameras: crate::test_room::journal_model::Cameras,
+    mut roots: crate::test_room::journal_model::Roots,
+    mut parts: crate::test_room::journal_model::Parts,
+) {
+    use crate::test_room::journal_model::{Scene, update};
+    let Some(camp) = host.0.as_mut() else { return };
+    update(
+        &mut slot,
+        camp.camp_mut(),
+        &mut Scene {
+            commands: &mut commands,
+            meshes: &mut meshes,
+            materials: &mut materials,
+            images: &mut images,
+            frame: &mut frame,
+        },
+        &mut cameras,
+        &mut roots,
+        &mut parts,
+    );
+}
+
 /// The character scene: while widgets exist the map hides and each widget
 /// model draws at its matrix (FUN_1403939f0) on its motion (FUN_140535450)
 /// through the widget camera (FUN_1405352e0: at the origin looking along
@@ -3556,6 +3588,7 @@ fn run(args: Vec<PathBuf>) -> Result<AppExit> {
     );
     let mut app = App::new();
     app.insert_resource(CampHost(camp));
+    app.init_resource::<crate::test_room::journal_model::JournalModelSlot>();
     app.insert_resource(wm)
         .insert_resource(AudioRes {
             output,
@@ -3615,6 +3648,7 @@ fn run(args: Vec<PathBuf>) -> Result<AppExit> {
             (
                 apply_draw_groups,
                 present,
+                journal_model_present,
                 present_widgets,
                 present_effects,
                 draw_ui,

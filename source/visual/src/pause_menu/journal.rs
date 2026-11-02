@@ -23,6 +23,7 @@ mod album;
 mod category;
 mod characters;
 mod files;
+pub use files::{MODEL_REACH, MODEL_TARGET, ModelView};
 mod limits;
 mod lists;
 mod puzzles;
@@ -491,6 +492,9 @@ pub struct JournalCache {
     /// `menu/jm_puzzle/<file>.bin` by `puzz` row.
     pub puzzles: HashSet<u8>,
     pub wanted_puzzle: Option<u8>,
+    /// The model pages' object and motion: asked for, and loaded.
+    pub wanted_model: Option<(u16, u16)>,
+    pub model_ready: Option<(u16, u16)>,
     /// The item pictures the banner shows.
     pub pictures: crate::pause_menu::picture::PictureCache,
 }
@@ -513,6 +517,8 @@ pub enum Sheet {
     Face(u8, u8),
     /// The album photo of `albu` row `.0`.
     Photo(u16),
+    /// The Character Files' model, off screen (`Journal::model_view`).
+    Model,
 }
 
 /// A dk::Sprite on another 2LD's image (FUN_14016a900 with an image
@@ -542,6 +548,8 @@ enum In {
     /// R2 / L2 (the album photos).
     R2,
     L2,
+    /// −6.
+    Triangle,
 }
 
 /// FUN_1402f6270: the sound of a list result.
@@ -549,7 +557,7 @@ fn sound(input: In, moved: bool, valid: bool) -> Option<u32> {
     match input {
         _ if moved => Some(SOUND_CURSOR),
         In::Cancel | In::Start => Some(SOUND_CLOSE),
-        In::Row(_) | In::R1 | In::L1 | In::R2 | In::L2 => {
+        In::Row(_) | In::R1 | In::L1 | In::R2 | In::L2 | In::Triangle => {
             Some(if valid { SOUND_DECIDE } else { SOUND_INVALID })
         }
         In::None => None,
@@ -1575,6 +1583,8 @@ impl Journal {
             In::R2
         } else if pad.trig & bits::L2 != 0 && m & 0x8000 != 0 {
             In::L2
+        } else if pad.trig & bits::TRIANGLE != 0 && m & 0x200 != 0 {
+            In::Triangle
         } else {
             In::None
         };
@@ -1630,6 +1640,7 @@ impl Journal {
                     puzzles::SOLVED => self.puzzle_solved(layout, &pad, &mut sounds),
                     0xf | 0x12 | 0x15 => self.files_list(layout, &pad, &mut sounds),
                     0x10 | 0x13 | 0x16 => self.files_detail(layout, &pad, &mut sounds),
+                    0x11 | 0x14 | 0x17 => self.files_model(layout, &pad, &mut sounds),
                     _ => self.option_page(layout, &pad, &mut sounds),
                 };
                 self.driver(seq, moved);
@@ -1742,7 +1753,7 @@ impl Journal {
                 self.pending = Some(if w < 0xf { NOTES_PAGE } else { COLLECTION_PAGE });
                 self.substate = 2;
             }
-            In::R2 | In::L2 | In::None => {}
+            In::R2 | In::L2 | In::Triangle | In::None => {}
         }
         moved
     }
@@ -1811,7 +1822,7 @@ impl Journal {
                     }
                 }
             }
-            In::R2 | In::L2 | In::None => {}
+            In::R2 | In::L2 | In::Triangle | In::None => {}
         }
         moved
     }
@@ -2053,7 +2064,8 @@ impl Journal {
                 sprite_player::Sheet::Icon => (Sheet::Icon, quads),
             })
         };
-        let extra = self.puzzle_draws();
+        let mut extra = self.puzzle_draws();
+        extra.extend(self.model_draw());
         let mut prios: Vec<u32> = self
             .pictures
             .iter()
@@ -2221,7 +2233,12 @@ mod tests {
             description: 0,
             origin: 0,
             object: 0,
+            motion: 0,
             flags: 0,
+            small: [0; 3],
+            big: [0; 2],
+            small_scale: 1.,
+            big_scale: 1.,
         };
         let mut d = JournalData {
             flags: vec![0x10],

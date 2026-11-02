@@ -150,7 +150,7 @@ pub fn read_minigames(bytes: &[u8]) -> io::Result<Vec<Minigame>> {
 }
 
 /// A `char` record (36 B): a Journal character.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Char {
     /// +0: journal world (0..14, 0x10 Character Links, 0x11 Heartless, 0x12
     /// Nobodies).
@@ -168,8 +168,32 @@ pub struct Char {
     pub origin: u16,
     /// +0xc: the object id (its model; its objentry +0x4c keys the counters).
     pub object: u16,
-    /// +0x10: flag 0x800 = a kill counter exists.
+    /// +0xe: the motion the model pages play.
+    pub motion: u16,
+    /// +0x10: flag 0x800 = a kill counter exists; 0x3ff, 0x1000, 0x2000: the
+    /// model's hidden parts.
     pub flags: u16,
+    /// +0x12, +0x14: the small model's place; +0x16 its turn, in degrees.
+    pub small: [i16; 3],
+    /// +0x18, +0x1a: the full model's place.
+    pub big: [i16; 2],
+    /// +0x1c, +0x20: their scales.
+    pub small_scale: f32,
+    pub big_scale: f32,
+}
+
+impl Char {
+    /// FUN_14032ee20: the model parts the row hides, as bits.
+    pub fn hidden_parts(&self) -> u64 {
+        let mask = u64::from(self.flags & 0x3ff);
+        if self.flags & 0x1000 == 0 {
+            mask
+        } else if self.flags & 0x2000 != 0 {
+            mask << 10
+        } else {
+            mask << 20
+        }
+    }
 }
 
 pub fn read_chars(bytes: &[u8]) -> io::Result<Vec<Char>> {
@@ -183,7 +207,16 @@ pub fn read_chars(bytes: &[u8]) -> io::Result<Vec<Char>> {
             description: u16_at(r, 8),
             origin: u16_at(r, 0xa),
             object: u16_at(r, 0xc),
+            motion: u16_at(r, 0xe),
             flags: u16_at(r, 0x10),
+            small: [
+                u16_at(r, 0x12) as i16,
+                u16_at(r, 0x14) as i16,
+                u16_at(r, 0x16) as i16,
+            ],
+            big: [u16_at(r, 0x18) as i16, u16_at(r, 0x1a) as i16],
+            small_scale: f32::from_le_bytes([r[0x1c], r[0x1d], r[0x1e], r[0x1f]]),
+            big_scale: f32::from_le_bytes([r[0x20], r[0x21], r[0x22], r[0x23]]),
         })
         .collect())
 }
@@ -485,6 +518,26 @@ mod tests {
             (minis[0].name, minis[0].label, minis[0].record),
             (0x4b0b, 0x4b35, 0xe)
         );
+    }
+
+    #[test]
+    fn reads_the_model_page_fields() {
+        let mut c = [0u8; 36];
+        c[0xe..0x10].copy_from_slice(&0x85u16.to_le_bytes());
+        c[0x10..0x12].copy_from_slice(&0x13ffu16.to_le_bytes());
+        c[0x12..0x14].copy_from_slice(&157i16.to_le_bytes());
+        c[0x14..0x16].copy_from_slice(&85i16.to_le_bytes());
+        c[0x16..0x18].copy_from_slice(&(-35i16).to_le_bytes());
+        c[0x1a..0x1c].copy_from_slice(&125i16.to_le_bytes());
+        c[0x1c..0x20].copy_from_slice(&1.12f32.to_le_bytes());
+        c[0x20..0x24].copy_from_slice(&1.54f32.to_le_bytes());
+        let ch = read_chars(&table(1, &c)).unwrap()[0];
+        assert_eq!(ch.motion, 0x85);
+        assert_eq!(ch.small, [157, 85, -35]);
+        assert_eq!(ch.big, [0, 125]);
+        assert_eq!((ch.small_scale, ch.big_scale), (1.12, 1.54));
+        // Bit 0x1000 moves the mask up 20 parts; with 0x2000, 10.
+        assert_eq!(ch.hidden_parts(), 0x3ff << 20);
     }
 
     #[test]

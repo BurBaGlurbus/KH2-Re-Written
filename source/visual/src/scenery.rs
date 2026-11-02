@@ -174,7 +174,7 @@ const MODEL_DATA: usize = 0x90;
 /// room draws the first, which the object's level byte +0x139 selects at 0 [I:
 /// its writer was not traced]; its texture numbers start at 0 (FUN_1401c3200
 /// counts only earlier levels). Any other payload is itself.
-fn level_payload(payload: &[u8]) -> &[u8] {
+pub fn level_payload(payload: &[u8]) -> &[u8] {
     let word = |at: usize| -> Option<u32> {
         Some(u32::from_le_bytes(
             payload
@@ -199,7 +199,7 @@ fn level_payload(payload: &[u8]) -> &[u8] {
 
 /// A level container's texture bank (FUN_1401a5180: first i16 -1, u32 count at
 /// +4, u32 offsets at +8): the first level's, and how far in it starts.
-fn level_bank(bank: &[u8]) -> (&[u8], usize) {
+pub fn level_bank(bank: &[u8]) -> (&[u8], usize) {
     let word = |at: usize| -> Option<usize> {
         Some(u32::from_le_bytes(bank.get(at..at + 4)?.try_into().ok()?) as usize)
     };

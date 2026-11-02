@@ -294,6 +294,10 @@ fn decode_admitted(
 }
 
 /// Read original environments and EVERY replacement, retaining complete chains.
+/// The most images a model may hold, its replacements counted: M_EX500_GM's
+/// run past 64.
+const MAX_TEXTURES: usize = 256;
+
 /// Global expansion is admitted before pixels allocate; raw headers alone do
 /// not authorize a format. Existing decoders still perform their full admission.
 pub fn read_textures(
@@ -305,8 +309,12 @@ pub fn read_textures(
     total_rgba: &mut usize,
 ) -> io::Result<InspectionTextures> {
     let layout = crate::model_texture::read_layout(payload)?;
-    if layout.images.is_empty() || layout.images.len() + replacements.len() > 64 {
-        return Err(invalid("inspection texture count outside 1..64"));
+    if layout.images.is_empty() || layout.images.len() + replacements.len() > MAX_TEXTURES {
+        return Err(invalid(&format!(
+            "inspection texture count {} + {} outside 1..{MAX_TEXTURES}",
+            layout.images.len(),
+            replacements.len()
+        )));
     }
     let original_bytes: usize = layout
         .images

@@ -2,7 +2,7 @@
 //! 0xe, FUN_140331da0), the lists (0xf / 0x12 / 0x15, FUN_140331870) and
 //! the detail page (0x10 / 0x13 / 0x16, FUN_1403315b0) with the portrait
 //! from `menu/jmface_<code>.2ld`, the "Slain" count and the reaction rows
-//! (FUN_14032e5c0). The 3D model is not built.
+//! (FUN_14032e5c0), and the model pages (0x11 / 0x14 / 0x17, FUN_14032fe70).
 use super::*;
 
 const MENU_STATE: u8 = 0xe;
@@ -46,6 +46,87 @@ const OTHER: u8 = 0x10;
 const HEARTLESS: u8 = 0x11;
 const NOBODIES: u8 = 0x12;
 
+const PRIO_MODEL_FRAME: u32 = 0x7561;
+const PRIO_MODEL_SMALL: u32 = 0x7563;
+const PRIO_MODEL_BACKDROP: u32 = 0x7567;
+const PRIO_MODEL_BIG: u32 = 0x7568;
+const MODEL_BACKDROP_IN: usize = 4;
+const MODEL_BACKDROP: usize = 5;
+const MODEL_BACKDROP_OUT: usize = 6;
+const MODEL_FRAME: usize = 7;
+const MODEL_FRAME_HOLD: usize = 8;
+const MODEL_FADE: usize = 9;
+/// Lumiere (the depth rule) and MCP (the turn's limit).
+const LUMIERE: u16 = 0x3e4;
+const MCP: u16 = 0x8fc;
+const MCP_TURN: f32 = 16.;
+
+/// The model's render covers twice the layout each way, so a tall model's
+/// place doesn't cut it at the target's edge, at the camp's texel density.
+pub const MODEL_REACH: f32 = 2.;
+pub const MODEL_TARGET: [u32; 2] = [2560, 1440];
+
+fn is_model_page(state: u8) -> bool {
+    matches!(state, 0x11 | 0x14 | 0x17)
+}
+
+/// FUN_14032fe70: held LEFT and RIGHT turn the model 2 degrees a frame; MCP
+/// stops at 16 each way. `None` when neither is held.
+fn turned(turn: f32, held: u64, object: u16) -> Option<f32> {
+    let step = if held & bits::LEFT != 0 {
+        2.
+    } else if held & bits::RIGHT != 0 {
+        -2.
+    } else {
+        return None;
+    };
+    let mut t = turn + step;
+    if object == MCP {
+        t = t.clamp(-MCP_TURN, MCP_TURN);
+    }
+    if t >= 360. {
+        t -= 360.;
+    } else if t <= -360. {
+        t += 360.;
+    }
+    Some(t)
+}
+
+/// What the host poses (`Journal::model_view`).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ModelView {
+    pub object: u16,
+    pub motion: u16,
+    /// The projection centre's shift from the layout's centre.
+    pub at: [f32; 2],
+    /// Degrees; positive turns the front to screen left.
+    pub turn: f32,
+    pub scale: f32,
+    pub z: f32,
+    pub hidden_parts: u64,
+    pub ticks: u32,
+    pub alpha: f32,
+    prio: u32,
+}
+
+/// One whole quad of the model's target, centred on the shifted projection
+/// centre (FUN_1402feb20: x and y go to the projection, not the paste).
+fn model_quad(at: [f32; 2], alpha: f32) -> Quad {
+    let (w, h) = (512. * 2. / 3. * MODEL_REACH, 208. * MODEL_REACH);
+    let (x, y) = (256. + at[0], 208. + at[1]);
+    Quad {
+        corners: [
+            [x - w, y - h],
+            [x + w, y - h],
+            [x - w, y + h],
+            [x + w, y + h],
+        ],
+        uv: [0, 0, MODEL_TARGET[0] as i32, MODEL_TARGET[1] as i32],
+        colors: [[1., 1., 1., alpha]; 4],
+        blend: 0,
+    }
+}
+
 #[derive(Default)]
 pub(super) struct Page {
     /// The kind the lists show (journal world, 0x10, 0x11, 0x12).
@@ -70,6 +151,12 @@ pub(super) struct Page {
     top: usize,
     frame: Option<Id>,
     face_made: bool,
+    /// The model's frame sprite (only its alpha shows), the full page's
+    /// backdrop, and the turn and the clock of the model.
+    model_frame: Option<Id>,
+    backdrop: Option<Id>,
+    turn: f32,
+    model_ticks: u32,
     up: Option<Id>,
     down: Option<Id>,
     /// The lists show Ansem Reports (`entries` are `anse` rows).
@@ -511,6 +598,15 @@ impl Journal {
         let c = self.container;
         let p0 = self.page_sprite(seq, PRIO_PANEL, DETAIL_PANEL, c, None);
         self.files.panel = Some(p0);
+        // A check of the model pages: `KH2RW_JOURNAL_MODEL_ROW` shows this
+        // `char` row, seen or not.
+        if let Some(row) = std::env::var("KH2RW_JOURNAL_MODEL_ROW")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            && let Some(e) = self.files.entries.get_mut(self.files.cur)
+        {
+            *e = row;
+        }
         let r = self.files.entries.get(self.files.cur).copied();
         let ch = r.and_then(|r| self.data.chars.get(r)).copied();
         let name = ch.map(|c| self.msg(c.name)).unwrap_or_default();
@@ -583,6 +679,9 @@ impl Journal {
         self.sprites.get_mut(f).offset = at;
         self.files.frame = Some(f);
         self.files.face_made = false;
+        self.files.model_frame = None;
+        self.files.backdrop = None;
+        self.files.turn = ch.map_or(0., |c| f32::from(c.small[2]));
         // The description: the page's own row, 7 lines at a time.
         let text = ch.map(|c| self.msg(c.description)).unwrap_or_default();
         self.files.lines = text.split(|&b| b == 0x02).map(<[u8]>::to_vec).collect();
@@ -607,7 +706,7 @@ impl Journal {
             .filter(|&&r| self.file_seen(r))
             .count();
         self.list = MenuList::new(vec![d], 0);
-        self.list.mask = 0x60 | if seen > 1 { 0xc000 } else { 0 };
+        self.list.mask = 0x260 | if seen > 1 { 0xc000 } else { 0 };
         self.show_help(seq, HELP_DETAIL);
         // The character counts as viewed.
         if let Some(r) = r
@@ -666,10 +765,15 @@ impl Journal {
         let seq = &layout_.sequences[SEQUENCE];
         let (input, moved) = self.input(pad);
         if self.substate == 2 {
-            self.leave(layout_, input, moved, false);
+            if self.pending.is_some_and(is_model_page) {
+                self.enter_model(seq, input, moved);
+            } else {
+                self.leave(layout_, input, moved, false);
+            }
             return false;
         }
         self.settle(seq, input, moved, true);
+        self.request_model(seq);
         // The portrait appears once the face file is bound.
         if !self.files.face_made
             && let Some(f) = self.files.frame
@@ -716,8 +820,16 @@ impl Journal {
                 sounds.push(SOUND_CLOSE);
                 self.hide_help(seq);
                 self.slide(seq, 1, 1);
+                self.fade_model_frame(seq);
                 self.pending = Some(self.files.ret.unwrap_or(list_state(self.state)));
                 self.files.ret = None;
+                self.substate = 2;
+            }
+            In::Triangle => {
+                sounds.push(SOUND_DECIDE);
+                self.fade_model_frame(seq);
+                self.hide_help(seq);
+                self.pending = Some(self.state + 1);
                 self.substate = 2;
             }
             In::R2 | In::L2 => {
@@ -740,6 +852,7 @@ impl Journal {
                     self.memory[0xf] = i;
                     self.hide_help(seq);
                     self.slide(seq, (input != In::R2) as usize, 1);
+                    self.fade_model_frame(seq);
                     self.pending = Some(self.state);
                     self.substate = 2;
                 }
@@ -747,6 +860,175 @@ impl Journal {
             _ => {}
         }
         moved
+    }
+
+    /// FUN_1403306c0: the model's frame fades, and the model with it.
+    fn fade_model_frame(&mut self, seq: &Sequence) {
+        if let Some(f) = self.files.model_frame.filter(|&f| self.sprites.alive(f)) {
+            self.sprites.close(seq, f, MODEL_FADE);
+        }
+    }
+
+    /// FUN_14032ee20's guard and first half: the object is asked for once the
+    /// face file is bound; once it is loaded the frame starts, so the fade-in
+    /// follows the load.
+    fn request_model(&mut self, seq: &Sequence) {
+        if self
+            .files
+            .model_frame
+            .is_some_and(|f| self.sprites.alive(f))
+        {
+            self.files.model_ticks = self.files.model_ticks.wrapping_add(1);
+            return;
+        }
+        let Some(ch) = self.files_char() else { return };
+        let (Some(p0), true) = (
+            self.files.panel,
+            self.cache.faces.contains(&(ch.world as u8)),
+        ) else {
+            return;
+        };
+        let want = (ch.object, ch.motion);
+        if self.cache.model_ready != Some(want) {
+            self.cache.wanted_model = Some(want);
+            return;
+        }
+        let f = self.page_sprite(seq, PRIO_MODEL_FRAME, MODEL_FRAME, p0, None);
+        self.sprites
+            .set(seq, f, MODEL_FRAME, Some(MODEL_FRAME_HOLD));
+        self.files.model_frame = Some(f);
+        self.files.model_ticks = 0;
+    }
+
+    fn files_char(&self) -> Option<data::journal_table::Char> {
+        let r = *self.files.entries.get(self.files.cur)?;
+        self.data.chars.get(r).copied()
+    }
+
+    /// FUN_14032f2a0's leaving, for the full page: the detail page stays
+    /// behind it.
+    fn enter_model(&mut self, seq: &Sequence, input: In, moved: bool) {
+        if let Some(f) = self.files.model_frame.filter(|&f| self.sprites.alive(f)) {
+            if input != In::None || moved {
+                self.sprites.kill(f);
+            }
+            return;
+        }
+        let Some(p0) = self.files.panel else { return };
+        self.state = self.pending.take().unwrap_or(self.state);
+        self.list = MenuList::new(vec![], 0);
+        self.list.mask = 0x30020;
+        let b = self.page_sprite(seq, PRIO_MODEL_BACKDROP, MODEL_BACKDROP_IN, p0, None);
+        self.sprites
+            .set(seq, b, MODEL_BACKDROP_IN, Some(MODEL_BACKDROP));
+        self.files.backdrop = Some(b);
+        self.files.model_frame = None;
+        self.files.turn = 0.;
+        self.substate = 0;
+    }
+
+    /// FUN_14032fe70.
+    pub(super) fn files_model(
+        &mut self,
+        layout_: &Layout,
+        pad: &Pad,
+        sounds: &mut Vec<u32>,
+    ) -> bool {
+        let seq = &layout_.sequences[SEQUENCE];
+        let (input, moved) = self.input(pad);
+        let shown = self.files.backdrop.filter(|&b| self.sprites.alive(b));
+        if self.substate == 2 {
+            if let Some(f) = self.files.model_frame.filter(|&f| self.sprites.alive(f)) {
+                if input != In::None || moved {
+                    self.sprites.kill(f);
+                }
+                return false;
+            }
+            // Back on the detail page, which rebuilds its small model.
+            self.state = self.pending.take().unwrap_or(self.state);
+            let seen = self
+                .files
+                .entries
+                .iter()
+                .filter(|&&r| self.file_seen(r))
+                .count();
+            let rows = self.files.desc.into_iter().collect();
+            self.list = MenuList::new(rows, 0);
+            self.list.mask = 0x260 | if seen > 1 { 0xc000 } else { 0 };
+            self.show_help(seq, HELP_DETAIL);
+            self.files.model_frame = None;
+            self.files.turn = self.files_char().map_or(0., |c| f32::from(c.small[2]));
+            self.substate = 0;
+            return false;
+        }
+        self.request_model(seq);
+        if (input != In::None || moved)
+            && let Some(b) = shown.filter(|&b| self.sprites.get(b).player.group != MODEL_BACKDROP)
+        {
+            self.sprites.set(seq, b, MODEL_BACKDROP, None);
+        }
+        if self.substate == 0
+            && shown.is_some_and(|b| self.sprites.get(b).player.group == MODEL_BACKDROP)
+        {
+            self.substate = 1;
+        }
+        // Held LEFT and RIGHT come before the cancel, so a cancel does nothing
+        // while one is held (FUN_1402f9440).
+        let object = self.files_char().map_or(0, |c| c.object);
+        if let Some(turn) = turned(self.files.turn, self.held, object) {
+            self.files.turn = turn;
+        } else if input == In::Cancel {
+            sounds.push(SOUND_CLOSE);
+            if let Some(b) = shown {
+                self.sprites.close(seq, b, MODEL_BACKDROP_OUT);
+            }
+            self.fade_model_frame(seq);
+            // 0x14 goes to 0x16 in the executable too.
+            self.pending = Some(if self.state == 0x11 { 0x10 } else { 0x16 });
+            self.substate = 2;
+        }
+        moved
+    }
+
+    /// What the host poses and renders now.
+    pub fn model_view(&self) -> Option<ModelView> {
+        let f = self.files.model_frame.filter(|&f| self.sprites.alive(f))?;
+        let ch = self.files_char()?;
+        let big = is_model_page(self.state);
+        let (at, scale) = if big {
+            (ch.big, ch.big_scale)
+        } else {
+            ([ch.small[0], ch.small[1]], ch.small_scale)
+        };
+        // Lumiere's scale is a depth (FUN_14032ee20's table).
+        let (z, scale) = if ch.object == LUMIERE {
+            (scale - 100., 1.)
+        } else {
+            (-100., scale)
+        };
+        Some(ModelView {
+            object: ch.object,
+            motion: ch.motion,
+            at: at.map(f32::from),
+            turn: self.files.turn,
+            scale,
+            z,
+            hidden_parts: ch.hidden_parts(),
+            ticks: self.files.model_ticks,
+            alpha: self.sprites.child_alpha(f),
+            prio: if big {
+                PRIO_MODEL_BIG
+            } else {
+                PRIO_MODEL_SMALL
+            },
+        })
+    }
+
+    /// The paste, at the model's priority (tint 1: FUN_1402ff530 is not called
+    /// on this path).
+    pub(super) fn model_draw(&self) -> Option<(u32, Sheet, Vec<Quad>)> {
+        let v = self.model_view()?;
+        Some((v.prio, Sheet::Model, vec![model_quad(v.at, v.alpha)]))
     }
 
     fn report_owned(&self, i: usize) -> bool {
@@ -956,5 +1238,32 @@ impl Journal {
             _ => {}
         }
         moved
+    }
+}
+
+#[cfg(test)]
+mod model_tests {
+    use super::*;
+
+    #[test]
+    fn held_keys_turn_two_degrees_and_mcp_stops_at_sixteen() {
+        assert_eq!(turned(0., 0, 1), None);
+        assert_eq!(turned(0., bits::LEFT, 1), Some(2.));
+        assert_eq!(turned(0., bits::RIGHT, 1), Some(-2.));
+        assert_eq!(turned(16., bits::LEFT, MCP), Some(16.));
+        assert_eq!(turned(-16., bits::RIGHT, MCP), Some(-16.));
+        assert_eq!(turned(358., bits::LEFT, 1), Some(0.));
+        assert_eq!(turned(-358., bits::RIGHT, 1), Some(0.));
+    }
+
+    #[test]
+    fn the_paste_is_centred_on_the_shifted_projection() {
+        let q = model_quad([0., 125.], 0.5);
+        let centre = [
+            (q.corners[0][0] + q.corners[3][0]) / 2.,
+            (q.corners[0][1] + q.corners[3][1]) / 2.,
+        ];
+        assert_eq!(centre, [256., 333.]);
+        assert_eq!(q.colors[0], [1., 1., 1., 0.5]);
     }
 }

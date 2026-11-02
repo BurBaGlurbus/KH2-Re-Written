@@ -40,6 +40,22 @@ pub const CAPTURES: [u64; 23] = [
 ];
 pub const END: u64 = 6400;
 
+/// `KH2RW_JOURNAL_CAPTURES=<tick>,...`: these captures in place of the tour's;
+/// the run ends after the last.
+pub fn captures() -> Vec<u64> {
+    match std::env::var("KH2RW_JOURNAL_CAPTURES") {
+        Ok(v) => v.split(',').filter_map(|t| t.parse().ok()).collect(),
+        Err(_) => CAPTURES.to_vec(),
+    }
+}
+
+pub fn end() -> u64 {
+    match std::env::var_os("KH2RW_JOURNAL_CAPTURES") {
+        Some(_) => captures().last().map_or(END, |t| t + 60),
+        None => END,
+    }
+}
+
 /// The tour's pieces: Awakening whole with its first two tiles swapped, half
 /// of Heart (they rotate) and some of Sunset (6 x 8).
 pub fn puzzles() -> super::journal::PuzzleSave {
@@ -164,9 +180,9 @@ pub fn tour(inventory: &Inventory) -> Tour {
     inputs.push((6200, DECIDE));
     Tour {
         inputs: route().unwrap_or(inputs),
-        captures: CAPTURES.to_vec(),
+        captures: captures(),
         close: 10_000,
-        end: END,
+        end: end(),
         expected_slots: inventory.slots.clone(),
         attacks: Vec::new(),
     }

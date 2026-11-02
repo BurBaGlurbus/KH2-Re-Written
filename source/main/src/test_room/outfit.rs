@@ -262,7 +262,7 @@ pub fn crown_patch(set: &InspectionTextures) -> Option<&TexturePlay> {
 /// The remaster keeps a TEXA chunk's images as one vertical strip at a whole
 /// multiple of the patch; the original page is scaled to match it, so the
 /// model's UVs still address it.
-fn crown_page(
+pub fn texa_page(
     set: &InspectionTextures,
     play: &TexturePlay,
     number: u16,
@@ -355,7 +355,7 @@ pub fn crown(
             continue;
         }
         let material = cache.entry(key).or_insert_with(|| {
-            let (width, height, rgba) = crown_page(set, play, number).unwrap_or((1, 1, vec![0; 4]));
+            let (width, height, rgba) = texa_page(set, play, number).unwrap_or((1, 1, vec![0; 4]));
             let texture = visual::room::static_rgba_image(width, height, rgba, &mut images);
             materials.add_fogged(StandardMaterial {
                 base_color: Color::WHITE,

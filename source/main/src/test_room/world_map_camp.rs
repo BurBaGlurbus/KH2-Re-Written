@@ -159,6 +159,10 @@ pub fn load(
 }
 
 impl WorldMapCamp {
+    pub fn camp_mut(&mut self) -> &mut CampRes {
+        &mut self.c
+    }
+
     /// The camp's and the journal's images as 2D sheets.
     pub fn upload(&mut self, frame: &mut Ui2dFrame, images: &mut Assets<Image>) {
         upload_camp_sheets(&mut self.c, frame, images);
@@ -460,6 +464,7 @@ impl WorldMapCamp {
                     journal::Sheet::Photo(r) => s.photos.get(&r).copied(),
                     journal::Sheet::Puzzle(r) => s.puzzles.get(&r).copied(),
                     journal::Sheet::Picture(i) => c.picture_sheets.get(&i).copied().flatten(),
+                    journal::Sheet::Model => s.model,
                 };
                 if let Some(slot) = slot {
                     frame.draws.push((slot, quads));

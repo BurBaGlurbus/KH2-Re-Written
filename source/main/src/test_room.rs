@@ -99,6 +99,7 @@ pub mod gear;
 pub mod gear_tour;
 pub mod item_drop_view;
 pub mod item_room;
+pub mod journal_model;
 pub mod journal_tour;
 pub mod level_growth;
 pub mod limit_form_tour;
@@ -2361,6 +2362,8 @@ pub struct JournalSource {
     /// commands (`rcct`): name and use counter.
     pub char_keys: Vec<u16>,
     pub key_commands: HashMap<u16, Vec<(Vec<u8>, u16)>>,
+    /// objentry, for the model pages' objects.
+    pub objects: std::sync::Arc<Vec<objentry::ObjectEntry>>,
     pub diag: Vec<data::journal_table::Diag>,
     pub albums: Vec<data::journal_table::Album>,
 }
@@ -2575,6 +2578,7 @@ pub fn load_journal(
         treasures,
         char_keys,
         key_commands,
+        objects: std::sync::Arc::new(objects),
         item_names,
         opened_bits: j.opened_bits.clone(),
         owned_items: j.owned_items.clone(),
@@ -6774,6 +6778,7 @@ pub fn setup(
             })
         })
         .collect();
+    commands.insert_resource(journal_model::JournalModelSlot::default());
     commands.insert_resource(MenuModel {
         sheet,
         clip: walk,
@@ -12627,6 +12632,8 @@ pub struct JournalSheets {
     pub photos: HashMap<u16, usize>,
     /// Puzzle pictures by `puzz` row.
     pub puzzles: HashMap<u8, usize>,
+    /// The Character Files' model target, once a page has asked for it.
+    pub model: Option<usize>,
 }
 
 impl CampRes {
@@ -14385,6 +14392,7 @@ pub fn camp_present(
                 journal::Sheet::Photo(r) => s.photos.get(&r).copied(),
                 journal::Sheet::Puzzle(r) => s.puzzles.get(&r).copied(),
                 journal::Sheet::Picture(i) => c.picture_sheets.get(&i).copied().flatten(),
+                journal::Sheet::Model => s.model,
             };
             if let Some(slot) = slot {
                 frame.draws.push((slot, quads));
@@ -15223,7 +15231,7 @@ pub fn run(
     } else if party_anim_tour {
         party_anim_tour::captures()
     } else if journal_tour {
-        journal_tour::CAPTURES.to_vec()
+        journal_tour::captures()
     } else if npc_tour {
         capture_at
             .clone()
@@ -15283,7 +15291,7 @@ pub fn run(
     } else if party_anim_tour {
         party_anim_tour::END
     } else if journal_tour {
-        journal_tour::END
+        journal_tour::end()
     } else if npc_tour {
         NPC_TOUR_END
     } else if save_point_tour {
@@ -16290,7 +16298,7 @@ impl Plugin for RoomPlugin {
                         resize_scene,
                         afterimage.run_if(resource_exists::<Afterimage>),
                         compose_2d,
-                        menu_model_present,
+                        (menu_model_present, journal_model::present).chain(),
                         (
                             camp_present,
                             game_over::present,

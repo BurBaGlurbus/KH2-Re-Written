@@ -442,10 +442,14 @@ fn read_models_profile(
                     || entries[0].1.offset < 0
                     || entries[0].1.size == 0
                 {
-                    return Err(
-                        "textured inspection requires exactly one nonempty tim_ BAR/type-7 entry"
-                            .into(),
-                    );
+                    return Err(format!(
+                        "textured inspection requires exactly one nonempty tim_ BAR/type-7 entry; found {:?}",
+                        bar.entries
+                            .iter()
+                            .map(|e| (e.entry_type, String::from_utf8_lossy(&e.name_bytes).into_owned(), e.size))
+                            .collect::<Vec<_>>()
+                    )
+                    .into());
                 }
                 let (ordinal, record) = entries[0];
                 let start = record.offset as usize;

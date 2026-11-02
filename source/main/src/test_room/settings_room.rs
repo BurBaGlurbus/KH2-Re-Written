@@ -302,6 +302,7 @@ impl SettingsRes {
         c.art = [None; 4];
         c.journal_sheets = JournalSheets {
             faces: std::mem::take(&mut c.journal_sheets.faces),
+            model: c.journal_sheets.model,
             ..Default::default()
         };
         c.notice_sheets.clear();

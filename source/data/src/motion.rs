@@ -614,6 +614,60 @@ pub fn read_slots_optional(
     Ok(result)
 }
 
+/// FUN_1403e6230's slot of `id` in a set: with bit 0 of the set's header +0xc
+/// its variant 2, then 3, 1, 0 when that slot is empty; else the id itself.
+pub fn variant_slot(variants: bool, id: u16, present: impl Fn(usize) -> bool) -> Option<usize> {
+    let id = usize::from(id);
+    if !variants {
+        return present(id).then_some(id);
+    }
+    [2, 3, 1, 0]
+        .iter()
+        .map(|k| id * 4 + k)
+        .find(|&s| present(s))
+}
+
+/// Motion `id` of a `_MEMO` set (the Journal's model pages), by
+/// [`variant_slot`].
+pub fn read_memo_motion(
+    source: &crate::probe_source::ProbeSource,
+    index: &str,
+    ordinal: usize,
+    name_hash: [u8; 16],
+    id: u16,
+) -> Result<Option<SelectedMotion>, Box<dyn std::error::Error>> {
+    source.verify_full_source()?;
+    let mut checked = source.open_index(index)?;
+    let entry = checked
+        .inventory
+        .entries
+        .get(ordinal)
+        .filter(|e| e.name_hash == name_hash)
+        .ok_or("motion source entry mismatch")?;
+    let original = crate::original_payload::read_original(&mut checked.reader, entry)?;
+    let table = crate::bar::read_bar(&original.bytes)?;
+    let variants = original.bytes.get(0xc).is_some_and(|b| b & 1 != 0);
+    let present = |slot: usize| {
+        table
+            .entries
+            .get(slot)
+            .is_some_and(|e| e.offset > 0 && e.size > 0)
+    };
+    let selected = match variant_slot(variants, id, present) {
+        Some(slot) => {
+            let e = &table.entries[slot];
+            let anb = original
+                .bytes
+                .get(e.offset as usize..e.offset as usize + e.size as usize)
+                .ok_or("motion slot exceeds set")?;
+            Some(read_anb(anb, slot)?)
+        }
+        None => None,
+    };
+    checked.verify_unchanged()?;
+    Ok(selected)
+}
+
 /// Like [`read_slots`] for each slot on its own, reading the set once: a
 /// slot that is absent, a dummy or does not read gives `None`, as separate
 /// `read_slots` calls of one slot each would have failed.
@@ -994,5 +1048,19 @@ mod tests {
         assert!(m.sample_fk(&[sample_bone()], 0).is_err());
         assert!(m.sample_fk(&[], 0).is_err());
         assert!(m.sample_fk(&[sample_bone()], 16_777_217).is_err());
+    }
+}
+
+#[cfg(test)]
+mod variant_tests {
+    use super::variant_slot;
+
+    #[test]
+    fn a_variant_set_tries_two_three_one_zero_and_a_plain_set_the_id() {
+        assert_eq!(variant_slot(false, 133, |s| s == 133), Some(133));
+        assert_eq!(variant_slot(false, 133, |_| false), None);
+        assert_eq!(variant_slot(true, 133, |_| true), Some(534));
+        assert_eq!(variant_slot(true, 133, |s| s == 535), Some(535));
+        assert_eq!(variant_slot(true, 133, |s| s == 532), Some(532));
     }
 }
