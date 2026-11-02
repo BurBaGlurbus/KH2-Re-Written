@@ -934,6 +934,8 @@ pub struct AreaRes {
     pub explore: bool,
     /// NPC slots that already have meshes.
     pub rendered: usize,
+    /// Areas made current so far, a reload in place included.
+    pub loads: u32,
     /// The live background group mask (ARD scripts plus zone switches).
     pub bg_mask: u64,
     /// Music to switch at the next tick (taken by `area_music`).
@@ -5637,6 +5639,7 @@ pub fn area_transition(
     party_room::follow_party_table(&mut game, next.world);
     outfit::enter_place(&mut game, &next.members);
     area.current = next;
+    area.loads += 1;
     // The old area's effects end with it; the new area's start next tick.
     game.fx_clear_map.push(None);
     game.map_fx_pending = true;
@@ -15631,6 +15634,7 @@ pub fn run(
         AreaRes {
             music: Some(std::mem::take(&mut current.music)),
             rendered: current.npcs.len(),
+            loads: 0,
             bg_mask: current.state.setup.bg_mask,
             banner: source
                 .place_name(current.world, current.area)

@@ -10,8 +10,8 @@
 //! signals scripts raise (a mission's 37 and 38) reach the entries after the
 //! mission.
 //!
-//! Not here yet: other signals, a player's skip (FUN_1403a55b0), events with no
-//! jump (signal 0x4c) and those over a running field (`evtp` flags bit 0 clear).
+//! Not here yet: a player's skip (FUN_1403a55b0), events with no jump (signal
+//! 0x4c) and those over a running field (`evtp` flags bit 0 clear).
 use super::*;
 use crate::area::{Fired, SignalJump};
 use save::slots::field;
@@ -47,7 +47,7 @@ pub fn tick(
     mut game: ResMut<Game>,
     area: Option<ResMut<AreaRes>>,
     camp: Option<Res<CampRes>>,
-    mut arrived: Local<Option<(u8, u8)>>,
+    mut arrived: Local<Option<u32>>,
 ) {
     if !enabled() {
         return;
@@ -59,8 +59,8 @@ pub fn tick(
     if a.transition.is_some() || a.pending.is_some() {
         return;
     }
-    let here = (a.current.world, a.current.area);
-    if *arrived == Some(here) {
+    // Every load raises signal 0, a reload in place too (FUN_140152cd0).
+    if *arrived == Some(a.loads) {
         // Signals raised in the area (FUN_1403aabe0 step 4), the mission
         // having had them first.
         for (code, arg) in std::mem::take(&mut game.story_signals) {
@@ -76,7 +76,11 @@ pub fn tick(
         return;
     }
     game.story_signals.clear();
-    *arrived = Some(here);
+    *arrived = Some(a.loads);
+    let record = serde_json::json!({"event":"story_arrival","tick":game.tick,
+        "world":a.current.world,"area":a.current.area,"programs":a.current.programs,
+        "loads":a.loads});
+    game.event(record);
     // Load-time writes: op 0x19 (FUN_1403a24c0).
     for flag in a.current.state.setup.set_flags.clone() {
         if !a.source.progress().test(flag) {

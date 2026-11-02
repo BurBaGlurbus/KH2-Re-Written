@@ -310,3 +310,4 @@ Records through T128 retain historical commands and paths. See [the folder guide
 | [T364](T364-door-signal.md) | A door raises signal 1 before its jump (issue #25, part) | PASS in the room behind the story switch. |
 | [T365](T365-jump-redirect.md) | The jump redirect to program 0x7a (issue #25, part) | PASS in the room behind the story switch. |
 | [T366](T366-raised-signals.md) | Raised signals reach the area's entries (issue #25, part) | PASS in the room behind the story switch. |
+| [T367](T367-arrival-every-load.md) | Signal 0 on every load (issue #25, part) | PASS in the room behind the story switch. |
