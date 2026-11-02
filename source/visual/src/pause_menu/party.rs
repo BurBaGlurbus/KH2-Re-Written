@@ -26,12 +26,21 @@ pub(super) struct Ui {
     pub(super) swap: MenuList,
     names: Vec<Id>,
     marker: Option<Id>,
-    /// Which member's model each card shows once a swap has moved them (the
-    /// models stay numbered as the camp opened).
-    models: Vec<usize>,
+    /// Which member's model each card shows (the models stay numbered as the
+    /// field's list is).
+    pub(super) models: Vec<usize>,
+    /// `models` when the screen opened.
+    entered: Vec<usize>,
 }
 
 impl Ui {
+    pub(super) fn with_models(models: Vec<usize>) -> Self {
+        Self {
+            models,
+            ..Self::default()
+        }
+    }
+
     pub(super) fn model_of(&self, card: usize) -> usize {
         self.models.get(card).copied().unwrap_or(card)
     }
@@ -69,6 +78,7 @@ impl Camp {
     pub(super) fn enter_party(&mut self, seq: &Sequence) {
         self.state = State::Party;
         self.substate = 0;
+        self.party_ui.entered = self.party_ui.models.clone();
         self.create_tab(seq, 0);
         let panel = self
             .sprites
@@ -129,7 +139,9 @@ impl Camp {
         self.party_ui.swap = swap;
         self.item_ui.no_pointer = !movable;
         self.model_time = Some(0.);
-        let h = self.data.party_help[usize::from(movable)].clone();
+        // FUN_140320b30 by count alone, so three with one locked still ask to
+        // select a member.
+        let h = self.data.party_help[usize::from(self.party_ui.cards.total >= 3)].clone();
         self.show_help(seq, h);
     }
 
@@ -193,8 +205,12 @@ impl Camp {
             sounds.push(s);
         }
         match pick {
-            Pick::Start => self.exit = true,
+            Pick::Start => {
+                self.party_left();
+                self.exit = true;
+            }
             Pick::Cancel => {
+                self.party_left();
                 self.hide_help(seq);
                 self.close_tab(seq, 0);
                 self.close_opt(seq, self.party_ui.panel, PANEL[2]);
@@ -219,6 +235,14 @@ impl Camp {
         }
         self.party_marker(seq);
         moved
+    }
+
+    /// FUN_14031f650 / FUN_140320480: a changed order zeroes the cursor memory
+    /// (FUN_140305ea0).
+    fn party_left(&mut self) {
+        if self.party_ui.models != self.party_ui.entered {
+            self.memory.clear();
+        }
     }
 
     /// The party list rebuilt in the new order (FUN_1402fc800): each
@@ -256,9 +280,7 @@ impl Camp {
         if self.substate == 2 {
             self.state = State::Party;
             self.substate = 1;
-            let locked = self.party_ui.cards.skip.count_ones() as usize - 1;
-            let movable = self.party_ui.cards.total >= 3 && self.party_ui.cards.total - locked >= 3;
-            let h = self.data.party_help[usize::from(movable)].clone();
+            let h = self.data.party_help[usize::from(self.party_ui.cards.total >= 3)].clone();
             self.show_help(seq, h);
             return false;
         }

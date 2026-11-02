@@ -140,8 +140,8 @@ impl Spell {
 
 /// FUN_1401cd270 / FUN_1401cd230 (the map at 0x1407249d0, filled into each
 /// action entry by FUN_1401cccf0): a spell's ability item and its index in
-/// the member's frequencies (FUN_1401dc060: 7 + the index). A guest's
-/// own act has no row here [U: only Donald's and Goofy's rows are listed].
+/// the member's frequencies (FUN_1401dc060: 7 + the index). A guest's act has
+/// its ability on its record (`Record::ability`).
 pub fn ability_of(spell: Spell) -> Option<(u16, usize)> {
     Some(match spell {
         Spell::Fire => (0xa5, 7),
@@ -157,25 +157,45 @@ pub fn ability_of(spell: Spell) -> Option<(u16, usize)> {
 
 /// FUN_1401dc060: an item's or ability's place in the frequencies: items
 /// 1..7 (Potion .. Megalixir, 0x1407282d0) at 0..6, a party ability at
-/// 7 + its per-character index (FUN_1401cd330, the table at 0x1407249d0;
-/// only Donald's and Goofy's rows are listed here).
+/// 7 + its per-character index (FUN_1401cd330, the table at 0x1407249d0,
+/// which searches by ability alone: first hit wins).
 pub fn frequency_index(id: u16) -> Option<usize> {
-    const ABILITIES: [Spell; 7] = [
-        Spell::Fire,
-        Spell::Blizzard,
-        Spell::Thunder,
-        Spell::Cure,
-        Spell::Tornado,
-        Spell::Bash,
-        Spell::Turbo,
+    /// {ability, index}, by character: Donald, Goofy, Auron, Mulan, Aladdin,
+    /// Sparrow, Beast, Jack, Simba, Tron, Riku.
+    const INDICES: [(u16, usize); 29] = [
+        (0xa5, 0),
+        (0xa6, 1),
+        (0xa7, 2),
+        (0xa8, 3),
+        (0x1a7, 0),
+        (0x1ad, 1),
+        (0x1a9, 2),
+        (0x1ac, 0),
+        (0xb0, 1),
+        (0x1b2, 0),
+        (0x1b3, 1),
+        (0x1aa, 0),
+        (0x1ab, 1),
+        (0x1be, 0),
+        (0x1bf, 1),
+        (0x1c0, 2),
+        (0xb1, 0),
+        (0x1ae, 1),
+        (0x1af, 0),
+        (0x1b0, 1),
+        (0x1b1, 2),
+        (0x1b7, 0),
+        (0x1b8, 1),
+        (0xbe, 2),
+        (0x1bc, 0),
+        (0xd7, 3),
+        (0x1b4, 0),
+        (0x1b6, 2),
+        (0xbb, 3),
     ];
     match id {
         1..=7 => Some(usize::from(id - 1)),
-        _ => ABILITIES
-            .iter()
-            .filter_map(|&s| ability_of(s))
-            .find(|&(a, _)| a == id)
-            .map(|(_, k)| k),
+        _ => INDICES.iter().find(|r| r.0 == id).map(|r| 7 + r.1),
     }
 }
 
@@ -278,13 +298,27 @@ impl Save {
         }
     }
 
+    /// A record's frequency: its own ability (a guest's act, FUN_1401cccf0's
+    /// table), else its spell's. Tron's swings have neither and stay free.
+    pub fn record_frequency(&self, r: &Record) -> Option<u8> {
+        match (r.ability, frequency_index(r.ability)) {
+            (0, _) | (_, None) => r
+                .spell
+                .map_or(Some(frequency::FREE), |s| self.spell_frequency(s)),
+            (item, Some(index)) => self.ability_frequency(item, index),
+        }
+    }
+
     /// FUN_1401b2880's ability test: the spell's frequency, or None when it
     /// is off (3), not held or held but not equipped.
     pub fn spell_frequency(&self, spell: Spell) -> Option<u8> {
-        // A guest's act is not gated by an ability.
         let Some((item, index)) = ability_of(spell) else {
             return Some(frequency::FREE);
         };
+        self.ability_frequency(item, index)
+    }
+
+    fn ability_frequency(&self, item: u16, index: usize) -> Option<u8> {
         let f = self.frequency[index];
         let equipped = self
             .abilities
@@ -345,6 +379,8 @@ pub struct Record {
     pub cost: u8,
     /// The act this record starts instead of a weapon motion.
     pub spell: Option<Spell>,
+    /// A guest act's ability (entry +0x30 → FUN_1401cd270; 0: none).
+    pub ability: u16,
     /// Cure: a member is healed while its HP is below this share of its
     /// maximum (+0x3c).
     pub heal_below: f32,
@@ -386,6 +422,7 @@ const fn ground(id: u8, motion: u16, far: f32) -> Record {
         jump: 0.,
         cost: 0,
         spell: None,
+        ability: 0,
         heal_below: 0.,
         item: None,
         urgent: Urgent::No,
@@ -431,6 +468,7 @@ const fn spell(id: u8, spell: Spell, motion: u16, window: [f32; 4], cost: u8) ->
         jump: 0.,
         cost,
         spell: Some(spell),
+        ability: 0,
         heal_below: 0.,
         item: None,
         urgent: Urgent::No,
@@ -926,7 +964,7 @@ impl Follower {
             return false;
         }
         // Acts without a cost (Tron's swings) are attacks, not spells.
-        if (!scene.spells && r.cost > 0) || scene.save.spell_frequency(spell).is_none() {
+        if (!scene.spells && r.cost > 0) || scene.save.record_frequency(r).is_none() {
             return false;
         }
         if let Some((_, _, charging)) = scene.mp
@@ -1027,11 +1065,7 @@ impl Follower {
         t: &Target,
         scene: &Scene<W>,
     ) -> Option<Record> {
-        let freq = |r: &Record| {
-            r.spell
-                .and_then(|s| scene.save.spell_frequency(s))
-                .unwrap_or(frequency::FREE)
-        };
+        let freq = |r: &Record| scene.save.record_frequency(r).unwrap_or(frequency::FREE);
         let mp = scene.mp.map_or(i32::MAX, |m| m.0);
         let candidates: Vec<Record> = records
             .iter()

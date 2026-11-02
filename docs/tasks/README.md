@@ -295,3 +295,4 @@ Records through T128 retain historical commands and paths. See [the folder guide
 | [T349](T349-party-weapon-motion-set.md) | A party weapon's motion set comes from the body's `wmst` row (issue #51) | PASS in the room. |
 | [T350](T350-map-object-levels-space-alpha-order.md) | Map objects: their true place, levels by distance, and the alpha order (issue #22) | PASS in the room; no comparison with the installed game. |
 | [T351](T351-world-map-small-details.md) | The world map's small details: the flag tail, faces on the widgets, the trigger-8 fade (issue #162) | PASS in the room; some paths are covered by unit tests only. |
+| [T352](T352-party-swap-member-settings.md) | A party swap waits for the next area; guests' settings; cursor memory (issue #34, parts) | PASS in the room; #34 stays open for guests. |

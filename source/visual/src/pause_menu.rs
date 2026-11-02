@@ -272,6 +272,8 @@ pub struct Data {
     pub party_help: [Vec<u8>; 3],
     /// Party slots that cannot be picked (FUN_1403e37c0).
     pub party_locked: Vec<bool>,
+    /// Which member's model each card starts with (empty: its own).
+    pub party_models: Vec<usize>,
     /// The Status rows' new bits of this camp (FUN_140369520: forms 0..4,
     /// summons 5..8) and the seen bits (save+0x4274).
     pub status_new: u16,
@@ -320,6 +322,16 @@ pub struct Memory {
     pub equip: (usize, usize),
     /// save+0x4270: the notices already seen (bit per `notice::ROWS`).
     pub notices_seen: u16,
+}
+
+impl Memory {
+    /// FUN_140305ea0. The notices seen aren't in that block: they're the save's.
+    pub fn clear(&mut self) {
+        *self = Memory {
+            notices_seen: self.notices_seen,
+            ..Memory::default()
+        };
+    }
 }
 
 /// Tz::MenuObj's pastes: priority and (member, layout offset, alpha).
@@ -741,6 +753,7 @@ impl Camp {
         let mut sp = Sprites::default();
         let munny = sp.create(seq, PRIO_PANEL, ART, MUNNY[0], Some(MUNNY[1]), None);
         let time = sp.create(seq, PRIO_PANEL, ART, TIME[0], Some(TIME[1]), None);
+        let party_models = data.party_models.clone();
         let mut camp = Camp {
             layout: task,
             sprites: sp,
@@ -787,7 +800,7 @@ impl Camp {
             config_scroll: 0,
             item_ui: items::Ui::default(),
             ability_ui: abilities::Ui::default(),
-            party_ui: party::Ui::default(),
+            party_ui: party::Ui::with_models(party_models),
             custom_ui: customize::Ui::default(),
             equip_ui: equip::Ui::default(),
             picture: picture::Picture::default(),

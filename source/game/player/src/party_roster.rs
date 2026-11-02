@@ -58,6 +58,7 @@ const fn rec(id: u8, motion: u16, window: [f32; 4], jump: f32) -> Record {
         jump,
         cost: 0,
         spell: None,
+        ability: 0,
         heal_below: 0.,
         item: None,
         urgent: Urgent::No,
@@ -75,6 +76,11 @@ const fn act_motion(id: u8, motion: u16, name: &'static str, window: [f32; 4], c
         spell: Some(Spell::Act(name)),
         ..rec(id, motion, window, 0.)
     }
+}
+
+/// A guest act's ability (FUN_1401cccf0's table).
+const fn needs(ability: u16, r: Record) -> Record {
+    Record { ability, ..r }
 }
 
 /// `FUN_1401cc1a0`: the Cure of Auron, Simba and Riku (cost 99, a member
@@ -107,8 +113,8 @@ pub const AURON: [Record; 8] = [
     rec(0x9, 152, [0., 500., -100., 200.], 0.),
     rec(0xa, 181, [0., 280., 150., 585.], 1.),
     rec(0xb, 182, [0., 280., 150., 585.], 1.),
-    act(0x5f, "yukizakura", [0., 750., -100., 1000.], 10),
-    cure(0x42),
+    needs(0x1ac, act(0x5f, "yukizakura", [0., 750., -100., 1000.], 10)),
+    needs(0xb0, cure(0x42)),
     HP,
     MP,
 ];
@@ -130,8 +136,11 @@ pub const MULAN: [Record; 8] = [
     rec(0x11, 152, [0., 450., -100., 150.], 0.),
     rec(0x12, 181, [0., 150., 100., 585.], -50.),
     rec(0x13, 182, [0., 150., 100., 585.], -50.),
-    act(0x60, "mushufire", [0., 250., -100., 200.], 10),
-    act(0x61, "flametongue", [250., 750., -100., 1000.], 10),
+    needs(0x1b2, act(0x60, "mushufire", [0., 250., -100., 200.], 10)),
+    needs(
+        0x1b3,
+        act(0x61, "flametongue", [250., 750., -100., 1000.], 10),
+    ),
     HP,
     MP,
 ];
@@ -142,8 +151,8 @@ pub const ALADDIN: [Record; 8] = [
     rec(0x15, 152, [0., 300., -100., 100.], 0.),
     rec(0x16, 181, [0., 100., 100., 385.], 50.),
     rec(0x17, 182, [0., 150., 100., 385.], -50.),
-    act(0x63, "slashrush", [0., 500., -100., 150.], 10),
-    act(0x64, "quickplay", [250., 750., -100., 500.], 10),
+    needs(0x1aa, act(0x63, "slashrush", [0., 500., -100., 150.], 10)),
+    needs(0x1ab, act(0x64, "quickplay", [250., 750., -100., 500.], 10)),
     HP,
     MP,
 ];
@@ -154,9 +163,12 @@ pub const SPARROW: [Record; 9] = [
     rec(0x19, 152, [0., 150., -100., 180.], 0.),
     rec(0x1a, 181, [0., 250., 180., 385.], 1.),
     rec(0x1b, 182, [0., 400., 250., 485.], 1.),
-    act(0x72, "slash", [0., 250., -100., 150.], 10),
-    act(0x73, "shadowsnipe", [250., 750., -100., 150.], 10),
-    act(0x74, "bonecrusher", [0., 500., -100., 500.], 10),
+    needs(0x1be, act(0x72, "slash", [0., 250., -100., 150.], 10)),
+    needs(
+        0x1bf,
+        act(0x73, "shadowsnipe", [250., 750., -100., 150.], 10),
+    ),
+    needs(0x1c0, act(0x74, "bonecrusher", [0., 500., -100., 500.], 10)),
     HP,
     MP,
 ];
@@ -167,8 +179,8 @@ pub const BEAST: [Record; 8] = [
     rec(0x1d, 152, [100., 350., -100., 150.], 0.),
     rec(0x1e, 181, [0., 100., 150., 385.], 1.),
     rec(0x1f, 182, [0., 100., 150., 385.], 1.),
-    act(0x45, "shout", [0., 250., -100., 250.], 10),
-    act(0x62, "rush", [250., 750., -100., 150.], 10),
+    needs(0xb1, act(0x45, "shout", [0., 250., -100., 250.], 10)),
+    needs(0x1ae, act(0x62, "rush", [250., 750., -100., 150.], 10)),
     HP,
     MP,
 ];
@@ -179,9 +191,15 @@ pub const JACK: [Record; 9] = [
     rec(0x21, 152, [100., 280., -100., 150.], 0.),
     rec(0x22, 181, [0., 150., 150., 385.], -50.),
     rec(0x23, 182, [0., 250., 0., 185.], -50.),
-    act(0x65, "slidingfire", [250., 750., -100., 150.], 10),
-    act(0x66, "backstepblizzard", [0., 500., -100., 500.], 10),
-    act(0x67, "airthunder", [0., 250., -100., 1000.], 10),
+    needs(
+        0x1af,
+        act(0x65, "slidingfire", [250., 750., -100., 150.], 10),
+    ),
+    needs(
+        0x1b0,
+        act(0x66, "backstepblizzard", [0., 500., -100., 500.], 10),
+    ),
+    needs(0x1b1, act(0x67, "airthunder", [0., 250., -100., 1000.], 10)),
     HP,
     MP,
 ];
@@ -192,9 +210,9 @@ pub const SIMBA: [Record; 9] = [
     rec(0x25, 152, [0., 160., -160., 160.], 0.),
     rec(0x26, 181, [0., 160., 160., 360.], 1.),
     rec(0x27, 182, [0., 160., 160., 360.], 1.),
-    act(0x6b, "rush", [250., 750., -100., 150.], 10),
-    act(0x6c, "quake", [0., 250., -100., 500.], 10),
-    cure(0x51),
+    needs(0x1b7, act(0x6b, "rush", [250., 750., -100., 150.], 10)),
+    needs(0x1b8, act(0x6c, "quake", [0., 250., -100., 500.], 10)),
+    needs(0xbe, cure(0x51)),
     HP,
     MP,
 ];
@@ -206,8 +224,11 @@ pub const TRON: [Record; 8] = [
     act_motion(0x29, 152, "normal_attack2", [0., 350., -100., 100.], 0),
     act_motion(0x78, 181, "normal_attack3", [0., 1000., 100., 1000.], 0),
     act_motion(0x79, 182, "normal_attack4", [0., 450., 100., 385.], 0),
-    act(0x6d, "overflow", [250., 1000., -1000., 1000.], 10),
-    act(0x55, "thunder", [0., 500., -100., 300.], 10),
+    needs(
+        0x1bc,
+        act(0x6d, "overflow", [250., 1000., -1000., 1000.], 10),
+    ),
+    needs(0xd7, act(0x55, "thunder", [0., 500., -100., 300.], 10)),
     HP,
     MP,
 ];
@@ -218,7 +239,7 @@ pub const RIKU: [Record; 7] = [
     rec(0x2d, 152, [0., 160., -160., 160.], 0.),
     rec(0x2e, 181, [0., 160., 160., 360.], 1.),
     rec(0x2f, 182, [0., 160., 160., 360.], 1.),
-    cure(0x59),
+    needs(0xbb, cure(0x59)),
     HP,
     MP,
 ];

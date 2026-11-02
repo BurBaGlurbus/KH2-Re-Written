@@ -105,6 +105,8 @@ pub fn load(
             journal: None,
             curtain: None,
             journal_sheets: JournalSheets::default(),
+            memory_key: None,
+            memory_row: None,
             picture_source: Some(source),
             seen_chars: Vec::new(),
             seen_albums: Vec::new(),
@@ -230,6 +232,7 @@ impl WorldMapCamp {
             labels: c.source.labels.clone(),
         };
         let side = CampSide {
+            party_models: Vec::new(),
             gear: player::equipment_stats::Totals::start(0, 0, 0, 0),
             form_slots: Vec::new(),
             ability_forms: Vec::new(),

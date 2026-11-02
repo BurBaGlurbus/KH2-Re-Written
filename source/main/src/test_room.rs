@@ -12652,6 +12652,10 @@ pub struct CampRes {
     pub open: Option<Camp>,
     /// Cursor memory and the save's config bits / game mode.
     pub memory: pause_menu::Memory,
+    /// What FUN_1403030e0 compares: party count, forms held, world; and the
+    /// row at the last close (DAT_140beed60).
+    pub memory_key: Option<(usize, usize, u8)>,
+    pub memory_row: Option<[u8; 4]>,
     pub config_flags: u32,
     pub game_mode: u32,
     pub pad: Pad,
@@ -13165,12 +13169,28 @@ pub fn camp_tick(
         ),
         _ => (1, 1, 0, 1),
     };
-    // The party list (FUN_1402fc360): Sora, then the members in party
-    // order — also one a Drive form holds out of the field [I: the camp's
-    // MENU_FRIEND objects stand for them].
-    let party: Vec<CampMember> = game
-        .party
+    // The party list (FUN_1402fc360): Sora, then the members in the row's
+    // order, which a swap changes at once while the field keeps its own until
+    // the next area (FUN_14036b460) — also one a Drive form holds out of the
+    // field [I: the camp's MENU_FRIEND objects stand for them].
+    let party_row = game_save::world_party(
+        &game.save.party_table,
+        area.as_deref().map_or(0, |a| a.current.world),
+    );
+    let by_row = game_save::party_order(
+        &party_row,
+        &game
+            .party
+            .iter()
+            .map(|m| m.kind.character)
+            .collect::<Vec<_>>(),
+    );
+    let party_models: Vec<usize> = std::iter::once(0)
+        .chain(by_row.iter().map(|&i| i + 1))
+        .collect();
+    let party: Vec<CampMember> = by_row
         .iter()
+        .map(|&i| &game.party[i])
         .map(|m| CampMember {
             character: m.kind.character,
             hp: m.hp,
@@ -13224,6 +13244,7 @@ pub fn camp_tick(
         })
         .unwrap_or_default();
     let side = CampSide {
+        party_models,
         gear,
         form_slots,
         ability_forms: status_forms::ability_forms(
@@ -13441,7 +13462,13 @@ pub fn camp_tick(
             if let Some(to) = game.save.party_table.get_mut(world as usize) {
                 *to = row;
             }
-            party_room::follow_party_table(&mut game, world);
+            // The field's list keeps its order until the next area: gauges and
+            // follow angles read it, not the row (FUN_1401b7f70, FUN_1403c2db0).
+            let field: Vec<u8> = game.party.iter().map(|m| m.kind.character).collect();
+            game.event(
+                serde_json::json!({"event":"party_row","tick":tick,"row":row,"field":field}),
+            );
+            c.memory_row = Some(row);
             if !game.party.is_empty() {
                 let records: Vec<_> = game.party.iter().map(|m| serde_json::json!({
                     "character": m.kind.character, "style": m.save.style,
@@ -13526,6 +13553,24 @@ pub fn camp_tick(
         && !game.talking
         && (!game.versus || game.camp_request.is_some())
     {
+        // FUN_1403030e0: the party count, the forms held, Pride Lands, the world
+        // or the row against the last close zeroes the cursor memory.
+        let world = area.as_deref().map_or(0, |a| a.current.world);
+        let row = game_save::world_party(&game.save.party_table, world);
+        let key = (
+            game.party.len(),
+            game.drive
+                .as_ref()
+                .map_or(0, |d| d.forms.owned.iter().filter(|&&o| o).count()),
+            world,
+        );
+        let same_row = c.memory_row.is_none_or(|last| {
+            (0..4).all(|k| game_save::party_type(last[k]) == game_save::party_type(row[k]))
+        });
+        if c.memory_key.is_some_and(|last| last != key) || !same_row {
+            c.memory.clear();
+        }
+        c.memory_key = Some(key);
         let mut data = camp_data(c, panels, game.items.as_ref(), &settings, &side);
         // A screen's request: its entries (the camp's own by id)
         // and its pages on the Config screen, the cursor on its first entry.
@@ -13642,6 +13687,8 @@ pub struct CampSide {
     pub journal_tour: bool,
     /// Party slots that cannot be picked (FUN_1403e37c0).
     pub party_locked: Vec<bool>,
+    /// Which member's model each card shows: the actor of its row's slot.
+    pub party_models: Vec<usize>,
     /// The Status list's forms and Summons.
     pub status: status_forms::Numbers,
 }
@@ -13785,6 +13832,7 @@ pub fn camp_data(
 ) -> pause_menu::Data {
     let CampSide {
         party_locked: _,
+        party_models: _,
         status: status_numbers,
         gear,
         form_slots,
@@ -13930,6 +13978,7 @@ pub fn camp_data(
         },
         party_help: c.source.party_help.clone(),
         party_locked: side.party_locked.clone(),
+        party_models: side.party_models.clone(),
         status_new: status_numbers.new & !c.status_seen,
         status_seen: c.status_seen,
         equip: pause_menu::equip::EquipData {
@@ -16136,6 +16185,8 @@ pub fn run(
             source: c,
             open: None,
             memory: pause_menu::Memory::default(),
+            memory_key: None,
+            memory_row: None,
             // A new game's config (FUN_1402e4fc0) and Standard mode
             // (FUN_1401523a0) [test-room save].
             config_flags: 0x40b,

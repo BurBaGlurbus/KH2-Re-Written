@@ -129,11 +129,15 @@ pub fn tour(slots: Vec<u16>) -> Tour {
     }
     // The room after the camp: Donald holds the staff he was given.
     captures.push(tick + 90);
+    // Reopened, the camp shows the row's order; the field kept its own.
+    inputs.push((tick + 120, OPEN));
+    captures.push(tick + 180);
+    inputs.push((tick + 200, CANCEL));
     Tour {
         inputs,
         captures,
         close: tick,
-        end: tick + 100,
+        end: tick + 260,
         expected_slots: slots,
         attacks: Vec::new(),
     }
@@ -156,6 +160,6 @@ mod tests {
         let t = tour(Vec::new());
         assert!(t.inputs.windows(2).all(|w| w[0].0 < w[1].0));
         assert!(t.captures.iter().all(|&c| c < t.end));
-        assert_eq!(t.inputs.last().map(|i| i.0), Some(t.close));
+        assert!(t.inputs.iter().any(|i| i.0 == t.close));
     }
 }

@@ -408,9 +408,12 @@ pub fn room(game: &Game, world: Option<u8>) -> Room {
     let Some(sd) = game.second_deck.as_ref() else {
         return Room::default();
     };
-    let members = game
-        .party
-        .iter()
+    // Menu 8 reads the row, so a swap shows here at once (FUN_1403f29e0).
+    let row = game_save::world_party(&game.save.party_table, world.unwrap_or(0));
+    let characters: Vec<u8> = game.party.iter().map(|m| m.kind.character).collect();
+    let members = game_save::party_order(&row, &characters)
+        .into_iter()
+        .map(|i| &game.party[i])
         .filter(|m| !m.stored)
         .map(|m| (m.kind.character, m.hp > 0))
         .collect();
