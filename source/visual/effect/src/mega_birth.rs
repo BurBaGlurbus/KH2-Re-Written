@@ -939,6 +939,7 @@ mod tests {
             cursors: vec![CURSOR],
             mega: HashMap::new(),
             mega_model: HashMap::new(),
+            model_filter: HashMap::new(),
             vertex_override: None,
             ribbons: HashMap::new(),
             shipoly: HashMap::new(),

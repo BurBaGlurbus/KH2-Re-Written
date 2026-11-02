@@ -660,6 +660,78 @@ fn s_rand_down_fv_only_subtracts() {
 }
 
 #[test]
+fn s_rand_up_hcv_only_adds() {
+    // At the key, var 16's shorts gain (char)(int)(k·r) with r in [0, 1).
+    let progs = vec![Prog {
+        kind: 82,
+        size: 20,
+        keys: vec![0, 16, 100 | (50 << 16), 20 | (10 << 16), 0],
+        use_val: vec![0],
+    }];
+    let dpd = build(&[(0, 8, progs)], &[], &[]);
+    let mut inst = Instance::new(dpd, 0, math::IDENTITY, 0.).unwrap();
+    let mut rng = Rng::default();
+    ticks(&mut inst, &mut rng, 1);
+    let p = inst.parts.iter().flatten().next().unwrap();
+    for (j, k) in [100., 50., 20., 10.].into_iter().enumerate() {
+        let r = p.f32(4 * j);
+        assert!((0. ..1.).contains(&r));
+        assert_eq!(p.i16(16 + 2 * j), i16::from((k * r) as i32 as i8));
+    }
+}
+
+/// A key block of the given bytes for pppRyjMegaBirthModelFilter.
+fn model_filter_keys(writes: &[(usize, u32)]) -> Vec<u32> {
+    let mut keys = vec![0; 0xf8 / 4];
+    for &(at, v) in writes {
+        keys[at / 4] = v;
+    }
+    keys
+}
+
+#[test]
+fn model_filter_scatters_slots_within_its_ball_and_brings_them_back() {
+    // Ten slots, one a tick, radius 100 + 20, falling at speed 50 along +y.
+    let progs = vec![Prog {
+        kind: 229,
+        size: 0xf8,
+        keys: model_filter_keys(&[
+            (8, 10 << 16),
+            (0xc, 1 | (1 << 16)),
+            (0xbc, f(1.)),
+            (0xc4, f(50.)),
+            (0xd4, f(10.)),
+            (0xd8, f(100.)),
+            (0xdc, f(20.)),
+            (0xe0, f(1.)),
+        ]),
+        use_val: vec![0, 16, 32],
+    }];
+    let dpd = build(&[(0, 4000, progs)], &[], &[]);
+    let mut inst = Instance::new(dpd, 0, math::IDENTITY, 0.).unwrap();
+    let mut rng = Rng::default();
+    for tick in 0..30 {
+        ticks(&mut inst, &mut rng, 1);
+        let p = inst.parts.iter().flatten().next().unwrap();
+        let pool = p.model_filter.values().next().expect("the pool");
+        assert_eq!(pool.slots.len(), 10, "tick {tick}");
+        for s in &pool.slots {
+            let [x, y, z, _] = s.position;
+            // A step of 50 past the ball, then back at its edge.
+            assert!(
+                (x * x + y * y + z * z).sqrt() <= 120. + 0.01,
+                "tick {tick}: {:?}",
+                s.position
+            );
+        }
+    }
+    // Falling: without the return they'd have left long ago, so slots moved.
+    let p = inst.parts.iter().flatten().next().unwrap();
+    let pool = p.model_filter.values().next().expect("the pool");
+    assert!(pool.slots.iter().all(|s| s.speed == 50.));
+}
+
+#[test]
 fn ke_born_rnd3_births_with_the_outward_direction() {
     // Emitter at (5, 0, 0) (MatrixLoc), VSF vertex (10, 0, 0): the child
     // starts at (15, 0, 0) with direction (1, 0, 0) in var 16.

@@ -16,6 +16,7 @@ pub(crate) const RAND_HCV: u32 = 72;
 pub(crate) const RAND_DOWN_HCV: u32 = 74;
 pub(crate) const S_RAND_UP_FV: u32 = 76;
 pub(crate) const S_RAND_HCV: u32 = 81;
+pub(crate) const S_RAND_UP_HCV: u32 = 82;
 pub(crate) const MATRIX_XZY: u32 = 88;
 pub(crate) const MATRIX_ZYX: u32 = 92;
 pub(crate) const MOVE_LOOP: u32 = 210;
@@ -60,6 +61,7 @@ pub(crate) fn handles(kind: u32) -> bool {
             | RAND_DOWN_HCV
             | S_RAND_UP_FV
             | S_RAND_HCV
+            | S_RAND_UP_HCV
             | MATRIX_XZY
             | MATRIX_ZYX
             | MATRIX_LOOP_XYZ
@@ -323,6 +325,32 @@ fn s_rand_hcv(p: &Program, cursor: usize, part: &mut Part, ctx: &mut Ctx) {
     }
 }
 
+/// pppSRandUpHCV (FUN_1404c3d80): at the key four draws (FUN_1404c3ec0) go to
+/// u0 and the short components gain `(char)(int)(k_j · r_j)`.
+fn s_rand_up_hcv(p: &Program, cursor: usize, part: &mut Part, ctx: &mut Ctx) {
+    if !active(part) || !key(ctx, part, cursor) {
+        return;
+    }
+    let u0 = use_val(ctx, p, 0);
+    let average = byte(ctx, cursor + 0x10) != 0;
+    for j in 0..4 {
+        let r = up(ctx, average);
+        part.set_f32(u0 + 4 * j, r);
+    }
+    let target = word(ctx, cursor + 4) as i32;
+    if target == -1 {
+        return;
+    }
+    let t = target as usize;
+    for j in 0..4 {
+        let k = key_i16(ctx, cursor + 8 + 2 * j) as i32 as f32;
+        let r = part.f32(u0 + 4 * j);
+        let gain = (k * r) as i32 as i8;
+        let v = part.i16(t + 2 * j).wrapping_add(i16::from(gain));
+        part.set_i16(t + 2 * j, v);
+    }
+}
+
 /// FUN_1404e0010 (Ry·Rz, then Rx): the XZY order.
 fn rot_xzy(a: [i32; 3]) -> Mat {
     math::mul(
@@ -444,6 +472,7 @@ pub(crate) fn update(p: &Program, cursor: usize, part: &mut Part, ctx: &mut Ctx)
         RAND_DOWN_HCV => rand_down_hcv(p, cursor, part, ctx),
         S_RAND_UP_FV => s_rand_up_fv(p, cursor, part, ctx),
         S_RAND_HCV => s_rand_hcv(p, cursor, part, ctx),
+        S_RAND_UP_HCV => s_rand_up_hcv(p, cursor, part, ctx),
         MATRIX_XZY | MATRIX_LOOP_XZY => matrix_with(p, part, ctx, rot_xzy),
         MATRIX_ZYX | MATRIX_LOOP_ZYX => matrix_with(p, part, ctx, rot_zyx),
         MATRIX_LOOP_XYZ => matrix_with(p, part, ctx, math::rot_xyz),

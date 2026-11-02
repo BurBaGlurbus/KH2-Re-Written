@@ -12,6 +12,7 @@ pub mod lens;
 pub mod math;
 mod mega_birth;
 mod mega_model;
+mod model_filter;
 mod models;
 pub mod prize;
 mod programs;
@@ -136,6 +137,7 @@ pub(crate) struct Part {
     pub mega: std::collections::HashMap<usize, mega_birth::Pool>,
     /// pppRyjMegaBirthModel pools by work offset.
     pub mega_model: std::collections::HashMap<usize, mega_model::Pool>,
+    pub model_filter: std::collections::HashMap<usize, model_filter::Pool>,
     /// Work +0x90 vertex handle: the array pppVtMime morphed this frame.
     pub vertex_override: Option<Arc<Vec<[i16; 3]>>>,
     /// pppEiDrawShipoly ribbon state by work offset u3.
@@ -542,6 +544,7 @@ impl Instance {
             cursors: entry.programs.iter().map(|p| p.params).collect(),
             mega: Default::default(),
             mega_model: Default::default(),
+            model_filter: Default::default(),
             vertex_override: None,
             ribbons: Default::default(),
             shipoly: Default::default(),

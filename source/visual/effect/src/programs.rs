@@ -112,6 +112,7 @@ pub(crate) fn has_draw(kind: u32) -> bool {
             DRAW_SHAPE_X
                 | MEGA_BIRTH
                 | MEGA_BIRTH_MODEL
+                | crate::model_filter::KIND
                 | models::VT_MIME
                 | models::DRAW_MDL3
                 | models::DRAW_MDL_TS3
@@ -191,6 +192,7 @@ pub(crate) fn create(p: &Program, part: &mut Part, ctx: &mut Ctx) {
         }
         MEGA_BIRTH => crate::mega_birth::create(p, part, ctx),
         MEGA_BIRTH_MODEL => crate::mega_model::create(p, part, ctx),
+        crate::model_filter::KIND => crate::model_filter::create(p, part, ctx),
         crate::ribbon::KIND => crate::ribbon::create(p, part, ctx),
         crate::tail::KIND => crate::tail::create(p, part, ctx),
         crate::tail2::TAIL_X | crate::tail2::TAIL_2 | crate::tail2::TAIL_2X => {
@@ -307,6 +309,7 @@ pub(crate) fn destroy(p: &Program, part: &mut Part, ctx: &mut Ctx) {
     match p.kind {
         MEGA_BIRTH => crate::mega_birth::destroy(p, part, ctx),
         MEGA_BIRTH_MODEL => crate::mega_model::destroy(p, part, ctx),
+        crate::model_filter::KIND => crate::model_filter::destroy(p, part, ctx),
         crate::ribbon::KIND => crate::ribbon::destroy(p, part, ctx),
         crate::shipoly::KIND => crate::shipoly::destroy(p, part),
         _ => {}
@@ -441,6 +444,7 @@ pub(crate) fn update(p: &Program, cursor: usize, part: &mut Part, ctx: &mut Ctx)
         KE_BORN_RND6 => born_rnd6(p, cursor, part, ctx),
         MEGA_BIRTH => crate::mega_birth::update(p, cursor, part, ctx),
         MEGA_BIRTH_MODEL => crate::mega_model::update(p, cursor, part, ctx),
+        crate::model_filter::KIND => crate::model_filter::update(p, cursor, part, ctx),
         MNG_FLAG => crate::mega_model::mng_flag(cursor, part, ctx),
         crate::ribbon::KIND => crate::ribbon::update(p, cursor, part, ctx),
         models::VT_MIME
@@ -466,6 +470,7 @@ pub(crate) fn draw(p: &Program, cursor: usize, part: &mut Part, ctx: &mut Ctx) {
         DRAW_SHAPE_X => draw_shape(p, cursor, part, ctx),
         MEGA_BIRTH => crate::mega_birth::draw(p, cursor, part, ctx),
         MEGA_BIRTH_MODEL => crate::mega_model::draw(p, cursor, part, ctx),
+        crate::model_filter::KIND => crate::model_filter::draw(p, cursor, part, ctx),
         crate::ribbon::KIND => crate::ribbon::draw(p, cursor, part, ctx),
         crate::tail::KIND => crate::tail::draw(p, cursor, part, ctx),
         crate::tail2::TAIL_X | crate::tail2::TAIL_2 | crate::tail2::TAIL_2X => {
