@@ -1033,11 +1033,9 @@ fn close_up(a: &Actor, mode: u8, now: Pose) -> Pose {
     pose
 }
 
-/// The Gummi menu's top screen for one tick; true while it is up. [Not
-/// built] Its sound ids (0xf36xx) aren't mapped to se997 entries, so it is
-/// silent; the leave window (0x4ab0) isn't drawn, so World Map returns at
-/// once; mission select, ship select and the editor end the run as the
-/// route did before.
+/// The Gummi menu for one tick; true while it is up. [Not built] The leave
+/// window (0x4ab0) isn't drawn, so World Map returns at once; ship select
+/// and the editor end the run as the route did before.
 fn gummi_tick(wm: &mut WorldMap, ui: &UiRes) -> bool {
     let Some((top, route)) = wm.gummi.as_mut() else {
         return false;
@@ -1059,6 +1057,12 @@ fn gummi_tick(wm: &mut WorldMap, ui: &UiRes) -> bool {
     });
     let (pressed, repeat) = (wm.pad.pressed | extra, wm.pad.repeat | extra);
     let events = top.tick(&menu.layout, data, pressed, repeat);
+    // Its ids are bank × 1000 + entry, all se997's.
+    for e in &events {
+        if let visual::gummi_menu::MenuEvent::Sound(id) = e {
+            wm.sounds.push(*id);
+        }
+    }
     for e in &events {
         wm.log
             .push(serde_json::json!({"event":"gummi_menu","tick":wm.tick,
@@ -3757,7 +3761,12 @@ fn run(args: Vec<PathBuf>) -> Result<AppExit> {
     let mut banks = visual::sound::Banks::default();
     // se000 (menus) and se016 (op 0x105's 16008) [I: the banks the world
     // map loads were not traced; these are the ones its requests name].
-    for bank in ["se/se000.win32.scd", "se/se016.win32.scd"] {
+    // se997: the Gummi menu's (FUN_140243bc0 loads it into slot 4).
+    for bank in [
+        "se/se000.win32.scd",
+        "se/se016.win32.scd",
+        "gumibattle/se/se997.win32.scd",
+    ] {
         if let Ok(bytes) = library.read(bank) {
             banks.insert(bytes)?;
         }

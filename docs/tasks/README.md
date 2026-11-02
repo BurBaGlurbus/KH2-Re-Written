@@ -316,3 +316,4 @@ Records through T128 retain historical commands and paths. See [the folder guide
 | [T370](T370-gummi-top-menu.md) | The Gummi menu's top screen, 2D (issue #142) | PASS in the world map program; 3D room, sounds and the leave window are gaps. |
 | [T371](T371-gummi-mission-select.md) | The Gummi menu's mission select, 2D (issue #142) | PASS in the world map program; counter start inferred, 3D and sounds are gaps. |
 | [T372](T372-motion-reference-matches.md) | 304 more motions match the PS2 reference (issue #72, part) | PASS against the PS2 reference; 594 left, mostly float noise. |
+| [T373](T373-gummi-menu-sounds.md) | The Gummi menu's sounds (issue #142) | PASS: se997 ids resolve in the world map program. |

@@ -10,8 +10,8 @@ pub mod pad {
     pub const DOWN: u64 = 0x20;
 }
 
-/// The menu's sound ids (0xf36xx; how they map to the se997 bank isn't
-/// traced).
+/// The menu's sound ids: bank × 1000 + entry, so 0xf3689 is se997 #1
+/// (FUN_140271ca0).
 pub mod sound {
     pub const MOVE: u32 = 0xf3689;
     pub const DECIDE: u32 = 0xf368a;
