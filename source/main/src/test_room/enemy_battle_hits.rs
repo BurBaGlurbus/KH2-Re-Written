@@ -854,15 +854,21 @@ pub fn tick(game: &mut Game, actors: &mut [GalleryActor], tick: u64) {
                             let contact =
                                 guard_at + (centre - guard_at).normalize_or_zero() * guard_radius;
                             if guard_row.refact_self == 2 || rows[0].refact_other == 2 {
-                                effect_queue.push(EffectRequest::System {
-                                    id: 13,
+                                effect_queue.push(EffectRequest::ClashSpark {
+                                    object: battle.assets.object_id,
+                                    effect: rows[0].hit_effect,
+                                    own: rows[0].refact_self == 2,
+                                    element: 13,
                                     at: contact,
                                 });
                             } else if !player.action.airborne()
                                 && (guard_row.refact_self != 0 || rows[0].refact_other != 0)
                             {
-                                effect_queue.push(EffectRequest::System {
-                                    id: 11,
+                                effect_queue.push(EffectRequest::ClashSpark {
+                                    object: battle.assets.object_id,
+                                    effect: rows[0].hit_effect,
+                                    own: rows[0].refact_self == 2,
+                                    element: 11,
                                     at: contact,
                                 });
                                 if player.guard_recoil([toward.x, toward.z], clips).is_some() {
@@ -870,8 +876,11 @@ pub fn tick(game: &mut Game, actors: &mut [GalleryActor], tick: u64) {
                                 }
                                 vitals.invulnerable = 80.;
                             } else {
-                                effect_queue.push(EffectRequest::System {
-                                    id: 13,
+                                effect_queue.push(EffectRequest::ClashSpark {
+                                    object: battle.assets.object_id,
+                                    effect: rows[0].hit_effect,
+                                    own: rows[0].refact_self == 2,
+                                    element: 13,
                                     at: contact,
                                 });
                                 if player.guard_bounce(&battle.assets.sstm, clips).is_some() {

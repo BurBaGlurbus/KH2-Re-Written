@@ -114,6 +114,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
         }
     }
+    // FUN_1403d10c0's rows: the attacker's own guard spark.
+    lines.push(String::new());
+    lines.push("GUARD SPARKS container\tpax\telement\tcategory".into());
+    for (name, paxes) in &containers {
+        for pax in paxes {
+            for e in &pax.elements {
+                if e.category & 0x10 != 0 && e.category >> 32 != 0 {
+                    lines.push(format!("{name}\t{}\t{}\t{:#x}", pax.name, e.id, e.category));
+                }
+            }
+        }
+    }
     lines.push(String::new());
     lines.push("TOTALS kind\telements\tcontainers".into());
     for (kind, (n, c)) in &totals {

@@ -300,3 +300,4 @@ Records through T128 retain historical commands and paths. See [the folder guide
 | [T354](T354-world-guests.md) | World guests: the reserve card, the swap at the camp's close, members from the row (issue #34, parts) | PASS in the room; #34 stays open for the notice. |
 | [T355](T355-party-notice.md) | The event camp's party notice and the row an event changes (issue #34, last part) | PASS in the room, event chain included; no side-by-side. |
 | [T356](T356-effect-programs.md) | Effect programs 229 and 82; who fills the user-control lists (issue #65) | PASS in the room for 229; 239, 242 and the ribbon's space 2 wait on natives not built. |
+| [T357](T357-black-hold-guard-spark.md) | The black hold after the iris, measured; the attacker's own guard spark (issues #36, #67) | PASS for the measure, warm cache; the spark compiled, not seen in a run. |

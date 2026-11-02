@@ -355,6 +355,16 @@ pub struct EffectSources {
 
 /// Effects raised by combat this tick.
 pub enum EffectRequest {
+    /// A guard meeting an attack: FUN_1403d10c0's spark on the attacker's own
+    /// container (`object`, as in `EnemyHit`), else the system `element`
+    /// (FUN_1403d0f00); `own` starts both, RefactSelf 2 marking no pair.
+    ClashSpark {
+        object: u32,
+        effect: u8,
+        own: bool,
+        element: u16,
+        at: Vec3,
+    },
     /// Keyblade hit spark (FUN_1403d1b40): ATKP hit effect and random
     /// count, contact point and hit direction in scene coordinates. `own`:
     /// the window is in Sora's own motion set, so the container is his
@@ -9501,6 +9511,57 @@ pub fn effects_tick(
                 });
                 continue;
             }
+            EffectRequest::ClashSpark {
+                object,
+                effect,
+                own,
+                element: id,
+                at,
+            } => {
+                // FUN_1403d10c0: the attacker's own guard spark. With one, the
+                // pair is marked and FUN_1403d0f00 starts no system element,
+                // unless the attack's RefactSelf is 2.
+                let pax = if object == 0 {
+                    fx.enemy.clone()
+                } else {
+                    fx.enemy_paxes.get(&object).cloned()
+                };
+                let row = pax.filter(|_| effect != 0).and_then(|pax| {
+                    let mask = (1u64 << (32 + effect as u64 - 1)) | 0x10;
+                    let row = pax.by_category(mask)?.id;
+                    Some((pax, row))
+                });
+                let sparked = row.is_some();
+                if let Some((pax, id)) = row {
+                    game.fx_queue.push(drive_fx::Placed {
+                        req: drive_fx::FxRequest {
+                            pax,
+                            id,
+                            owner: ENEMY_HIT_OWNER,
+                        },
+                        anchor: drive_fx::Anchor::World {
+                            at,
+                            pitch: 0.,
+                            yaw: 0.,
+                        },
+                    });
+                }
+                if sparked && !own {
+                    continue;
+                }
+                let Some(pax) = fx.system.clone() else {
+                    continue;
+                };
+                let Some(element) = pax.by_id(id).cloned() else {
+                    continue;
+                };
+                let world = ::effect::instance_matrix(
+                    to_world(at.to_array()),
+                    element.rotation,
+                    element.scale,
+                );
+                (pax, element, world, "system", None)
+            }
             EffectRequest::System { id, at } => {
                 let Some(pax) = fx.system.clone() else {
                     continue;
@@ -11454,15 +11515,21 @@ pub fn combat_tick(game: &mut Game, tick: u64) {
         let contact = g + (claw_at - g).normalize_or_zero() * gr;
         let (s, t) = (gr_row.refact_self, claw_row.refact_other);
         let outcome = if s == 2 || t == 2 {
-            effect_queue.push(EffectRequest::System {
-                id: 13,
+            effect_queue.push(EffectRequest::ClashSpark {
+                object: 0,
+                effect: claw_row.hit_effect,
+                own: claw_row.refact_self == 2,
+                element: 13,
                 at: contact,
             });
             "pass"
         } else if !player.action.airborne() && (s != 0 || t != 0) {
             // Sora is the player character (0x6c8 bit 7): effect 11.
-            effect_queue.push(EffectRequest::System {
-                id: 11,
+            effect_queue.push(EffectRequest::ClashSpark {
+                object: 0,
+                effect: claw_row.hit_effect,
+                own: claw_row.refact_self == 2,
+                element: 11,
                 at: contact,
             });
             if player
@@ -11475,8 +11542,11 @@ pub fn combat_tick(game: &mut Game, tick: u64) {
             "guard"
         } else {
             // FUN_1403d61d0's last branch: the bounce.
-            effect_queue.push(EffectRequest::System {
-                id: 13,
+            effect_queue.push(EffectRequest::ClashSpark {
+                object: 0,
+                effect: claw_row.hit_effect,
+                own: claw_row.refact_self == 2,
+                element: 13,
                 at: contact,
             });
             if player.guard_bounce(&rt.enemy.sstm, clips).is_some() {
