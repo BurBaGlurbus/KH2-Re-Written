@@ -373,7 +373,7 @@ impl Info {
 
 /// dk::WM_GLANDING_INFO (FUN_140398ef0, closed by FUN_140399cd0): the
 /// route's name frame with its star, and once its first mission is
-/// cleared, per mission row the rank, the EX rank and the score.
+/// cleared, per mission row the rank, the EX rank and the treasure share.
 pub struct RouteInfo {
     pub route: u8,
     sprites: Sprites,
@@ -415,12 +415,12 @@ impl RouteInfo {
             for (&normal, &ex) in missions[0].iter().zip(&missions[1]).take(rows) {
                 let rank = gummi::RANK_GROUPS[(normal.rank as usize).min(16)];
                 child(&mut sprites, PRIO_INFO + 2, rank, [0., y]);
-                if ex.cleared {
+                if ex.unlocked {
                     child(&mut sprites, PRIO_INFO + 2, 0x78, [0., y]);
                     let rank = gummi::RANK_GROUPS[(ex.rank as usize).min(16)];
                     child(&mut sprites, PRIO_INFO + 2, rank, [90., y]);
                 }
-                let (d, used) = landing::digits(normal.score as u32, 3);
+                let (d, used) = landing::digits(normal.treasure as u32, 3);
                 child(&mut sprites, PRIO_INFO + 3, 0x90, [0., y]);
                 let pitch = seq.groups[0x90].text_position_x as f32;
                 for (i, &digit) in d.iter().rev().take(used).enumerate() {

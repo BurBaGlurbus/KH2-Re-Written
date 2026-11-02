@@ -3163,7 +3163,9 @@ fn run(args: Vec<PathBuf>) -> Result<AppExit> {
     let mut src = AreaSource::open(Arc::clone(&source), &story)?;
     if let Some(image) = &load_image {
         crate::test_room::game_save::apply_progress(src.progress_mut(), image);
-    } else if all_worlds {
+    }
+    // --all-worlds opens every world, on top of a loaded save's state too.
+    if all_worlds {
         src.progress_mut().finish_story();
         story = src.progress().story_ranges();
     }
@@ -3513,7 +3515,14 @@ fn run(args: Vec<PathBuf>) -> Result<AppExit> {
     println!("{summary}");
     let worlds: Vec<u8> = wm.actors.iter().filter_map(actor_world).collect();
     let routes: Vec<u8> = wm.actors.iter().filter_map(actor_route).collect();
-    let ui = ui::Ui::load(&source, &mut library, &src, &worlds, &routes)?;
+    let ui = ui::Ui::load(
+        &source,
+        &mut library,
+        &src,
+        &worlds,
+        &routes,
+        load_image.as_ref().map(|i| i.bytes()),
+    )?;
     // FUN_14038cf20 → FUN_14038e880: dk::WM_TOTAL_INFO at the area start.
     wm.total = Some(TotalInfo::new(
         &ui.layout.layout.sequences[world_map_menu::SEQUENCE],

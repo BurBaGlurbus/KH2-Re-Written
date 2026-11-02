@@ -109,8 +109,8 @@ pub struct Prepared {
 pub struct PreparedRoute {
     pub texts: MenuTexts,
     pub name: Vec<u8>,
-    /// The route's normal and EX mission records [this program keeps no
-    /// Gummi records: all unplayed].
+    /// The route's normal and EX mission records, from the loaded save
+    /// (all unplayed without one).
     pub missions: [[Mission; 3]; 2],
 }
 
@@ -165,6 +165,7 @@ impl Ui {
         src: &AreaSource,
         worlds: &[u8],
         routes: &[u8],
+        save: Option<&[u8]>,
     ) -> Result<Self> {
         let (i, o, h) = locate(library, "file/us/wm_ws.2ld")?;
         let layout = menu_screen::load(source, i, o, h)?;
@@ -279,7 +280,9 @@ impl Ui {
                 PreparedRoute {
                     texts,
                     name,
-                    missions: [[Mission::default(); 3]; 2],
+                    missions: save.map_or([[Mission::default(); 3]; 2], |s| {
+                        gummi::route_missions(s, r)
+                    }),
                 },
             );
         }
