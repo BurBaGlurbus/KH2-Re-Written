@@ -308,3 +308,4 @@ Records through T128 retain historical commands and paths. See [the folder guide
 | [T362](T362-gummi-records.md) | Gummi mission records from the save (issue #142, piece 1) | PASS on the route panel with a generated save. |
 | [T363](T363-gummi-result-rules.md) | Gummi result rules and tables (issue #142, piece 3) | PASS in isolation, tables checked; no flight yet. |
 | [T364](T364-door-signal.md) | A door raises signal 1 before its jump (issue #25, part) | PASS in the room behind the story switch. |
+| [T365](T365-jump-redirect.md) | The jump redirect to program 0x7a (issue #25, part) | PASS in the room behind the story switch. |

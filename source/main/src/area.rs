@@ -214,6 +214,17 @@ fn entry_jump(entry: &EventEntry, program_areas: &[Vec<(u16, u16)>]) -> Option<S
     }
 }
 
+/// FUN_14039fbc0(0x7a, 2): where FUN_1403a46e0's redirect lands.
+fn redirect_target(program_areas: &[Vec<(u16, u16)>]) -> Option<SignalJump> {
+    let t = world_state::resolve_program(program_areas, 2, 0x7a)?;
+    Some(SignalJump::Field {
+        world: t.world,
+        area: t.area,
+        entrance: t.entrance,
+        programs: [0x7a; 3],
+    })
+}
+
 /// One loaded area.
 pub struct LoadedArea {
     pub world: u8,
@@ -1009,11 +1020,26 @@ impl AreaSource {
     }
 
     pub fn signal_jump(&self, events: &[EventEntry], signal: i32) -> Option<SignalJump> {
-        signal_jump(events, &self.program_areas, signal)
+        self.redirect(signal_jump(events, &self.program_areas, signal))
     }
 
     pub fn entry_jump(&self, entry: &EventEntry) -> Option<SignalJump> {
-        entry_jump(entry, &self.program_areas)
+        self.redirect(entry_jump(entry, &self.program_areas))
+    }
+
+    /// FUN_1403a46e0: once flags 0x86e to 0x871 are all set and 0x872 isn't,
+    /// a jump to a place (kinds 1 to 3) lands on program 0x7a of world 2
+    /// instead.
+    pub fn redirect(&self, jump: Option<SignalJump>) -> Option<SignalJump> {
+        let p = &self.progress;
+        match jump {
+            Some(SignalJump::Field { .. })
+                if !p.test(0x872) && (0x86e..=0x871).all(|f| p.test(f)) =>
+            {
+                redirect_target(&self.program_areas).or(jump)
+            }
+            _ => jump,
+        }
     }
 
     /// FUN_1403f61a0: the entry's flag, if unset, with its script; the menu
@@ -1758,6 +1784,22 @@ mod signal_tests {
         // An entry tied to another spawn does not answer.
         assert_eq!(signal_jump(&events, &areas, 61), None);
         assert_eq!(signal_jump(&events, &areas, 9), None);
+    }
+
+    #[test]
+    fn the_redirect_lands_on_program_0x7a() {
+        let mut areas = vec![Vec::new(); 3];
+        areas[2] = vec![(0x40, 3), (0x7a, 9)];
+        assert_eq!(
+            redirect_target(&areas),
+            Some(SignalJump::Field {
+                world: 2,
+                area: 9,
+                entrance: 0,
+                programs: [0x7a; 3],
+            })
+        );
+        assert_eq!(redirect_target(&areas[..2]), None);
     }
 }
 

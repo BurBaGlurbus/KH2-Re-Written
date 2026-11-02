@@ -105,15 +105,18 @@ fn run_entry(
     let here = (a.current.world, a.current.area);
     let entry = a.current.state.setup.events[index].clone();
     // FUN_1403a46e0: kind 3's target is the door's.
-    let jump = match (entry.jump, door) {
-        (Some([3, ..]), Some((world, area, entrance))) => Some(SignalJump::Field {
-            world,
-            area,
-            entrance,
-            programs: [-1; 3],
-        }),
+    let resolve = |a: &AreaRes| match (entry.jump, door) {
+        (Some([3, ..]), Some((world, area, entrance))) => {
+            a.source.redirect(Some(SignalJump::Field {
+                world,
+                area,
+                entrance,
+                programs: [-1; 3],
+            }))
+        }
         _ => a.source.entry_jump(&entry),
     };
+    let jump = resolve(a);
     if let Some((_, mode)) = entry.event
         && !playable(mode, &jump)
     {
@@ -126,6 +129,9 @@ fn run_entry(
         .source
         .fire_entry(&mut a.current.state.setup.events, index);
     let name = event.map(|(name, _)| event_name(name));
+    // The jump is read when the event ends (FUN_1403ac750 case 9), after the
+    // entry's flag: FUN_1403a46e0's redirect sees it.
+    let jump = resolve(a);
     // FUN_1403a46e0: sub-op 4 works on the row of the jump's world; sub-op 7's
     // mode shows the notice, 2 also stripping whoever left.
     let notice = entry.party.filter(|&p| p >= 0).and_then(|party| {
