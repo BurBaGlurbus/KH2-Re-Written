@@ -75,9 +75,9 @@ fn first_level(
         Some((archive.get(at..at + e.size as usize)?, at))
     };
     let (payload, _) = slice(4).ok_or_else(|| format!("{path} has no model"))?;
-    let payload = visual::scenery::level_payload(payload);
+    let payload = visual::scenery::level_payload(payload, 0);
     let bank = slice(7).map(|(b, at)| {
-        let (b, skip) = visual::scenery::level_bank(b);
+        let (b, skip) = visual::scenery::level_bank(b, 0);
         (b, at + skip, 0)
     });
     Ok(model_inspection::model_from_payload(payload, bank, &[])?)

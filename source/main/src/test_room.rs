@@ -5153,7 +5153,14 @@ pub fn spawn_model(
                 .bind_hd_or_original(route.environment_ordinal)
                 .expect("admitted model binding");
             if let Some(image) = binding.image_index {
-                texture = Some(model_texture(set, image, images));
+                let handle = model_texture(set, image, images);
+                // A far level's tile repeats its image (GS REPEAT).
+                if uvs.iter().flatten().any(|c| !(0. ..=1.).contains(c))
+                    && let Some(mut image) = images.get_mut(&handle)
+                {
+                    image.sampler = visual::room::repeating_nearest();
+                }
+                texture = Some(handle);
             }
         }
         let material = shared
@@ -5505,7 +5512,8 @@ pub fn area_transition(
         "spawn":position.to_array(),"yaw":yaw,
         "save_points":next.save_points.iter().map(|(p, _)| p.to_array()).collect::<Vec<_>>(),
         "bob_models":next.bobs.models.len(),
-        "bobs_unread":next.bobs.models.iter().filter(|m| m.is_none()).count()}));
+        "bobs_unread":next.bobs.models.iter().filter(|m| m.is_none()).count(),
+        "bob_levels":next.bobs.models.iter().flatten().map(|b| b.far.len() + 1).collect::<Vec<_>>()}));
     area.previous = Some(area.current.area);
     area.visited.insert((next.world, next.area));
     area.music = Some(std::mem::take(&mut next.music));
@@ -5569,6 +5577,14 @@ pub struct BobRoot;
 pub struct BobPart {
     pub placement: usize,
     pub ordinal: usize,
+    /// The level of a container this part draws at (0 otherwise).
+    pub level: u8,
+}
+/// On a level container's object: the level byte (+0x139).
+#[derive(Component)]
+pub struct BobLevel {
+    pub placement: usize,
+    pub level: u8,
 }
 
 /// Creates the meshes of an area's map objects (those whose group bit is
@@ -5602,24 +5618,98 @@ pub fn spawn_bobs(
                 },
             ))
             .id();
-        let pose: Vec<Vec3> = bob.model.poses[0]
-            .position_bits
-            .iter()
-            .map(|v| Vec3::from_array(v.map(f32::from_bits)))
-            .collect();
-        for (ordinal, entity) in
-            spawn_model(commands, &bob.model, &pose, root, meshes, materials, images)
-        {
-            if let Some(entity) = entity {
-                commands.entity(entity).insert((
-                    RoomPart,
-                    BobPart {
-                        placement: i,
-                        ordinal,
-                    },
-                ));
+        if !bob.far.is_empty() {
+            commands.entity(root).insert(BobLevel {
+                placement: i,
+                level: 0,
+            });
+        }
+        for level in 0..=bob.far.len() as u8 {
+            let bob = bob.level(level);
+            let pose: Vec<Vec3> = bob.model.poses[0]
+                .position_bits
+                .iter()
+                .map(|v| Vec3::from_array(v.map(f32::from_bits)))
+                .collect();
+            for (ordinal, entity) in
+                spawn_model(commands, &bob.model, &pose, root, meshes, materials, images)
+            {
+                if let Some(entity) = entity {
+                    commands.entity(entity).insert((
+                        RoomPart,
+                        BobPart {
+                            placement: i,
+                            ordinal,
+                            level,
+                        },
+                    ));
+                    if level != 0 {
+                        commands.entity(entity).insert(Visibility::Hidden);
+                    }
+                }
             }
         }
+    }
+}
+
+/// FUN_1401879a0: each level container's object measures the eye's distance
+/// from its point every draw, paused too, and shows that level's parts. An
+/// object with a motion measures from the motion's root (FUN_14016e790).
+pub fn bob_levels(
+    mut game: ResMut<Game>,
+    area: Option<Res<AreaRes>>,
+    cameras: Query<&GlobalTransform, CameraOnly>,
+    mut roots: Query<(&mut BobLevel, &GlobalTransform)>,
+    mut parts: Query<(&BobPart, &mut Visibility)>,
+) {
+    let Some(area) = area else { return };
+    // (Before the first tick the camera stands at the origin.)
+    let Some(eye) = cameras
+        .iter()
+        .next()
+        .map(GlobalTransform::translation)
+        .filter(|_| game.tick != 0)
+    else {
+        return;
+    };
+    for (mut root, at) in &mut roots {
+        let p = &area.current.bobs.placements[root.placement];
+        let Some(Some(bob)) = area.current.bobs.models.get(p.model) else {
+            continue;
+        };
+        let point = (p.motion >= 0)
+            .then(|| {
+                let anim = bob.anims.get(p.motion as usize)?;
+                let tick = (game.tick as f32 + p.start) as usize;
+                anim.root(&bob.model, tick)
+            })
+            .flatten()
+            .map_or(at.translation(), |r| at.transform_point(r));
+        let d = eye.distance(point);
+        let level = visual::scenery::next_level(d, p.levels, root.level);
+        if level == root.level {
+            continue;
+        }
+        root.level = level;
+        // A level past the end draws the last.
+        let shown = level.min(bob.far.len() as u8);
+        for (part, mut v) in &mut parts {
+            if part.placement == root.placement {
+                let want = if part.level == shown {
+                    Visibility::Inherited
+                } else {
+                    Visibility::Hidden
+                };
+                if *v != want {
+                    *v = want;
+                }
+            }
+        }
+        let (placement, tick) = (root.placement, game.tick);
+        game.event(
+            serde_json::json!({"event":"bob_level","tick":tick,"placement":placement,
+            "level":level,"d":d,"eye":eye.to_array(),"point":point.to_array()}),
+        );
     }
 }
 
@@ -5651,18 +5741,19 @@ pub fn bob_present(
         let Some(Some(bob)) = area.current.bobs.models.get(p.model) else {
             continue;
         };
-        let Some(anim) = bob.anims.get(p.motion as usize) else {
+        let level = bob.level(part.level);
+        let Some(anim) = level.anims.get(p.motion as usize) else {
             continue;
         };
         if anim.is_empty() {
             continue;
         }
         let tick = (game.tick as f32 + p.start) as usize % anim.len();
-        let frame = poses.positions(bob, p, tick);
+        let frame = poses.positions(bob, p, tick, part.level);
         if frame.is_empty() {
             continue;
         }
-        let positions = bob.model.parts[part.ordinal]
+        let positions = level.model.parts[part.ordinal]
             .indices
             .iter()
             .map(|&i| frame[i as usize].to_array());
@@ -6111,9 +6202,30 @@ pub fn field_npc_present(
 /// tagged so an area change can remove them.
 #[allow(clippy::too_many_arguments)]
 /// One mesh of a room: the map chunks merged into it, in chunk order.
+type TriangleList = (Vec<[f32; 3]>, Vec<[f32; 2]>, Vec<[f32; 4]>);
+
+/// A triangle list's class 0 triangles, then its class 1 (a vertex alpha over
+/// 0x80), each in its own order.
+fn by_class(positions: Vec<[f32; 3]>, uvs: Vec<[f32; 2]>, colors: Vec<[f32; 4]>) -> TriangleList {
+    let class = |k: usize| colors[k * 3..k * 3 + 3].iter().any(|c| c[3] > 1.);
+    let count = colors.len() / 3;
+    let order: Vec<usize> = (0..count)
+        .filter(|&k| !class(k))
+        .chain((0..count).filter(|&k| class(k)))
+        .flat_map(|k| k * 3..k * 3 + 3)
+        .collect();
+    (
+        order.iter().map(|&i| positions[i]).collect(),
+        order.iter().map(|&i| uvs[i]).collect(),
+        order.iter().map(|&i| colors[i]).collect(),
+    )
+}
+
 pub struct MergedChunk {
     /// Texture slot, blend, background group and UV scroll record (0: none).
     pub key: (Option<usize>, u8, u8, u32),
+    /// An alpha chunk's place in the transparent sort.
+    pub sort: Option<f32>,
     pub bit: u8,
     pub positions: Vec<[f32; 3]>,
     pub uvs: Vec<[f32; 2]>,
@@ -6141,7 +6253,7 @@ pub fn spawn_room(
             e.clear[0], e.clear[1], e.clear[2],
         )));
     }
-    for part in &room.rooms {
+    for (part_index, part) in room.rooms.iter().enumerate() {
         // Each environment's CLAMP region is baked into a cropped copy with
         // the exe's address modes and linear filter (draw-01 §4.6).
         let regions: Vec<visual::room::EnvRegion> = part
@@ -6190,9 +6302,8 @@ pub fn spawn_room(
                 });
             }
         }
-        // The alpha pass in the exe's batch order (draw-01 §3.3): all the map's
-        // chunks sit at one origin, so a fraction of a unit orders them in the
-        // transparent sort and is too small to bias the depth.
+        // The alpha pass in the exe's batch order (draw-01 §3.3), by a fixed
+        // place in the transparent sort (`SortOrder`).
         let order = {
             let descriptors: Vec<_> = part
                 .model
@@ -6215,7 +6326,13 @@ pub fn spawn_room(
                 visual::room::isolated_textures(descriptors.len(), part.model.header_words),
             )
         };
-        let order_step = 1. / (order.len() + 1) as f32;
+        // The sky's phases come before the map's, and both before the objects'
+        // alpha, which reach about 7e5 in distance.
+        let sort_base = if part.name.starts_with(b"SK") {
+            -8.0e6
+        } else {
+            -4.0e6
+        };
         // Opaque chunks drawn with the same texture and UV scroll record share
         // one material, so the renderer can batch them and a scroll rewrites
         // one material a tick, not one per chunk.
@@ -6299,11 +6416,6 @@ pub fn spawn_room(
                     1 => AlphaMode::Add,
                     _ => AlphaMode::Blend,
                 },
-                depth_bias: if blend == 0 {
-                    0.
-                } else {
-                    order[chunk_index] as f32 * order_step
-                },
                 ..default()
             };
             let mut add = |base| {
@@ -6355,6 +6467,8 @@ pub fn spawn_room(
             }
             merged.push(MergedChunk {
                 key,
+                sort: (blend != 0)
+                    .then(|| sort_base + (part_index * 4096) as f32 + order[chunk_index] as f32),
                 bit,
                 positions,
                 uvs,
@@ -6378,7 +6492,14 @@ pub fn spawn_room(
                         let alphas: Vec<f32> = m.colors.iter().map(|c| c[3]).collect();
                         visual::glow::triangle_classes(&alphas)
                     });
-                    let drawn = mesh(m.positions, m.uvs, m.colors);
+                    // A batch draws its class 0 triangles before its class 1
+                    // (FUN_1401b9b30).
+                    let (positions, uvs, colors) = if m.key.1 != 0 {
+                        by_class(m.positions, m.uvs, m.colors)
+                    } else {
+                        (m.positions, m.uvs, m.colors)
+                    };
+                    let drawn = mesh(positions, uvs, colors);
                     // The opaque pass's glow stencil (FUN_1401ba2c0).
                     match classes {
                         Some(c) => drawn.with_inserted_attribute(Mesh::ATTRIBUTE_UV_1, c),
@@ -6390,6 +6511,9 @@ pub fn spawn_room(
             ));
             if let Some(scroll) = m.scroll {
                 entity.insert(scroll);
+            }
+            if let Some(place) = m.sort {
+                entity.insert(visual::mesh_upload::SortOrder(place));
             }
         }
     }
@@ -15855,6 +15979,7 @@ pub fn run(
             "enemy_level":a.source.progress().battle_level(setup.battle_level, a.current.world),
             "bob_models":a.current.bobs.models.len(),
             "bobs_unread":a.current.bobs.models.iter().filter(|m| m.is_none()).count(),
+            "bob_levels":a.current.bobs.models.iter().flatten().map(|b| b.far.len() + 1).collect::<Vec<_>>(),
             "members":format!("{:x?}", a.current.members),
             "bg_mask":format!("{:#x}", setup.bg_mask),"battle_level":setup.battle_level,
             "bgm":setup.bgm,"camera_mode":setup.camera_mode,
@@ -16266,7 +16391,7 @@ impl Plugin for RoomPlugin {
                         area_music,
                         uv_scroll_tick,
                         texa_tick,
-                        bob_present,
+                        (bob_levels, bob_present).chain(),
                         field_npc_spawn_new,
                         (field_npc_present, chest::present),
                         dissolve_present,

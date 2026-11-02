@@ -75,6 +75,19 @@ struct Centres {
     world: Vec<(Entity, Vec3)>,
 }
 
+/// A fixed place in the transparent sort: lower draws first, whatever the
+/// mesh's distance. The map's alpha chunks draw in the executable's batch
+/// order, before the objects' alpha (FUN_14019f170's phases 8 and 0xb).
+#[derive(Component, Clone, Copy)]
+pub struct SortOrder(pub f32);
+
+/// The ordered entities, whole, when they change.
+#[derive(Resource, Default)]
+struct Orders {
+    list: Vec<(Entity, f32)>,
+    changed: bool,
+}
+
 pub struct MeshUploadPlugin;
 
 impl Plugin for MeshUploadPlugin {
@@ -82,17 +95,20 @@ impl Plugin for MeshUploadPlugin {
         ACTIVE.store(true, Ordering::Relaxed);
         app.init_resource::<Uploads>()
             .init_resource::<Centres>()
+            .init_resource::<Orders>()
             .add_systems(
                 PostUpdate,
                 (
                     collect.in_set(VisibilitySystems::CalculateBounds),
                     to_world.after(TransformSystems::Propagate),
+                    list_orders,
                 ),
             );
         if let Some(render_app) = app.get_sub_app_mut(RenderApp) {
             render_app
                 .init_resource::<Uploads>()
                 .init_resource::<Centres>()
+                .init_resource::<Orders>()
                 .add_systems(ExtractSchedule, take)
                 .add_systems(
                     Render,
@@ -172,13 +188,42 @@ fn to_world(mut centres: ResMut<Centres>, transforms: Query<&GlobalTransform>) {
     );
 }
 
+fn list_orders(
+    mut orders: ResMut<Orders>,
+    added: Query<(), Added<SortOrder>>,
+    mut removed: RemovedComponents<SortOrder>,
+    all: Query<(Entity, &SortOrder)>,
+) {
+    if added.is_empty() && removed.read().count() == 0 {
+        return;
+    }
+    orders.list = all.iter().map(|(e, o)| (e, o.0)).collect();
+    orders.changed = true;
+}
+
 /// What Bevy's path would have refreshed. Newly queued items read the render
 /// mesh; ones kept from earlier frames hold their own copy of the world centre.
 fn recentre(
     mut centres: ResMut<Centres>,
+    orders: Res<Orders>,
     mut render_meshes: ResMut<RenderAssets<RenderMesh>>,
     mut phases: ResMut<ViewSortedRenderPhases<Transparent3d>>,
 ) {
+    for phase in phases.values_mut() {
+        for &(entity, place) in &orders.list {
+            if let Some(item) = phase
+                .items
+                .get_mut(&(Entity::PLACEHOLDER, MainEntity::from(entity)))
+                && let TransparentSortingInfo3d::Sorted {
+                    mesh_center,
+                    depth_bias,
+                } = &mut item.sorting_info
+            {
+                *mesh_center = Vec3::ZERO;
+                *depth_bias = place;
+            }
+        }
+    }
     for (mesh, centre) in centres.meshes.drain(..) {
         if let Some(mesh) = render_meshes.get_mut(mesh) {
             mesh.aabb_center = centre;
@@ -197,7 +242,18 @@ fn recentre(
     }
 }
 
-fn take(mut main: ResMut<MainWorld>, mut uploads: ResMut<Uploads>, mut centres: ResMut<Centres>) {
+fn take(
+    mut main: ResMut<MainWorld>,
+    mut uploads: ResMut<Uploads>,
+    mut centres: ResMut<Centres>,
+    mut orders: ResMut<Orders>,
+) {
+    if let Some(mut from) = main.get_resource_mut::<Orders>()
+        && from.changed
+    {
+        from.changed = false;
+        orders.list = std::mem::take(&mut from.list);
+    }
     if let Some(mut from) = main.get_resource_mut::<Uploads>()
         && !from.0.is_empty()
     {

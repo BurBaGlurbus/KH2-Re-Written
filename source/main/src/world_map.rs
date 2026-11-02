@@ -2435,7 +2435,7 @@ fn present(
                 continue;
             }
             let tick = (wm.tick as f32 + p.start) as usize % anim.len();
-            let frame = bob_poses.positions(bob, p, tick);
+            let frame = bob_poses.positions(bob, p, tick, 0);
             if frame.is_empty() {
                 continue;
             }

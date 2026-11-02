@@ -755,6 +755,15 @@ pub fn render_target(width: u32, height: u32, format: TextureFormat) -> Image {
 
 /// `rgba_image` for a texture that never changes after upload: the pixels
 /// live only on the GPU (no copy kept in the main world).
+/// `static_rgba_image`'s sampler, for UVs past the image's edge.
+pub fn repeating_nearest() -> ImageSampler {
+    ImageSampler::Descriptor(ImageSamplerDescriptor {
+        address_mode_u: ImageAddressMode::Repeat,
+        address_mode_v: ImageAddressMode::Repeat,
+        ..ImageSamplerDescriptor::nearest()
+    })
+}
+
 pub fn static_rgba_image(
     width: u32,
     height: u32,
