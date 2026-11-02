@@ -728,13 +728,10 @@ pub fn evaluate_with_clock(
     let mut taken = 0;
     for &j in &order {
         if flags[j] & 3 == 1 {
-            // A flag-128 joint past the end of the effector list aims at the
-            // next joint, as without the flag (M_EX730 5 has the flag and an
-            // empty list; the reference aims it at index + 1).
             aim_target[j] = if flags[j] & 128 != 0 {
                 let t = effectors.get(taken).copied();
                 taken += 1;
-                t.or(Some(j + 1))
+                t
             } else {
                 Some(j + 1)
             };

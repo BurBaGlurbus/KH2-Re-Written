@@ -3,6 +3,18 @@
 //! 4x4 f32 matrices, `cnt1 + cnt2` per sample, as written by the local
 //! reference adapter). Inputs are private payload files; nothing is
 //! distributed.
+//!
+//! Pass rule (owner's decision, 2026-11-02): the reference is the PS2 routine,
+//! whose trig and square roots are approximations, so differences at the
+//! level of that rounding count as matched. A bone matches at a sample when
+//! its translation error is at most `max(0.1, 2e-3 * size)`, where `size` is
+//! the largest reference joint distance from the origin at that sample
+//! (coordinates of 1e6 or more, hidden bones parked far away, are left out
+//! of `size`), and every rotation row differs from the reference by at most
+//! 0.002 of that row's length (rows carry the joint's scale; a row shorter
+//! than 1 is held to 0.002 absolute). Non-finite
+//! values never match. `STRICT=1` restores the plain rule: translation error
+//! at most 0.1, rotation not checked.
 use data::{bar, model_pose::Skinning, motion, motion_eval};
 use std::path::PathBuf;
 
@@ -54,6 +66,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         cnt1
     };
     let mut worst = vec![(0f32, 0f32); compared];
+    let strict = std::env::var_os("STRICT").is_some();
+    let mut outside = 0usize;
     for (sample, &tick) in ticks.iter().enumerate() {
         // EXPR_CLOCK=<v> sets the expression time node's clock (the local
         // reference adapter leaves it at 0); default: the sampled frame.
@@ -71,7 +85,24 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 );
             }
         }
+        // The model's size at this sample for the pass rule (module doc).
+        let size = (0..compared)
+            .map(|b| {
+                let at = sample * per + b * 64 + 48;
+                let t: Vec<f32> = reference[at..at + 12]
+                    .as_chunks::<4>()
+                    .0
+                    .iter()
+                    .map(|c| f32::from_le_bytes(*c))
+                    .collect();
+                (t[0] * t[0] + t[1] * t[1] + t[2] * t[2]).sqrt()
+            })
+            .filter(|d| d.is_finite() && *d < 1e6)
+            .fold(0f32, f32::max);
+        let limit = if strict { 0.1 } else { (2e-3 * size).max(0.1) };
+        let mut sample_outside = 0usize;
         let mut sample_worst = (0f32, 0usize);
+        let mut sample_rotation = (0f32, 0usize);
         for (b, w) in worst.iter_mut().enumerate() {
             let at = sample * per + b * 64;
             let r: Vec<f32> = reference[at..at + 64]
@@ -92,6 +123,27 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                         dr = dr.max(d);
                     }
                 }
+            }
+            // Rotation rows relative to the reference row's length (rows
+            // shorter than 1, small or vanishing scales, absolutely).
+            let row_error = (0..3)
+                .map(|row| {
+                    let len = (0..3)
+                        .map(|col| r[row * 4 + col] * r[row * 4 + col])
+                        .sum::<f32>()
+                        .sqrt();
+                    let d = (0..3)
+                        .map(|col| (ours[row][col] - r[row * 4 + col]).abs())
+                        .fold(0f32, f32::max);
+                    d / len.max(1.)
+                })
+                .fold(0f32, |a, d| if d.is_nan() { f32::NAN } else { a.max(d) });
+            if row_error.is_nan() || row_error > sample_rotation.0 {
+                sample_rotation = (row_error, b);
+            }
+            let matched = dt <= limit && (strict || row_error <= 2e-3);
+            if !matched {
+                sample_outside += 1;
             }
             w.0 = w.0.max(dt);
             w.1 = w.1.max(dr);
@@ -121,9 +173,12 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             }
         }
         println!(
-            "tick {tick}: worst translation error {:.4} at bone {}",
-            sample_worst.0, sample_worst.1
+            "tick {tick}: worst translation error {:.4} at bone {}; worst rotation row error {:.4} at bone {}; {} bones outside the pass rule (translation limit {limit:.4})",
+            sample_worst.0, sample_worst.1, sample_rotation.0, sample_rotation.1, sample_outside
         );
+        if sample_outside > 0 {
+            outside += 1;
+        }
         if std::env::var("FIRST_DIVERGENCE").is_ok_and(|t| t.parse::<f32>().ok() == Some(tick)) {
             // Model bones in the motion's processing order, with their errors.
             for record in m.joints.bytes.as_chunks::<4>().0 {
@@ -160,6 +215,16 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     }
     let total: f32 = worst.iter().map(|w| w.0).fold(0., f32::max);
     println!("max translation error over all bones/ticks: {total:.4}");
+    println!(
+        "pass rule ({}): {} ({outside} of {} samples outside)",
+        if strict {
+            "strict 0.1"
+        } else {
+            "owner tolerance"
+        },
+        if outside == 0 { "PASS" } else { "FAIL" },
+        ticks.len()
+    );
     Ok(())
 }
 

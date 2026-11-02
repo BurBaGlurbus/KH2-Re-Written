@@ -229,7 +229,16 @@ pub fn read_interpolated(bytes: &[u8]) -> io::Result<InterpolatedMotion> {
     let root = table(body, h[7], 1, 84)?;
     let mut external_count = 0;
     let mut cursor = h[36];
-    while cursor < header[2] {
+    // The list runs to the extra block, or to the end of the motion when
+    // there is none (header[2] == 0); the exe reads it with no bound at all
+    // (FUN_1401d3b80, header +0xa0). Stopping at header[2] alone lost every
+    // list in a motion without an extra block (M_EX640, M_EX730).
+    let list_end = if header[2] > 0 {
+        header[2]
+    } else {
+        u32::try_from(body.len()).map_err(|_| invalid("motion too large"))?
+    };
+    while cursor.checked_add(2).is_some_and(|next| next <= list_end) {
         let value = half(span(body, cursor, 2)?, 0);
         if value == 0 {
             break;
@@ -964,6 +973,19 @@ mod tests {
         assert_eq!(motion.joints.bytes.len(), 4);
         assert_eq!(motion.constraints.bytes.len(), 0);
         assert_eq!(motion.extra_size, 0);
+    }
+    #[test]
+    fn reads_the_effector_list_of_a_motion_without_an_extra_block() {
+        // header[2] == 0 (no extra block): the list runs to the end of the
+        // motion, ended by a zero entry.
+        let mut bytes = fixture();
+        bytes[0x90 + 8..0x90 + 12].copy_from_slice(&0u32.to_le_bytes());
+        let at = (bytes.len() - 0x90) as u32;
+        bytes.extend_from_slice(&[7, 0, 9, 0, 0, 0]);
+        bytes[0x90 + 160..0x90 + 164].copy_from_slice(&at.to_le_bytes());
+        let motion = read_interpolated(&bytes).unwrap();
+        assert_eq!(motion.extra_size, 0);
+        assert_eq!(motion.external_effectors.bytes, [7, 0, 9, 0]);
     }
     #[test]
     fn rejects_bad_types_counts_ranges_and_curve_key_spans() {
