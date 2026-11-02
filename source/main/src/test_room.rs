@@ -8957,13 +8957,24 @@ pub fn simulate(
                     world,
                     area,
                     entrance,
+                    point,
                     ..
                 } = request
                 {
                     game.event(serde_json::json!({"event":"exit","tick":tick,"world":world,
-                    "area":area,"entrance":entrance}));
-                    // Another player's room stays where it is.
-                    if a.transition.is_none() && !game.versus {
+                    "area":area,"entrance":entrance,"point":point}));
+                    // Another player's room stays where it is. The door's
+                    // signal 1 may take the jump over (story_events.rs).
+                    if a.transition.is_none()
+                        && !game.versus
+                        && !story_events::door(
+                            &mut game,
+                            camp.as_deref(),
+                            a,
+                            point,
+                            (world, area, entrance),
+                        )
+                    {
                         a.transition = Some(Transition {
                             stage: Stage::Closing,
                             iris: None,

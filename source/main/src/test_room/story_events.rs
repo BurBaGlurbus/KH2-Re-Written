@@ -5,6 +5,9 @@
 //! FUN_1403a46e0). An event writes no story state, so the field does all the
 //! writes, hands over one image and the event program starts the next field.
 //!
+//! A door raises signal 1 with its point id first (FUN_1403ffb40): an entry that
+//! answers takes the jump over, kind 3 going on to the door's own target.
+//!
 //! Not here yet: other signals, a player's skip (FUN_1403a55b0), events with no
 //! jump (signal 0x4c) and those over a running field (`evtp` flags bit 0 clear).
 use super::*;
@@ -52,7 +55,6 @@ pub fn tick(
         return;
     }
     *arrived = Some(here);
-    let tick = game.tick;
     // Load-time writes: op 0x19 (FUN_1403a24c0).
     for flag in a.current.state.setup.set_flags.clone() {
         if !a.source.progress().test(flag) {
@@ -62,14 +64,63 @@ pub fn tick(
     let Some(index) = ::area::script::find_entry(&a.current.state.setup.events, 0, 0) else {
         return;
     };
+    run_entry(&mut game, &camp, a, index, 0, None);
+}
+
+/// FUN_1403ffb40 → FUN_1403aabe0(1, id): before a door's jump. True when an
+/// entry answered and took the jump over; false leaves the door's own jump
+/// (FUN_140152990).
+pub fn door(
+    game: &mut Game,
+    camp: Option<&CampRes>,
+    a: &mut AreaRes,
+    point: u16,
+    target: (u8, u8, u8),
+) -> bool {
+    if !enabled() {
+        return false;
+    }
+    let Some(camp) = camp else {
+        return false;
+    };
+    let Some(index) = ::area::script::find_entry(&a.current.state.setup.events, 1, point.into())
+    else {
+        return false;
+    };
+    run_entry(game, camp, a, index, 1, Some(target))
+}
+
+/// FUN_1403f61a0 and what follows it for the entry a signal picked. `door` is
+/// the stored target kind 3 goes on to (`DAT_140717028`). False when the
+/// entry is one this step can't carry out, which is then left unfired.
+fn run_entry(
+    game: &mut Game,
+    camp: &CampRes,
+    a: &mut AreaRes,
+    index: usize,
+    signal: i32,
+    door: Option<(u8, u8, u8)>,
+) -> bool {
+    let tick = game.tick;
+    let here = (a.current.world, a.current.area);
     let entry = a.current.state.setup.events[index].clone();
-    let jump = a.source.entry_jump(&entry);
+    // FUN_1403a46e0: kind 3's target is the door's.
+    let jump = match (entry.jump, door) {
+        (Some([3, ..]), Some((world, area, entrance))) => Some(SignalJump::Field {
+            world,
+            area,
+            entrance,
+            programs: [-1; 3],
+        }),
+        _ => a.source.entry_jump(&entry),
+    };
     if let Some((_, mode)) = entry.event
         && !playable(mode, &jump)
     {
         game.event(serde_json::json!({"event":"story_event_left","tick":tick,
-            "world":here.0,"area":here.1,"mode":mode,"jump":format!("{jump:?}")}));
-        return;
+            "world":here.0,"area":here.1,"signal":signal,"mode":entry.event.map(|e| e.1),
+            "jump":format!("{jump:?}")}));
+        return false;
     }
     let Fired { event, flag } = a
         .source
@@ -90,12 +141,12 @@ pub fn tick(
         }
         let mode = entry.mode.unwrap_or(0);
         if mode == 2 {
-            game_save::strip_departing(&mut game, &old, &new);
+            game_save::strip_departing(game, &old, &new);
         }
         (mode != 0).then_some((old, mode))
     });
     game.event(
-        serde_json::json!({"event":"story_signal","tick":tick,"world":here.0,
+        serde_json::json!({"event":"story_signal","tick":tick,"signal":signal,"world":here.0,
         "area":here.1,"programs":a.current.programs,"flag":flag,"story_event":name,
         "jump":format!("{jump:?}")}),
     );
@@ -106,7 +157,7 @@ pub fn tick(
         programs,
     }) = jump
     else {
-        return;
+        return true;
     };
     match name {
         Some(name) => {
@@ -115,8 +166,8 @@ pub fn tick(
                 .copied()
                 .unwrap_or("zz");
             start_event(
-                &mut game,
-                &camp,
+                game,
+                camp,
                 a,
                 &format!("{code}:{}:{name}", here.1),
                 (world, place, entrance),
@@ -140,6 +191,7 @@ pub fn tick(
             });
         }
     }
+    true
 }
 
 /// The image at the jump's place, and the event program, which starts the next

@@ -88,6 +88,9 @@ pub enum Request {
         area: u8,
         entrance: u8,
         world_changed: bool,
+        /// The exit point's id (record +2): FUN_1403ffb40 raises signal 1
+        /// with it before the jump.
+        point: u16,
     },
     /// FUN_140167fc0: show the destination's name this frame (opt 2
     /// appends sys 0x8add).
@@ -518,6 +521,7 @@ fn exit(
                     area,
                     entrance,
                     world_changed: world != current_world,
+                    point: o.point.id,
                 });
             }
             None
@@ -770,7 +774,8 @@ mod tests {
                 world: 2,
                 area: 6,
                 entrance: 3,
-                world_changed: false
+                world_changed: false,
+                point: 40,
             }
         );
         assert!(a.locked);
