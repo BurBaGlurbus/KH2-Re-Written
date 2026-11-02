@@ -304,3 +304,4 @@ Records through T128 retain historical commands and paths. See [the folder guide
 | [T358](T358-sora-motion-clock.md) | Sora's motion clock: the first step and the hold during a blend (issue #73) | PASS in the room; timing not compared with the installed game. |
 | [T359](T359-tinker-bell-revive.md) | Tinker Bell's revive of Sora (issue #67, part) | PASS in the room; no side-by-side. |
 | [T360](T360-item-shop.md) | The item shop (issue #33) | PASS in the room; no synthesis, no side-by-side. |
+| [T361](T361-cutscene-weapon-mount.md) | Keyblades mounted on the hand without the axis flip (issue #27) | PASS against footage; no side-by-side. |
