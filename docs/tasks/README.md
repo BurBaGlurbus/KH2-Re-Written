@@ -312,3 +312,4 @@ Records through T128 retain historical commands and paths. See [the folder guide
 | [T366](T366-raised-signals.md) | Raised signals reach the area's entries (issue #25, part) | PASS in the room behind the story switch. |
 | [T367](T367-arrival-every-load.md) | Signal 0 on every load (issue #25, part) | PASS in the room behind the story switch. |
 | [T368](T368-skip-chain.md) | The skip chain after Skip Scene (issue #25, part) | PASS in the room behind the story switch. |
+| [T369](T369-gummi-menu-data.md) | Gummi menu data: item records and layout transitions (issue #142) | PASS for the readers, checked on the installed files. |
