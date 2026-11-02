@@ -1353,6 +1353,10 @@ pub struct Game {
     pub reserve: Option<party_room::Reserve>,
     /// An event changed the party: the row before it, and sub-op 7's mode.
     pub party_notice: Option<([u8; 4], i16)>,
+    /// The event before this room was skipped (`DAT_142a104a8`): arrivals
+    /// pass through skippable entries (story_events.rs) until the field
+    /// starts.
+    pub event_skipped: bool,
     pub items: Option<item_room::ItemRt>,
     /// Drive forms (None when the form tables could not be read).
     pub drive: Option<drive_room::DriveRt>,
@@ -15123,6 +15127,7 @@ pub fn run(
     // `--save-dump <file>`: each written save also goes to a file (tests).
     let mut load_image: Option<save::data::SaveData> = None;
     let mut party_notice = None;
+    let mut event_skipped = false;
     let mut save_dump: Option<PathBuf> = None;
     // Capture ticks replacing the unattended run's own list (research).
     let mut capture_at: Option<Vec<u64>> = None;
@@ -15177,6 +15182,7 @@ pub fn run(
                 let v = options.next().ok_or("party notice absent")?;
                 party_notice = party_room::parse_notice(&v.to_string_lossy());
             }
+            Some("--event-skipped") => event_skipped = true,
             Some("--save-dump") => {
                 save_dump = Some(options.next().cloned().ok_or("save dump file absent")?);
             }
@@ -15946,6 +15952,7 @@ pub fn run(
         sora_attack: std::mem::take(&mut loaded.kit.attack),
         reserve: None,
         party_notice,
+        event_skipped,
         party: loaded
             .party
             .into_iter()

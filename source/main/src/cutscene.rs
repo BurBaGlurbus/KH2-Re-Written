@@ -65,6 +65,9 @@ struct Event {
     frame: f32,
     tick: u64,
     finished: bool,
+    /// Skip Scene ended it: the next room starts with the skip flag
+    /// (`DAT_142a104a8`, FUN_1402cfcd0 → FUN_1403a5640).
+    skipped: bool,
     voices_started: usize,
     autoplay: Option<PathBuf>,
     /// `--then-room`: the room's arguments (Steam root, manifest, config) when
@@ -554,6 +557,7 @@ fn tick(
             if result == PAUSE_SKIP {
                 // Skip Scene: the end-of-event path, sounds stopped.
                 event.finished = true;
+                event.skipped = true;
                 if let Some(out) = audio.output.as_ref()
                     && let Ok(mut mixer) = out.mixer.lock()
                 {
@@ -1029,6 +1033,9 @@ fn finish(
                 args.push("--party-notice".into());
                 args.push(notice.to_string_lossy().into_owned());
             }
+            if event.skipped {
+                args.push("--event-skipped".into());
+            }
             crate::save_files::start_next(args);
         }
         exit.write(AppExit::Success);
@@ -1190,6 +1197,7 @@ fn run(args: Vec<PathBuf>) -> Result<AppExit, Box<dyn std::error::Error>> {
         frame: 0.,
         tick: 0,
         finished: false,
+        skipped: false,
         voices_started: 0,
         autoplay,
         then_room,

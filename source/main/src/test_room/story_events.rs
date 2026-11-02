@@ -10,8 +10,11 @@
 //! signals scripts raise (a mission's 37 and 38) reach the entries after the
 //! mission.
 //!
-//! Not here yet: a player's skip (FUN_1403a55b0), events with no jump (signal
-//! 0x4c) and those over a running field (`evtp` flags bit 0 clear).
+//! After a skipped event (`--event-skipped`) arrivals pass through skippable
+//! entries without their events (FUN_1403a55b0).
+//!
+//! Not here yet: events with no jump (signal 0x4c) and those over a running
+//! field (`evtp` flags bit 0 clear).
 use super::*;
 use crate::area::{Fired, SignalJump};
 use save::slots::field;
@@ -70,7 +73,7 @@ pub fn tick(
             if let Some(index) =
                 ::area::script::find_entry(&a.current.state.setup.events, code, arg)
             {
-                run_entry(&mut game, &camp, a, index, code, None);
+                run_entry(&mut game, &camp, a, index, code, None, false);
             }
         }
         return;
@@ -88,9 +91,19 @@ pub fn tick(
         }
     }
     let Some(index) = ::area::script::find_entry(&a.current.state.setup.events, 0, 0) else {
+        game.event_skipped = false;
         return;
     };
-    run_entry(&mut game, &camp, a, index, 0, None);
+    // FUN_1403a55b0: after a skipped event, an entry of mode 2 or 3 without
+    // bits 0x40 and 0x80, in an area with no mission, fires with no event and
+    // its jump follows at once; the chain stops at the first that can't.
+    let skip = game.event_skipped
+        && a.current.state.setup.missions.is_empty()
+        && a.current.state.setup.events[index]
+            .event
+            .is_some_and(|(_, mode)| matches!(mode & 0x3f, 2 | 3) && mode & 0xc0 == 0);
+    game.event_skipped = skip;
+    run_entry(&mut game, &camp, a, index, 0, None, skip);
 }
 
 /// FUN_1403ffb40 → FUN_1403aabe0(1, id): before a door's jump. True when an
@@ -113,12 +126,13 @@ pub fn door(
     else {
         return false;
     };
-    run_entry(game, camp, a, index, 1, Some(target))
+    run_entry(game, camp, a, index, 1, Some(target), false)
 }
 
 /// FUN_1403f61a0 and what follows it for the entry a signal picked. `door` is
-/// the stored target kind 3 goes on to (`DAT_140717028`). False when the
-/// entry is one this step can't carry out, which is then left unfired.
+/// the stored target kind 3 goes on to (`DAT_140717028`); `skip` leaves the
+/// event out. False when the entry is one this step can't carry out, which
+/// is then left unfired.
 fn run_entry(
     game: &mut Game,
     camp: &CampRes,
@@ -126,6 +140,7 @@ fn run_entry(
     index: usize,
     signal: i32,
     door: Option<(u8, u8, u8)>,
+    skip: bool,
 ) -> bool {
     let tick = game.tick;
     let here = (a.current.world, a.current.area);
@@ -154,7 +169,7 @@ fn run_entry(
     let Fired { event, flag } = a
         .source
         .fire_entry(&mut a.current.state.setup.events, index);
-    let name = event.map(|(name, _)| event_name(name));
+    let name = event.filter(|_| !skip).map(|(name, _)| event_name(name));
     // The jump is read when the event ends (FUN_1403ac750 case 9), after the
     // entry's flag: FUN_1403a46e0's redirect sees it.
     let jump = resolve(a);
@@ -179,7 +194,7 @@ fn run_entry(
     });
     game.event(
         serde_json::json!({"event":"story_signal","tick":tick,"signal":signal,"world":here.0,
-        "area":here.1,"programs":a.current.programs,"flag":flag,"story_event":name,
+        "area":here.1,"programs":a.current.programs,"flag":flag,"story_event":name,"skipped":skip,
         "jump":format!("{jump:?}")}),
     );
     let Some(SignalJump::Field {
