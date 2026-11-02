@@ -319,3 +319,4 @@ Records through T128 retain historical commands and paths. See [the folder guide
 | [T373](T373-gummi-menu-sounds.md) | The Gummi menu's sounds (issue #142) | PASS: se997 ids resolve in the world map program. |
 | [T374](T374-gummi-result-panel.md) | The Gummi result panel: banner and both columns (issue #142) | PASS in the world map program with a test aid's numbers; notices, prizes, menus are gaps. |
 | [T375](T375-motion-tolerance-effectors.md) | The owner's tolerance and the external effector lists (issue #72) | PASS: 7716 match, the rest are rounding, singular poses or bad reference data. |
+| [T376](T376-gummi-after-clear-menu.md) | The Gummi after-clear and game-over menus (issue #142) | PASS in the world map program for 0x35; retry needs the flight. |

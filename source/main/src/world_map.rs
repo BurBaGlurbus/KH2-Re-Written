@@ -242,7 +242,9 @@ struct WorldMap {
     gummi: Option<(visual::gummi_menu::GummiMenu, u8)>,
     /// [Test aid] The result panel after mission select, with the numbers of
     /// `KH2RW_GUMMI_RESULT` (no flight is built).
-    gummi_result: Option<visual::gummi_result::ResultPanel>,
+    gummi_result: Option<(visual::gummi_result::ResultPanel, u8)>,
+    /// The after-clear menu (0x35) after the result panel, for its route.
+    gummi_list: Option<(visual::gummi_list::ListMenu, u8)>,
     /// The landing's target once a world point is decided.
     jump: Option<world_state::Target>,
     /// 03system 'cmd': each command's execute id (FUN_1403b68b0).
@@ -403,6 +405,7 @@ struct UiRes {
     /// The Gummi menu layout's images and the flight sprites'.
     gummi_images: Vec<usize>,
     gummi_sprite_images: Vec<usize>,
+    gummi_list_images: Vec<usize>,
     pictures: Vec<usize>,
     font: usize,
     icon: usize,
@@ -791,6 +794,18 @@ fn setup_ui(
                 .push(frame.add_sheet(&mut images, t.rgba, t.size, t.texel_scale));
         }
     }
+    if let Some(menu) = ui.ui.gummi_lists.as_mut() {
+        for k in 0..menu.image_sizes.len() {
+            if let Some(t) = menu.replacements.get_mut(k).and_then(Option::take) {
+                ui.gummi_list_images.push(frame.add_sheet(
+                    &mut images,
+                    t.rgba,
+                    t.size,
+                    t.texel_scale,
+                ));
+            }
+        }
+    }
     if let Some(menu) = ui.ui.gummi_sprites.as_mut() {
         for k in 0..menu.image_sizes.len() {
             if let Some(t) = menu.replacements.get_mut(k).and_then(Option::take) {
@@ -1065,7 +1080,46 @@ fn gummi_tick(wm: &mut WorldMap, ui: &UiRes) -> bool {
             .fold(0, |a, b| a | b)
     });
     let (pressed, repeat) = (wm.pad.pressed | extra, wm.pad.repeat | extra);
-    if let (Some(panel), Some(menu)) = (wm.gummi_result.as_mut(), ui.ui.gummi_sprites.as_ref()) {
+    // The after-clear menu (0x35): 1 retry, 2 the Gummi menu, 3 the world
+    // map (FUN_1401e17d0, FUN_140151930). [Not built] Retry needs the flight:
+    // it returns to the map.
+    if let (Some((list, route)), Some(menu)) = (wm.gummi_list.as_mut(), ui.ui.gummi_lists.as_ref())
+    {
+        let route = *route;
+        let sounds = list.tick(&menu.layout.sequences, pressed, repeat);
+        wm.sounds.extend(sounds);
+        if let Some(result) = list.result {
+            wm.log.push(
+                serde_json::json!({"event":"gummi_list_closed","tick":wm.tick,
+                "route":route,"result":result}),
+            );
+            wm.gummi_list = None;
+            if result == 2
+                && let Some((m, data)) = ui.ui.gummi.as_ref()
+            {
+                let missions = ui
+                    .ui
+                    .routes
+                    .get(&route)
+                    .map(|p| p.missions)
+                    .unwrap_or_default();
+                let top = visual::gummi_menu::GummiMenu::new(
+                    &m.layout,
+                    data,
+                    route.saturating_sub(1),
+                    ui.ui.message(gummi::route_name(route)),
+                    missions,
+                    false,
+                );
+                wm.gummi = Some((top, route));
+            }
+        }
+        return true;
+    }
+    if let (Some((panel, route)), Some(menu)) =
+        (wm.gummi_result.as_mut(), ui.ui.gummi_sprites.as_ref())
+    {
+        let route = *route;
         let decide = pressed & world_map::landing::pad::DECIDE != 0;
         let was_done = panel.done;
         for e in panel.tick(&menu.layout.sequences, decide) {
@@ -1081,7 +1135,26 @@ fn gummi_tick(wm: &mut WorldMap, ui: &UiRes) -> bool {
         if was_done && decide {
             wm.log
                 .push(serde_json::json!({"event":"gummi_result_closed","tick":wm.tick}));
+            let first = panel.first();
             wm.gummi_result = None;
+            // A first clear goes straight back to the map (battle phase 0x12).
+            if !first
+                && let (Some(menu), Some((_, data))) =
+                    (ui.ui.gummi_lists.as_ref(), ui.ui.gummi.as_ref())
+            {
+                let kind = visual::gummi_list::Kind::AfterClear;
+                let texts = kind.texts().map(|id| {
+                    data.texts
+                        .get(&id)
+                        .cloned()
+                        .unwrap_or_else(|| ui.ui.message(id))
+                });
+                let list = visual::gummi_list::ListMenu::new(&menu.layout.sequences, texts);
+                wm.log
+                    .push(serde_json::json!({"event":"gummi_list_open","tick":wm.tick,
+                    "route":route}));
+                wm.gummi_list = Some((list, route));
+            }
         }
         return true;
     }
@@ -1135,8 +1208,8 @@ fn gummi_tick(wm: &mut WorldMap, ui: &UiRes) -> bool {
                 serde_json::json!({"event":"gummi_result_open","tick":wm.tick,
                 "route":route,"level":level,"ex":ex,"run":format!("{run:?}")}),
             );
-            wm.gummi_result = Some(visual::gummi_result::ResultPanel::new(
-                visual::gummi_result::ResultInput {
+            wm.gummi_result = Some((
+                visual::gummi_result::ResultPanel::new(visual::gummi_result::ResultInput {
                     route_name: ui.ui.message(gummi::route_name(route)),
                     level,
                     ex,
@@ -1144,7 +1217,8 @@ fn gummi_tick(wm: &mut WorldMap, ui: &UiRes) -> bool {
                     run,
                     saved,
                     first: level == 1 && !saved.cleared,
-                },
+                }),
+                route,
             ));
             return true;
         }
@@ -2316,8 +2390,23 @@ fn draw_ui(
         widths: &ui.ui.font.widths,
         pad: 1,
     };
+    // The after-clear menu over its own black backdrop.
+    if let (Some((list, _)), Some(menu)) = (&wm.gummi_list, ui.ui.gummi_lists.as_ref()) {
+        for (sheet, quads) in list.draw(&menu.layout.sequences, &font) {
+            let slot = match sheet {
+                world_map_menu::Sheet::Image(k) => ui.gummi_list_images.get(k).copied(),
+                world_map_menu::Sheet::Font => Some(ui.font),
+                world_map_menu::Sheet::Icon => Some(ui.icon),
+                world_map_menu::Sheet::Picture(_) => None,
+            };
+            if let Some(s) = slot {
+                frame.draws.push((s, quads));
+            }
+        }
+        return;
+    }
     // The result panel over black, where the flight's scene would be.
-    if let (Some(panel), Some(menu)) = (&wm.gummi_result, ui.ui.gummi_sprites.as_ref()) {
+    if let (Some((panel, _)), Some(menu)) = (&wm.gummi_result, ui.ui.gummi_sprites.as_ref()) {
         frame.draws.push((
             ui.white,
             vec![data::sprite_sequence::Quad {
@@ -3626,6 +3715,7 @@ fn run(args: Vec<PathBuf>) -> Result<AppExit> {
         route_info: None,
         gummi: None,
         gummi_result: None,
+        gummi_list: None,
         jump: None,
         commands,
         sounds: Vec::new(),
@@ -3971,6 +4061,7 @@ fn run(args: Vec<PathBuf>) -> Result<AppExit> {
             images: Vec::new(),
             gummi_images: Vec::new(),
             gummi_sprite_images: Vec::new(),
+            gummi_list_images: Vec::new(),
             pictures: Vec::new(),
             font: 0,
             icon: 0,

@@ -406,6 +406,11 @@ impl ResultPanel {
         out
     }
 
+    /// A route's first level 1 clear (no after-clear menu follows).
+    pub fn first(&self) -> bool {
+        self.input.first
+    }
+
     pub fn draw(&self, seqs: &[Sequence], font: &Font) -> Vec<(Sheet, Vec<Quad>)> {
         let mut out = Vec::new();
         for (k, s) in self.sprites.iter().enumerate() {
