@@ -45,7 +45,11 @@ fn replacement_number(name: &[u8; 32]) -> Option<usize> {
     let stem = name
         .strip_suffix(".png")
         .or_else(|| name.strip_suffix(".dds"))?;
-    let digits = stem.rsplit_once("_2ld")?.1;
+    // A 2LD inside a BAR (gumimenu.bar) names its pictures `..._bar<N>`.
+    let digits = stem
+        .rsplit_once("_2ld")
+        .or_else(|| stem.rsplit_once("_bar"))?
+        .1;
     digits.parse().ok()
 }
 
@@ -231,7 +235,45 @@ pub fn load_layout(
     let archive = original_payload::read_original(&mut checked.reader, entry)?.bytes;
     let hd = replacement_payload::read_all_replacements(&mut checked.reader, entry)?;
     checked.verify_unchanged()?;
-    let table = bar::read_bar(&archive)?;
+    build(&archive, &hd, nth)
+}
+
+/// `load` for a 2LD held in a BAR's entry named `entry` (e.g.
+/// `gumimenu/us/gumimenu.bar` `0000`, "gummi_menu_lay"); the BAR carries the
+/// pictures.
+pub fn load_entry_layout(
+    source: &ProbeSource,
+    index: &str,
+    ordinal: usize,
+    name_hash: [u8; 16],
+    entry: [u8; 4],
+) -> Result<Menu2ld, Box<dyn std::error::Error>> {
+    let mut checked = source.open_index(index)?;
+    let e = checked
+        .inventory
+        .entries
+        .get(ordinal)
+        .filter(|e| e.name_hash == name_hash)
+        .ok_or("BAR archive entry mismatch")?;
+    let outer = original_payload::read_original(&mut checked.reader, e)?.bytes;
+    let hd = replacement_payload::read_all_replacements(&mut checked.reader, e)?;
+    checked.verify_unchanged()?;
+    let table = bar::read_bar(&outer)?;
+    let inner = table
+        .entries
+        .iter()
+        .find(|t| t.name_bytes == entry)
+        .and_then(|t| outer.get(t.offset as usize..t.offset as usize + t.size as usize))
+        .ok_or("BAR entry absent")?;
+    build(inner, &hd, 0)
+}
+
+fn build(
+    archive: &[u8],
+    hd: &[replacement_payload::ReplacementSample],
+    nth: usize,
+) -> Result<Menu2ld, Box<dyn std::error::Error>> {
+    let table = bar::read_bar(archive)?;
     let slice = |kind: u16| -> Result<&[u8], Box<dyn std::error::Error>> {
         let e = table
             .entries
@@ -251,7 +293,7 @@ pub fn load_layout(
         })
         .collect::<Result<Vec<_>, _>>()?;
     let mut replacements: Vec<Option<Texture>> = Vec::new();
-    for r in &hd {
+    for r in hd {
         let Some(n) = replacement_number(&r.metadata.name_bytes) else {
             continue;
         };

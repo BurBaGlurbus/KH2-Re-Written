@@ -14,6 +14,7 @@ pub mod footsteps;
 pub mod frame_limit;
 pub mod gauge;
 pub mod glow;
+pub mod gummi_menu;
 pub mod hud;
 pub mod hud_slots;
 pub mod input;

@@ -8,6 +8,7 @@ rust-version.workspace = true
 [dependencies]
 audio = { path = "../audio" }
 effect = { path = "effect" }
+gummi = { path = "../game/gummi" }
 data = { path = "../data" }
 player = { path = "../game/player" }
 save = { path = "../game/save" }

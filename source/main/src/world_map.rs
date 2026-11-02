@@ -60,7 +60,7 @@ use visual::{controller, input, lock_on};
 use world_map::{
     camera::{self as wm_camera, LockOnCamera, ObjCamera, Pose},
     cursor::{self, Candidate, WarpPath},
-    events,
+    events, gummi,
     landing::{self, Landing, Outcome},
     objects::{self, Switch},
     widgets,
@@ -238,6 +238,8 @@ struct WorldMap {
     info: Option<Info>,
     /// dk::WM_GLANDING_INFO on the reacting (or chosen) Gummi route.
     route_info: Option<RouteInfo>,
+    /// The Gummi menu's top screen after a route's Proceed (route 1..=9).
+    gummi: Option<(visual::gummi_menu::TopMenu, u8)>,
     /// The landing's target once a world point is decided.
     jump: Option<world_state::Target>,
     /// 03system 'cmd': each command's execute id (FUN_1403b68b0).
@@ -395,6 +397,8 @@ const VOICE_KEY: u32 = 0xb7_0000;
 struct UiRes {
     ui: ui::Ui,
     images: Vec<usize>,
+    /// The Gummi menu layout's images.
+    gummi_images: Vec<usize>,
     pictures: Vec<usize>,
     font: usize,
     icon: usize,
@@ -783,6 +787,14 @@ fn setup_ui(
                 .push(frame.add_sheet(&mut images, t.rgba, t.size, t.texel_scale));
         }
     }
+    if let Some((menu, _)) = ui.ui.gummi.as_mut() {
+        for k in 0..menu.image_sizes.len() {
+            if let Some(t) = menu.replacements.get_mut(k).and_then(Option::take) {
+                ui.gummi_images
+                    .push(frame.add_sheet(&mut images, t.rgba, t.size, t.texel_scale));
+            }
+        }
+    }
     for t in std::mem::take(&mut ui.ui.pictures) {
         ui.pictures
             .push(frame.add_sheet(&mut images, t.rgba, t.size, t.texel_scale));
@@ -1021,10 +1033,58 @@ fn close_up(a: &Actor, mode: u8, now: Pose) -> Pose {
     pose
 }
 
+/// The Gummi menu's top screen for one tick; true while it is up. [Not
+/// built] Its sound ids (0xf36xx) aren't mapped to se997 entries, so it is
+/// silent; the leave window (0x4ab0) isn't drawn, so World Map returns at
+/// once; mission select, ship select and the editor end the run as the
+/// route did before.
+fn gummi_tick(wm: &mut WorldMap, ui: &UiRes) -> bool {
+    let Some((top, route)) = wm.gummi.as_mut() else {
+        return false;
+    };
+    let Some((menu, data)) = ui.ui.gummi.as_ref() else {
+        return false;
+    };
+    let route = *route;
+    // [Tour aid] KH2RW_GUMMI_KEYS=<tick>:<pad bits>,...: pressed then.
+    let extra = std::env::var("KH2RW_GUMMI_KEYS").ok().map_or(0, |v| {
+        v.split(',')
+            .filter_map(|p| {
+                let (t, b) = p.split_once(':')?;
+                let b = b.trim().trim_start_matches("0x");
+                (t.trim().parse::<u64>().ok()? == wm.tick)
+                    .then(|| u64::from_str_radix(b, 16).ok())?
+            })
+            .fold(0, |a, b| a | b)
+    });
+    let (pressed, repeat) = (wm.pad.pressed | extra, wm.pad.repeat | extra);
+    let events = top.tick(&menu.layout, data, pressed, repeat);
+    for e in &events {
+        wm.log
+            .push(serde_json::json!({"event":"gummi_menu","tick":wm.tick,
+            "what":format!("{e:?}"),"cursor":top.cursor}));
+    }
+    if top.closed() {
+        let choice = top.chosen;
+        wm.log.push(
+            serde_json::json!({"event":"gummi_menu_closed","tick":wm.tick,
+            "route":route,"choice":format!("{choice:?}")}),
+        );
+        wm.gummi = None;
+        if choice != Some(::gummi::menu::TopChoice::WorldMap) {
+            wm.jump = Some(world_state::Target::NONE);
+        }
+    }
+    true
+}
+
 /// The landing reaction, the info panel and the landing menu for one tick
 /// (FUN_140394810 / FUN_140394fc0 / FUN_1403931f0). True while the menu
 /// holds the cursor.
 fn landing_tick(wm: &mut WorldMap, ui: &UiRes) -> bool {
+    if gummi_tick(wm, ui) {
+        return true;
+    }
     let layout = &ui.ui.layout.layout;
     let seq = &layout.sequences[world_map_menu::SEQUENCE];
     if let Some((state, menu, symbol)) = wm.landing.as_mut() {
@@ -1083,12 +1143,30 @@ fn landing_tick(wm: &mut WorldMap, ui: &UiRes) -> bool {
                         _ => target,
                     })
                 }
-                // FUN_1403946f0 queues the route's Gummi mission task (not
-                // part of this program): the run ends as a jump does.
+                // FUN_1403946f0 → FUN_140394690: the Gummi menu mode starts
+                // on its top screen (FUN_140243bc0: level 1, not EX). With
+                // its files missing the run ends as a jump does.
                 Some(Outcome::Route(route)) => {
-                    wm.log
-                        .push(serde_json::json!({"event":"gummi_mission","route":route}));
-                    wm.jump = Some(world_state::Target::NONE);
+                    let missions = &ui.ui.routes.get(&route).map(|p| p.missions);
+                    let cleared = missions.is_some_and(|m| m[0][0].cleared);
+                    if let Some((menu, data)) = ui.ui.gummi.as_ref() {
+                        let name = ui.ui.message(gummi::route_name(route));
+                        let top = visual::gummi_menu::TopMenu::new(
+                            &menu.layout,
+                            data,
+                            name,
+                            0,
+                            cleared,
+                            false,
+                        );
+                        wm.log.push(serde_json::json!({"event":"gummi_menu_open",
+                            "tick":wm.tick,"route":route,"items":top.items()}));
+                        wm.gummi = Some((top, route));
+                    } else {
+                        wm.log
+                            .push(serde_json::json!({"event":"gummi_mission","route":route}));
+                        wm.jump = Some(world_state::Target::NONE);
+                    }
                 }
                 _ => {}
             }
@@ -2158,6 +2236,31 @@ fn draw_ui(
         widths: &ui.ui.font.widths,
         pad: 1,
     };
+    // The Gummi menu over black, where its 3D room would be.
+    if let (Some((top, _)), Some((menu, _))) = (&wm.gummi, ui.ui.gummi.as_ref()) {
+        frame.draws.push((
+            ui.white,
+            vec![data::sprite_sequence::Quad {
+                corners: [[-200., -10.], [712., -10.], [-200., 426.], [712., 426.]],
+                uv: [0, 0, 1, 1],
+                colors: [[0., 0., 0., 1.]; 4],
+                blend: 0,
+            }],
+        ));
+        for (sheet, quads) in top.draw(&menu.layout, &font) {
+            let slot = match sheet {
+                world_map_menu::Sheet::Image(k) => ui.gummi_images.get(k).copied(),
+                world_map_menu::Sheet::Font => Some(ui.font),
+                world_map_menu::Sheet::Icon => Some(ui.icon),
+                world_map_menu::Sheet::Picture(_) => None,
+            };
+            if let Some(s) = slot {
+                frame.draws.push((s, quads));
+            }
+        }
+        // The menu mode replaces the map (FUN_140394690).
+        return;
+    }
     if let (Some(visual::gauge::Draw::Quads { quads, .. }), Some(sheet)) =
         (wm.reticle_draw.as_ref(), ui.fiel)
     {
@@ -3417,6 +3520,7 @@ fn run(args: Vec<PathBuf>) -> Result<AppExit> {
         landing: None,
         info: None,
         route_info: None,
+        gummi: None,
         jump: None,
         commands,
         sounds: Vec::new(),
@@ -3755,6 +3859,7 @@ fn run(args: Vec<PathBuf>) -> Result<AppExit> {
         .insert_resource(UiRes {
             ui,
             images: Vec::new(),
+            gummi_images: Vec::new(),
             pictures: Vec::new(),
             font: 0,
             icon: 0,

@@ -9,6 +9,7 @@ use crate::area::AreaSource;
 use ::area::world_state::{LandingGrid, Target};
 use data::{bar, journal_table, path_lookup::Library, probe_source::ProbeSource, sprite_sequence};
 use std::collections::HashMap;
+use visual::gummi_menu::GummiData;
 use visual::{
     hud::{self, SystemFont},
     menu_screen::{self, Menu2ld, Texture},
@@ -139,6 +140,35 @@ pub struct Ui {
     /// name, and the field 2D sheet with the lock-on reticle ('fiel').
     pub command: Option<(String, hud::Sheet)>,
     pub field: Option<(String, hud::Sheet)>,
+    /// The Gummi menu's layout (`gumimenu/us/gumimenu.bar` `0000`) and its
+    /// records, transitions and texts.
+    pub gummi: Option<(Menu2ld, GummiData)>,
+}
+
+/// The Gummi menu's files (the menu mode's loads, FUN_140243bc0).
+fn load_gummi(source: &ProbeSource, library: &mut Library) -> Result<(Menu2ld, GummiData)> {
+    let (i, o, h) = locate(library, "gumimenu/us/gumimenu.bar")?;
+    let layout = menu_screen::load_entry_layout(source, i, o, h, *b"0000")?;
+    let outer = library.read("gumimenu/us/gumimenu.bar")?;
+    let table = bar::read_bar(&outer)?;
+    let transitions = table
+        .entries
+        .iter()
+        .find(|e| &e.name_bytes == b"0004")
+        .and_then(|e| outer.get(e.offset as usize..e.offset as usize + e.size as usize))
+        .and_then(data::gummi_table::read_transitions)
+        .ok_or("gumimenu.bar 0004 unreadable")?;
+    let entries = data::gummi_table::read_menu_entries(&library.read("gumimenu/menuentry.bar")?)
+        .ok_or("menuentry.bar unreadable")?;
+    let texts = message_table(&library.read("msg/us/gumi.bar")?)?;
+    Ok((
+        layout,
+        GummiData {
+            entries,
+            transitions,
+            texts,
+        },
+    ))
 }
 
 fn locate(library: &Library, name: &str) -> Result<(&'static str, usize, [u8; 16])> {
@@ -251,6 +281,9 @@ impl Ui {
             tables: [area, sys, journal],
             command: None,
             field: None,
+            gummi: load_gummi(source, library)
+                .map_err(|e| eprintln!("Gummi menu unavailable: {e}"))
+                .ok(),
         };
         // The world map is area 0 of world 15 (FUN_140154e20).
         let name = src.command_layout(15, 0, "us", false);
