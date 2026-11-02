@@ -707,6 +707,7 @@ pub fn tick(mut game: ResMut<Game>, gallery: Res<EnemyGallery>, rig: Res<super::
             )),
             flight_spec: a.flight_spec,
             enemy_radius: super::party_limit::room_enemy_radius(game).unwrap_or(0.),
+            player_air: game.sora.player.in_air(),
             player_star: false,
             player_centre: super::SORA_OBJ[2],
         };

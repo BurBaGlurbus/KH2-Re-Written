@@ -887,6 +887,9 @@ fn tour_press(game: &Game, shown: Option<rc::Candidate>, tick: u64) -> bool {
         rc::Source::Shape if game.enemy_battle_tour && area_enemies::enabled() => {
             tick.is_multiple_of(10)
         }
+        rc::Source::Partner if game.enemy_battle_tour && area_enemies::enabled() => {
+            tick.is_multiple_of(10)
+        }
         rc::Source::Shape => {
             game.sephiroth_tour
                 && super::sephiroth::tour_reaction(

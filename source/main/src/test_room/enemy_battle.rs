@@ -1356,6 +1356,7 @@ pub fn tick(mut game: ResMut<Game>, mut gallery: ResMut<EnemyGallery>) {
             // A battle actor fights: the battle flag (DAT_142a11404), and
             // whether Sora cannot be damaged (`obj_is_star`).
             a.facts.battle = true;
+            a.facts.player_air = game.sora.player.in_air();
             a.facts.player_centre = super::SORA_OBJ[2];
             a.facts.player_hp = game
                 .enemy

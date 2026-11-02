@@ -121,6 +121,10 @@ pub trait Env {
     fn line_blocked(&self, from: Vec3, to: Vec3) -> bool {
         self.line_hit(from, to).is_some()
     }
+    /// Whether Sora is off the ground (`obj_is_air` on him).
+    fn player_air(&self) -> bool {
+        false
+    }
     /// Sora's heading about Y (the direction scripts read from the player object).
     fn player_yaw(&self) -> f32 {
         0.

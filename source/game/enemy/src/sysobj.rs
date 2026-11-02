@@ -2065,6 +2065,12 @@ impl Sysobj {
         self.state_flags &= !state_flag::GROUND_ARMED;
     }
 
+    /// The jump armed on Sora's stand-in: he carries it out.
+    pub fn take_pending_jump(&mut self) -> Option<(Vec3, f32, f32)> {
+        self.pending_mode = 0;
+        self.pending_jump.take()
+    }
+
     /// Frame event 3 (FUN_14040dd70 -> FUN_1403b4da0(obj, 7)): physics mode
     /// 7 enters as the jump does (FUN_1403cbd30) on the jump the last
     /// `obj_flyjump` / `method_obj_jump` armed (FUN_1403cbb00).

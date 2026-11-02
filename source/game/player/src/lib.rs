@@ -801,6 +801,21 @@ impl Player {
         self.start_motion_id(motion, blend, clips)
     }
 
+    /// A script's `method_obj_jump` on him (FUN_1403cbb00): the apex above where
+    /// he stands and a speed along the heading, under the motion he plays.
+    pub fn script_jump(&mut self, direction: [f32; 3], height: f32, speed: f32) {
+        let len = direction[0].hypot(direction[2]);
+        let dir = if len > 0. {
+            [direction[0] / len, direction[2] / len]
+        } else {
+            [0.; 2]
+        };
+        self.arc = actor_physics::Arc::launch(self.position[1], height);
+        self.sampler.reset();
+        self.air_velocity = [dir[0] * speed, dir[1] * speed];
+        self.scripted_air = true;
+    }
+
     fn start_motion_id(&mut self, motion: u16, blend: f32, clips: &Clips) -> bool {
         let air = self.in_air();
         let action = match motion {

@@ -397,6 +397,11 @@ fn fly(ctx: &mut Ctx<'_>, m: &mut Memory<'_>, args: &mut Args) -> Result<(), Fau
 /// 1:60 FUN_14042efc0: FUN_1403ba9a0, the mode's flag bit 1 or `+0x18c` bit 6.
 fn is_air(ctx: &mut Ctx<'_>, m: &mut Memory<'_>, args: &mut Args) -> Result<(), Fault> {
     let id = ctx.sys_of_ai(m, args[0].value)?;
+    if id == crate::world::PLAYER_OBJECT {
+        let air = ctx.env.player_air();
+        int(args, air as i32);
+        return Ok(());
+    }
     let sys = &ctx.object(id)?.sys;
     let air = sys.air_blocked()
         || sys.mode_flags() & 2 != 0

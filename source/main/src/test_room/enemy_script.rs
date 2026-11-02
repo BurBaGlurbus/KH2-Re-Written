@@ -136,6 +136,8 @@ impl EnemyClips for NoClips {
 pub struct HostFacts {
     /// The battle flag (DAT_142a11404).
     pub battle: bool,
+    /// Sora is off the ground (`obj_is_air` on him).
+    pub player_air: bool,
     /// Sora's form or summon time (sheet +0x1b4).
     pub drive_time: f32,
     /// Peter Pan is out with Tinker Bell (FUN_1403de320).
@@ -278,6 +280,9 @@ impl Env for BrainEnv<'_> {
     }
     fn player_yaw(&self) -> f32 {
         self.player_yaw
+    }
+    fn player_air(&self) -> bool {
+        self.facts.player_air
     }
     /// Vertical segments only: the floor where it crosses the segment.
     fn line_hit(&self, from: Vec3, to: Vec3) -> Option<Vec3> {
@@ -579,6 +584,8 @@ pub struct ScriptBrain {
     /// Falls a hook thread started on Sora (`obj_fly_to_jump`), with the
     /// fall and land motions it named; whether his stand-in was falling.
     pub sora_falls: Vec<(i32, i32)>,
+    /// `method_obj_jump` on Sora: heading, apex height and speed.
+    pub sora_jumps: Vec<([f32; 3], f32, f32)>,
     proxy_falling: bool,
     /// HP changes (`obj_add_hp`: delta) and MP charges
     /// (`obj_start_mpdrive`: the factor) the script made on Sora.
@@ -816,6 +823,7 @@ impl ScriptBrain {
             sora_captures: Vec::new(),
             sora_pushed: Vec::new(),
             sora_falls: Vec::new(),
+            sora_jumps: Vec::new(),
             proxy_falling: false,
             sora_hp: Vec::new(),
             sora_mpdrive: Vec::new(),
@@ -1695,6 +1703,10 @@ impl ScriptBrain {
         }
         if let Some(p) = self.world.player_proxy.as_mut() {
             self.sora_pushed.append(&mut p.sys.motion_queue);
+            // `method_obj_jump` on Sora (FUN_1403cbb00).
+            if let Some(jump) = p.sys.take_pending_jump() {
+                self.sora_jumps.push(jump);
+            }
             let falling = p.sys.falling();
             if falling && !self.proxy_falling {
                 let m = p.sys.jump_motions;

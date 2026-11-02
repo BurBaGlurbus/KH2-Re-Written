@@ -252,6 +252,7 @@ pub fn requests(game: &mut Game, actors: &mut [enemy_gallery::GalleryActor]) {
         let hp = std::mem::take(&mut a.sora_hp);
         let mpdrive = std::mem::take(&mut a.sora_mpdrive);
         let falls = std::mem::take(&mut a.sora_falls);
+        let jumps = std::mem::take(&mut a.sora_jumps);
         // FUN_1403aabe0's signals go to the mission's trigger 10.
         game.mission_signals.append(&mut a.signals);
         if !captures.is_empty() {
@@ -262,6 +263,14 @@ pub fn requests(game: &mut Game, actors: &mut [enemy_gallery::GalleryActor]) {
             game.reaction.captor = Some(actor.id as u32);
         }
         play_on_sora(game, object, &captures, &pushed);
+        // After the capture, which starts on the ground: the jump puts him in
+        // the air under it.
+        for (direction, height, speed) in jumps {
+            game.sora.player.script_jump(direction, height, speed);
+            let tick = game.tick;
+            game.event(serde_json::json!({"event":"boss_sora_jump","tick":tick,
+                "direction":direction,"height":height,"speed":speed}));
+        }
         for delta in hp {
             sora_hp_change(game, delta);
         }
