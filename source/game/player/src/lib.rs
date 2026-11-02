@@ -618,6 +618,10 @@ pub struct Player {
     /// Wisdom Form's Attack is "Shoot" (0x16d): FUN_1403d6fc0 always
     /// allows its combo count.
     pub shoot: bool,
+    /// The frame before this tick's step (they're equal while a blend holds).
+    pub prior_frame: u32,
+    /// FUN_1403c8a40's clock while a blend holds the frame; 0 when none does.
+    pub blend_clock: f32,
     /// Motions queued after the current one (FUN_1403c8310): id and blend.
     pub queued: Vec<(u16, f32)>,
     /// A scripted motion started in the air keeps the airborne physics.
@@ -758,6 +762,8 @@ impl Player {
             jump_cut: JumpCut::default(),
             action: Action::Idle,
             frame: 0,
+            prior_frame: 0,
+            blend_clock: 0.,
             armed: false,
             battle_flag: false,
             weapon: party_motion::WeaponDraw::default(),
@@ -834,6 +840,7 @@ impl Player {
         self.action = action;
         self.frame = 0;
         self.blend = blend;
+        self.begin_blend();
         self.arm();
         true
     }
@@ -1036,6 +1043,7 @@ impl Player {
         }
         self.begin_reaction(Action::Item);
         self.blend = actor_physics::MOTION_BLEND;
+        self.begin_blend();
         Some(self.action)
     }
 
@@ -1307,6 +1315,7 @@ impl Player {
         self.action = action;
         self.frame = 0;
         self.blend = blend_for(action);
+        self.begin_blend();
         step.started = Some(action);
     }
 
@@ -1450,11 +1459,8 @@ impl Player {
             Action::Cast(i) | Action::AirCast(i) => (&clips.spells[i].clip, &clips.spells[i].root),
             _ => return [0.; 3],
         };
-        let Some(before) = self.frame.checked_sub(1) else {
-            return [0.; 3];
-        };
         let at = |f: u32| root.get(clip.held_frame(f) as usize).copied();
-        let (Some(now), Some(before)) = (at(self.frame), at(before)) else {
+        let (Some(now), Some(before)) = (at(self.frame), at(self.prior_frame)) else {
             return [0.; 3];
         };
         let (s, c) = self.yaw.sin_cos();
@@ -1512,6 +1518,36 @@ impl Player {
         if let Some(&(_, ticks)) = clip.command_lockout.iter().find(|&&(f, _)| f == frame) {
             self.command_lock = ticks;
         }
+    }
+
+    /// FUN_1403c8a40: a blend longer than 2 ticks sets the clock to 2 and holds
+    /// the new motion where it starts until the clock reaches the blend.
+    fn begin_blend(&mut self) {
+        self.blend_clock = if self.blend > 2. { 2. } else { 0. };
+    }
+
+    /// FUN_1403c6740 for the frame: the first step from 0 jumps to 2, and a
+    /// finished blend continues from where it held.
+    fn advance_frame(&mut self) {
+        self.prior_frame = self.frame;
+        if self.blend_clock > 0. && self.blend > 2. {
+            self.blend_clock += 1.;
+            if self.blend_clock >= self.blend {
+                self.blend_clock = 0.;
+            }
+            return;
+        }
+        self.blend_clock = 0.;
+        self.frame = if self.frame == 0 {
+            2
+        } else {
+            self.frame.saturating_add(1)
+        };
+    }
+
+    /// This tick's step of the frame went past `frame`.
+    pub fn passed(&self, frame: u32) -> bool {
+        self.prior_frame < frame && frame <= self.frame
     }
 
     /// Motion frame to sample for the current action.
@@ -1749,6 +1785,7 @@ impl Player {
         };
         self.start(Action::Growth(m), step);
         self.blend = growth::GLIDE_BLEND;
+        self.begin_blend();
     }
 
     /// Leaving the ground without jumping (FUN_1403b4780 / FUN_1403b8150),
@@ -1802,9 +1839,9 @@ impl Player {
         let locomotion = matches!(self.action, Action::Idle | Action::Walk | Action::Run);
         let looped = was == self.action
             && locomotion
-            && self.frame > 0
+            && self.frame > self.prior_frame
             && self.clip(clips).looped_frame(self.frame)
-                < self.clip(clips).looped_frame(self.frame - 1);
+                < self.clip(clips).looped_frame(self.prior_frame);
         let ended = was != self.action && locomotion && self.played_variant != 0;
         if self.armed && !self.battle_flag && (looped || ended) {
             self.armed = false;
@@ -1837,10 +1874,14 @@ impl Player {
     ) -> Step {
         let mut step = Step::default();
         self.jump_reach_height = self.jump_height(p).0;
-        self.frame = self.frame.saturating_add(1);
+        self.advance_frame();
         self.command_lockout(clips);
         if self.action == Action::Item
-            && clips.item.as_ref().and_then(|c| c.item_use) == Some(self.frame)
+            && clips
+                .item
+                .as_ref()
+                .and_then(|c| c.item_use)
+                .is_some_and(|at| self.passed(at))
         {
             self.item_fired = true;
         }
@@ -2007,6 +2048,7 @@ impl Player {
                 } else if self.frame >= clip.end {
                     self.start(Action::Idle, &mut step);
                     self.blend = clips.attacks[i].blend;
+                    self.begin_blend();
                 }
             }
             Action::Cast(i) => {
@@ -2039,7 +2081,7 @@ impl Player {
                 };
                 self.face_target(clip, input);
                 let at = |f: u32| root.get(clip.held_frame(f) as usize).copied();
-                if let (Some(now), Some(before)) = (at(self.frame), at(self.frame - 1)) {
+                if let (Some(now), Some(before)) = (at(self.frame), at(self.prior_frame)) {
                     let (s, c) = self.yaw.sin_cos();
                     let (dx, dz) = (now[0] - before[0], now[2] - before[2]);
                     disp[0] += dx * c + dz * s;
@@ -2061,7 +2103,7 @@ impl Player {
                     None => (&clips.idle, &empty),
                 };
                 let at = |f: u32| root.get(clip.held_frame(f) as usize).copied();
-                if let (Some(now), Some(before)) = (at(self.frame), at(self.frame - 1)) {
+                if let (Some(now), Some(before)) = (at(self.frame), at(self.prior_frame)) {
                     let (s, c) = self.yaw.sin_cos();
                     let (dx, dz) = (now[0] - before[0], now[2] - before[2]);
                     disp[0] += dx * c + dz * s;
@@ -2069,7 +2111,7 @@ impl Player {
                 }
                 let ready = self.command_window(clips);
                 let end = clip.end;
-                if self.frame == growth::ROLL_CHAIN_TICK && input.guard_held {
+                if self.passed(growth::ROLL_CHAIN_TICK) && input.guard_held {
                     // Frame trigger 34: Square still held → Quick Run.
                     let facing = [self.yaw.sin(), self.yaw.cos()];
                     self.start_quick_run(facing, clips, &mut step);
@@ -2672,6 +2714,7 @@ impl Player {
             self.sampler.reset();
             self.start(Action::Fall, step);
             self.blend = growth::GLIDE_BLEND;
+            self.begin_blend();
             return;
         }
         let Action::Growth(current) = self.action else {
@@ -2701,6 +2744,7 @@ impl Player {
             // motion_keep: the new glide motion blends over 16.
             self.start(Action::Growth(want), step);
             self.blend = growth::GLIDE_BLEND;
+            self.begin_blend();
         }
         if moving {
             let rate = if want == growth::motion::GLIDE_STAND {
@@ -3337,11 +3381,12 @@ mod tests {
         for _ in 0..20 {
             player.tick(&hold([0., 0.3]), &p, &c, &w);
         }
-        assert_eq!((player.action, player.motion_frame(&c)), (Action::Walk, 19));
+        // The blend holds frame 0 for six ticks, and 0 steps to 2.
+        assert_eq!((player.action, player.motion_frame(&c)), (Action::Walk, 14));
         assert_eq!(player.blend, 8.);
         player.tick(&hold([0., 1.]), &p, &c, &w);
-        // Field walk 50 → field run 36: 36 × (20 + 8) / 50 = 20.16.
-        assert_eq!((player.action, player.frame), (Action::Run, 20));
+        // Field walk 50 → field run 36: 36 × (15 + 8) / 50 = 16.56.
+        assert_eq!((player.action, player.frame), (Action::Run, 16));
         let jump = Input {
             jump: true,
             ..Input::default()
@@ -3425,7 +3470,7 @@ mod tests {
         };
         player.tick(&jump, &p, &c, &w);
         assert_eq!(player.action, Action::Jump);
-        for _ in 1..4 {
+        for _ in 1..3 {
             player.tick(&Input::default(), &p, &c, &w);
             assert_eq!(player.position[1], 0.);
             assert!(player.pending_jump.is_some());
@@ -3705,12 +3750,12 @@ mod tests {
             player.tick(&Input::default(), &p, &c, &w);
             open.push(player.can_command(&c));
         }
-        // Frames 1 and 2 are open, the trigger at frame 3 closes five ticks
-        // (the frame itself counts one down at the next), then it reopens.
+        // Frame 2 is open, the trigger at frame 3 closes five ticks (the frame
+        // itself counts one down at the next), then it reopens.
         assert_eq!(
             open,
             [
-                true, true, false, false, false, false, false, true, true, true, true, true
+                true, false, false, false, false, false, true, true, true, true, true, true
             ]
         );
         // Outside a range the lockout is cleared at once.
@@ -3735,7 +3780,8 @@ mod tests {
             player.tick(&Input::default(), &p, &c, &w);
             blocked.push(player.first_person_blocked(&c));
         }
-        assert_eq!(blocked, [false, true, true, true, false, false]);
+        // The first tick steps from frame 0 to 2.
+        assert_eq!(blocked, [true, true, true, false, false, false]);
     }
 
     #[test]
@@ -4261,8 +4307,9 @@ mod tests {
         for _ in 0..10 {
             player.tick(&Input::default(), &p, &c, &w);
         }
+        // Frame 11 after ten ticks: the first steps from 0 to 2.
         assert!(
-            (player.position[0] - 20.).abs() < 1e-3,
+            (player.position[0] - 22.).abs() < 1e-3,
             "{:?}",
             player.position
         );
@@ -4338,9 +4385,10 @@ mod tests {
         for _ in 0..10 {
             player.tick(&Input::default(), &p, &c, &w);
         }
-        // The hop has no target speed here: the 30 units are root motion.
+        // The hop has no target speed here: the 33 units are root motion, to
+        // frame 11.
         assert!(
-            (player.position[0] - x - 30.).abs() < 1.,
+            (player.position[0] - x - 33.).abs() < 1.,
             "{} -> {}",
             x,
             player.position[0]
@@ -4374,12 +4422,12 @@ mod tests {
         let step = player.tick(&press, &p, &c, &world);
         assert_eq!(step.started, Some(Action::Guard));
         assert!((player.yaw - std::f32::consts::FRAC_PI_2).abs() < 1e-5);
-        // Locked: moving does nothing until tick 52.
+        // Locked: moving does nothing until tick 51.
         let stick = Input {
             direction: [0., 1.],
             ..Input::default()
         };
-        for _ in 1..52 {
+        for _ in 1..51 {
             player.tick(&stick, &p, &c, &world);
         }
         assert_eq!(player.action, Action::Guard);
@@ -4976,7 +5024,8 @@ mod tests {
                 assert_eq!(player.action, Action::Item, "locked at {t}");
             }
         }
-        assert_eq!(fired, Some(18));
+        // Six ticks held by the blend, less the step from 0 to 2.
+        assert_eq!(fired, Some(23));
         // Not in the air, not while locked, not while dead.
         let mut air = Player::new([0., 50., 0.], 0.);
         air.arc = actor_physics::Arc::fall(50., 0.);
@@ -5013,8 +5062,8 @@ mod tests {
         assert_eq!(action, Action::Cast(0));
         assert_eq!((start.motion, start.row, start.finisher), (56, 0, false));
         assert_eq!(player.combo, ptya::Combo { step: 1, finish: 1 });
-        // No MP is spent before the release tick (10).
-        for _ in 0..9 {
+        // No MP is spent before the release frame (10).
+        for _ in 0..8 {
             player.tick(&Input::default(), &p, &c, &w);
             assert_eq!(player.mp.cur, 100);
             assert!(player.take_released().is_none());

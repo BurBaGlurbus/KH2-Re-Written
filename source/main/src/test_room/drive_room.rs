@@ -2158,7 +2158,7 @@ pub fn shots(game: &mut Game) {
         let clip = player.clip(clips);
         if matches!(player.action, Action::Attack(_) | Action::AirAttack(_)) {
             for &(f, n) in &clip.effects {
-                if f != player.frame {
+                if !player.passed(f) {
                     continue;
                 }
                 let Some(sub) = player::wisdom_form::shot_sub(n) else {
