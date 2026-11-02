@@ -132,15 +132,117 @@ pub fn party_locked(row: &[u8; 4], slot: usize, absent: &[u8]) -> bool {
             .is_some_and(|&b| b & 0x80 != 0 || absent.contains(&party_type(b)))
 }
 
-/// FUN_14036b460 between the room's two members: the world table takes the
-/// camp's order when both active slots changed.
-pub fn write_party_order(row: &mut [u8; 4], order: &[u8]) {
-    if let [a, b] = order
-        && character_type(*a) != party_type(row[1])
-        && character_type(*b) != party_type(row[2])
-    {
+/// The row's empty byte.
+const NO_MEMBER: u8 = 0x12;
+
+/// A reserve's record, from the save when it holds one.
+pub fn load_reserve(r: &mut party_room::Reserve, base: &SaveData) {
+    let p = Persistent::read(base);
+    let Some(record) = p
+        .records
+        .get(r.character as usize - 1)
+        .filter(|x| x.max_hp != 0)
+    else {
+        return;
+    };
+    let s = &mut r.save;
+    s.weapon = record.weapon;
+    s.bonus = [record.ap, record.strength, record.magic, record.defense];
+    s.armor_slots = record.armor_slots;
+    s.accessory_slots = record.accessory_slots;
+    s.item_slots = record.item_slots;
+    s.armor = record.armor;
+    s.accessories = record.accessories;
+    s.items = record.items;
+    s.originals = record.originals;
+    s.abilities = record.abilities;
+    s.style = record.style;
+    s.frequency = record.frequency;
+    r.max_hp = i32::from(record.max_hp);
+    r.hp = i32::from(record.hp.min(record.max_hp));
+    r.max_mp = i32::from(record.max_mp);
+    r.mp = i32::from(record.mp.min(record.max_mp));
+}
+
+/// A member with no field object writes its record into the save.
+pub fn store_reserve(r: &party_room::Reserve, base: &mut SaveData) {
+    let mut p = Persistent::read(base);
+    if let Some(to) = p.records.get_mut(r.character as usize - 1) {
+        let level = to.level.max(1);
+        *to = Record {
+            level,
+            ..member_of(&r.save, r.hp, r.max_hp, (r.mp, r.max_mp))
+        };
+    }
+    p.write(base);
+}
+
+/// A member's gear from its record.
+pub fn member_gear(
+    source: &super::AbilitySource,
+    save: &player::party_members::Save,
+) -> player::equipment_stats::Totals {
+    let record = member_of(save, 0, 0, (0, 0));
+    source.gear(&equipment_of(&record), None)
+}
+
+/// A member's own byte of the row, or a fresh one (bit 7 is its lock).
+pub fn camp_row(row: &[u8; 4], order: &[u8]) -> [u8; 4] {
+    let mut camp = [row[0], NO_MEMBER, NO_MEMBER, NO_MEMBER];
+    for (to, &character) in camp[1..].iter_mut().zip(order) {
+        let t = character_type(character);
+        *to = row
+            .iter()
+            .copied()
+            .find(|&b| party_type(b) == t)
+            .unwrap_or(t);
+    }
+    camp
+}
+
+/// The slot a field object leaves, and the type that leaves.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Leaver {
+    pub slot: usize,
+    pub party_type: u8,
+}
+
+/// FUN_14036b460: the world's row takes the camp's, once the camp closes. With
+/// both active slots changed they swap (only bytes: the field keeps its list).
+/// A reserve who came out replaces whoever now stands in its slot: at the
+/// player's own camp (`field_camp`, `DAT_140742da4 == 1`) that also replaces
+/// the field object, which is the leaver returned; at an event's camp the bytes
+/// alone swap.
+pub fn write_party_order(row: &mut [u8; 4], camp: &[u8; 4], field_camp: bool) -> Option<Leaver> {
+    if party_type(camp[1]) != party_type(row[1]) && party_type(camp[2]) != party_type(row[2]) {
         row.swap(1, 2);
     }
+    let reserve = party_type(row[3]);
+    if reserve == NO_MEMBER {
+        return None;
+    }
+    let slot = (1..=3).find(|&k| party_type(camp[k]) == reserve)?;
+    if slot == 3 {
+        return None;
+    }
+    if !field_camp {
+        row.swap(slot, 3);
+        return None;
+    }
+    let left = party_type(row[slot]);
+    to_reserve(row, slot);
+    Some(Leaver {
+        slot,
+        party_type: left,
+    })
+}
+
+/// FUN_1403e33f0: the reserve takes `slot`, and whoever stood there goes to
+/// the reserve. Both lock bits drop.
+pub fn to_reserve(row: &mut [u8; 4], slot: usize) {
+    let left = party_type(row[slot]);
+    row[slot] = party_type(row[3]);
+    row[3] = left;
 }
 
 /// The room's members in the order of a world's table: by the party slots
@@ -685,6 +787,15 @@ pub fn capture(game: &Game, c: &CampRes, area: Option<&AreaRes>) -> SaveData {
             };
         }
     }
+    if let Some(m) = &game.reserve
+        && let Some(r) = p.records.get_mut(m.character as usize - 1)
+    {
+        let level = r.level.max(1);
+        *r = Record {
+            level,
+            ..member_of(&m.save, m.hp, m.max_hp, (m.mp, m.max_mp))
+        };
+    }
     p.write(&mut d);
     if let Some(a) = area {
         let progress = a.source.progress();
@@ -1218,6 +1329,65 @@ impl JournalSave {
 }
 
 #[cfg(test)]
+mod party_swap_tests {
+    use super::*;
+
+    const S: u8 = 0;
+    const D: u8 = 1;
+    const G: u8 = 2;
+    const B: u8 = 12;
+
+    /// The executable's five orders, worked by hand over FUN_14036b460.
+    #[test]
+    fn the_row_takes_each_camp_order_as_the_executable_does() {
+        let cases = [
+            ([S, G, D, B], [S, G, D, B], None),
+            ([S, B, G, D], [S, B, G, D], Some((1, D))),
+            ([S, D, B, G], [S, D, B, G], Some((2, G))),
+            ([S, B, D, G], [S, B, D, G], Some((1, G))),
+            ([S, G, B, D], [S, G, B, D], Some((2, D))),
+        ];
+        for (camp, want, leaver) in cases {
+            let mut row = [S, D, G, B];
+            let left = write_party_order(&mut row, &camp, true);
+            assert_eq!(row, want, "camp {camp:?}");
+            assert_eq!(
+                left.map(|l| (l.slot, l.party_type)),
+                leaver,
+                "camp {camp:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn an_event_camp_swaps_bytes_only_and_keeps_the_lock() {
+        let mut row = [S, D, G, B | 0x80];
+        assert_eq!(
+            write_party_order(&mut row, &[S, B | 0x80, G, D], false),
+            None
+        );
+        assert_eq!(row, [S, B | 0x80, G, D]);
+    }
+
+    #[test]
+    fn a_field_swap_drops_both_lock_bits() {
+        let mut row = [S, D | 0x80, G, B | 0x80];
+        to_reserve(&mut row, 1);
+        assert_eq!(row, [S, B, G, D]);
+    }
+
+    #[test]
+    fn no_reserve_means_no_leaver() {
+        let mut row = [S, D, G, NO_MEMBER];
+        assert_eq!(
+            write_party_order(&mut row, &[S, G, D, NO_MEMBER], true),
+            None
+        );
+        assert_eq!(row, [S, G, D, NO_MEMBER]);
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -1263,19 +1433,22 @@ mod tests {
     fn the_world_table_takes_a_swap_and_gives_the_order() {
         let mut row = ROOM_PARTY;
         // Goofy, then Donald: both active slots changed.
-        write_party_order(&mut row, &[3, 2]);
+        let camp = camp_row(&row, &[3, 2]);
+        write_party_order(&mut row, &camp, true);
         assert_eq!(row, [0, 2, 1, 0x12]);
         assert_eq!(party_order(&row, &[2, 3]), vec![1, 0]);
         assert_eq!(party_order(&row, &[3, 2]), vec![0, 1]);
         // The same order leaves it.
-        write_party_order(&mut row, &[3, 2]);
+        let camp = camp_row(&row, &[3, 2]);
+        write_party_order(&mut row, &camp, true);
         assert_eq!(row, [0, 2, 1, 0x12]);
         // A guest in the reserve slot; Goofy locked stays with his bit.
         let mut row = [0, 1, 2 | 0x80, 3];
         assert!(
             party_locked(&row, 0, &[]) && party_locked(&row, 2, &[]) && !party_locked(&row, 1, &[])
         );
-        write_party_order(&mut row, &[3, 2]);
+        let camp = camp_row(&row, &[3, 2]);
+        write_party_order(&mut row, &camp, true);
         assert_eq!(row, [0, 2 | 0x80, 1, 3]);
         // No table yet: the room's.
         let table = [[0; 4]; 19];

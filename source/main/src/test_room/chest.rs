@@ -53,6 +53,16 @@ pub fn sync_holdings(
     let Some(mut area) = area else { return };
     let here = (area.current.world, area.current.area);
     let tick = game.tick;
+    // The first area's op 0x0f works on the world's row as an arrival's does.
+    if last.is_none()
+        && area.current.members.record.is_some()
+        && let Some(to) = game.save.party_table.get_mut(here.0 as usize)
+    {
+        *to = game_save::row_with_presets(*to, &area.current.members.presets);
+    }
+    let objects = area.current.members.objects.clone();
+    party_room::keep_reserve(&mut game, &objects, here.0);
+    party_room::keep_actors(&mut game, &objects, here.0);
     let mut camp = camp;
     let Game {
         items, drive, save, ..

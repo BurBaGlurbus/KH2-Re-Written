@@ -352,7 +352,21 @@ impl party_motion::Clips for KindClips<'_> {
 }
 
 /// A member in the room.
+/// The row's fourth slot: a member with a record but no field object.
+#[derive(Clone, Debug)]
+pub struct Reserve {
+    pub character: u8,
+    pub object: u16,
+    pub save: party_members::Save,
+    pub hp: i32,
+    pub max_hp: i32,
+    pub mp: i32,
+    pub max_mp: i32,
+}
+
 pub struct MemberRt {
+    /// Who takes this member's place when `reload` finishes (FUN_1403e90e0).
+    pub replacing: Option<Reserve>,
     pub kind: Arc<PartyKind>,
     pub follower: Follower,
     /// The game tick the current attack started, for hit instance keys.
@@ -1332,6 +1346,184 @@ pub struct ReloadSource {
     pub items: Vec<data::item_table::Item>,
 }
 
+/// A member's record and numbers without a field object: from the save when
+/// it holds them, else the new game's (00battle `plrp`).
+pub fn make_reserve(
+    src: &ReloadSource,
+    base: &save::data::SaveData,
+    object: u16,
+) -> Option<Reserve> {
+    let entry = src
+        .objects
+        .iter()
+        .find(|o| o.object_id == u32::from(object))?;
+    let character = entry.character as u8;
+    let plrp = bar_entry(&src.battle, b"plrp").unwrap_or(&[]);
+    let (hp, mp) = visual::hud::starting_stats_of(plrp, character).ok()?;
+    let item_kinds = &src.items;
+    let is_item = |id: u16| item_kinds.iter().any(|r| r.id == id && r.kind == 0);
+    let new_game = data::battle_tables::new_game_row(plrp, character)
+        .ok()?
+        .map_or(party_members::Save::EMPTY, |row| party_members::Save {
+            armor_slots: row.armor_slots.min(8),
+            accessory_slots: row.accessory_slots.min(8),
+            bonus: row.bonus,
+            ..party_members::Save::new_game(row.item_slots, &row.ids, is_item)
+        });
+    let mut reserve = Reserve {
+        character,
+        object,
+        save: new_game,
+        hp,
+        max_hp: hp,
+        mp,
+        max_mp: mp,
+    };
+    game_save::load_reserve(&mut reserve, base);
+    Some(reserve)
+}
+
+/// FUN_1403e33f0's bookkeeping each tick: the record of whoever the row holds
+/// as its reserve (a door's preset, a load, a swap with no field object). A
+/// reserve leaving this place writes its record to the save first.
+pub fn keep_reserve(game: &mut Game, objects: &[u16], world: u8) {
+    let Some(src) = game.party_reload.clone() else {
+        return;
+    };
+    let row = game_save::world_party(&game.save.party_table, world);
+    let want = game_save::party_type(row[3]);
+    let held = game
+        .reserve
+        .as_ref()
+        .map(|r| game_save::character_type(r.character));
+    let want = (want != 0x12).then_some(want);
+    if held == want {
+        return;
+    }
+    if let Some(old) = game.reserve.take() {
+        game_save::store_reserve(&old, &mut game.save.base);
+    }
+    let object = want.and_then(|t| objects.get(t as usize).copied());
+    game.reserve = object
+        .filter(|&o| o != 0)
+        .and_then(|o| make_reserve(&src, &game.save.base, o));
+    let tick = game.tick;
+    let character = game.reserve.as_ref().map(|r| r.character);
+    game.event(
+        serde_json::json!({"event":"party_reserve","tick":tick,"row":row,"character":character}),
+    );
+}
+
+/// Member `i` is replaced by `new`: its body, weapon and record, on a thread
+/// (FUN_1403e90e0). The newcomer takes the leaver's list index, so its follow
+/// angle and gauge; `swap_weapons` finishes it.
+pub fn start_replace(game: &mut Game, i: usize, new: Reserve) {
+    let (Some(src), limits) = (game.party_reload.clone(), game.party_limits.clone()) else {
+        return;
+    };
+    let Some(entry) = src
+        .objects
+        .iter()
+        .find(|o| o.object_id == u32::from(new.object))
+    else {
+        return;
+    };
+    let Some(member) = party_roster::by_character(new.character) else {
+        return;
+    };
+    let name: &'static str = Box::leak(
+        String::from_utf8_lossy(&entry.model_name)
+            .into_owned()
+            .into_boxed_str(),
+    );
+    let item = new.save.weapon;
+    let weapon = (item != 0)
+        .then(|| weapon_object(&src, name, item))
+        .flatten();
+    let Some(m) = game.party.get_mut(i) else {
+        return;
+    };
+    let handle = std::thread::spawn(move || {
+        let mut library = Library::open(&src.source).map_err(|e| e.to_string())?;
+        load(
+            &src.source,
+            &mut library,
+            &src.system,
+            bar_entry(&src.battle, b"lvup").unwrap_or(&[]),
+            bar_entry(&src.battle, b"plrp").unwrap_or(&[]),
+            &src.objects,
+            name,
+            member,
+            limits.motions(member.character),
+            weapon.as_deref(),
+        )
+        .map_err(|e| e.to_string())
+    });
+    m.rebody = true;
+    m.replacing = Some(new);
+    m.reload = Some((item, handle));
+}
+
+/// FUN_1403e2eb0 at each area load: the row names who stands in the field.
+/// A member the row holds as active, and a field member it doesn't, make a
+/// replacement (the row starting empty changes nothing). `KH2RW_PARTY` picks
+/// the party by hand.
+pub fn keep_actors(game: &mut Game, objects: &[u16], world: u8) {
+    if std::env::var_os("KH2RW_PARTY").is_some()
+        || game.party_reload.is_none()
+        || game.party.iter().any(|m| m.reload.is_some() || m.stored)
+        || game
+            .save
+            .party_table
+            .get(world as usize)
+            .is_none_or(|r| *r == [0; 4])
+    {
+        return;
+    }
+    let row = game_save::world_party(&game.save.party_table, world);
+    let active = [game_save::party_type(row[1]), game_save::party_type(row[2])];
+    let is_field = |t: u8, party: &[MemberRt]| {
+        party
+            .iter()
+            .any(|m| game_save::character_type(m.kind.character) == t)
+    };
+    let Some(&newcomer) = active
+        .iter()
+        .find(|&&t| t != 0x12 && !is_field(t, &game.party))
+    else {
+        return;
+    };
+    let Some(i) = game
+        .party
+        .iter()
+        .position(|m| !active.contains(&game_save::character_type(m.kind.character)))
+    else {
+        return;
+    };
+    let Some(src) = game.party_reload.clone() else {
+        return;
+    };
+    let Some(new) = objects
+        .get(newcomer as usize)
+        .filter(|&&o| o != 0)
+        .and_then(|&o| make_reserve(&src, &game.save.base, o))
+    else {
+        return;
+    };
+    let m = &game.party[i];
+    let old = Reserve {
+        character: m.kind.character,
+        object: 0,
+        save: m.save,
+        hp: m.hp,
+        max_hp: m.max_hp,
+        mp: m.mp.cur,
+        max_mp: m.mp.max,
+    };
+    game_save::store_reserve(&old, &mut game.save.base);
+    start_replace(game, i, new);
+}
+
 /// FUN_1403ef8b0: the weapon object of `item` in the WENT set of the
 /// member object `member` (objentry +0x4e), by the item record's +4.
 pub fn weapon_object(src: &ReloadSource, member: &str, item: u16) -> Option<String> {
@@ -1448,6 +1640,7 @@ pub fn swap_weapons(
 ) {
     let tick = game.tick;
     let mut events = Vec::new();
+    let mut replaced = Vec::new();
     for (i, m) in game.party.iter_mut().enumerate() {
         if !m.reload.as_ref().is_some_and(|(_, h)| h.is_finished()) {
             continue;
@@ -1466,8 +1659,31 @@ pub fn swap_weapons(
             }
             Err(_) => continue,
         };
-        kind.voices = m.kind.voices.clone();
+        let replacing = m.replacing.take();
+        if replacing.is_none() {
+            kind.voices = m.kind.voices.clone();
+        }
         m.kind = Arc::new(kind);
+        if let Some(new) = replacing {
+            // FUN_1403e90e0: the leaver's record is already written.
+            m.hp = new.hp;
+            m.max_hp = new.max_hp;
+            m.mp = player::magic::Mp::new(new.max_mp);
+            let delta = new.mp - m.mp.cur;
+            if delta != 0 {
+                m.mp.add(delta);
+            }
+            m.save = new.save;
+            m.follower = m.follower.with_personality(party_members::Personality {
+                jump_max: m.kind.jump_max,
+                ..m.kind.member.personality
+            });
+            m.bash_keys.clear();
+            m.forced = None;
+            m.limit = None;
+            m.heal_ticks = 0.;
+            replaced.push(i);
+        }
         m.weapon_item = item;
         // FUN_1403d7c70: a new weapon object starts hidden (FUN_1403ef750).
         m.weapon_draw = Default::default();
@@ -1539,6 +1755,43 @@ pub fn swap_weapons(
     for e in events {
         game.event(e);
     }
+    for i in replaced {
+        finish_replace(&mut game, i);
+    }
+}
+
+/// FUN_1403c2fc0: the newcomer stands where the leaver stood when the line to
+/// Sora is clear (both 100 up), else 200 to 300 from him; and faces him. Its
+/// numbers follow its record.
+fn finish_replace(game: &mut Game, i: usize) {
+    let sora = game.sora.player.position;
+    let Some(m) = game.party.get(i) else { return };
+    let at = m.follower.position;
+    let lift = |p: [f32; 3]| [p[0], p[1] + 100., p[2]];
+    let blocked = game.world.line_hit(lift(sora), lift(at)).is_some();
+    let (mut seed, mut sector) = (game.tick as u32 | 1, i as u8);
+    let (place, yaw) = if blocked {
+        player::forms::return_spot(&game.world, sora, &mut seed, &mut sector)
+    } else {
+        let d = [sora[0] - at[0], sora[2] - at[2]];
+        (at, d[0].atan2(d[1]))
+    };
+    let gear = {
+        let m = &game.party[i];
+        game_save::member_gear(&game.ability_source, &m.save)
+    };
+    let abilities = member_abilities(&game.ability_source, &game.party[i].save);
+    let tick = game.tick;
+    let m = &mut game.party[i];
+    m.follower.position = place;
+    m.follower.yaw = yaw;
+    m.gear = gear;
+    m.abilities = abilities;
+    let (character, name) = (m.kind.character, m.kind.name);
+    game.event(
+        serde_json::json!({"event":"party_replace","tick":tick,"slot":i,
+        "character":character,"member":name,"at":place,"blocked":blocked}),
+    );
 }
 
 /// Marks a member's root and its mesh parts.

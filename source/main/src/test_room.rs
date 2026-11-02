@@ -1336,6 +1336,8 @@ pub struct Game {
     pub cure_pick: Option<usize>,
     /// Donald and Goofy, following Sora.
     pub party: Vec<party_room::MemberRt>,
+    /// The row's reserve (`row[3]`).
+    pub reserve: Option<party_room::Reserve>,
     pub items: Option<item_room::ItemRt>,
     /// Drive forms (None when the form tables could not be read).
     pub drive: Option<drive_room::DriveRt>,
@@ -3272,10 +3274,26 @@ pub fn load_camp_source(
         item_frequency: std::array::from_fn(|_| take()),
         item_frequency_help: std::array::from_fn(|_| take()),
     };
-    // Donald and Goofy (party-camp spec §1.1, §2.4).
-    let names = msg(&[0x8520, 0x8521])?;
-    let party_sources = [2u8, 3]
+    // Donald, Goofy and the guests (the name table at 0x1405c8f60; party-camp
+    // spec §1.1, §2.4).
+    const PARTY_NAMES: [(u8, u32); 12] = [
+        (2, 0x8520),
+        (3, 0x8521),
+        (5, 0x8523),
+        (6, 0x8525),
+        (7, 0x8526),
+        (8, 0x8527),
+        (9, 0x8528),
+        (10, 0x8529),
+        (11, 0x852a),
+        (12, 0x852b),
+        (13, 0x852c),
+        (15, 0x8524),
+    ];
+    let names = msg(&PARTY_NAMES.map(|n| n.1))?;
+    let party_sources = PARTY_NAMES
         .into_iter()
+        .map(|n| n.0)
         .zip(names)
         .map(|(character, name)| {
             let mut help = Vec::new();
@@ -6823,78 +6841,33 @@ pub fn setup(
     // Each slot renders alone into its own target (camp-03 §5.1: RT1 is
     // cleared and drawn per member): Sora on MENU_LAYER, the members on
     // the layers after it.
-    let mut spawn_menu_slot = |commands: &mut Commands,
-                               member: usize,
-                               model: &model_inspection::InspectionModel,
-                               pose: &[Vec3]|
-     -> usize {
-        let layer = RenderLayers::layer(MENU_LAYER + member);
-        let menu_root = commands
-            .spawn((
-                MenuModelRoot,
-                Transform::from_xyz(0., 0., 100.),
-                Visibility::Hidden,
-                layer.clone(),
-            ))
-            .id();
-        for (ordinal, entity) in spawn_model(
-            commands,
-            model,
-            pose,
-            menu_root,
-            &mut meshes,
-            &mut materials,
-            &mut images,
-        ) {
-            if let Some(entity) = entity {
-                commands
-                    .entity(entity)
-                    .insert((MenuModelPart { member, ordinal }, layer.clone()));
-            }
-        }
-        let menu_target = images.add(visual::room::render_target(
-            MENU_TARGET[0],
-            MENU_TARGET[1],
-            TextureFormat::Rgba8UnormSrgb,
-        ));
-        commands.spawn((
-            Camera3d::default(),
-            // (Unlit, like the main camera: no lights to cluster.)
-            bevy::light::cluster::ClusterConfig::None,
-            Camera {
-                order: -3,
-                is_active: false,
-                clear_color: ClearColorConfig::Custom(Color::NONE),
-                ..default()
-            },
-            bevy::camera::RenderTarget::Image(menu_target.clone().into()),
-            // A 640x480-style camera with horizontal FOV 40° (focal 879.19):
-            // vertical 2·atan(240 / 879.19); squeezed to the layout, the
-            // target's 16:9 square pixels match it (camp-03 §1).
-            Projection::Perspective(PerspectiveProjection {
-                fov: 2. * (240f32 / 879.1928).atan(),
-                near: 1.,
-                far: 100_000.,
-                ..default()
-            }),
-            Transform::from_xyz(0., 50., 800.).looking_at(Vec3::new(0., 0., -55.), Vec3::Y),
-            Msaa::Off,
-            Tonemapping::None,
-            DebandDither::Disabled,
-            NoIndirectDrawing,
-            layer,
-            MenuCamera(member),
-        ));
-        frame.add_image(menu_target, MENU_TARGET, true)
-    };
-    let sheet = spawn_menu_slot(&mut commands, 0, &actor, &walk_pose);
+    let sheet = spawn_menu_slot(
+        &mut commands,
+        0,
+        &actor,
+        &walk_pose,
+        &mut meshes,
+        &mut materials,
+        &mut images,
+        &mut frame,
+    );
     let friends = std::mem::take(&mut startup.menu_friends)
         .into_iter()
         .enumerate()
         .map(|(i, friend)| {
             let f = friend?;
-            let sheet = spawn_menu_slot(&mut commands, i + 1, &f.model, &f.frames[0]);
+            let sheet = spawn_menu_slot(
+                &mut commands,
+                i + 1,
+                &f.model,
+                &f.frames[0],
+                &mut meshes,
+                &mut materials,
+                &mut images,
+                &mut frame,
+            );
             Some(MenuFriendView {
+                character: game.party.get(i).map_or(0, |m| m.kind.character),
                 sheet,
                 indices: f.model.parts.iter().map(|p| p.indices.clone()).collect(),
                 frames: f.frames,
@@ -7227,11 +7200,100 @@ pub struct MenuModel {
 }
 
 pub struct MenuFriendView {
+    /// Whose model it shows.
+    pub character: u8,
     pub sheet: usize,
     pub indices: Vec<Vec<u32>>,
     pub frames: Vec<Vec<Vec3>>,
     pub length: f32,
 }
+
+/// A member's model under its own root and layer.
+pub fn spawn_menu_parts(
+    commands: &mut Commands,
+    member: usize,
+    model: &model_inspection::InspectionModel,
+    pose: &[Vec3],
+    meshes: &mut Assets<Mesh>,
+    materials: &mut Assets<FogMaterial>,
+    images: &mut Assets<Image>,
+) {
+    let layer = RenderLayers::layer(MENU_LAYER + member);
+    let menu_root = commands
+        .spawn((
+            MenuModelRoot,
+            MenuSlot(member),
+            Transform::from_xyz(0., 0., 100.),
+            Visibility::Hidden,
+            layer.clone(),
+        ))
+        .id();
+    for (ordinal, entity) in
+        spawn_model(commands, model, pose, menu_root, meshes, materials, images)
+    {
+        if let Some(entity) = entity {
+            commands
+                .entity(entity)
+                .insert((MenuModelPart { member, ordinal }, layer.clone()));
+        }
+    }
+}
+
+/// Each slot renders alone into its own target (camp-03 §5.1: RT1 is cleared
+/// and drawn per member): Sora on MENU_LAYER, the members on the layers after
+/// it.
+#[allow(clippy::too_many_arguments)]
+pub fn spawn_menu_slot(
+    commands: &mut Commands,
+    member: usize,
+    model: &model_inspection::InspectionModel,
+    pose: &[Vec3],
+    meshes: &mut Assets<Mesh>,
+    materials: &mut Assets<FogMaterial>,
+    images: &mut Assets<Image>,
+    frame: &mut Ui2dFrame,
+) -> usize {
+    spawn_menu_parts(commands, member, model, pose, meshes, materials, images);
+    let layer = RenderLayers::layer(MENU_LAYER + member);
+    let menu_target = images.add(visual::room::render_target(
+        MENU_TARGET[0],
+        MENU_TARGET[1],
+        TextureFormat::Rgba8UnormSrgb,
+    ));
+    commands.spawn((
+        Camera3d::default(),
+        // (Unlit, like the main camera: no lights to cluster.)
+        bevy::light::cluster::ClusterConfig::None,
+        Camera {
+            order: -3,
+            is_active: false,
+            clear_color: ClearColorConfig::Custom(Color::NONE),
+            ..default()
+        },
+        bevy::camera::RenderTarget::Image(menu_target.clone().into()),
+        // A 640x480-style camera with horizontal FOV 40° (focal 879.19):
+        // vertical 2·atan(240 / 879.19); squeezed to the layout, the
+        // target's 16:9 square pixels match it (camp-03 §1).
+        Projection::Perspective(PerspectiveProjection {
+            fov: 2. * (240f32 / 879.1928).atan(),
+            near: 1.,
+            far: 100_000.,
+            ..default()
+        }),
+        Transform::from_xyz(0., 50., 800.).looking_at(Vec3::new(0., 0., -55.), Vec3::Y),
+        Msaa::Off,
+        Tonemapping::None,
+        DebandDither::Disabled,
+        NoIndirectDrawing,
+        layer,
+        MenuCamera(member),
+    ));
+    frame.add_image(menu_target, MENU_TARGET, true)
+}
+
+/// Which member a menu root belongs to.
+#[derive(Component)]
+pub struct MenuSlot(pub usize);
 
 /// While the camp shows its members, render Sora's walk at the menu time
 /// (root motion kept, camp-03 §3).
@@ -13185,10 +13247,10 @@ pub fn camp_tick(
             .map(|m| m.kind.character)
             .collect::<Vec<_>>(),
     );
-    let party_models: Vec<usize> = std::iter::once(0)
+    let mut party_models: Vec<usize> = std::iter::once(0)
         .chain(by_row.iter().map(|&i| i + 1))
         .collect();
-    let party: Vec<CampMember> = by_row
+    let mut party: Vec<CampMember> = by_row
         .iter()
         .map(|&i| &game.party[i])
         .map(|m| CampMember {
@@ -13200,6 +13262,19 @@ pub fn camp_tick(
             save: m.save,
         })
         .collect();
+    // The party list holds the row's fourth too (FUN_1402fc360); its model is
+    // the member after the two in the field.
+    if let Some(r) = &game.reserve {
+        party.push(CampMember {
+            character: r.character,
+            hp: r.hp,
+            max_hp: r.max_hp,
+            mp: r.mp,
+            max_mp: r.max_mp,
+            save: r.save,
+        });
+        party_models.push(3);
+    }
     let panels = pause_menu::Panels {
         munny: game.enemy.as_ref().map_or(0, |rt| rt.munny),
         time_frames: game.save.play_frames(tick),
@@ -13457,10 +13532,65 @@ pub fn camp_tick(
                 .iter()
                 .map(|e| e.character)
                 .collect();
+            // The reserve's own record, as the camp left it (FUN_14036b210: its
+            // new weapon reloads nothing until it joins).
+            if let Some(r) = game.reserve.as_mut()
+                && let Some(m) = menu
+                    .data
+                    .items
+                    .equipment
+                    .iter()
+                    .skip(1)
+                    .position(|e| e.character == r.character)
+                    .map(|p| p + 1)
+            {
+                if let Some(e) = menu.data.items.equipment.get(m) {
+                    write_member(
+                        &mut r.save,
+                        e,
+                        menu.data.abilities.members.get(m),
+                        menu.data.customize.styles.get(m).copied(),
+                    );
+                }
+                if let Some(p) = menu.data.panels.members.get(m) {
+                    r.hp = p.hp;
+                    r.mp = p.mp;
+                }
+            }
             let mut row = game_save::world_party(&game.save.party_table, world);
-            game_save::write_party_order(&mut row, &order);
+            let camp = game_save::camp_row(&row, &order);
+            let leaver = game_save::write_party_order(&mut row, &camp, true);
             if let Some(to) = game.save.party_table.get_mut(world as usize) {
                 *to = row;
+            }
+            // The reserve came out: it replaces the leaver's field object at once
+            // and the leaver takes the reserve (FUN_14036b400). With no field
+            // object only the bytes changed.
+            if let Some(l) = leaver
+                && let Some(i) = game
+                    .party
+                    .iter()
+                    .position(|m| game_save::character_type(m.kind.character) == l.party_type)
+                && let Some(new) = game.reserve.take()
+            {
+                let m = &game.party[i];
+                let object = area.as_deref().and_then(|a| {
+                    a.current
+                        .members
+                        .objects
+                        .get(l.party_type as usize)
+                        .copied()
+                });
+                game.reserve = Some(party_room::Reserve {
+                    character: m.kind.character,
+                    object: object.unwrap_or(0),
+                    save: m.save,
+                    hp: m.hp,
+                    max_hp: m.max_hp,
+                    mp: m.mp.cur,
+                    max_mp: m.mp.max,
+                });
+                party_room::start_replace(&mut game, i, new);
             }
             // The field's list keeps its order until the next area: gauges and
             // follow angles read it, not the row (FUN_1401b7f70, FUN_1403c2db0).
@@ -15623,11 +15753,13 @@ pub fn run(
         motors_fresh: false,
         vibration_scan: None,
         sora_attack: std::mem::take(&mut loaded.kit.attack),
+        reserve: None,
         party: loaded
             .party
             .into_iter()
             .enumerate()
             .map(|(i, kind)| party_room::MemberRt {
+                replacing: None,
                 hp: kind.hp,
                 max_hp: kind.hp,
                 mp: player::magic::Mp::new(kind.mp),
@@ -16475,7 +16607,12 @@ impl Plugin for RoomPlugin {
                         resize_scene,
                         afterimage.run_if(resource_exists::<Afterimage>),
                         compose_2d,
-                        (menu_model_present, journal_model::present).chain(),
+                        (
+                            menu_friend::sync,
+                            menu_model_present,
+                            journal_model::present,
+                        )
+                            .chain(),
                         (
                             camp_present,
                             game_over::present,

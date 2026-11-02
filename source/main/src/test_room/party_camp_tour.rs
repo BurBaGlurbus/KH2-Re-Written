@@ -117,6 +117,32 @@ const STEPS: &[(u64, u64, bool)] = &[
 const START: u64 = 40;
 
 pub fn tour(slots: Vec<u16>) -> Tour {
+    // `KH2RW_TOUR_KEYS=<tick>:<bits>,...` and `KH2RW_TOUR_CAPTURES=<tick>,...`:
+    // another route, for a place whose party isn't Donald and Goofy.
+    if let Ok(keys) = std::env::var("KH2RW_TOUR_KEYS") {
+        let inputs: Vec<(u64, u64)> = keys
+            .split(',')
+            .filter_map(|k| {
+                let (at, bits) = k.split_once(':')?;
+                Some((at.parse().ok()?, bits.parse().ok()?))
+            })
+            .collect();
+        let captures: Vec<u64> = std::env::var("KH2RW_TOUR_CAPTURES")
+            .unwrap_or_default()
+            .split(',')
+            .filter_map(|t| t.parse().ok())
+            .collect();
+        let close = inputs.last().map_or(START, |i| i.0);
+        let end = captures.last().map_or(close, |&c| c.max(close)) + 60;
+        return Tour {
+            inputs,
+            captures,
+            close,
+            end,
+            expected_slots: slots,
+            attacks: Vec::new(),
+        };
+    }
     let mut inputs = vec![(START, OPEN)];
     let mut captures = Vec::new();
     let mut tick = START;

@@ -30,6 +30,17 @@ pub fn load(
     let id = *OBJECTS
         .get(slot.wrapping_sub(1))
         .ok_or("no MENU_FRIEND object for this party slot")?;
+    load_object(source, library, objects, id)
+}
+
+/// A member's model on the camp's walk. The MENU_FRIEND objects resolve to the
+/// row's member object at run time (FUN_1403dfeb0, FUN_1403c3320).
+pub fn load_object(
+    source: &ProbeSource,
+    library: &mut Library,
+    objects: &[objentry::ObjectEntry],
+    id: u32,
+) -> Result<MenuFriend, Box<dyn std::error::Error>> {
     let entry = objects
         .iter()
         .find(|o| o.object_id == id)
@@ -86,6 +97,147 @@ pub fn load(
         length,
     })
 }
+
+/// A load in progress: the member slot, whose model, and the thread.
+pub type Loading = (
+    usize,
+    u8,
+    std::thread::JoinHandle<Result<MenuFriend, String>>,
+);
+
+/// The camp's members follow the field and the reserve: FUN_14036b760 loads
+/// each slot's object, and a card shows no model until it's there. Members
+/// 1 and 2 are the field's two, member 3 the reserve.
+#[allow(clippy::too_many_arguments)]
+pub fn sync(
+    mut commands: Commands,
+    game: Res<Game>,
+    area: Option<Res<AreaRes>>,
+    model: Option<ResMut<MenuModel>>,
+    roots: Query<(Entity, &MenuSlot)>,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<FogMaterial>>,
+    mut images: ResMut<Assets<Image>>,
+    mut frame: ResMut<Ui2dFrame>,
+    mut loading: Local<Option<Loading>>,
+) {
+    let (Some(mut model), Some(src), Some(area)) = (model, game.party_reload.clone(), area) else {
+        return;
+    };
+    if loading.as_ref().is_some_and(|l| l.2.is_finished())
+        && let Some((member, character, thread)) = loading.take()
+    {
+        match thread.join() {
+            Ok(Ok(f)) => {
+                let mut view = MenuFriendView {
+                    character,
+                    sheet: 0,
+                    indices: f.model.parts.iter().map(|p| p.indices.clone()).collect(),
+                    frames: Vec::new(),
+                    length: f.length,
+                };
+                let slot = member - 1;
+                if model.friends.len() <= slot {
+                    model.friends.resize_with(slot + 1, || None);
+                }
+                if let Some(Some(old)) = model.friends.get(slot) {
+                    view.sheet = old.sheet;
+                    for (e, r) in &roots {
+                        if r.0 == member {
+                            commands.entity(e).despawn();
+                        }
+                    }
+                    spawn_menu_parts(
+                        &mut commands,
+                        member,
+                        &f.model,
+                        &f.frames[0],
+                        &mut meshes,
+                        &mut materials,
+                        &mut images,
+                    );
+                } else {
+                    view.sheet = spawn_menu_slot(
+                        &mut commands,
+                        member,
+                        &f.model,
+                        &f.frames[0],
+                        &mut meshes,
+                        &mut materials,
+                        &mut images,
+                        &mut frame,
+                    );
+                }
+                view.frames = f.frames;
+                model.friends[slot] = Some(view);
+            }
+            Ok(Err(e)) => {
+                eprintln!("camp model of member {member}: {e}");
+                let slot = member - 1;
+                if model.friends.len() <= slot {
+                    model.friends.resize_with(slot + 1, || None);
+                }
+                // Tried once: its card shows no model.
+                if let Some(Some(old)) = model.friends.get_mut(slot) {
+                    old.character = character;
+                } else {
+                    model.friends[slot] = None;
+                    REFUSED
+                        .lock()
+                        .expect("refused camp models")
+                        .push((member, character));
+                }
+            }
+            Err(_) => {}
+        }
+    }
+    if loading.is_some() {
+        return;
+    }
+    let want = game
+        .party
+        .iter()
+        .take(2)
+        .enumerate()
+        .map(|(i, m)| (i + 1, m.kind.character))
+        .chain(game.reserve.as_ref().map(|r| (3, r.character)));
+    let objects_of = &area.current.members.objects;
+    for (member, character) in want {
+        let held = model
+            .friends
+            .get(member - 1)
+            .and_then(|f| f.as_ref())
+            .map(|f| f.character);
+        let refused = REFUSED
+            .lock()
+            .expect("refused camp models")
+            .contains(&(member, character));
+        if held == Some(character) || refused {
+            continue;
+        }
+        let object = match character {
+            2 => OBJECTS[0],
+            3 => OBJECTS[1],
+            _ => {
+                let t = usize::from(game_save::character_type(character));
+                let Some(&o) = objects_of.get(t).filter(|&&o| o != 0) else {
+                    continue;
+                };
+                u32::from(o)
+            }
+        };
+        let src = src.clone();
+        let thread = std::thread::spawn(move || {
+            let mut library = Library::open(&src.source).map_err(|e| e.to_string())?;
+            load_object(&src.source, &mut library, &src.objects, object).map_err(|e| e.to_string())
+        });
+        *loading = Some((member, character, thread));
+        return;
+    }
+}
+
+/// The members with no camp motion: they aren't asked again.
+static REFUSED: std::sync::Mutex<Vec<(usize, u8)>> = std::sync::Mutex::new(Vec::new());
 
 /// The walk time after `steps` camp updates (FUN_1403001b0: 1..=length,
 /// 0 before the first update).

@@ -153,6 +153,9 @@ const COMPUTER_SIGNALS: [(i32, i32); 2] = [(0x57, 60), (0x58, 60)];
 pub struct Members {
     pub player: u16,
     pub friends: Vec<u16>,
+    /// `memt`'s result for the place: the object of each member type
+    /// (FUN_1403e2eb0, `DAT_142a25300`).
+    pub objects: Vec<u16>,
     /// The world's member bytes (save +0x3534 + 4 × world) after the area's
     /// op 0x0f, when it has one, starting from a new row.
     pub record: Option<[u8; 4]>,
@@ -867,6 +870,7 @@ impl AreaSource {
         }
         let object = |byte: u8| objects.get((byte & 0x1f) as usize).copied().unwrap_or(0);
         Members {
+            objects: objects.to_vec(),
             record: (!party_set.is_empty()).then_some(record),
             presets,
             player: object(record[0]),
