@@ -171,6 +171,38 @@ pub fn read_transitions(bytes: &[u8]) -> Option<Vec<Transition>> {
     )
 }
 
+/// A digit font (`gumimenu.bar` `0005`, a BAR of six 0x80-byte "MENU"
+/// records; FUN_14026aed0): the groups of the digits 0 to 9 on a sequence.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DigitStyle {
+    pub layout: String,
+    pub sequence: i16,
+    pub texture: i16,
+    pub digits: [i16; 10],
+    /// +0x38 [I: what the width is read from].
+    pub extra: i16,
+}
+
+pub fn read_digit_styles(bar: &[u8]) -> Option<Vec<DigitStyle>> {
+    let table = crate::bar::read_bar(bar).ok()?;
+    table
+        .entries
+        .iter()
+        .map(|e| {
+            let at = usize::try_from(e.offset).ok()?;
+            let r = bar.get(at..at + 0x3a)?;
+            let h = |o: usize| i16::from_le_bytes([r[o], r[o + 1]]);
+            Some(DigitStyle {
+                layout: name(&r[..0x20]),
+                sequence: h(0x20),
+                texture: h(0x22),
+                digits: std::array::from_fn(|k| h(0x24 + 2 * k)),
+                extra: h(0x38),
+            })
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -158,6 +158,13 @@ fn load_gummi(source: &ProbeSource, library: &mut Library) -> Result<(Menu2ld, G
         .and_then(|e| outer.get(e.offset as usize..e.offset as usize + e.size as usize))
         .and_then(data::gummi_table::read_transitions)
         .ok_or("gumimenu.bar 0004 unreadable")?;
+    let digits = table
+        .entries
+        .iter()
+        .find(|e| &e.name_bytes == b"0005")
+        .and_then(|e| outer.get(e.offset as usize..e.offset as usize + e.size as usize))
+        .and_then(data::gummi_table::read_digit_styles)
+        .ok_or("gumimenu.bar 0005 unreadable")?;
     let entries = data::gummi_table::read_menu_entries(&library.read("gumimenu/menuentry.bar")?)
         .ok_or("menuentry.bar unreadable")?;
     let texts = message_table(&library.read("msg/us/gumi.bar")?)?;
@@ -166,6 +173,7 @@ fn load_gummi(source: &ProbeSource, library: &mut Library) -> Result<(Menu2ld, G
         GummiData {
             entries,
             transitions,
+            digits,
             texts,
         },
     ))

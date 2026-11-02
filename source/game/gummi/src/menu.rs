@@ -94,6 +94,84 @@ pub fn return_entrance(route: u8) -> u8 {
     13 + route
 }
 
+/// Mission select's extra pad bits (pad +0x18): the carousel's next and
+/// previous level, and the EX toggle (pad +8; which button it is isn't
+/// traced).
+pub mod mission_pad {
+    pub const NEXT: u64 = 0x80;
+    pub const PREVIOUS: u64 = 0x40;
+    pub const EX: u64 = 0x10000;
+}
+
+/// Mission select's sound ids.
+pub mod mission_sound {
+    pub const NEXT: u32 = 0xf3705;
+    pub const PREVIOUS: u32 = 0xf3706;
+    pub const EX: u32 = 0xf36f6;
+    pub const OPEN: u32 = 0xf3704;
+}
+
+/// Levels on the carousel (FUN_14024ee90): two, and the third once it's
+/// unlocked. `normal` is the route's three normal records.
+pub fn level_count(normal: &[crate::Mission; 3]) -> usize {
+    2 + usize::from(normal[2].unlocked)
+}
+
+/// FUN_140277b50: EX can be chosen for a level whose EX record is unlocked.
+pub fn ex_available(ex: &[crate::Mission; 3], index: usize) -> bool {
+    ex.get(index).is_some_and(|m| m.unlocked)
+}
+
+/// The carousel's turn (FUN_140276dd0, 5° a frame): input waits this long.
+pub fn turn_frames(levels: usize) -> u32 {
+    (360 / levels as u32) / 5
+}
+
+/// The level panel's records: MISSION_L1..L3.
+pub const LEVEL_PANELS: [usize; 3] = [0x10, 0x11, 0x12];
+
+/// The panel's re-skin for a level change (tables 0x1405b77e0 for next,
+/// 0x1405b7760 for previous): the record whose groups slide it.
+pub fn level_slide(from: usize, to: usize, next: bool) -> Option<usize> {
+    Some(match (from, to, next) {
+        (0, 1, true) => 0x14,
+        (0, 1, false) => 0x248,
+        (1, 0, true) => 0x249,
+        (1, 0, false) => 0x15,
+        (1, 2, _) => 0x16,
+        (2, 1, _) => 0x17,
+        (2, 0, _) => 0x152,
+        (0, 2, _) => 0x153,
+        _ => return None,
+    })
+}
+
+/// What the level panel's counter shows (FUN_140277e30): its record
+/// (MISSION_EMBLEM, MISSION_DESTROY, MISSION_SCORE), digit style, digit
+/// count and value.
+pub fn level_value(level: usize, m: &crate::Mission) -> (usize, usize, usize, u32) {
+    match level {
+        0 => (0x156, 1, 2, u32::from(m.medals)),
+        1 => (0x158, 3, 7, u32::from(m.destroyed())),
+        _ => (0x159, 0, 10, m.score),
+    }
+}
+
+/// The rank counter: style 2 below rank 10, else 5, one digit.
+pub fn rank_digit(rank: u8) -> (usize, u32) {
+    (if rank < 10 { 2 } else { 5 }, u32::from(rank % 10))
+}
+
+/// The level's description: the route table's text, 0x483a + level for a
+/// normal mission, the EX condition 0x4f8d + 3 × route + level for EX.
+pub fn level_text(route: u8, level: usize, ex: bool) -> u32 {
+    if ex {
+        0x4f8d + 3 * route as u32 + level as u32
+    } else {
+        0x483a + level as u32
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -116,6 +194,34 @@ mod tests {
             Step::Decide(2)
         );
         assert_eq!(selector(&mut c, 3, pad::CANCEL, pad::DOWN), Step::Cancel);
+    }
+
+    #[test]
+    fn mission_select_rules() {
+        let mut normal = [crate::Mission::default(); 3];
+        assert_eq!(level_count(&normal), 2);
+        normal[2].unlocked = true;
+        assert_eq!(level_count(&normal), 3);
+        assert!(!ex_available(&normal, 3));
+        assert!(ex_available(&normal, 2));
+        assert_eq!((turn_frames(2), turn_frames(3)), (36, 24));
+        assert_eq!(level_slide(0, 1, true), Some(0x14));
+        assert_eq!(level_slide(0, 1, false), Some(0x248));
+        assert_eq!(level_slide(0, 2, false), Some(0x153));
+        assert_eq!(level_slide(3, 0, true), None);
+        let mut m = crate::Mission {
+            medals: 12,
+            score: 4321,
+            ..Default::default()
+        };
+        m.counters[1] = 77;
+        assert_eq!(level_value(0, &m), (0x156, 1, 2, 12));
+        assert_eq!(level_value(1, &m), (0x158, 3, 7, 77));
+        assert_eq!(level_value(2, &m), (0x159, 0, 10, 4321));
+        assert_eq!(rank_digit(6), (2, 6));
+        assert_eq!(rank_digit(12), (5, 2));
+        assert_eq!(level_text(0, 1, false), 0x483b);
+        assert_eq!(level_text(2, 1, true), 0x4f94);
     }
 
     #[test]

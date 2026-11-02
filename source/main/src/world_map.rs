@@ -239,7 +239,7 @@ struct WorldMap {
     /// dk::WM_GLANDING_INFO on the reacting (or chosen) Gummi route.
     route_info: Option<RouteInfo>,
     /// The Gummi menu's top screen after a route's Proceed (route 1..=9).
-    gummi: Option<(visual::gummi_menu::TopMenu, u8)>,
+    gummi: Option<(visual::gummi_menu::GummiMenu, u8)>,
     /// The landing's target once a world point is decided.
     jump: Option<world_state::Target>,
     /// 03system 'cmd': each command's execute id (FUN_1403b68b0).
@@ -1062,7 +1062,7 @@ fn gummi_tick(wm: &mut WorldMap, ui: &UiRes) -> bool {
     for e in &events {
         wm.log
             .push(serde_json::json!({"event":"gummi_menu","tick":wm.tick,
-            "what":format!("{e:?}"),"cursor":top.cursor}));
+            "what":format!("{e:?}"),"cursor":top.cursor,"items":top.items()}));
     }
     if top.closed() {
         let choice = top.chosen;
@@ -1071,7 +1071,11 @@ fn gummi_tick(wm: &mut WorldMap, ui: &UiRes) -> bool {
             "route":route,"choice":format!("{choice:?}")}),
         );
         wm.gummi = None;
-        if choice != Some(::gummi::menu::TopChoice::WorldMap) {
+        if choice
+            != Some(visual::gummi_menu::Choice::Top(
+                ::gummi::menu::TopChoice::WorldMap,
+            ))
+        {
             wm.jump = Some(world_state::Target::NONE);
         }
     }
@@ -1147,16 +1151,15 @@ fn landing_tick(wm: &mut WorldMap, ui: &UiRes) -> bool {
                 // on its top screen (FUN_140243bc0: level 1, not EX). With
                 // its files missing the run ends as a jump does.
                 Some(Outcome::Route(route)) => {
-                    let missions = &ui.ui.routes.get(&route).map(|p| p.missions);
-                    let cleared = missions.is_some_and(|m| m[0][0].cleared);
+                    let missions = ui.ui.routes.get(&route).map(|p| p.missions);
                     if let Some((menu, data)) = ui.ui.gummi.as_ref() {
                         let name = ui.ui.message(gummi::route_name(route));
-                        let top = visual::gummi_menu::TopMenu::new(
+                        let top = visual::gummi_menu::GummiMenu::new(
                             &menu.layout,
                             data,
+                            route.saturating_sub(1),
                             name,
-                            0,
-                            cleared,
+                            missions.unwrap_or_default(),
                             false,
                         );
                         wm.log.push(serde_json::json!({"event":"gummi_menu_open",
