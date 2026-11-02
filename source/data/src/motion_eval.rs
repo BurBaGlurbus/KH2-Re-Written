@@ -219,9 +219,15 @@ pub struct Evaluated {
     pub stats: EvaluationStats,
 }
 
-/// Standard cubic Hermite sampling with first/last-key holds (cycle type 0),
-/// repeat (2) and zero (3); type 1 (additive) offsets by whole cycles.
-/// Tangents are slopes per key-time unit, scaled by the key span.
+/// The reference curve sampler (FUN_1401d30c0). Outside the keys the pre
+/// (`channel >> 4`) or post (`channel >> 6`) cycle type decides: 0 holds the
+/// first/last value, 1 extrapolates linearly along the first key's in-tangent
+/// or the last key's out-tangent, 2 repeats the key span, 3 gives zero.
+/// Between keys the left key's type picks constant, linear or cubic Hermite
+/// (tangents are slopes per key-time unit). The PC routine also holds the left
+/// value on a rotation channel whose keys are at most 2 units apart and turn
+/// by 3.14 or more; the PS2 reference does not (P_EX100_HTLF 732 at 104,
+/// P_EX330 231 at 168), so that rule is left out here.
 pub fn sample_curve(m: &InterpolatedMotion, curve: &Curve, frame: f32) -> io::Result<Option<f32>> {
     let start = usize::try_from(curve.key_start).map_err(|_| invalid("negative key start"))?;
     let end = start + curve.key_count as usize;
@@ -235,23 +241,30 @@ pub fn sample_curve(m: &InterpolatedMotion, curve: &Curve, frame: f32) -> io::Re
     let first = key(start)?;
     let last = key(end - 1)?;
     let span = last[0] - first[0];
-    let (mut t, mut offset) = (frame, 0.);
-    if frame < first[0] || frame > last[0] {
-        let cycle = if frame < first[0] {
-            (curve.channel >> 4) & 3
-        } else {
-            (curve.channel >> 6) & 3
-        };
-        match cycle {
-            3 => return Ok(Some(0.)),
-            2 | 1 if span > 0. => {
-                let k = ((frame - first[0]) / span).floor();
-                t = frame - k * span;
-                if cycle == 1 {
-                    offset = k * (last[1] - first[1]);
+    let mut t = frame;
+    if frame > last[0] {
+        match (curve.channel >> 6) & 3 {
+            0 => return Ok(Some(last[1])),
+            1 => return Ok(Some(last[1] + (frame - last[0]) * last[3])),
+            2 if span > 0. => {
+                while t > last[0] {
+                    t -= span;
                 }
             }
-            _ => return Ok(Some(if frame < first[0] { first[1] } else { last[1] })),
+            2 => return Ok(Some(last[1])),
+            _ => return Ok(Some(0.)),
+        }
+    } else if frame < first[0] {
+        match (curve.channel >> 4) & 3 {
+            0 => return Ok(Some(first[1])),
+            1 => return Ok(Some(first[1] - (first[0] - frame) * first[2])),
+            2 if span > 0. => {
+                while t < first[0] {
+                    t += span;
+                }
+            }
+            2 => return Ok(Some(first[1])),
+            _ => return Ok(Some(0.)),
         }
     }
     let mut i = start;
@@ -259,17 +272,20 @@ pub fn sample_curve(m: &InterpolatedMotion, curve: &Curve, frame: f32) -> io::Re
         i += 1;
     }
     let left = key(i)?;
-    if i + 1 >= end {
-        return Ok(Some(left[1] + offset));
+    if i + 1 >= end || left[0] == t {
+        return Ok(Some(left[1]));
     }
     let right = key(i + 1)?;
     let dt = right[0] - left[0];
     if dt <= 0. {
-        return Ok(Some(right[1] + offset));
+        return Ok(Some(right[1]));
+    }
+    let kind = m.keys[i][0] & 3;
+    if kind == 0 {
+        return Ok(Some(left[1]));
     }
     let n = (t - left[0]) / dt;
-    let value = match m.keys[i][0] & 3 {
-        0 => left[1],
+    let value = match kind {
         1 => left[1] + (right[1] - left[1]) * n,
         2 => {
             let (n2, n3) = (n * n, n * n * n);
@@ -283,7 +299,7 @@ pub fn sample_curve(m: &InterpolatedMotion, curve: &Curve, frame: f32) -> io::Re
     if !value.is_finite() {
         return Err(invalid("nonfinite curve sample"));
     }
-    Ok(Some(value + offset))
+    Ok(Some(value))
 }
 
 fn set_channel(local: &mut Local, channel: u8, value: f32) {
@@ -437,6 +453,19 @@ pub fn evaluate_shared(
 
 /// Evaluates every joint of `m` at `frame` (key-time units).
 pub fn evaluate(bones: &[BoneRecord], m: &InterpolatedMotion, frame: f32) -> io::Result<Evaluated> {
+    evaluate_with_clock(bones, m, frame, frame)
+}
+
+/// [`evaluate`] with the expression time node (kind 30) reading `clock`
+/// instead of `frame`. The exe passes its motion clock there (FUN_1401d2c80,
+/// context +0x30); the local PS2 reference adapter never sets that clock, so
+/// comparisons with it pass 0.
+pub fn evaluate_with_clock(
+    bones: &[BoneRecord],
+    m: &InterpolatedMotion,
+    frame: f32,
+    clock: f32,
+) -> io::Result<Evaluated> {
     if m.raw.is_some() {
         return Err(invalid(
             "raw matrices require stored-matrix inspection sampling",
@@ -699,14 +728,20 @@ pub fn evaluate(bones: &[BoneRecord], m: &InterpolatedMotion, frame: f32) -> io:
     let mut taken = 0;
     for &j in &order {
         if flags[j] & 3 == 1 {
+            // A flag-128 joint past the end of the effector list aims at the
+            // next joint, as without the flag (M_EX730 5 has the flag and an
+            // empty list; the reference aims it at index + 1).
             aim_target[j] = if flags[j] & 128 != 0 {
                 let t = effectors.get(taken).copied();
                 taken += 1;
-                t
+                t.or(Some(j + 1))
             } else {
                 Some(j + 1)
             };
-        } else if flags[j] & 128 != 0 {
+        } else if flags[j] & 128 != 0 && flags[j] & 3 != 0 {
+            // Chains of levels 2 and 3 take an effector entry too; joints
+            // without an IK level do not (FUN_1401d3b80 reads the list only
+            // under an IK level).
             taken += 1;
         }
     }
@@ -724,7 +759,8 @@ pub fn evaluate(bones: &[BoneRecord], m: &InterpolatedMotion, frame: f32) -> io:
                     nodes: &nodes,
                     locals: &locals,
                     world: &world,
-                    frame,
+                    clock,
+                    motion: m,
                 };
                 if let Some(v) = ctx.eval(node, 0).filter(|v| v.is_finite()) {
                     // Expression rotations are degrees (reference converts).
@@ -811,10 +847,12 @@ pub fn evaluate(bones: &[BoneRecord], m: &InterpolatedMotion, frame: f32) -> io:
                 .filter(|c| c.constrained == end && c.temporary_active && c.kind == 0)
                 .map(|c| c.source)
                 .collect();
+            // The end joint's turn solves the chain only when the end has
+            // the chain-end flag (4); an end without it (an aim joint ending
+            // a chain, B_EX420) is solved here whatever the order.
+            let end_turn = flags[end] & 4 != 0 && flags[mid] & 32 != 0;
             if parents[end] == mid as i32
                 && parents[mid] == j as i32
-                && flags[end] & 4 != 0
-                && flags[mid] & 32 != 0
                 && !targets.is_empty()
                 // A target the order has not reached yet is read when the
                 // end joint's turn comes instead.
@@ -823,14 +861,11 @@ pub fn evaluate(bones: &[BoneRecord], m: &InterpolatedMotion, frame: f32) -> io:
                 // (they may read the limb); chains processed in a row are
                 // solved at the end joint's turn, which matched the
                 // reference in every such case checked.
-                && order_pos[end] > order_pos[j] + 2
+                && (!end_turn || order_pos[end] > order_pos[j] + 2)
             {
-                let target = if targets.len() >= 2 {
-                    add(world[targets[0]].translation, world[targets[1]].translation)
-                        .map(|v| v * 0.5)
-                } else {
-                    world[targets[0]].translation
-                };
+                // The first position source is the target, as at the end
+                // joint's turn below.
+                let target = world[targets[0]].translation;
                 // The chain's own expressions (roll channels) take effect
                 // before the solve reads them.
                 for &(joint, channel, node) in &expressions {
@@ -839,7 +874,8 @@ pub fn evaluate(bones: &[BoneRecord], m: &InterpolatedMotion, frame: f32) -> io:
                             nodes: &nodes,
                             locals: &locals,
                             world: &world,
-                            frame,
+                            clock,
+                            motion: m,
                         };
                         if let Some(v) = ctx.eval(node, 0).filter(|v| v.is_finite()) {
                             let v = if (3..=5).contains(&channel) {
@@ -872,20 +908,24 @@ pub fn evaluate(bones: &[BoneRecord], m: &InterpolatedMotion, frame: f32) -> io:
                     pole,
                 );
                 stats.ik_chains_solved += 1;
+                write_back(&mut locals, &world, &parents, &flags, [j, mid]);
                 solved_end[end] = true;
                 solved_mid[mid] = true;
             }
         }
         // The reference collects a joint's constraints first and then applies
-        // them in a fixed order: position sources, the position limit, the
-        // rotation limit, then rotation constraints (opt1_fk_translation
-        // 0x12bb34 runs the limit after the position source).
+        // them in a fixed order: the scale source, position sources, the
+        // position limit, the rotation limit, then rotation constraints
+        // (opt1_fk_translation 0x12bb34 runs the limit after the position
+        // source).
         let mut own: Vec<&Constraint> = constraints.iter().filter(|c| c.constrained == j).collect();
+        let mut chain_done = false;
         own.sort_by_key(|c| match c.kind {
-            0 => 0,
-            12 => 1,
-            13 => 2,
-            _ => 3,
+            6 => 0,
+            0 => 1,
+            12 => 2,
+            13 => 3,
+            _ => 4,
         });
         for c in own {
             // The reference evaluator gates on the temporary-active byte only.
@@ -914,6 +954,15 @@ pub fn evaluate(bones: &[BoneRecord], m: &InterpolatedMotion, frame: f32) -> io:
                         && flags[mid as usize] & 32 != 0
                         && flags[top as usize] & 3 != 0
                     {
+                        if chain_done {
+                            continue;
+                        }
+                        // The chain reaches for the end joint's first
+                        // position source only; a second one is ignored
+                        // (FUN_1401d3b80 stops its target search at the
+                        // first match; P_EX100 784).
+                        chain_done = true;
+                        let target = source.translation;
                         let above = parents[top as usize];
                         let parent_frame = if above >= 0 {
                             world[above as usize]
@@ -932,10 +981,17 @@ pub fn evaluate(bones: &[BoneRecord], m: &InterpolatedMotion, frame: f32) -> io:
                             parent_frame,
                             flags[top as usize] & 3 == 3,
                             [top as usize, mid as usize, j],
-                            source.translation,
+                            target,
                             pole,
                         );
                         stats.ik_chains_solved += 1;
+                        write_back(
+                            &mut locals,
+                            &world,
+                            &parents,
+                            &flags,
+                            [top as usize, mid as usize],
+                        );
                         if flags[j] & 8 != 0 {
                             // Reference evaluation: the end joint's rotation is
                             // its own local rotation in character space.
@@ -950,22 +1006,44 @@ pub fn evaluate(bones: &[BoneRecord], m: &InterpolatedMotion, frame: f32) -> io:
                     }
                 }
                 2 => world[j].rotation = source.rotation,
+                // Scale: the joint takes the source's world scale and its
+                // scale channels become that over the parent's (FUN_1401d3b80
+                // sets the scale before the joint's other constraints).
+                6 => {
+                    world[j].scale = source.scale;
+                    if parent >= 0 {
+                        let ps = world[parent as usize].scale;
+                        locals[j].scale = std::array::from_fn(|k| {
+                            if ps[k].abs() > 1e-6 {
+                                source.scale[k] / ps[k]
+                            } else {
+                                source.scale[k]
+                            }
+                        });
+                    } else {
+                        locals[j].scale = source.scale;
+                    }
+                }
                 3 => {
                     // Reference aim: in the parent frame, local +X points from
                     // the joint's local translation to the source, the up
                     // reference is the parent's +Y, and the joint's own
                     // animated X rotation is applied as roll about the aim.
-                    let (pr, pt) = if parent < 0 {
-                        (IDENTITY, [0.; 3])
+                    // The frame is the parent's scaled matrix (FUN_1401d3b80
+                    // inverts the scaled world matrix), so a non-uniform
+                    // parent scale skews the local direction.
+                    let (pr, pt, ps) = if parent < 0 {
+                        (IDENTITY, [0.; 3], [1.; 3])
                     } else {
-                        (
-                            world[parent as usize].rotation,
-                            world[parent as usize].translation,
-                        )
+                        let w = world[parent as usize];
+                        (w.rotation, w.translation, w.scale)
                     };
                     let target = rotate(qconj(pr), sub(source.translation, pt));
                     let here = rotate(qconj(pr), sub(world[j].translation, pt));
-                    let to = sub(target, here);
+                    let to: Vec3 = std::array::from_fn(|k| {
+                        let d = target[k] - here[k];
+                        if ps[k].abs() > 1e-6 { d / ps[k] } else { d }
+                    });
                     if let Some(x) = normalize(to) {
                         let side = cross(to, [0., 1., 0.]);
                         if let Some(y) = normalize(cross(side, to)) {
@@ -976,20 +1054,36 @@ pub fn evaluate(bones: &[BoneRecord], m: &InterpolatedMotion, frame: f32) -> io:
                         }
                     }
                 }
+                // A chain end keeps its solved position: the reference reads
+                // the position limit only for joints that are not chain ends
+                // (FUN_1401d3b80, chain-end branch; N_BB080_RTN 0).
+                12 if chain_done || solved_end[j] => continue,
                 12 => {
-                    // Limited in the parent frame around the source position.
+                    // Limited in the parent frame around the source position,
+                    // in local translation units: the exe limits the joint's
+                    // translation channels against the source taken through
+                    // the inverse of the parent's scaled matrix.
                     if let Some(l) = c.limiter.and_then(|i| limiters.get(i)) {
-                        let (pr, pt) = if parent < 0 {
-                            (IDENTITY, [0.; 3])
+                        let (pr, pt, ps) = if parent < 0 {
+                            (IDENTITY, [0.; 3], [1.; 3])
                         } else {
-                            (
-                                world[parent as usize].rotation,
-                                world[parent as usize].translation,
-                            )
+                            let w = world[parent as usize];
+                            (w.rotation, w.translation, w.scale)
                         };
-                        let local = rotate(qconj(pr), sub(world[j].translation, pt));
-                        let center = rotate(qconj(pr), sub(source.translation, pt));
-                        world[j].translation = add(pt, rotate(pr, l.apply(center, local)));
+                        let unscale = |v: Vec3| -> Vec3 {
+                            std::array::from_fn(|k| {
+                                if ps[k].abs() > 1e-6 {
+                                    v[k] / ps[k]
+                                } else {
+                                    v[k]
+                                }
+                            })
+                        };
+                        let local = unscale(rotate(qconj(pr), sub(world[j].translation, pt)));
+                        let center = unscale(rotate(qconj(pr), sub(source.translation, pt)));
+                        let limited = l.apply(center, local);
+                        let scaled: Vec3 = std::array::from_fn(|k| limited[k] * ps[k]);
+                        world[j].translation = add(pt, rotate(pr, scaled));
                     }
                 }
                 13 => {
@@ -1070,6 +1164,27 @@ pub fn evaluate(bones: &[BoneRecord], m: &InterpolatedMotion, frame: f32) -> io:
     })
 }
 
+/// Flag 64 on a solved chain joint: its rotation channels are rewritten from
+/// the solved matrix (FUN_1401ab290), so later expressions read them.
+fn write_back(
+    locals: &mut [Local],
+    world: &[World],
+    parents: &[i32],
+    flags: &[u8],
+    joints: [usize; 2],
+) {
+    for j in joints {
+        if flags[j] & 64 == 0 {
+            continue;
+        }
+        let pr = match parents[j] {
+            p if p < 0 => IDENTITY,
+            p => world[p as usize].rotation,
+        };
+        locals[j].rotation = euler_near(qmul(qconj(pr), world[j].rotation), locals[j].rotation);
+    }
+}
+
 /// Rotation whose images of the unit X/Y/Z axes are `x`, `y`, `z`.
 fn from_basis(x: Vec3, y: Vec3, z: Vec3) -> Quat {
     // Column-vector matrix R = [x y z]; standard trace-based conversion.
@@ -1130,9 +1245,6 @@ fn solve_two_joint(
     pole: Option<Vec3>,
 ) {
     let [l1, l2] = lengths;
-    if l1 < 1e-4 || l2 < 1e-4 {
-        return;
-    }
     let inv = qconj(parent.rotation);
     let p0 = rotate(inv, sub(world[a].translation, parent.translation));
     let pt = rotate(inv, sub(target, parent.translation));
@@ -1149,7 +1261,14 @@ fn solve_two_joint(
         from_basis(dir, y, z),
         axis_angle([1., 0., 0.], locals[a].rotation[0]),
     );
-    let cosine = ((dist * dist - l1 * l1 - l2 * l2) / (2. * l1 * l2)).clamp(-1., 1.);
+    // Segment lengths carry the joints' scale, so they may be zero or
+    // negative; the reference only guards the zero product (FUN_1401c57b0).
+    let product = 2. * l1 * l2;
+    let cosine = if product != 0. {
+        ((dist * dist - l1 * l1 - l2 * l2) / product).clamp(-1., 1.)
+    } else {
+        1.
+    };
     let mut sine = (1. - cosine * cosine).max(0.).sqrt();
     if arm {
         sine = -sine;
@@ -1385,7 +1504,9 @@ struct ExprContext<'a> {
     nodes: &'a [Node],
     locals: &'a [Local],
     world: &'a [World],
-    frame: f32,
+    /// The value the time node (kind 30) reads.
+    clock: f32,
+    motion: &'a InterpolatedMotion,
 }
 impl ExprContext<'_> {
     /// Current local channels of `j`: the stored channel values, as the
@@ -1521,11 +1642,26 @@ impl ExprContext<'_> {
             27 => f32::from(a()? <= b()?),
             28 => f32::from(a()? != 0. && b()? != 0.),
             29 => f32::from(a()? != 0. || b()? != 0.),
-            30 => self.frame,
+            30 => self.clock,
             31 => n.value,
+            // FCURVE: the curve `cdr` of the combined forward + inverse list
+            // sampled at the time `car` evaluates to, scaled by 60 / fps;
+            // kind 43 returns the sample in degrees (FUN_1401d9950).
+            15 | 43 => {
+                let m = self.motion;
+                let index = usize::try_from(n.cdr).ok()?;
+                let curve = if index < m.forward_curves.len() {
+                    m.forward_curves.get(index)
+                } else {
+                    m.inverse_curves.get(index - m.forward_curves.len())
+                }?;
+                let fps = m.frame_window().map_or(0., |w| w.2);
+                let time = if fps > 0. { a()? * 60. / fps } else { a()? };
+                let v = sample_curve(m, curve, time).ok()??;
+                if n.kind == 43 { v * RAD_TO_DEG } else { v }
+            }
             32..=40 => channel(n.kind)?,
             41 | 42 => 0.,
-            15 | 43 => a()?,
             _ => return None,
         })
     }
@@ -1738,6 +1874,102 @@ mod tests {
         let again = from_euler(e);
         let dot = q.iter().zip(&again).map(|(a, b)| a * b).sum::<f32>().abs();
         assert!(dot > 0.9999, "{e:?} {dot}");
+    }
+
+    /// Two linear keys: (0, 1) with tangents in 0.5 / out 2, and (10, 3) with
+    /// in 0.25 / out 0.75, at 30 fps. Synthetic bytes only.
+    fn two_key_motion() -> (InterpolatedMotion, Curve) {
+        let table = || crate::motion::Table {
+            offset: 0,
+            stride: 0,
+            bytes: Vec::new(),
+        };
+        let mut header = vec![0u32; 36];
+        header[34] = 30f32.to_bits();
+        let m = InterpolatedMotion {
+            raw: None,
+            header_words: [0; 4],
+            interpolated_header_words: header,
+            bone_count: 1,
+            total_bone_count: 1,
+            initial_poses: Vec::new(),
+            forward_curves: Vec::new(),
+            inverse_curves: Vec::new(),
+            keys: vec![[1, 0, 0, 1], [(1 << 2) | 1, 1, 2, 3]],
+            key_tail_bytes: Vec::new(),
+            time_bits: vec![0f32.to_bits(), 10f32.to_bits()],
+            value_bits: vec![1f32.to_bits(), 3f32.to_bits()],
+            tangent_bits: [0.5f32, 2., 0.25, 0.75].map(f32::to_bits).to_vec(),
+            constraints: table(),
+            activations: table(),
+            limiters: table(),
+            expressions: table(),
+            expression_nodes: table(),
+            helpers: table(),
+            joints: table(),
+            root: table(),
+            external_effectors: table(),
+            extra_sha256: String::new(),
+            extra_size: 0,
+        };
+        let curve = Curve {
+            joint_id: 0,
+            channel: 3,
+            key_count: 2,
+            key_start: 0,
+        };
+        (m, curve)
+    }
+
+    #[test]
+    fn curve_cycles_past_the_keys() {
+        let (m, mut curve) = two_key_motion();
+        let at = |curve: &Curve, t: f32| sample_curve(&m, curve, t).unwrap().unwrap();
+        assert_eq!(at(&curve, 5.), 2.);
+        // Type 0 holds the end keys.
+        assert_eq!(at(&curve, 12.), 3.);
+        assert_eq!(at(&curve, -2.), 1.);
+        // Type 1 extends along the last key's out-tangent and the first
+        // key's in-tangent.
+        curve.channel = 3 | (1 << 4) | (1 << 6);
+        assert_eq!(at(&curve, 12.), 3. + 2. * 0.75);
+        assert_eq!(at(&curve, -2.), 1. - 2. * 0.5);
+        // Type 2 repeats the key span, type 3 gives zero.
+        curve.channel = 3 | (2 << 4) | (2 << 6);
+        assert_eq!(at(&curve, 15.), 2.);
+        assert_eq!(at(&curve, -5.), 2.);
+        curve.channel = 3 | (3 << 4) | (3 << 6);
+        assert_eq!(at(&curve, 12.), 0.);
+        assert_eq!(at(&curve, -2.), 0.);
+    }
+
+    #[test]
+    fn expression_curve_nodes_scale_time_and_convert_degrees() {
+        let (mut m, curve) = two_key_motion();
+        m.forward_curves = vec![curve];
+        let node = |kind: i8, value: f32, car: i16, cdr: i16| Node {
+            kind,
+            global: false,
+            element: -1,
+            value,
+            car,
+            cdr,
+        };
+        // Curve 0 at 2.5 * 60 / 30 = 5 gives 2; kind 43 returns degrees.
+        let nodes = [
+            node(43, 0., 2, 0),
+            node(15, 0., 2, 0),
+            node(31, 2.5, -1, -1),
+        ];
+        let ctx = ExprContext {
+            nodes: &nodes,
+            locals: &[],
+            world: &[],
+            clock: 0.,
+            motion: &m,
+        };
+        assert_eq!(ctx.eval(1, 0), Some(2.));
+        assert_eq!(ctx.eval(0, 0), Some(2. * RAD_TO_DEG));
     }
 
     #[test]

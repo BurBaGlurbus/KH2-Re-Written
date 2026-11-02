@@ -55,7 +55,13 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     };
     let mut worst = vec![(0f32, 0f32); compared];
     for (sample, &tick) in ticks.iter().enumerate() {
-        let e = motion_eval::evaluate(&skinning.bones, &m, tick * scale)?;
+        // EXPR_CLOCK=<v> sets the expression time node's clock (the local
+        // reference adapter leaves it at 0); default: the sampled frame.
+        let clock = match std::env::var("EXPR_CLOCK") {
+            Ok(v) => v.parse()?,
+            Err(_) => tick * scale,
+        };
+        let e = motion_eval::evaluate_with_clock(&skinning.bones, &m, tick * scale, clock)?;
         if let Ok(list) = std::env::var("SHOW_JOINTS") {
             for j in list.split(',').filter_map(|v| v.parse::<usize>().ok()) {
                 let w = e.joints[j];
