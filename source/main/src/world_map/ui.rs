@@ -143,6 +143,9 @@ pub struct Ui {
     /// The Gummi menu's layout (`gumimenu/us/gumimenu.bar` `0000`) and its
     /// records, transitions and texts.
     pub gummi: Option<(Menu2ld, GummiData)>,
+    /// The Gummi flight's sprites (`gumibattle/sprite/us/sprite.bar`), for
+    /// the result panel.
+    pub gummi_sprites: Option<Menu2ld>,
 }
 
 /// The Gummi menu's files (the menu mode's loads, FUN_140243bc0).
@@ -291,6 +294,10 @@ impl Ui {
             field: None,
             gummi: load_gummi(source, library)
                 .map_err(|e| eprintln!("Gummi menu unavailable: {e}"))
+                .ok(),
+            gummi_sprites: locate(library, "gumibattle/sprite/us/sprite.bar")
+                .and_then(|(i, o, h)| menu_screen::load(source, i, o, h))
+                .map_err(|e| eprintln!("Gummi sprites unavailable: {e}"))
                 .ok(),
         };
         // The world map is area 0 of world 15 (FUN_140154e20).
