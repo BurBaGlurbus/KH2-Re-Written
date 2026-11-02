@@ -274,6 +274,8 @@ pub struct Data {
     pub party_locked: Vec<bool>,
     /// Which member's model each card starts with (empty: its own).
     pub party_models: Vec<usize>,
+    /// An event's change of party: the camp opens on its notice (state 0x15).
+    pub party_notice: Option<party::PartyNotice>,
     /// The Status rows' new bits of this camp (FUN_140369520: forms 0..4,
     /// summons 5..8) and the seen bits (save+0x4274).
     pub status_new: u16,
@@ -392,6 +394,8 @@ pub enum State {
     /// 0x14: pick a member; 0x16: pick the one to swap with.
     Party,
     PartySwap,
+    /// State 0x15: an event changed the party, and the camp says who.
+    PartyNotice,
     /// 0x19 characters, 0x1a Sora's settings, 0x1d–0x1f a choice popup of
     /// category 0 shortcut / 1 MP Charge / 2 Auto-Reload, 0x1c the
     /// Auto-Reload warning.
@@ -1041,6 +1045,7 @@ impl Camp {
                     State::AbilityPopup(_) => self.ability_popup(seq, &pad, &mut sounds),
                     State::Party => self.party(seq, &pad, &mut sounds),
                     State::PartySwap => self.party_swap(seq, &pad, &mut sounds),
+                    State::PartyNotice => self.party_notice(seq, &pad, &mut sounds),
                     State::CustomizeChars => self.customize_chars(seq, &pad, &mut sounds),
                     State::CustomizeList => self.customize_list(seq, &pad, &mut sounds),
                     State::CustomizePopup(_) => self.customize_popup(seq, &pad, &mut sounds),
@@ -1104,6 +1109,7 @@ impl Camp {
             State::AbilityPopup(_) => (&self.ability_ui.popup, RowGroupsFor::None),
             State::Party => (&self.party_ui.cards, RowGroupsFor::None),
             State::PartySwap => (&self.party_ui.swap, RowGroupsFor::None),
+            State::PartyNotice => (&ui.choices, RowGroupsFor::Fixed(items::CHOICE_ROWS)),
             State::CustomizeChars => (&self.custom_ui.chars, RowGroupsFor::Top),
             State::CustomizeList => (&self.custom_ui.list.list, RowGroupsFor::None),
             State::CustomizePopup(_) => (&self.custom_ui.popup.list, RowGroupsFor::None),
@@ -2566,6 +2572,40 @@ impl Camp {
 
     pub fn config_cursor(&self) -> usize {
         self.config_list.cursor
+    }
+
+    /// FUN_1402e4bf0: an event's camp, on the party notice.
+    pub fn open_party_notice(layout: &Layout, data: Data, memory: Memory) -> Self {
+        let quiet = Memory {
+            notices_seen: u16::MAX,
+            ..memory
+        };
+        let (mut camp, _) = Camp::open(layout, data, quiet);
+        camp.memory.notices_seen = memory.notices_seen;
+        let seq = &layout.sequences[SEQUENCE];
+        camp.layout.set_scene(SCENE_IDLE, None);
+        for id in camp.top.rows.clone() {
+            camp.sprites.kill(id);
+        }
+        for id in [camp.frame_sprite, camp.status_block, camp.prompt]
+            .into_iter()
+            .flatten()
+        {
+            camp.sprites.kill(id);
+        }
+        if let Some(h) = camp.help.take() {
+            camp.sprites.kill(h);
+        }
+        let label = camp
+            .data
+            .entries
+            .iter()
+            .find(|e| e.id == 3)
+            .map(|e| e.label.clone())
+            .unwrap_or_default();
+        camp.tab_text(0, label);
+        camp.enter_party_notice(seq);
+        camp
     }
 
     /// The camp reopened straight on Config, on the remembered page, with

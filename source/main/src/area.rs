@@ -883,6 +883,11 @@ impl AreaSource {
         }
     }
 
+    /// A member preset of `memt`'s tail (sub-op 4's value).
+    pub fn member_preset(&self, index: usize) -> Option<u32> {
+        self.members.presets.get(index).copied()
+    }
+
     /// An object's model name.
     pub fn model_name(&self, object: u32) -> Option<String> {
         let &i = self.object_index.get(&object)?;

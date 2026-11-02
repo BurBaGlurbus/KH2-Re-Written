@@ -1708,15 +1708,26 @@ impl Camp {
     /// FUN_140306f30 + FUN_140306cc0: the box (G6 → 7) and its choice rows
     /// on the box at its group's (LightPositionX, TextPositionY).
     pub(super) fn open_dialog(&mut self, seq: &Sequence, text: Vec<u8>, choices: Vec<Vec<u8>>) {
-        let size = seq.groups[DIALOG[0]].text_scale as f32;
+        self.open_dialog_in(seq, DIALOG, text, choices);
+    }
+
+    /// The same box in another's groups (in, idle, out).
+    pub(super) fn open_dialog_in(
+        &mut self,
+        seq: &Sequence,
+        groups: [usize; 3],
+        text: Vec<u8>,
+        choices: Vec<Vec<u8>>,
+    ) {
+        let size = seq.groups[groups[0]].text_scale as f32;
         let mut t = Self::kept_text(text, size);
         t.align = 2;
         let d = self
             .sprites
-            .create(seq, PRIO_DIALOG, ART, DIALOG[0], Some(DIALOG[1]), Some(t));
-        self.closers.push((d, DIALOG[2]));
+            .create(seq, PRIO_DIALOG, ART, groups[0], Some(groups[1]), Some(t));
+        self.closers.push((d, groups[2]));
         self.item_ui.dialog = Some(d);
-        let bg = &seq.groups[DIALOG[0]];
+        let bg = &seq.groups[groups[0]];
         let at = [bg.light_position_x as f32, bg.text_position_y as f32];
         let rg = &seq.groups[CHOICE_ROWS.appear];
         let (pitch, dx) = (rg.ui_padding as f32, rg.text_position_x as f32);

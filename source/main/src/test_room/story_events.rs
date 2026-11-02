@@ -75,6 +75,25 @@ pub fn tick(
         .source
         .fire_entry(&mut a.current.state.setup.events, index);
     let name = event.map(|(name, _)| event_name(name));
+    // FUN_1403a46e0: sub-op 4 works on the row of the jump's world; sub-op 7's
+    // mode shows the notice, 2 also stripping whoever left.
+    let notice = entry.party.filter(|&p| p >= 0).and_then(|party| {
+        let world = match jump {
+            Some(SignalJump::Field { world, .. }) => world,
+            _ => here.0,
+        };
+        let preset = a.source.member_preset(party as usize)?;
+        let old = game_save::world_party(&game.save.party_table, world);
+        let new = game_save::row_with_presets(old, &[preset]);
+        if let Some(to) = game.save.party_table.get_mut(world as usize) {
+            *to = new;
+        }
+        let mode = entry.mode.unwrap_or(0);
+        if mode == 2 {
+            game_save::strip_departing(&mut game, &old, &new);
+        }
+        (mode != 0).then_some((old, mode))
+    });
     game.event(
         serde_json::json!({"event":"story_signal","tick":tick,"world":here.0,
         "area":here.1,"programs":a.current.programs,"flag":flag,"story_event":name,
@@ -102,10 +121,14 @@ pub fn tick(
                 &format!("{code}:{}:{name}", here.1),
                 (world, place, entrance),
                 programs,
+                notice,
             );
         }
         // No event: the jump as a gate's (FUN_1403a46e0 → FUN_140152990).
         None => {
+            // [I] FUN_140152a90 waits for the camp: the notice opens as the
+            // next room starts here, where no camp waits for the jump.
+            game.party_notice = notice;
             let mut fade = Fade::default();
             fade.fade_out(15, false);
             a.transition = Some(Transition {
@@ -128,6 +151,7 @@ fn start_event(
     event: &str,
     (world, number, entrance): (u8, u8, u8),
     programs: [i16; 3],
+    notice: Option<([u8; 4], i16)>,
 ) {
     let mut image = game_save::capture(game, c, Some(a));
     image.set_u8(field::WORLD, world);
@@ -154,15 +178,25 @@ fn start_event(
     let started = (game.autoplay.is_none() || crate::save_files::chain_test())
         && crate::save_files::write_handoff(&image).is_ok()
         && match (args.first(), args.get(1), &config) {
-            (Some(root), Some(manifest), Some(config)) => crate::save_files::start_next(vec![
-                "event".into(),
-                root.to_string_lossy().into_owned(),
-                manifest.to_string_lossy().into_owned(),
-                "--event".into(),
-                event.to_owned(),
-                "--then-room".into(),
-                config.to_string_lossy().into_owned(),
-            ]),
+            (Some(root), Some(manifest), Some(config)) => crate::save_files::start_next(
+                vec![
+                    "event".into(),
+                    root.to_string_lossy().into_owned(),
+                    manifest.to_string_lossy().into_owned(),
+                    "--event".into(),
+                    event.to_owned(),
+                    "--then-room".into(),
+                    config.to_string_lossy().into_owned(),
+                ]
+                .into_iter()
+                .chain(notice.into_iter().flat_map(|(old, mode)| {
+                    [
+                        "--party-notice".to_owned(),
+                        party_room::notice_arg(old, mode),
+                    ]
+                }))
+                .collect::<Vec<_>>(),
+            ),
             _ => false,
         };
     if started {

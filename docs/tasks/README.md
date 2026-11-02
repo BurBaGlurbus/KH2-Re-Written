@@ -298,3 +298,4 @@ Records through T128 retain historical commands and paths. See [the folder guide
 | [T352](T352-party-swap-member-settings.md) | A party swap waits for the next area; guests' settings; cursor memory (issue #34, parts) | PASS in the room; #34 stays open for guests. |
 | [T353](T353-partner-command-grab.md) | Sora takes a script's jump, so the grab and the partner command run (issue #138) | PASS in the room; the press's no-op is read from code. |
 | [T354](T354-world-guests.md) | World guests: the reserve card, the swap at the camp's close, members from the row (issue #34, parts) | PASS in the room; #34 stays open for the notice. |
+| [T355](T355-party-notice.md) | The event camp's party notice and the row an event changes (issue #34, last part) | PASS in the room, event chain included; no side-by-side. |

@@ -1464,6 +1464,88 @@ pub fn start_replace(game: &mut Game, i: usize, new: Reserve) {
     m.reload = Some((item, handle));
 }
 
+/// `--party-notice <row hex>:<mode>`: the row before the event, and its mode.
+pub fn parse_notice(v: &str) -> Option<([u8; 4], i16)> {
+    let (row, mode) = v.split_once(':')?;
+    let n = u32::from_str_radix(row, 16).ok()?;
+    Some((n.to_be_bytes(), mode.parse().ok()?))
+}
+
+pub fn notice_arg(row: [u8; 4], mode: i16) -> String {
+    format!("{:08x}:{mode}", u32::from_be_bytes(row))
+}
+
+/// FUN_140320680 and FUN_140320fc0: who came, who went, and the third line.
+pub fn notice_texts(
+    game: &Game,
+    c: &CampRes,
+    objects: &[u16],
+    world: u8,
+    old: [u8; 4],
+    mode: i16,
+) -> pause_menu::party::PartyNotice {
+    let row = game_save::world_party(&game.save.party_table, world);
+    let character = |t: u8| -> Option<u8> {
+        let o = *objects.get(t as usize)?;
+        let e = game
+            .party_reload
+            .as_ref()?
+            .objects
+            .iter()
+            .find(|e| e.object_id == u32::from(o))?;
+        Some(e.character as u8)
+    };
+    let names = |from: &[u8; 4], against: &[u8; 4]| -> Vec<u8> {
+        let mut text = Vec::new();
+        for b in game_save::party_changes(from, against) {
+            let t = game_save::party_type(b);
+            let Some(name) = character(t)
+                .and_then(|ch| party_source(c, ch))
+                .map(|s| &s.name)
+            else {
+                continue;
+            };
+            if !text.is_empty() {
+                text.extend([1, 1, 1]);
+            }
+            // A locked member's name has icon 10 before it.
+            if b & 0x80 != 0 {
+                text.extend([0x09, 0x0a]);
+            }
+            text.extend_from_slice(name);
+        }
+        text
+    };
+    // The last locked slot's message (0x1405bbb40).
+    let note = if mode == 2 {
+        c.source.party_notice_note.clone()
+    } else {
+        row[1..]
+            .iter()
+            .filter(|&&b| b & 0x80 != 0)
+            .filter_map(|&b| character(game_save::party_type(b)))
+            .filter_map(|ch| {
+                c.source
+                    .party_lock_notes
+                    .iter()
+                    .find(|n| n.0 == ch)
+                    .map(|n| n.1.clone())
+            })
+            .next_back()
+            .unwrap_or_default()
+    };
+    let t = &c.source.party_notice;
+    pause_menu::party::PartyNotice {
+        title: t[0].clone(),
+        in_label: t[1].clone(),
+        out_label: t[2].clone(),
+        ok: c.source.items.texts.ok.clone(),
+        came: names(&row, &old),
+        went: names(&old, &row),
+        note,
+    }
+}
+
 /// FUN_1403e2eb0 at each area load: the row names who stands in the field.
 /// A member the row holds as active, and a field member it doesn't, make a
 /// replacement (the row starting empty changes nothing). `KH2RW_PARTY` picks

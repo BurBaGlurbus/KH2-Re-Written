@@ -135,6 +135,57 @@ pub fn party_locked(row: &[u8; 4], slot: usize, absent: &[u8]) -> bool {
 /// The row's empty byte.
 const NO_MEMBER: u8 = 0x12;
 
+/// FUN_140320680: the bytes of `from` whose member `against` doesn't hold.
+pub fn party_changes(from: &[u8; 4], against: &[u8; 4]) -> Vec<u8> {
+    from[1..]
+        .iter()
+        .copied()
+        .filter(|&b| {
+            let t = party_type(b);
+            t != NO_MEMBER && !against.iter().any(|&o| party_type(o) == t)
+        })
+        .collect()
+}
+
+/// FUN_1403fd8d0: each member who left gives up its gear and items to the stock,
+/// and its abilities are unequipped.
+pub fn strip_departing(game: &mut Game, old: &[u8; 4], new: &[u8; 4]) {
+    let left: Vec<u8> = party_changes(old, new)
+        .into_iter()
+        .map(party_type)
+        .collect();
+    let mut given = Vec::new();
+    let mut strip = |save: &mut player::party_members::Save| {
+        for list in [&mut save.armor, &mut save.accessories, &mut save.items] {
+            for v in list.iter_mut() {
+                if *v != 0 {
+                    given.push(*v);
+                    *v = 0;
+                }
+            }
+        }
+        for a in save.abilities.iter_mut() {
+            *a &= 0x7fff;
+        }
+    };
+    for m in &mut game.party {
+        if left.contains(&character_type(m.kind.character)) {
+            strip(&mut m.save);
+        }
+    }
+    if let Some(r) = game.reserve.as_mut()
+        && left.contains(&character_type(r.character))
+    {
+        strip(&mut r.save);
+    }
+    if let Some(items) = game.items.as_mut() {
+        for id in given {
+            let n = items.stock.entry(id).or_insert(0);
+            *n = n.saturating_add(1).min(99);
+        }
+    }
+}
+
 /// A reserve's record, from the save when it holds one.
 pub fn load_reserve(r: &mut party_room::Reserve, base: &SaveData) {
     let p = Persistent::read(base);
@@ -1331,6 +1382,16 @@ impl JournalSave {
 #[cfg(test)]
 mod party_swap_tests {
     use super::*;
+
+    #[test]
+    fn a_notice_names_who_came_and_who_went() {
+        let old = [0, 1, 2, NO_MEMBER];
+        let new = [0, 3 | 0x80, 2, 1];
+        assert_eq!(party_changes(&new, &old), vec![3 | 0x80]);
+        assert_eq!(party_changes(&old, &new), Vec::<u8>::new());
+        let new = [0, 3, 2, NO_MEMBER];
+        assert_eq!(party_changes(&old, &new), vec![1]);
+    }
 
     const S: u8 = 0;
     const D: u8 = 1;

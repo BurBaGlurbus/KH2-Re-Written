@@ -31,6 +31,8 @@ pub(super) struct Ui {
     pub(super) models: Vec<usize>,
     /// `models` when the screen opened.
     entered: Vec<usize>,
+    /// The notice's lines and labels.
+    notice: Vec<Id>,
 }
 
 impl Ui {
@@ -46,11 +48,125 @@ impl Ui {
     }
 }
 
+/// State 0x15's texts (FUN_140320fc0).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct PartyNotice {
+    /// 0x846d, 0x846e, 0x846f, 0x9fcf.
+    pub title: Vec<u8>,
+    pub in_label: Vec<u8>,
+    pub out_label: Vec<u8>,
+    pub ok: Vec<u8>,
+    /// The names that came and went (FUN_140320680).
+    pub came: Vec<u8>,
+    pub went: Vec<u8>,
+    /// 0xcc69 or a lock message; empty for none.
+    pub note: Vec<u8>,
+}
+
+/// The notice's box, in, idle and out (0x1405bad90).
+const NOTICE: [usize; 3] = [9, 10, 11];
+/// The in and out lines and the third, and the labels' group (0x1405bbb30).
+const NOTICE_LINES: [usize; 3] = [0, 1, 123];
+const NOTICE_LABEL: usize = 123;
+const PRIO_NOTICE: u32 = 0x7547;
+
 impl Camp {
+    /// FUN_140320fc0 over FUN_140320b30: the Party screen with the notice on it.
+    /// After it the second pick's keys stay swapped, as FUN_140320fc0 leaves
+    /// them (party-spec §5.1).
+    pub(super) fn enter_party_notice(&mut self, seq: &Sequence) {
+        let Some(n) = self.data.party_notice.clone() else {
+            return;
+        };
+        self.enter_party(seq);
+        self.state = State::PartyNotice;
+        self.substate = 0;
+        self.party_ui.swap.keys = Some((bits::RIGHT, bits::LEFT));
+        let h = self.data.party_help[2].clone();
+        self.show_help(seq, h);
+        self.open_dialog_in(seq, NOTICE, n.title, vec![n.ok]);
+        let Some(boxed) = self.item_ui.dialog_box() else {
+            return;
+        };
+        let mut lines = Vec::new();
+        let mut y = seq.groups[NOTICE[0]].ui_padding as f32;
+        for (k, text) in [n.came, n.went, n.note].into_iter().enumerate() {
+            let group = NOTICE_LINES[k];
+            let g = &seq.groups[group];
+            let mut t = Text::new(text, TEXT_SIZE);
+            t.align = 2;
+            let s = self
+                .sprites
+                .create(seq, PRIO_NOTICE, ART, group, None, Some(t));
+            self.child(s, boxed);
+            self.sprites.get_mut(s).offset = [0., y];
+            self.closers.push((s, group));
+            y += g.ui_padding as f32;
+            lines.push(s);
+        }
+        for (k, label) in [n.in_label, n.out_label].into_iter().enumerate() {
+            let mut t = Text::new(label, TEXT_SIZE);
+            t.align = 2;
+            let s = self
+                .sprites
+                .create(seq, PRIO_NOTICE, ART, NOTICE_LABEL, None, Some(t));
+            self.child(s, lines[k]);
+            lines.push(s);
+        }
+        self.party_ui.notice = lines;
+    }
+
+    /// FUN_14031ff80.
+    pub(super) fn party_notice(
+        &mut self,
+        seq: &Sequence,
+        pad: &Pad,
+        sounds: &mut Vec<u32>,
+    ) -> bool {
+        let (pick, moved) = self.item_ui.choices.input(pad);
+        if self.substate == 2 {
+            let lines = self.party_ui.notice.clone();
+            if !self.dialog_alive() && lines.iter().all(|&s| !self.sprites.alive(s)) {
+                self.party_ui.notice.clear();
+                self.state = State::Party;
+                self.substate = 0;
+            } else if pad.trig != 0 {
+                self.kill_dialog();
+                for s in lines {
+                    self.sprites.kill(s);
+                }
+            }
+            return false;
+        }
+        if self.substate == 0 && self.group_of(self.item_ui.dialog_box()) == Some(NOTICE[1]) {
+            self.substate = 1;
+        }
+        if self.substate != 1 {
+            return false;
+        }
+        if let Some(s) = pick_sound(pick, moved, true) {
+            sounds.push(s);
+        }
+        if matches!(pick, Pick::Row(0) | Pick::Cancel) {
+            self.close_opt(seq, self.item_ui.dialog_box(), NOTICE[2]);
+            for &r in &self.item_ui.choices.rows.clone() {
+                self.close_opt(seq, Some(r), items::CHOICE_ROWS.close);
+            }
+            for s in self.party_ui.notice.clone() {
+                self.sprites.kill(s);
+            }
+            self.substate = 2;
+        }
+        moved
+    }
+
     /// The name cards' model pastes (party-spec §4): member i's render on
     /// card i at the card's context, with the card's alpha.
     pub(super) fn party_models(&self) -> Option<ModelLayer> {
-        if !matches!(self.state, State::Party | State::PartySwap) {
+        if !matches!(
+            self.state,
+            State::Party | State::PartySwap | State::PartyNotice
+        ) {
             return None;
         }
         let panel_alpha = self

@@ -1338,6 +1338,8 @@ pub struct Game {
     pub party: Vec<party_room::MemberRt>,
     /// The row's reserve (`row[3]`).
     pub reserve: Option<party_room::Reserve>,
+    /// An event changed the party: the row before it, and sub-op 7's mode.
+    pub party_notice: Option<([u8; 4], i16)>,
     pub items: Option<item_room::ItemRt>,
     /// Drive forms (None when the form tables could not be read).
     pub drive: Option<drive_room::DriveRt>,
@@ -2614,6 +2616,10 @@ pub struct CampSource {
     pub abilities: pause_menu::abilities::AbilityTexts,
     pub weapon_ability: u16,
     pub party_help: [Vec<u8>; 3],
+    /// 0x846d, 0x846e, 0x846f; 0xcc69; the lock messages by character.
+    pub party_notice: [Vec<u8>; 3],
+    pub party_notice_note: Vec<u8>,
+    pub party_lock_notes: Vec<(u8, Vec<u8>)>,
     /// The Status rows of the forms and Summons.
     pub status_texts: status_forms::Texts,
     pub customize: pause_menu::customize::CustomizeTexts,
@@ -3359,6 +3365,31 @@ pub fn load_camp_source(
     let mut party = msg(&[0xbb88, 0x846b, 0x846c])?.into_iter();
     let mut next = || party.next().unwrap_or_default();
     let party_help = [next(), next(), next()];
+    // The notice of an event's change of party (party-spec §8, §11).
+    let mut notice = msg(&[0x846d, 0x846e, 0x846f, 0xcc69])?.into_iter();
+    let party_notice = [
+        notice.next().unwrap_or_default(),
+        notice.next().unwrap_or_default(),
+        notice.next().unwrap_or_default(),
+    ];
+    let party_notice_note = notice.next().unwrap_or_default();
+    const LOCK_NOTES: [(u8, u32); 10] = [
+        (5, 0x8473),
+        (6, 0x8474),
+        (7, 0x8475),
+        (8, 0x8476),
+        (9, 0x8477),
+        (10, 0x8478),
+        (11, 0x8479),
+        (12, 0x847a),
+        (13, 0x847b),
+        (15, 0x847c),
+    ];
+    let party_lock_notes = LOCK_NOTES
+        .iter()
+        .map(|n| n.0)
+        .zip(msg(&LOCK_NOTES.map(|n| n.1))?)
+        .collect();
     let items = load_camp_items(system, |ids| {
         hud::load_messages_optional(
             source,
@@ -3385,6 +3416,9 @@ pub fn load_camp_source(
         abilities,
         weapon_ability,
         party_help,
+        party_notice,
+        party_notice_note,
+        party_lock_notes,
         status_texts,
         customize,
         equip_texts,
@@ -7290,6 +7324,10 @@ pub fn spawn_menu_slot(
     ));
     frame.add_image(menu_target, MENU_TARGET, true)
 }
+
+/// The ticks before an event's notice: the first area's row goes in and the
+/// field starts following it.
+const NOTICE_AFTER: u64 = 2;
 
 /// Which member a menu root belongs to.
 #[derive(Component)]
@@ -13559,7 +13597,10 @@ pub fn camp_tick(
             }
             let mut row = game_save::world_party(&game.save.party_table, world);
             let camp = game_save::camp_row(&row, &order);
-            let leaver = game_save::write_party_order(&mut row, &camp, true);
+            // `DAT_140742da4`: 1 for the player's camp, 0 or 2 for an event's,
+            // whose following jump rebuilds the field.
+            let field_camp = menu.data.party_notice.is_none();
+            let leaver = game_save::write_party_order(&mut row, &camp, field_camp);
             if let Some(to) = game.save.party_table.get_mut(world as usize) {
                 *to = row;
             }
@@ -13679,10 +13720,19 @@ pub fn camp_tick(
             game.event(serde_json::json!({"event":"camp_open","tick":tick}));
         }
     } else if c.curtain.is_none()
-        && (c.pad.pressed & 0x2 != 0 || std::mem::take(&mut game.camp_open_request))
+        // A member being replaced: the camp's order is read from the field.
+        && game.party.iter().all(|m| m.replacing.is_none())
+        && (c.pad.pressed & 0x2 != 0
+            || std::mem::take(&mut game.camp_open_request)
+            || (game.party_notice.is_some() && game.tick > NOTICE_AFTER))
         && !game.talking
         && (!game.versus || game.camp_request.is_some())
     {
+        let notice = if game.tick > NOTICE_AFTER {
+            game.party_notice.take()
+        } else {
+            None
+        };
         // FUN_1403030e0: the party count, the forms held, Pride Lands, the world
         // or the row against the last close zeroes the cursor memory.
         let world = area.as_deref().map_or(0, |a| a.current.world);
@@ -13702,6 +13752,14 @@ pub fn camp_tick(
         }
         c.memory_key = Some(key);
         let mut data = camp_data(c, panels, game.items.as_ref(), &settings, &side);
+        if let Some((old, mode)) = notice {
+            let objects = area
+                .as_deref()
+                .map_or(&[][..], |a| &a.current.members.objects);
+            data.party_notice = Some(party_room::notice_texts(
+                &game, c, objects, world, old, mode,
+            ));
+        }
         // A screen's request: its entries (the camp's own by id)
         // and its pages on the Config screen, the cursor on its first entry.
         let (menu, s) = if let Some(req) = game.camp_request.take() {
@@ -13728,6 +13786,8 @@ pub fn camp_tick(
             } else {
                 Camp::open(layout, data, memory)
             }
+        } else if data.party_notice.is_some() {
+            (Camp::open_party_notice(layout, data, c.memory), Vec::new())
         } else {
             Camp::open(layout, data, c.memory)
         };
@@ -14109,6 +14169,7 @@ pub fn camp_data(
         party_help: c.source.party_help.clone(),
         party_locked: side.party_locked.clone(),
         party_models: side.party_models.clone(),
+        party_notice: None,
         status_new: status_numbers.new & !c.status_seen,
         status_seen: c.status_seen,
         equip: pause_menu::equip::EquipData {
@@ -14937,6 +14998,7 @@ pub fn run(
     // `--load-image <file>`: start from a save image (the title's Load, tests);
     // `--save-dump <file>`: each written save also goes to a file (tests).
     let mut load_image: Option<save::data::SaveData> = None;
+    let mut party_notice = None;
     let mut save_dump: Option<PathBuf> = None;
     // Capture ticks replacing the unattended run's own list (research).
     let mut capture_at: Option<Vec<u64>> = None;
@@ -14986,6 +15048,10 @@ pub fn run(
             Some("--load-image") => {
                 let path = options.next().ok_or("save image absent")?;
                 load_image = Some(game_save::read_image(path)?);
+            }
+            Some("--party-notice") => {
+                let v = options.next().ok_or("party notice absent")?;
+                party_notice = party_room::parse_notice(&v.to_string_lossy());
             }
             Some("--save-dump") => {
                 save_dump = Some(options.next().cloned().ok_or("save dump file absent")?);
@@ -15754,6 +15820,7 @@ pub fn run(
         vibration_scan: None,
         sora_attack: std::mem::take(&mut loaded.kit.attack),
         reserve: None,
+        party_notice,
         party: loaded
             .party
             .into_iter()

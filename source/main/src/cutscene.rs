@@ -70,6 +70,8 @@ struct Event {
     /// `--then-room`: the room's arguments (Steam root, manifest, config) when
     /// a story event ends (FUN_1403a46e0's target, field side).
     then_room: Option<[PathBuf; 3]>,
+    /// Passed on to the room: an event's change of party.
+    party_notice: Option<PathBuf>,
     captures: Vec<f32>,
     captures_taken: usize,
     capture_pending: bool,
@@ -1023,6 +1025,10 @@ fn finish(
                     .to_string_lossy()
                     .into_owned(),
             );
+            if let Some(notice) = &event.party_notice {
+                args.push("--party-notice".into());
+                args.push(notice.to_string_lossy().into_owned());
+            }
             crate::save_files::start_next(args);
         }
         exit.write(AppExit::Success);
@@ -1042,6 +1048,7 @@ fn run(args: Vec<PathBuf>) -> Result<AppExit, Box<dyn std::error::Error>> {
     };
     let mut load_only = false;
     let mut then_room = None;
+    let mut party_notice = None;
     let mut bg_mask = u64::MAX;
     let mut autoplay = None;
     let mut pause_at = None;
@@ -1056,6 +1063,9 @@ fn run(args: Vec<PathBuf>) -> Result<AppExit, Box<dyn std::error::Error>> {
             Some("--then-room") => {
                 let config = options.next().cloned().ok_or("room config absent")?;
                 then_room = Some([args[0].clone(), args[1].clone(), config]);
+            }
+            Some("--party-notice") => {
+                party_notice = options.next().cloned();
             }
             Some("--pause-at") => {
                 pause_at = Some(
@@ -1183,6 +1193,7 @@ fn run(args: Vec<PathBuf>) -> Result<AppExit, Box<dyn std::error::Error>> {
         voices_started: 0,
         autoplay,
         then_room,
+        party_notice,
         captures,
         captures_taken: 0,
         capture_pending: false,
