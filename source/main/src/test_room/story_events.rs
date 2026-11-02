@@ -6,7 +6,9 @@
 //! writes, hands over one image and the event program starts the next field.
 //!
 //! A door raises signal 1 with its point id first (FUN_1403ffb40): an entry that
-//! answers takes the jump over, kind 3 going on to the door's own target.
+//! answers takes the jump over, kind 3 going on to the door's own target. The
+//! signals scripts raise (a mission's 37 and 38) reach the entries after the
+//! mission.
 //!
 //! Not here yet: other signals, a player's skip (FUN_1403a55b0), events with no
 //! jump (signal 0x4c) and those over a running field (`evtp` flags bit 0 clear).
@@ -16,6 +18,13 @@ use save::slots::field;
 
 /// `evtp` rows whose flags bit 0 is clear play over the running field.
 const OVER_THE_FIELD: [i16; 6] = [11, 12, 13, 14, 15, 17];
+
+/// Codes FUN_1403aabe0 hands elsewhere and returns from (FUN_1401518e0, the
+/// menus' FUN_1402e4570) before looking at the entries.
+const OTHER_HANDLERS: [i32; 32] = [
+    0x13, 0x66, 0x67, 0x68, 0x69, 0x6a, 0x6b, 0x6c, 0x6d, 0x6e, 0x6f, 0x70, 0x71, 0x72, 0x73, 0x74,
+    0x75, 0x83, 0x84, 0x85, 0x8a, 0x16, 0x46, 0x4f, 0x57, 0x58, 0x59, 0x62, 0x64, 0x65, 0x76, 0x81,
+];
 
 pub fn enabled() -> bool {
     std::env::var_os("KH2RW_STORY_EVENTS").is_some()
@@ -52,8 +61,21 @@ pub fn tick(
     }
     let here = (a.current.world, a.current.area);
     if *arrived == Some(here) {
+        // Signals raised in the area (FUN_1403aabe0 step 4), the mission
+        // having had them first.
+        for (code, arg) in std::mem::take(&mut game.story_signals) {
+            if a.transition.is_some() || OTHER_HANDLERS.contains(&code) {
+                continue;
+            }
+            if let Some(index) =
+                ::area::script::find_entry(&a.current.state.setup.events, code, arg)
+            {
+                run_entry(&mut game, &camp, a, index, code, None);
+            }
+        }
         return;
     }
+    game.story_signals.clear();
     *arrived = Some(here);
     // Load-time writes: op 0x19 (FUN_1403a24c0).
     for flag in a.current.state.setup.set_flags.clone() {

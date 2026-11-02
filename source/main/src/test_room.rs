@@ -1519,6 +1519,9 @@ pub struct Game {
     /// `trap_mission_failed` ran: a boss fight's room ends (boss_fight.rs).
     pub mission_failed: bool,
     pub mission_signals: Vec<(i32, i32)>,
+    /// The same signals, after the mission's, for the area's event entries
+    /// (story_events.rs; only with the switch on).
+    pub story_signals: Vec<(i32, i32)>,
     pub mission_cleared: bool,
     /// The game speed (DAT_140717424) a running overlay set, the share of a
     /// field step it has accumulated, and whether the field steps now.
@@ -16138,6 +16141,7 @@ pub fn run(
         mission_tried: false,
         mission_failed: false,
         mission_signals: Vec::new(),
+        story_signals: Vec::new(),
         mission_cleared: false,
         game_speed: 1.,
         speed_carry: 0.,

@@ -758,10 +758,22 @@ pub fn mission_tick(
     }
     medal_tick(&mut game, &mut gallery);
     reserved_signals(&mut game, &mut gallery);
-    let signals = std::mem::take(&mut game.mission_signals);
     let tick = game.tick;
+    // `KH2RW_TOUR_SIGNAL=<tick>:<code>[:<arg>]`: FUN_1403aabe0 is called then.
+    if let Ok(v) = std::env::var("KH2RW_TOUR_SIGNAL") {
+        let n: Vec<i32> = v.split(':').filter_map(|p| p.trim().parse().ok()).collect();
+        if n.first() == Some(&(tick as i32)) && n.len() >= 2 {
+            game.mission_signals
+                .push((n[1], n.get(2).copied().unwrap_or(0)));
+        }
+    }
+    let signals = std::mem::take(&mut game.mission_signals);
     for &(code, arg) in &signals {
         game.event(serde_json::json!({"event":"mission_signal","tick":tick,"code":code,"arg":arg}));
+    }
+    // FUN_1403aabe0: the mission's trigger 10 first, then the area's entries.
+    if story_events::enabled() {
+        game.story_signals.extend(&signals);
     }
     // The mission's script: the signals reach its trigger 10, then its main
     // thread and the threads it started run, with the fighters' objects in its
@@ -792,6 +804,9 @@ pub fn mission_tick(
         if let Some(fault) = script.fault.take() {
             game.event(serde_json::json!({"event":"mission_fault","tick":tick,"fault":fault}));
         }
+        // The mission's own 1:41 calls raise signals too; they reach its
+        // trigger 10 on the next step.
+        game.mission_signals.append(&mut script.signals);
         if let Some(m) = game.mission.as_mut() {
             m.script = Some(script);
         }
