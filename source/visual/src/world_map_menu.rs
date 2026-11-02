@@ -154,16 +154,16 @@ pub enum Sheet {
 /// A shown prop of the current scene: where its children sit, its colour
 /// and group.
 #[derive(Clone, Copy, Debug)]
-struct Anchor {
-    at: [f32; 2],
-    color: [f32; 4],
-    sequence: usize,
-    group: usize,
+pub(crate) struct Anchor {
+    pub(crate) at: [f32; 2],
+    pub(crate) color: [f32; 4],
+    pub(crate) sequence: usize,
+    pub(crate) group: usize,
 }
 
 /// FUN_140194f20(layout, flat, 0): the first shown prop of the task's scene
 /// playing flat group `flat` (groups counted across the layout's SEQDs).
-fn anchor(layout: &Layout, task: &LayoutTask, flat: usize) -> Option<Anchor> {
+pub(crate) fn anchor(layout: &Layout, task: &LayoutTask, flat: usize) -> Option<Anchor> {
     if task.dead {
         return None;
     }

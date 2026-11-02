@@ -215,7 +215,7 @@ pub fn gear_totals(
 
 /// FUN_1402fd100: the info rows an item shows (bit k: 0 AP, 1 Str, 2 Mag,
 /// 3 Def, 4–7 resists, 8 ability).
-fn row_mask(kind: u8, s: &ItemStats) -> u32 {
+pub(super) fn row_mask(kind: u8, s: &ItemStats) -> u32 {
     let mut m = match kind {
         2..=13 => 6 | if s.ability != 0 { 0x100 } else { 0 },
         14 => 0xf8,
@@ -239,7 +239,7 @@ fn row_mask(kind: u8, s: &ItemStats) -> u32 {
 }
 
 /// A stat value (k < 4) or a resist ("%d%%" of 100 − v).
-fn stat_value(s: &ItemStats, k: usize) -> i32 {
+pub(super) fn stat_value(s: &ItemStats, k: usize) -> i32 {
     match k {
         0 => s.ap as i32,
         1 => s.strength as i32,
@@ -259,7 +259,7 @@ fn total_value(t: &Totals, k: usize) -> i32 {
     }
 }
 
-fn number_text(k: usize, v: i32) -> Vec<u8> {
+pub(super) fn number_text(k: usize, v: i32) -> Vec<u8> {
     if k >= 4 {
         encode_number(&format!("{v}%"))
     } else {

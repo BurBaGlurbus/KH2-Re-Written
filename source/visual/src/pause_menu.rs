@@ -18,6 +18,7 @@ pub mod journal;
 pub mod notice;
 pub mod party;
 pub mod picture;
+pub mod shop;
 
 use crate::field_command_menu::Font;
 use crate::sprite_player::{self, Id, LightCur, Sprites, Text};

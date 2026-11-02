@@ -254,6 +254,10 @@ pub struct LoadedArea {
     /// row, or a SAVE_POINT (0x23a) (FUN_1403a8b10, FUN_1402eb490).
     pub world_points: Vec<bool>,
     pub gates: Vec<Gate>,
+    /// Objects whose reaction opens a shop (`signal` is its id).
+    pub shops: Vec<Gate>,
+    /// The SHOP_POINTs among them: objentry id, scene position and yaw.
+    pub shop_points: Vec<(u16, Vec3, f32)>,
     pub members: Members,
     /// The save point object's effects (`obj/SAVE_POINT.a.us`) when the
     /// area has save points.
@@ -625,6 +629,32 @@ impl AreaSource {
         let world_points = self.world_points(&spawns);
         let chests = self.chests(world, area, &spawns);
         let gates = self.gates(code, &spawns, &state.setup.events);
+        // Every placement of the active points: a town's shopkeepers pop in by
+        // zone (spawn type 2), which `activate` passes over.
+        let placed: Vec<_> = state
+            .objects
+            .iter()
+            .filter(|o| !o.deferred)
+            .flat_map(|o| o.point.entities.iter())
+            .cloned()
+            .collect();
+        let shops = self.shops(&placed);
+        let shop_points = placed
+            .iter()
+            .filter(|e| {
+                self.object_index
+                    .get(&e.object)
+                    .is_some_and(|&i| self.objects[i].object_type == 0x14)
+            })
+            .map(|e| {
+                let [x, y, z] = e.position;
+                (
+                    e.object as u16,
+                    Vec3::new(x, -y, -z),
+                    std::f32::consts::PI - e.rotation[1],
+                )
+            })
+            .collect();
         let members = self.members(world, area, &state.setup.party_set);
         let save_point_pax = if save_points.is_empty() {
             None
@@ -668,6 +698,8 @@ impl AreaSource {
                 save_entrances,
                 world_points,
                 gates,
+                shops,
+                shop_points,
                 members,
                 save_point_pax,
                 world_point_pax,
@@ -834,6 +866,59 @@ impl AreaSource {
                     .map_or(signal, |(_, row)| *row);
                 if self.signal_jump(events, signal).is_some() {
                     let [x, y, z] = s.entity.position;
+                    out.push(Gate {
+                        position: Vec3::new(x, -y, -z),
+                        shape,
+                        command,
+                        signal,
+                    });
+                }
+            }
+        }
+        out
+    }
+
+    /// The shopkeepers (type 15) and SHOP_POINTs (0x14): their REACTION shape's
+    /// command raises one of FUN_1403aabe0's shop signals. These don't go to
+    /// `signal_jump`: the signal goes no further than the shop.
+    fn shops(&mut self, placed: &[ard::Entity]) -> Vec<Gate> {
+        let mut out = Vec::new();
+        for entity in placed {
+            let Some(&i) = self.object_index.get(&entity.object) else {
+                continue;
+            };
+            let o = &self.objects[i];
+            if !matches!(o.object_type, 15 | 0x14) {
+                continue;
+            }
+            let name = String::from_utf8_lossy(&o.model_name)
+                .trim_end_matches('\0')
+                .to_owned();
+            let shapes = self
+                .library
+                .read(&format!("obj/{name}.mdlx"))
+                .ok()
+                .and_then(|b| {
+                    let table = bar::read_bar(&b).ok()?;
+                    let e = table.entries.iter().find(|e| e.entry_type == 23)?;
+                    let bytes = b.get(e.offset as usize..e.offset as usize + e.size as usize)?;
+                    data::object_collision::read(bytes).ok()
+                })
+                .unwrap_or_default();
+            for shape in shapes
+                .into_iter()
+                .filter(|e| e.kind == data::object_collision::REACTION)
+            {
+                let command = match shape.argument as u16 {
+                    0x83 => entity.reaction,
+                    c => c,
+                };
+                let Some((0x7f, argument)) = self.commands.get(&command).copied() else {
+                    continue;
+                };
+                let signal = i32::from(argument);
+                if matches!(signal, 0x13 | 0x66..=0x75 | 0x83..=0x85 | 0x8a) {
+                    let [x, y, z] = entity.position;
                     out.push(Gate {
                         position: Vec3::new(x, -y, -z),
                         shape,

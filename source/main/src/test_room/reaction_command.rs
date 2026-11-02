@@ -29,6 +29,8 @@ pub const SAVE_POINT: u32 = 0xffff_0100;
 pub const GATE: u32 = 0xffff_0200;
 /// Chest `k` of the area (`LoadedArea::chests`) is `CHEST + k`.
 pub const CHEST: u32 = 0xffff_0300;
+/// A shop's shape is `SHOP + signal`.
+pub const SHOP: u32 = 0xffff_0400;
 /// Command 0x37 "Save" (exec 0x37).
 const SAVE_COMMAND: u16 = 0x37;
 /// Effect owners of the save points' glow (element 1, started with the
@@ -70,6 +72,11 @@ pub fn save_tour_logical(tick: u64) -> u64 {
 fn gate_tour_tick() -> Option<u64> {
     static AT: std::sync::OnceLock<Option<u64>> = std::sync::OnceLock::new();
     *AT.get_or_init(|| std::env::var("KH2RW_TOUR_GATE").ok()?.parse().ok())
+}
+
+fn shop_tour_tick() -> Option<u64> {
+    static AT: std::sync::OnceLock<Option<u64>> = std::sync::OnceLock::new();
+    *AT.get_or_init(|| std::env::var("KH2RW_TOUR_SHOP_POINT").ok()?.parse().ok())
 }
 
 /// The townspeople's and the test NPC's reaction (cmd 31 "Talk").
@@ -446,6 +453,21 @@ pub fn tick(
             });
         }
     }
+    // The area's shops.
+    if let Some(a) = area.as_deref() {
+        for g in &a.current.shops {
+            inputs.shapes.push(rc::Shape {
+                owner: SHOP + g.signal as u32,
+                group: g.shape.group,
+                command: g.command,
+                centre: (g.position + Vec3::Y * f32::from(g.shape.position_height)).to_array(),
+                radius: f32::from(g.shape.radius),
+                height: f32::from(g.shape.height),
+                owner_yaw: 0.,
+                attack: None,
+            });
+        }
+    }
     // The area's gates: objects whose reaction raises a signal.
     if let Some(a) = area.as_deref() {
         for (k, g) in a.current.gates.iter().enumerate() {
@@ -469,6 +491,18 @@ pub fn tick(
             && tick < at + 120
         {
             game.sora.player.position = g.position.to_array();
+            game.rc_queued = tick >= at;
+        }
+        // `KH2RW_TOUR_SHOP_POINT=<tick>`: the same before the area's first
+        // shop, facing it (its command dims otherwise).
+        if let Some(at) = shop_tour_tick()
+            && let Some(g) = a.current.shops.first()
+            && tick >= 20
+            && tick < at + 120
+        {
+            let (s, c) = game.sora.player.yaw.sin_cos();
+            let p = g.position - Vec3::new(s, 0., c) * 100.;
+            game.sora.player.position = p.to_array();
             game.rc_queued = tick >= at;
         }
     }
@@ -518,6 +552,7 @@ pub fn tick(
             "source":offer.map(|o| format!("{:?}", o.candidate.source)),
             "priority":offer.map(|o| o.priority),"mode":offer.map(|o| o.candidate.mode)}));
     }
+
     state.offer = offer;
     // Triangle (logical bit 10), and the tours' presses on their own offers.
     let shown = state.shown();
@@ -940,6 +975,10 @@ fn carry_out(game: &mut Game, actors: &mut [GalleryActor], c: rc::Candidate, tic
         // FUN_1403a8b10 case 0x20: the chest opens (chest.rs).
         rc::Source::Shape if (CHEST..CHEST + 0x100).contains(&c.target.owner) => {
             game.chest_wanted = Some((c.target.owner - CHEST) as usize);
+        }
+        // FUN_1403a8b10 case 0x7f, FUN_1403aabe0: a shop's signal.
+        rc::Source::Shape if (SHOP..SHOP + 0x100).contains(&c.target.owner) => {
+            game.shop_wanted = Some((c.target.owner - SHOP) as i16);
         }
         // FUN_1403a8b10 case 0x1e (the talk's op 3) or 0x7f: the signal.
         rc::Source::Shape if (GATE..GATE + 0x100).contains(&c.target.owner) => {

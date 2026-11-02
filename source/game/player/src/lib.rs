@@ -30,6 +30,7 @@ pub mod party_style;
 pub mod ptya;
 pub mod reaction_command;
 pub mod shadow;
+pub mod shop;
 pub mod soldier;
 pub mod targeting;
 pub mod vibration;

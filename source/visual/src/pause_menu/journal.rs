@@ -23,7 +23,7 @@ mod album;
 mod category;
 mod characters;
 mod files;
-pub use files::{MODEL_REACH, MODEL_TARGET, ModelView};
+pub use files::{MODEL_REACH, MODEL_TARGET, ModelView, model_quad};
 mod limits;
 mod lists;
 mod puzzles;

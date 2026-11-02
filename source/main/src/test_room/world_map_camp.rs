@@ -82,6 +82,9 @@ pub fn load(
         c: CampRes {
             source: camp,
             open: None,
+            shop: None,
+            shop_art: None,
+            shop_faces: Vec::new(),
             memory: pause_menu::Memory::default(),
             config_flags: 0x40b,
             game_mode: 1,

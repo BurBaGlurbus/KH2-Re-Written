@@ -54,6 +54,7 @@ pub mod replacement_payload;
 pub mod room_collision;
 pub mod room_geometry;
 pub mod scd;
+pub mod shop_table;
 pub mod sklt;
 pub mod sprite_sequence;
 pub mod unencrypted_payload;

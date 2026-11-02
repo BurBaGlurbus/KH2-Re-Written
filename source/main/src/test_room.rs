@@ -122,6 +122,7 @@ pub mod rival;
 pub mod second_deck;
 pub mod sephiroth;
 pub mod settings_room;
+pub mod shop_room;
 pub mod shortcut_menu;
 pub mod soak_tour;
 pub mod spell_fx;
@@ -1474,6 +1475,8 @@ pub struct Game {
     pub save_menu_wanted: bool,
     /// A gate's reaction was taken: `LoadedArea::gates` index.
     pub gate_wanted: Option<usize>,
+    /// A shop's signal was raised (FUN_1401518e0).
+    pub shop_wanted: Option<i16>,
     /// The other world a door is fading out to.
     pub door_out: Option<(u8, u8, u8)>,
     /// Files the save point's menu wrote this run, and the world and area
@@ -2635,6 +2638,7 @@ pub struct CampSource {
     pub customize: pause_menu::customize::CustomizeTexts,
     pub equip_texts: pause_menu::equip::EquipTexts,
     pub equip_stats: Vec<pause_menu::equip::ItemStats>,
+    pub shop: Option<shop_room::ShopSource>,
     /// Donald and Goofy: names, Status help and level-1 rows.
     pub party: Vec<PartyCampSource>,
     /// The font image's icon plane (0x09 icons).
@@ -3358,6 +3362,28 @@ pub fn load_camp_source(
             take(),
         ],
     };
+    // The shops (FUN_1402fbdf0): their rows, names and the screen's texts.
+    let shop = match bar_entry(system, b"shop").and_then(|b| Ok(data::shop_table::read(b)?)) {
+        Ok(table) => {
+            let names: Vec<u32> = table.rows.iter().map(|r| u32::from(r.name)).collect();
+            let names = msg(&names)?;
+            let names = table.rows.iter().map(|r| r.signal).zip(names).collect();
+            let prices = data::item_table::read(bar_entry(system, b"item")?)?
+                .iter()
+                .map(|i| (i.id, i.buy))
+                .collect();
+            Some(shop_room::ShopSource {
+                table,
+                prices,
+                texts: shop_room::ShopSource::texts(msg(&shop_room::ShopSource::MESSAGES)?),
+                names,
+            })
+        }
+        Err(e) => {
+            eprintln!("Shop table rejected: {e}");
+            None
+        }
+    };
     let equip_stats = data::item_table::read_stats(bar_entry(system, b"item")?)?
         .into_iter()
         .map(|s| pause_menu::equip::ItemStats {
@@ -3433,6 +3459,7 @@ pub fn load_camp_source(
         customize,
         equip_texts,
         equip_stats,
+        shop,
         party: party_sources,
         picture_sequence: bar_entry(system, b"ipic")
             .ok()
@@ -6920,6 +6947,7 @@ pub fn setup(
         })
         .collect();
     commands.insert_resource(journal_model::JournalModelSlot::default());
+    commands.insert_resource(shop_room::ShopPoints::default());
     commands.insert_resource(MenuModel {
         sheet,
         clip: walk,
@@ -12820,6 +12848,10 @@ pub fn finish(
 pub struct CampRes {
     pub source: CampSource,
     pub open: Option<Camp>,
+    /// The shop's screen, its files and each member's face.
+    pub shop: Option<visual::pause_menu::shop::Shop>,
+    pub shop_art: Option<shop_room::ShopArt>,
+    pub shop_faces: Vec<Option<usize>>,
     /// Cursor memory and the save's config bits / game mode.
     pub memory: pause_menu::Memory,
     /// What FUN_1403030e0 compares: party count, forms held, world; and the
@@ -12938,6 +12970,7 @@ impl CampRes {
     /// A menu (camp, curtain or journal) holds the screen and the pad.
     pub fn menu_up(&self) -> bool {
         self.open.is_some()
+            || self.shop.is_some()
             || self.journal.is_some()
             || self.curtain.is_some()
             || self.files.as_ref().is_some_and(|f| f.ui.is_some())
@@ -13310,6 +13343,9 @@ pub fn camp_tick(
     }
     if game.versus && c.open.is_none() && game.camp_request.is_none() && c.pad.pressed & 0x2 != 0 {
         game.start_pressed = true;
+    }
+    if shop_room::tick(c, &mut game, &mut audio, &mut frame, &mut images) {
+        return;
     }
     if save_menu_tick(
         c,
@@ -14769,6 +14805,7 @@ pub fn camp_present(
             }
         }
     }
+    shop_room::present(c, &mut frame, &font);
     if let Some(menu) = c.open.as_mut() {
         let art = c.art[c.glyph].or(c.art[0]).expect("camp art");
         for (sheet, mut quads) in menu.draw(&c.source.menu.layout, &font) {
@@ -16064,6 +16101,7 @@ pub fn run(
         flow_queued: false,
         save_menu_wanted: false,
         gate_wanted: None,
+        shop_wanted: None,
         door_out: None,
         files_saved: 0,
         save_place: None,
@@ -16294,6 +16332,7 @@ pub fn run(
         let setup = &a.current.state.setup;
         game.event(serde_json::json!({"event":"area_start","world":a.current.world,
             "area":a.current.area,"programs":a.current.programs,
+            "shops":a.current.shops.iter().map(|s| s.signal).collect::<Vec<_>>(),
             "enemy_level":a.source.progress().battle_level(setup.battle_level, a.current.world),
             "bob_models":a.current.bobs.models.len(),
             "bobs_unread":a.current.bobs.models.iter().filter(|m| m.is_none()).count(),
@@ -16453,6 +16492,9 @@ pub fn run(
         let mut camp = CampRes {
             source: c,
             open: None,
+            shop: None,
+            shop_art: None,
+            shop_faces: Vec::new(),
             memory: pause_menu::Memory::default(),
             memory_key: None,
             memory_row: None,
@@ -16656,7 +16698,9 @@ impl Plugin for RoomPlugin {
                 FixedUpdate,
                 (
                     read_pad.in_set(RoomSet::ReadPad),
-                    camp_tick.in_set(RoomSet::CampTick),
+                    (shop_room::open, camp_tick, shop_room::shop_points)
+                        .chain()
+                        .in_set(RoomSet::CampTick),
                     game_over::tick,
                     command_layout::follow,
                     boss::mission_tick.in_set(RoomSet::MissionTick),

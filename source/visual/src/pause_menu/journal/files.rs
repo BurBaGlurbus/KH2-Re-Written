@@ -103,15 +103,17 @@ pub struct ModelView {
     pub turn: f32,
     pub scale: f32,
     pub z: f32,
+    /// How far down the screen it stands.
+    pub drop: f32,
     pub hidden_parts: u64,
     pub ticks: u32,
     pub alpha: f32,
-    prio: u32,
+    pub prio: u32,
 }
 
 /// One whole quad of the model's target, centred on the shifted projection
 /// centre (FUN_1402feb20: x and y go to the projection, not the paste).
-fn model_quad(at: [f32; 2], alpha: f32) -> Quad {
+pub fn model_quad(at: [f32; 2], alpha: f32) -> Quad {
     let (w, h) = (512. * 2. / 3. * MODEL_REACH, 208. * MODEL_REACH);
     let (x, y) = (256. + at[0], 208. + at[1]);
     Quad {
@@ -1013,6 +1015,7 @@ impl Journal {
             turn: self.files.turn,
             scale,
             z,
+            drop: 0.,
             hidden_parts: ch.hidden_parts(),
             ticks: self.files.model_ticks,
             alpha: self.sprites.child_alpha(f),

@@ -5,7 +5,7 @@
 use super::*;
 use data::{model_inspection::InspectionModel, motion::SelectedMotion, path_lookup::Library};
 use std::{sync::Arc, thread::JoinHandle};
-use visual::pause_menu::journal::{Journal, MODEL_REACH, MODEL_TARGET};
+use visual::pause_menu::journal::{MODEL_REACH, MODEL_TARGET};
 
 /// Free of the camp's (3..6), the overlay's (7), the blur's (8..) and the
 /// skateboard's (31).
@@ -30,12 +30,12 @@ const NUMBERS: [(u16, u16); 13] = [
 ];
 
 pub struct Loaded {
-    model: InspectionModel,
+    pub model: InspectionModel,
     motion: SelectedMotion,
     /// The first key, and the clock's total and return, in ticks.
     start: f32,
-    total: f32,
-    back: f32,
+    pub total: f32,
+    pub back: f32,
 }
 
 /// The `_MEMO` name of a set (FUN_1403e0bd0): the entry's set, or the model's
@@ -114,13 +114,29 @@ pub fn load(
         Ok(mut models) if !models.is_empty() => models.remove(0),
         _ => first_level(&mut library, &path)?,
     };
-    let set = memo_set(&set, &name);
-    let found = library
-        .find(&set)
-        .ok_or_else(|| format!("{set} is not installed"))?;
-    let selected =
-        motion::read_memo_motion(source, found.index, found.ordinal, found.name_hash, motion)?
-            .ok_or_else(|| format!("{set} has no motion {motion:#x}"))?;
+    // A shopkeeper's motion may be in the plain set (no `_MEMO` copy of it).
+    let memo = memo_set(&set, &name);
+    let mut sets = vec![memo];
+    if !set.is_empty() {
+        sets.push(format!("obj/{set}"));
+    }
+    let mut selected = None;
+    for set in &sets {
+        if let Some(found) = library.find(set) {
+            selected = motion::read_memo_motion(
+                source,
+                found.index,
+                found.ordinal,
+                found.name_hash,
+                motion,
+            )?;
+        }
+        if selected.is_some() {
+            break;
+        }
+    }
+    let set = sets.join(", ");
+    let selected = selected.ok_or_else(|| format!("{set} has no motion {motion:#x}"))?;
     let (start, end, fps, back) = selected.motion.frame_window()?;
     if !(1. ..=60.).contains(&fps) || !(0. ..end).contains(&start) {
         return Err(format!("{set} motion {motion:#x} frame window {start}..{end}").into());
@@ -203,14 +219,15 @@ impl JournalModelSlot {
     /// Starts the page's load and takes a finished one.
     fn take_load(
         &mut self,
-        open: &mut Journal,
+        wanted: &mut Option<(u16, u16)>,
+        ready: &mut Option<(u16, u16)>,
         source: &Arc<ProbeSource>,
         objects: &Arc<Vec<objentry::ObjectEntry>>,
         scene: &mut Scene<'_, '_, '_>,
     ) {
-        if let Some(key) = open.cache.wanted_model.take() {
+        if let Some(key) = wanted.take() {
             if self.shown.as_ref().is_some_and(|s| s.key == key) {
-                open.cache.model_ready = Some(key);
+                *ready = Some(key);
             } else if !self.rejected.contains(&key)
                 && self.loading.as_ref().is_none_or(|l| l.0 != key)
             {
@@ -230,7 +247,7 @@ impl JournalModelSlot {
         match thread.join() {
             Ok(Ok(loaded)) => {
                 self.show(key, loaded, scene);
-                open.cache.model_ready = Some(key);
+                *ready = Some(key);
             }
             Ok(Err(e)) => {
                 eprintln!("Journal model {:#x} rejected: {e}", key.0);
@@ -340,7 +357,7 @@ impl JournalModelSlot {
 pub struct JournalModelRoot;
 
 /// The vertices at clock time `t`.
-fn positions(l: &Loaded, t: f32) -> Option<Vec<Vec3>> {
+pub fn positions(l: &Loaded, t: f32) -> Option<Vec<Vec3>> {
     let (pose, _) = l
         .model
         .skinning
@@ -417,13 +434,35 @@ pub fn update(
     }
     let view = match (
         camp.journal.as_mut(),
+        camp.shop.as_mut(),
         camp.picture_source.as_ref(),
         camp.journal_source.as_ref(),
     ) {
-        (Some(open), Some(source), Some(j)) => {
+        (Some(open), _, Some(source), Some(j)) => {
             if open.cache.wanted_model.is_some() || slot.loading.is_some() {
                 slot.camera(&mut camp.journal_sheets.model, scene);
-                slot.take_load(open, source, &j.objects, scene);
+                let c = &mut open.cache;
+                slot.take_load(
+                    &mut c.wanted_model,
+                    &mut c.model_ready,
+                    source,
+                    &j.objects,
+                    scene,
+                );
+            }
+            open.model_view()
+        }
+        // The shop's model goes the same way (FUN_1402feb20).
+        (None, Some(open), Some(source), Some(j)) => {
+            if open.wanted_model.is_some() || slot.loading.is_some() {
+                slot.camera(&mut camp.journal_sheets.model, scene);
+                slot.take_load(
+                    &mut open.wanted_model,
+                    &mut open.model_ready,
+                    source,
+                    &j.objects,
+                    scene,
+                );
             }
             open.model_view()
         }
@@ -460,7 +499,7 @@ pub fn update(
     shown.ticks = view.ticks;
     if let Ok((mut t, _)) = roots.get_mut(shown.root) {
         *t = Transform {
-            translation: Vec3::new(0., 0., -view.z),
+            translation: Vec3::new(0., -view.drop, -view.z),
             rotation: Quat::from_rotation_y(-view.turn.to_radians()),
             scale: Vec3::splat(view.scale),
         };
