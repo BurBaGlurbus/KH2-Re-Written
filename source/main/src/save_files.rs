@@ -26,6 +26,53 @@ pub fn handoff_path() -> PathBuf {
         .join("handoff.sav")
 }
 
+/// A test of the chain between programs: with `KH2RW_CHAIN=1` an unattended
+/// run hands over as a person's would.
+pub fn chain_test() -> bool {
+    std::env::var_os("KH2RW_CHAIN").is_some()
+}
+
+/// What such a test adds to the next run of `program`
+/// (`KH2RW_CHAIN_ARGS_<PROGRAM>`, split on `|`).
+pub fn chain_args(program: &str) -> Vec<String> {
+    let name = format!("KH2RW_CHAIN_ARGS_{}", program.to_uppercase());
+    std::env::var(name)
+        .map(|v| v.split('|').map(str::to_owned).collect())
+        .unwrap_or_default()
+}
+
+/// Set on a program the launcher started.
+pub const UNDER_LAUNCHER: &str = "KH2RW_UNDER_LAUNCHER";
+/// The line that asks the launcher for the next program, followed by its
+/// arguments as a JSON list.
+pub const NEXT_PROGRAM: &str = "kh2fm-next ";
+
+/// Starts the next program of a chain (room to map to field, event to room).
+/// The launcher waits on its one child and shows itself when that ends, so
+/// under it the launcher starts the next one.
+pub fn start_next(args: Vec<String>) -> bool {
+    if std::env::var_os(UNDER_LAUNCHER).is_some() {
+        println!("{NEXT_PROGRAM}{}", serde_json::json!(args));
+        return true;
+    }
+    let extra = args.first().map(|p| chain_args(p)).unwrap_or_default();
+    std::env::current_exe()
+        .and_then(|exe| {
+            std::process::Command::new(exe)
+                .args(&args)
+                .args(extra)
+                .spawn()
+        })
+        .inspect_err(|e| eprintln!("The next program could not start: {e}"))
+        .is_ok()
+}
+
+/// The world the handed-over image is in.
+pub fn handoff_world() -> Option<u8> {
+    let bytes = std::fs::read(handoff_path()).ok()?;
+    bytes.get(slots::field::WORLD).copied()
+}
+
 pub fn write_handoff(image: &SaveData) -> std::io::Result<()> {
     let path = handoff_path();
     if let Some(dir) = path.parent() {

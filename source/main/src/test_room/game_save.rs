@@ -510,7 +510,7 @@ pub fn jump_to_world_map(game: &mut Game, c: &CampRes, area: Option<&AreaRes>) {
         eprintln!("Save dump rejected: {e}");
     }
     game.limit = Some(tick);
-    if game.autoplay.is_some() {
+    if game.autoplay.is_some() && !crate::save_files::chain_test() {
         return;
     }
     if let Err(e) = crate::save_files::write_handoff(&image) {
@@ -518,23 +518,18 @@ pub fn jump_to_world_map(game: &mut Game, c: &CampRes, area: Option<&AreaRes>) {
         return;
     }
     let args = &game.save.args;
-    if let (Some(root), Some(manifest), Some(config), Ok(exe)) = (
-        args.first(),
-        args.get(1),
-        args.get(2),
-        std::env::current_exe(),
-    ) {
-        let started = std::process::Command::new(exe)
-            .arg("wm")
-            .args([root, manifest])
-            .arg("--field")
-            .arg(config)
-            .arg("--load-image")
-            .arg(crate::save_files::handoff_path())
-            .spawn();
-        if let Err(e) = started {
-            eprintln!("The world map could not start: {e}");
-        }
+    if let (Some(root), Some(manifest), Some(config)) = (args.first(), args.get(1), args.get(2)) {
+        crate::save_files::start_next(vec![
+            "wm".into(),
+            root.to_string_lossy().into_owned(),
+            manifest.to_string_lossy().into_owned(),
+            "--field".into(),
+            config.to_string_lossy().into_owned(),
+            "--load-image".into(),
+            crate::save_files::handoff_path()
+                .to_string_lossy()
+                .into_owned(),
+        ]);
     }
 }
 
@@ -570,16 +565,19 @@ pub fn jump_to_field(
                 .map_err(|e| eprintln!("The next world could not start: {e}"))
                 .ok()
         });
-    let started = game.autoplay.is_none()
+    let started = (game.autoplay.is_none() || crate::save_files::chain_test())
         && crate::save_files::write_handoff(&image).is_ok()
-        && match (args.first(), args.get(1), &config, std::env::current_exe()) {
-            (Some(root), Some(manifest), Some(config), Ok(exe)) => std::process::Command::new(exe)
-                .arg("room")
-                .args([root, manifest, config])
-                .arg("--load-image")
-                .arg(crate::save_files::handoff_path())
-                .spawn()
-                .is_ok(),
+        && match (args.first(), args.get(1), &config) {
+            (Some(root), Some(manifest), Some(config)) => crate::save_files::start_next(vec![
+                "room".into(),
+                root.to_string_lossy().into_owned(),
+                manifest.to_string_lossy().into_owned(),
+                config.to_string_lossy().into_owned(),
+                "--load-image".into(),
+                crate::save_files::handoff_path()
+                    .to_string_lossy()
+                    .into_owned(),
+            ]),
             _ => false,
         };
     game.event(

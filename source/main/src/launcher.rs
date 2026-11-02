@@ -160,6 +160,8 @@ struct Launcher {
     repeat: Option<(i32, f32)>,
     mouse: Option<Vec2>,
     paint: Option<Paint>,
+    auto_run: Option<String>,
+    auto_started: bool,
 }
 
 impl Launcher {
@@ -446,9 +448,24 @@ fn start_test(index: usize, dir: &Path, b: &Bound) -> Result<Running, String> {
 
 /// The room started on the file the title's Load chose.
 fn start_loaded(dir: &Path, b: &Bound) -> Result<Running, String> {
-    let args = install::test_args(dir, "load", b)?;
+    let at_map = crate::save_files::handoff_world() == Some(::area::world_state::WORLD_MAP);
+    let args = if at_map {
+        // A file saved on the world map starts there, with what it holds.
+        let mut args = install::test_args(dir, "wm", b)?;
+        args.retain(|a| a != "--all-worlds");
+        args.push("--load-image".into());
+        args.push(
+            crate::save_files::handoff_path()
+                .to_string_lossy()
+                .into_owned(),
+        );
+        args
+    } else {
+        install::test_args(dir, "load", b)?
+    };
     let exe = std::env::current_exe().map_err(|e| e.to_string())?;
-    spawn("Test room".into(), exe, args)
+    let name = if at_map { "World map" } else { "Test room" };
+    spawn(name.into(), exe, args)
 }
 
 fn start_boss(index: usize, dir: &Path, b: &Bound) -> Result<Running, String> {
@@ -470,9 +487,15 @@ fn start_viewer(v: &install::Viewer, b: &Bound) -> Result<Running, String> {
 }
 
 pub fn spawn(name: String, exe: PathBuf, args: Vec<String>) -> Result<Running, String> {
+    let extra = args
+        .first()
+        .map(|p| crate::save_files::chain_args(p))
+        .unwrap_or_default();
     let mut command = Command::new(exe);
     command
         .args(&args)
+        .args(extra)
+        .env(crate::save_files::UNDER_LAUNCHER, "1")
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
@@ -955,7 +978,7 @@ fn update(
                 winit.unfocused_mode = UpdateMode::reactive_low_power(Duration::from_millis(100));
             }
             if let Ok(Some(status)) = run.child.try_wait() {
-                let (lines, next) = run
+                let (lines, next, chained) = run
                     .output
                     .lock()
                     .map(|o| {
@@ -964,18 +987,36 @@ fn update(
                             .rev()
                             .find_map(|l| l.trim().strip_prefix("kh2fm-handoff "))
                             .map(str::to_owned);
-                        (failure_lines(&o), next)
+                        let chained = o.iter().rev().find_map(|l| {
+                            let args = l.trim().strip_prefix(crate::save_files::NEXT_PROGRAM)?;
+                            serde_json::from_str::<Vec<String>>(args).ok()
+                        });
+                        (failure_lines(&o), next, chained)
                     })
                     .unwrap_or_default();
-                ended = Some((status, b.clone(), run.name.clone(), lines, next));
+                ended = Some((status, b.clone(), run.name.clone(), lines, next, chained));
             }
         }
         _ => {}
     }
-    if let Some((status, b, name, lines, next)) = ended {
+    if let Some((status, b, name, lines, next, chained)) = ended {
         let next = next.as_deref().filter(|_| status.success());
         let run_of = |program: &str| TESTS.iter().position(|t| t.program == program);
-        if let (Some("NewGame"), Some(room)) = (next, run_of("play")) {
+        if let Some(args) = chained.filter(|_| status.success()) {
+            // The room's world map row, a landing, a door, an event's end: the
+            // game goes on, so the launcher stays hidden.
+            let started = std::env::current_exe()
+                .map_err(|e| e.to_string())
+                .and_then(|exe| spawn(name.clone(), exe, args));
+            match started {
+                Ok(running) => l.go(Screen::Loading(running, b)),
+                Err(why) => l.go(Screen::Problem {
+                    title: "The next part could not start".into(),
+                    lines: vec![why],
+                    retry: Some(b),
+                }),
+            }
+        } else if let (Some("NewGame"), Some(room)) = (next, run_of("play")) {
             // New Game on the title continues straight into the test room.
             launch(l, &Action::Run(room), b);
         } else if next == Some("Load") {
@@ -1015,6 +1056,22 @@ fn update(
     }
     if let Some((result, folder)) = finished {
         checked(l, result, &folder);
+    }
+    // A test of the launcher's own chain (`KH2RW_LAUNCHER_RUN=<program>`): start
+    // that entry on reaching the tests screen, close on coming back to it.
+    if let Screen::Tests(b) = &l.screen
+        && let Some(program) = &l.auto_run
+    {
+        if l.auto_started {
+            exit.write(AppExit::Success);
+            return;
+        }
+        let run = TESTS.iter().position(|t| t.program == program);
+        if let Some(i) = run {
+            let b = b.clone();
+            l.auto_started = true;
+            launch(l, &Action::Run(i), b);
+        }
     }
 
     // Input on lists.
@@ -1509,6 +1566,8 @@ pub fn main() -> std::process::ExitCode {
             repeat: None,
             mouse: None,
             paint: None,
+            auto_run: std::env::var("KH2RW_LAUNCHER_RUN").ok(),
+            auto_started: false,
         })
         .insert_resource(ClearColor(Color::BLACK))
         .insert_resource(WinitSettings::game())

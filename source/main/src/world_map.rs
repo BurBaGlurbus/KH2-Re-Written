@@ -2810,18 +2810,20 @@ fn start_field(
     {
         eprintln!("Save dump rejected: {e}");
     }
-    let started = !unattended
+    let started = (!unattended || crate::save_files::chain_test())
         && crate::save_files::write_handoff(image).is_ok()
-        && std::env::current_exe()
-            .and_then(|exe| {
-                std::process::Command::new(exe)
-                    .arg("room")
-                    .args([&h.root, &h.manifest, &config])
-                    .arg("--load-image")
-                    .arg(crate::save_files::handoff_path())
-                    .spawn()
-            })
-            .is_ok();
+        && crate::save_files::start_next(
+            [
+                "room",
+                &h.root.to_string_lossy(),
+                &h.manifest.to_string_lossy(),
+                &config.to_string_lossy(),
+                "--load-image",
+                &crate::save_files::handoff_path().to_string_lossy(),
+            ]
+            .map(str::to_owned)
+            .to_vec(),
+        );
     serde_json::json!({"event":"field_start","world":code,"area":target.area,
         "entrance":target.entrance,"programs":programs,"config":config.file_name().map(|n| n.to_string_lossy().into_owned()),
         "started":started})

@@ -151,17 +151,18 @@ fn start_event(
                 .ok()
         });
     // An unattended run stops at the hand-over: its captures are the room's.
-    let started = game.autoplay.is_none()
+    let started = (game.autoplay.is_none() || crate::save_files::chain_test())
         && crate::save_files::write_handoff(&image).is_ok()
-        && match (args.first(), args.get(1), &config, std::env::current_exe()) {
-            (Some(root), Some(manifest), Some(config), Ok(exe)) => std::process::Command::new(exe)
-                .arg("event")
-                .args([root, manifest])
-                .args(["--event", event])
-                .arg("--then-room")
-                .arg(config)
-                .spawn()
-                .is_ok(),
+        && match (args.first(), args.get(1), &config) {
+            (Some(root), Some(manifest), Some(config)) => crate::save_files::start_next(vec![
+                "event".into(),
+                root.to_string_lossy().into_owned(),
+                manifest.to_string_lossy().into_owned(),
+                "--event".into(),
+                event.to_owned(),
+                "--then-room".into(),
+                config.to_string_lossy().into_owned(),
+            ]),
             _ => false,
         };
     if started {

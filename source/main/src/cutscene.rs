@@ -1014,16 +1014,16 @@ fn finish(
         for line in event.log.drain(..) {
             println!("{line}");
         }
-        if !window_closed
-            && let (Some(room), Ok(exe)) = (&event.then_room, std::env::current_exe())
-            && let Err(e) = std::process::Command::new(exe)
-                .arg("room")
-                .args(room)
-                .arg("--load-image")
-                .arg(crate::save_files::handoff_path())
-                .spawn()
-        {
-            eprintln!("The field could not start after the event: {e}");
+        if !window_closed && let Some(room) = &event.then_room {
+            let mut args = vec!["room".to_owned()];
+            args.extend(room.iter().map(|p| p.to_string_lossy().into_owned()));
+            args.push("--load-image".into());
+            args.push(
+                crate::save_files::handoff_path()
+                    .to_string_lossy()
+                    .into_owned(),
+            );
+            crate::save_files::start_next(args);
         }
         exit.write(AppExit::Success);
     }

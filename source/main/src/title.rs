@@ -602,10 +602,7 @@ fn tick(
         };
         if back_done || left {
             let a = s.handoff.unwrap_or(Action::Back);
-            s.event(
-                serde_json::json!({"event":"handoff","tick":tick,"action":format!("{a:?}"),
-                "note":"next screen not built"}),
-            );
+            s.event(serde_json::json!({"event":"handoff","tick":tick,"action":format!("{a:?}")}));
             s.handoff = Some(a);
         } else {
             s.title = Some(t);
@@ -686,15 +683,16 @@ fn finish(
         && session.tick >= session.end()
         && session.captures_taken == session.captures().len();
     let window_closed = closed.read().count() > 0;
-    let handed_off =
-        session.handoff.is_some() && session.title.is_none() && session.autoplay.is_none();
+    let handed_off = session.handoff.is_some()
+        && session.title.is_none()
+        && (session.autoplay.is_none() || crate::save_files::chain_test());
     if keys.just_pressed(KeyCode::Escape)
         || window_closed
         || autoplay_done
         || handed_off
         || session.limit.is_some_and(|n| session.tick >= n)
     {
-        let code = u8::from(session.autoplay.is_some() && !autoplay_done);
+        let code = u8::from(session.autoplay.is_some() && !autoplay_done && !handed_off);
         if session.exit_code.is_none() {
             session.exit_code = Some(code);
             let tick = session.tick;
