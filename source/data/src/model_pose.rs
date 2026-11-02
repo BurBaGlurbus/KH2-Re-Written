@@ -463,6 +463,7 @@ impl Skinning {
                     joints: Vec::new(),
                     root_translation,
                     stats: Default::default(),
+                    chains: Vec::new(),
                 },
             ));
         }

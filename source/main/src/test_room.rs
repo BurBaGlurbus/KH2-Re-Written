@@ -633,6 +633,10 @@ pub const PARTY_COLLIDE: u32 = 1 << 4;
 pub struct Skin {
     pub skinning: data::model_pose::Skinning,
     pub parents: Vec<i32>,
+    /// The helper joints (bone record +0xc bit 0) and each bone's length
+    /// (+0x1c), for the motion switch's blend (FUN_1401c3a30).
+    pub helpers: Vec<bool>,
+    pub lengths: Vec<f32>,
     pub weapon_joint: usize,
     /// The bones a motion drives (`motion_eval::evaluate_shared`).
     pub shared_bones: usize,
@@ -715,11 +719,30 @@ impl ClipPoses {
     /// then the root taken off each position). The joints (None without an
     /// evaluation) are what a motion switch blends joint by joint.
     pub fn posed(&self, f: usize) -> (Vec<Vec3>, Option<Vec<data::motion_eval::World>>) {
+        let (vertices, joints, _) = self.posed_with_chains(f);
+        (vertices, joints)
+    }
+
+    /// [`Self::posed`] with the evaluation's IK chains, which a blend from
+    /// these joints re-solves.
+    #[allow(clippy::type_complexity)]
+    pub fn posed_with_chains(
+        &self,
+        f: usize,
+    ) -> (
+        Vec<Vec3>,
+        Option<Vec<data::motion_eval::World>>,
+        Vec<data::motion_eval::ChainTop>,
+    ) {
         if !self.frames.is_empty() {
-            return (self.frames[f.min(self.frames.len() - 1)].clone(), None);
+            return (
+                self.frames[f.min(self.frames.len() - 1)].clone(),
+                None,
+                Vec::new(),
+            );
         }
         let (Some(skin), Some(motion)) = (&self.skin, &self.motion) else {
-            return (Vec::new(), None);
+            return (Vec::new(), None, Vec::new());
         };
         let f = f.min(self.root.len().saturating_sub(1));
         let bones = &skin.skinning.bones;
@@ -727,10 +750,10 @@ impl ClipPoses {
         let Ok(evaluated) =
             data::motion_eval::evaluate_shared(bones, motion, key, skin.shared_bones)
         else {
-            return (Vec::new(), None);
+            return (Vec::new(), None, Vec::new());
         };
         let Some(joints) = evaluated.joints.get(..skin.parents.len()) else {
-            return (Vec::new(), None);
+            return (Vec::new(), None, Vec::new());
         };
         let r = self.root[f].to_array();
         let vertices = skin
@@ -753,7 +776,7 @@ impl ClipPoses {
                 w
             })
             .collect();
-        (vertices, Some(rootless))
+        (vertices, Some(rootless), evaluated.chains)
     }
 
     /// Frame `f`'s vertex positions (`posed`).
@@ -1402,6 +1425,10 @@ pub struct Game {
     /// when the shown clip has none), for joint-space blends.
     pub display_joints: Vec<data::motion_eval::World>,
     pub blend_from_joints: Vec<data::motion_eval::World>,
+    /// The IK chains of those joints, which the blend re-solves (none for a
+    /// blended pose: its snapshot holds no motion).
+    pub display_chains: Vec<data::motion_eval::ChainTop>,
+    pub blend_from_chains: Vec<data::motion_eval::ChainTop>,
     pub display_hand: Transform,
     pub weapon_indices: Vec<Vec<u32>>,
     /// The same for slot 1's Keyblade (the form's own).
@@ -12507,6 +12534,7 @@ pub type ShownTarget = Option<(
     (usize, usize, usize),
     Vec<Vec3>,
     Option<Vec<data::motion_eval::World>>,
+    Vec<data::motion_eval::ChainTop>,
 )>;
 
 // Bevy systems take each resource as a parameter.
@@ -12532,6 +12560,7 @@ pub fn present(
         if game.shown_action.is_some() {
             game.blend_from = Some((game.display.clone(), game.display_hand, game.action_started));
             game.blend_from_joints = std::mem::take(&mut game.display_joints);
+            game.blend_from_chains = std::mem::take(&mut game.display_chains);
         }
         game.shown_action = Some((action, started));
     }
@@ -12542,10 +12571,11 @@ pub fn present(
     // pose changes once per tick; frames between ticks reuse it).
     let key = (game.clip_poses.as_ptr() as usize, clip, frame);
     if shown_target.as_ref().is_none_or(|(k, ..)| *k != key) {
-        let (vertices, joints) = game.clip_poses[clip].posed(frame);
-        *shown_target = Some((key, vertices, joints));
+        let (vertices, joints, chains) = game.clip_poses[clip].posed_with_chains(frame);
+        *shown_target = Some((key, vertices, joints, chains));
     }
-    let (_, target, target_joints) = shown_target.as_ref().expect("target pose kept");
+    let (_, target, target_joints, target_chains) =
+        shown_target.as_ref().expect("target pose kept");
     // Unattended runs log how far each switch of action moves the shown
     // pose when it is not blended (the first frame of the new motion
     // against the pose left behind).
@@ -12572,6 +12602,7 @@ pub fn present(
     // (FUN_1403c8a40, FUN_1403c6740), and takes durations of 2 or less as no
     // blend; the weight is that clock over the duration.
     let mut shown_joints = target_joints.clone().unwrap_or_default();
+    let mut shown_chains = target_chains.clone();
     if let Some((from, from_hand, start)) = &game.blend_from {
         // A held clock (an unattended capture) shows the tick itself.
         let overstep = if virt.is_paused() {
@@ -12589,21 +12620,31 @@ pub fn present(
         if weight >= 1. {
             game.blend_from = None;
             game.blend_from_joints.clear();
+            game.blend_from_chains.clear();
         } else if let (Some(skin), Some(to)) = (&skin, target_joints)
             && game.blend_from_joints.len() == to.len()
             && let Ok(pose) = {
-                shown_joints = data::motion_eval::blend_poses(
+                shown_joints = data::motion_eval::blend_poses_with_chains(
                     &skin.parents,
+                    &skin.helpers,
+                    &data::motion_eval::ChainBlend {
+                        lengths: &skin.lengths,
+                        from: &game.blend_from_chains,
+                        to: target_chains,
+                    },
                     &game.blend_from_joints,
                     to,
                     weight,
                 );
+                shown_chains.clear();
                 skin.skinning.pose_from_worlds(&shown_joints)
             }
         {
-            // Joint by joint, as the reference blends (FUN_1401c3970): the
-            // body's joints turn between the two poses instead of the
-            // skinned points sliding past each other.
+            // Joint by joint, as the reference blends (FUN_1401c3a30 with
+            // FUN_1401c3970, FUN_1401c6150 for helper joints and
+            // FUN_1401c57b0 re-solving the IK chains): the body's joints
+            // turn between the two poses instead of the skinned points
+            // sliding past each other.
             display = pose
                 .position_bits
                 .iter()
@@ -12622,6 +12663,7 @@ pub fn present(
                 scale: from_hand.scale.lerp(hand.scale, weight),
             };
             shown_joints.clear();
+            shown_chains.clear();
         }
     }
     // Stitch's limit re-attaches the Keyblades at bone code 0x4000 (Sora's
@@ -12631,6 +12673,7 @@ pub fn present(
         hand = Transform::IDENTITY;
     }
     game.display_joints = shown_joints;
+    game.display_chains = shown_chains;
     game.display_hand = hand;
     if let Ok((mut transform, mut visibility)) = hands.single_mut() {
         *transform = hand;
@@ -16036,6 +16079,8 @@ pub fn run(
         display: Vec::new(),
         blend_from: None,
         display_joints: Vec::new(),
+        display_chains: Vec::new(),
+        blend_from_chains: Vec::new(),
         blend_from_joints: Vec::new(),
         display_hand: Transform::IDENTITY,
         weapon_indices: Vec::new(),

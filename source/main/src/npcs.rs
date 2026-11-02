@@ -165,10 +165,11 @@ pub struct NpcKind {
     /// The type-0 (map collision) shape the meet test overlaps: centre
     /// height, radius, height (shape 0/3 ellipsoid, npc-01 section 3.5).
     pub body: [f32; 3],
-    /// Each bone's parent and whether it is a helper (bone +0xc bit 0), for
-    /// the motion blend.
+    /// Each bone's parent, whether it is a helper (bone +0xc bit 0) and its
+    /// length, for the motion blend.
     parents: Vec<i32>,
     helpers: Vec<bool>,
+    lengths: Vec<f32>,
 }
 
 /// Motion slots of an RTN set: 0 R00A idle, 1 R10A walk, 129 R50A turn in
@@ -344,9 +345,11 @@ impl NpcKind {
         let bones = &model.skinning.bones;
         let parents = bones.iter().map(|b| b.header_i32[1]).collect();
         let helpers = bones.iter().map(|b| b.header_i32[3] & 1 != 0).collect();
+        let lengths = motion_eval::bone_lengths(bones);
         Ok(Self {
             parents,
             helpers,
+            lengths,
             reaction,
             name: model_name,
             program,
@@ -814,6 +817,9 @@ struct Shown {
     motion: u16,
     frame: usize,
     joints: Vec<motion_eval::World>,
+    /// The IK chains a blend from these joints re-solves (none when they
+    /// were themselves a blend).
+    chains: Vec<motion_eval::ChainTop>,
     vertices: Vec<Vec3>,
 }
 
@@ -1452,11 +1458,11 @@ fn rootless_joints(
     motion: &motion::InterpolatedMotion,
     key: f32,
     root: Vec3,
-) -> Option<Vec<motion_eval::World>> {
+) -> Option<(Vec<motion_eval::World>, Vec<motion_eval::ChainTop>)> {
     let bones = &kind.model.skinning.bones;
     let evaluated = motion_eval::evaluate(bones, motion, key).ok()?;
     let joints = evaluated.joints.get(..bones.len())?;
-    Some(
+    Some((
         joints
             .iter()
             .map(|w| {
@@ -1467,7 +1473,8 @@ fn rootless_joints(
                 w
             })
             .collect(),
-    )
+        evaluated.chains,
+    ))
 }
 
 /// The meeting time (ce4..ce8, npc-01 section 2.4 timing table).
@@ -1571,7 +1578,7 @@ impl FieldNpc {
                     && let Some(old) = kind.anims.by_id(from.motion)
                 {
                     let f = from.frame.min(old.frames.len() - 1);
-                    from.joints = old
+                    (from.joints, from.chains) = old
                         .source
                         .as_ref()
                         .and_then(|o| {
@@ -1608,21 +1615,28 @@ impl FieldNpc {
                 )
             });
             match (joints, weight) {
-                (Some(to), w) => {
-                    let joints = match w {
-                        Some(w) if self.blend_from.joints.len() == to.len() => {
-                            motion_eval::blend_poses_with_helpers(
+                (Some((to, to_chains)), w) => {
+                    let (joints, chains) = match w {
+                        Some(w) if self.blend_from.joints.len() == to.len() => (
+                            motion_eval::blend_poses_with_chains(
                                 &kind.parents,
                                 &kind.helpers,
+                                &motion_eval::ChainBlend {
+                                    lengths: &kind.lengths,
+                                    from: &self.blend_from.chains,
+                                    to: &to_chains,
+                                },
                                 &self.blend_from.joints,
                                 &to,
                                 w,
-                            )
-                        }
-                        _ => to,
+                            ),
+                            Vec::new(),
+                        ),
+                        _ => (to, to_chains),
                     };
                     self.look_positions = self.pose_with_look(kind, &joints, aim, sora);
                     now.joints = joints;
+                    now.chains = chains;
                 }
                 // Raw-matrix motions have no joints: their vertices turn.
                 (None, Some(w)) if self.blend_from.vertices.len() == anim.frames[frame].len() => {

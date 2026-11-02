@@ -12,7 +12,7 @@
 //! revives it. Air attacks, items, Limits and Goofy's Bash follow the specs
 //! under `party-01`.
 use super::*;
-use data::motion_eval::World as Joint;
+use data::motion_eval::{ChainTop, World as Joint};
 use data::path_lookup::Library;
 use player::party_hit;
 use player::party_members::{self, Follower, Target};
@@ -106,8 +106,20 @@ impl MotionData {
         model: &model_inspection::InspectionModel,
         f: usize,
     ) -> Option<(Vec<Vec3>, Vec<Joint>)> {
+        self.posed_with_chains(model, f)
+            .map(|(vertices, joints, _)| (vertices, joints))
+    }
+
+    /// [`Self::posed`] with the evaluation's IK chains, which a blend from
+    /// these joints re-solves.
+    #[allow(clippy::type_complexity)]
+    pub fn posed_with_chains(
+        &self,
+        model: &model_inspection::InspectionModel,
+        f: usize,
+    ) -> Option<(Vec<Vec3>, Vec<Joint>, Vec<ChainTop>)> {
         if !self.raw_frames.is_empty() {
-            return Some((self.raw_frames.get(f).cloned()?, Vec::new()));
+            return Some((self.raw_frames.get(f).cloned()?, Vec::new(), Vec::new()));
         }
         let r = *self.root.get(f)?;
         let key = (self.key_start as usize + f) as f32;
@@ -126,7 +138,7 @@ impl MotionData {
                 w
             })
             .collect();
-        Some((vertices, rootless))
+        Some((vertices, rootless, evaluated.chains))
     }
 
     /// Tick `f`'s weapon vertices in the member's model space.
@@ -147,6 +159,17 @@ impl MotionData {
         weapon: Option<&model_inspection::InspectionModel>,
         f: usize,
     ) -> Option<(Vec<Vec3>, Vec<Joint>)> {
+        self.weapon_local_with_chains(weapon, f)
+            .map(|(vertices, joints, _)| (vertices, joints))
+    }
+
+    /// [`Self::weapon_local`] with the evaluation's IK chains.
+    #[allow(clippy::type_complexity)]
+    pub fn weapon_local_with_chains(
+        &self,
+        weapon: Option<&model_inspection::InspectionModel>,
+        f: usize,
+    ) -> Option<(Vec<Vec3>, Vec<Joint>, Vec<ChainTop>)> {
         let (weapon, motion) = (weapon?, self.weapon_motion.as_ref()?);
         let key = (self.key_start as usize + f) as f32;
         let (pose, evaluated) = weapon.skinning.sample_evaluated(motion, key).ok()?;
@@ -155,7 +178,7 @@ impl MotionData {
             .get(..weapon.skinning.bones.len())
             .map(<[_]>::to_vec)
             .unwrap_or_default();
-        Some((unbits(&pose.position_bits), joints))
+        Some((unbits(&pose.position_bits), joints, evaluated.chains))
     }
 
     pub fn frame_of(&self, tick: u32) -> usize {
@@ -229,6 +252,9 @@ pub struct PartyKind {
     /// The helper joints (bone record +0xc bit 0) the blend steps over.
     pub helpers: Vec<bool>,
     pub weapon_helpers: Vec<bool>,
+    /// Each bone's length (bone record +0x1c), for the IK chains' blend.
+    pub lengths: Vec<f32>,
+    pub weapon_lengths: Vec<f32>,
     /// The weapon object's own effects (`obj/W_<rest>.a.us`): the sparks of
     /// its hits come from them (FUN_1403d1b40 reads the attack owner's
     /// container, and the owner of a member's swing is its weapon).
@@ -1184,6 +1210,11 @@ pub fn load(
                 .collect()
         })
         .unwrap_or_default();
+    let lengths = data::motion_eval::bone_lengths(&model.skinning.bones);
+    let weapon_lengths = weapon
+        .as_ref()
+        .map(|w| data::motion_eval::bone_lengths(&w.skinning.bones))
+        .unwrap_or_default();
     // The member's own effects and collision heights.
     let pax =
         data::object_effect::read_file_pax(library, &format!("obj/{name}.a.us")).map(Arc::new);
@@ -1330,6 +1361,8 @@ pub fn load(
         hand_bone,
         helpers,
         weapon_helpers,
+        lengths,
+        weapon_lengths,
         weapon_pax,
         member,
         jump_max,
@@ -3913,6 +3946,12 @@ pub struct ShownPose {
     weapon: Vec<Joint>,
     from_body: Vec<Joint>,
     from_weapon: Vec<Joint>,
+    /// The IK chains of the joints above (none for a blended pose, whose
+    /// snapshot holds no motion).
+    body_chains: Vec<ChainTop>,
+    weapon_chains: Vec<ChainTop>,
+    from_body_chains: Vec<ChainTop>,
+    from_weapon_chains: Vec<ChainTop>,
     /// The vertices, the tick and the controller start last shown (the
     /// tour's pose-jump log).
     last: Vec<Vec3>,
@@ -3939,14 +3978,18 @@ fn pose_member(m: &MemberRt, shown: &mut ShownPose) -> Option<(Vec<Vec3>, Vec<Ve
         if ctl.weight().is_some() {
             shown.from_body = std::mem::take(&mut shown.body);
             shown.from_weapon = std::mem::take(&mut shown.weapon);
+            shown.from_body_chains = std::mem::take(&mut shown.body_chains);
+            shown.from_weapon_chains = std::mem::take(&mut shown.weapon_chains);
         } else {
             shown.from_body.clear();
             shown.from_weapon.clear();
+            shown.from_body_chains.clear();
+            shown.from_weapon_chains.clear();
         }
     }
-    let (body_vertices, body_target) = data.posed(&kind.model, f)?;
-    let (weapon_local, weapon_target) = data
-        .weapon_local(kind.weapon.as_ref(), f)
+    let (body_vertices, body_target, body_chains) = data.posed_with_chains(&kind.model, f)?;
+    let (weapon_local, weapon_target, weapon_chains) = data
+        .weapon_local_with_chains(kind.weapon.as_ref(), f)
         .unwrap_or_default();
     // The hand the weapon's vertices hang on, unblended.
     let weapon_hand = data.hand.get(f).copied().unwrap_or(Mat4::IDENTITY);
@@ -3954,9 +3997,14 @@ fn pose_member(m: &MemberRt, shown: &mut ShownPose) -> Option<(Vec<Vec3>, Vec<Ve
         && !body_target.is_empty()
         && shown.from_body.len() == body_target.len()
     {
-        let body = data::motion_eval::blend_poses_with_helpers(
+        let body = data::motion_eval::blend_poses_with_chains(
             &kind.parents,
             &kind.helpers,
+            &data::motion_eval::ChainBlend {
+                lengths: &kind.lengths,
+                from: &shown.from_body_chains,
+                to: &body_chains,
+            },
             &shown.from_body,
             &body_target,
             w,
@@ -3968,11 +4016,17 @@ fn pose_member(m: &MemberRt, shown: &mut ShownPose) -> Option<(Vec<Vec3>, Vec<Ve
             .map_or(Mat4::IDENTITY, |b| {
                 Mat4::from_cols_array(&b.map(f32::from_bits))
             });
-        let weapon = if !weapon_target.is_empty() && shown.from_weapon.len() == weapon_target.len()
-        {
-            data::motion_eval::blend_poses_with_helpers(
+        let weapon_blends =
+            !weapon_target.is_empty() && shown.from_weapon.len() == weapon_target.len();
+        let weapon = if weapon_blends {
+            data::motion_eval::blend_poses_with_chains(
                 &kind.weapon_parents,
                 &kind.weapon_helpers,
+                &data::motion_eval::ChainBlend {
+                    lengths: &kind.weapon_lengths,
+                    from: &shown.from_weapon_chains,
+                    to: &weapon_chains,
+                },
                 &shown.from_weapon,
                 &weapon_target,
                 w,
@@ -4001,10 +4055,18 @@ fn pose_member(m: &MemberRt, shown: &mut ShownPose) -> Option<(Vec<Vec3>, Vec<Ve
         let blended_vertices = unbits(&pose.position_bits);
         shown.body = body;
         shown.weapon = weapon;
+        shown.body_chains.clear();
+        shown.weapon_chains = if weapon_blends {
+            Vec::new()
+        } else {
+            weapon_chains
+        };
         return Some((blended_vertices, weapon_vertices));
     }
     shown.body = body_target;
     shown.weapon = weapon_target;
+    shown.body_chains = body_chains;
+    shown.weapon_chains = weapon_chains;
     Some((
         body_vertices,
         weapon_local

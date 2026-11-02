@@ -217,6 +217,53 @@ pub struct Evaluated {
     /// Root position (translation) from the root fcurves, model space.
     pub root_translation: Vec3,
     pub stats: EvaluationStats,
+    /// The motion's IK chains as a motion switch's blend reads them
+    /// ([`chain_tops`]); empty for a raw-matrix motion.
+    pub chains: Vec<ChainTop>,
+}
+
+/// One IK chain of an evaluated pose, as the reference's pose snapshot keeps
+/// it for a motion switch (FUN_1401c5d00): the chain list comes from the
+/// motion (FUN_1401d2810, interpolated-motion vtable 0x1405b4958 slot 0x18)
+/// and the middle joint's X rotation channel rides in the snapshot's scale
+/// word 3 (FUN_1401c5d00 copies object +0x38 x there). The blend
+/// ([`blend_poses_with_chains`]) derives the rest from the pose's joints.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ChainTop {
+    /// The chain's top joint; the middle joint is the next index.
+    pub joint: usize,
+    /// The IK level: 2 (legs) or 3 (arms, which bend the other way).
+    pub level: u8,
+    /// The middle joint's X rotation channel (radians) at the snapshot.
+    pub mid_roll: f32,
+}
+
+/// The chains [`blend_poses_with_chains`] reads for one pose: FUN_1401d2810
+/// takes every joint-order entry of IK level 2 or 3 on a model bone (at most
+/// 32), sorted by joint index. `locals` are the evaluated local channels;
+/// the middle joint's X rotation is the one the snapshot keeps.
+fn chain_tops(order: &[(usize, u8)], bone_count: usize, locals: &[Local]) -> Vec<ChainTop> {
+    let mut chains: Vec<ChainTop> = order
+        .iter()
+        .filter(|&&(j, f)| f & 3 > 1 && j < bone_count)
+        .take(32)
+        .map(|&(joint, f)| ChainTop {
+            joint,
+            level: f & 3,
+            mid_roll: locals.get(joint + 1).map_or(0., |l| l.rotation[0]),
+        })
+        .collect();
+    chains.sort_by_key(|c| c.joint);
+    chains
+}
+
+/// Each bone's length (bone record scale word 3, +0x1c), which a chain's
+/// re-solve during a blend reads.
+pub fn bone_lengths(bones: &[BoneRecord]) -> Vec<f32> {
+    bones
+        .iter()
+        .map(|b| f32::from_bits(b.transform_bits[3]))
+        .collect()
 }
 
 /// The reference curve sampler (FUN_1401d30c0). Outside the keys the pre
@@ -430,6 +477,8 @@ pub fn evaluate_shared(
     let mut evaluated = evaluate(own, m, frame)?;
     let helpers = evaluated.joints.split_off(m.bone_count);
     evaluated.joints.truncate(shared);
+    // A chain past the shared bones would name the model's other bones.
+    evaluated.chains.retain(|c| c.joint + 1 < shared);
     for bone in &bones[shared..] {
         let t = bone.transform_bits.map(f32::from_bits);
         let local = Local {
@@ -1155,6 +1204,7 @@ pub fn evaluate_with_clock(
         return Err(invalid("nonfinite evaluated joint"));
     }
     Ok(Evaluated {
+        chains: chain_tops(&joint_flags, bone_count, &locals),
         joints: world,
         root_translation: root.translation,
         stats,
@@ -1241,23 +1291,49 @@ fn solve_two_joint(
     target: Vec3,
     pole: Option<Vec3>,
 ) {
-    let [l1, l2] = lengths;
     let inv = qconj(parent.rotation);
     let p0 = rotate(inv, sub(world[a].translation, parent.translation));
     let pt = rotate(inv, sub(target, parent.translation));
-    let delta = sub(pt, p0);
-    let dist = length(delta);
-    let Some(dir) = normalize(delta) else {
+    let Some((upper, mid)) = two_joint_turns(
+        sub(pt, p0),
+        pole.map(|p| sub(rotate(inv, sub(p, parent.translation)), p0)),
+        lengths,
+        arm,
+        [locals[a].rotation[0], locals[b].rotation[0]],
+    ) else {
         return;
     };
-    let (y, z) = aim_axes(
-        dir,
-        pole.map(|p| sub(rotate(inv, sub(p, parent.translation)), p0)),
-    );
-    let frame = qmul(
-        from_basis(dir, y, z),
-        axis_angle([1., 0., 0.], locals[a].rotation[0]),
-    );
+    world[a].rotation = qnorm(qmul(parent.rotation, upper));
+    let mid_local = Local {
+        scale: locals[b].scale,
+        rotation: [0.; 3],
+        translation: locals[b].translation,
+    };
+    let mut mid_world = World::compose(&world[a], &mid_local);
+    mid_world.rotation = qnorm(qmul(world[a].rotation, mid));
+    world[b] = mid_world;
+    world[c] = World::compose(&world[b], &locals[c]);
+}
+
+/// FUN_1401c57b0, the two-joint solve, in the chain parent's frame: `delta`
+/// runs from the top joint to the target and `pole` from the top joint to
+/// the pole (none: the default up). The aim frame (X toward the target, Y
+/// facing the pole) is rolled about X by `rolls[0]`; the middle joint bends
+/// about Z by the law-of-cosines angle (the other way for arm chains), after
+/// its own roll `rolls[1]`; the top swings about Z so the end reaches the
+/// target. Returns the top's and the middle joint's local rotations, or
+/// none for a target on the top joint.
+fn two_joint_turns(
+    delta: Vec3,
+    pole: Option<Vec3>,
+    [l1, l2]: [f32; 2],
+    arm: bool,
+    rolls: [f32; 2],
+) -> Option<(Quat, Quat)> {
+    let dist = length(delta);
+    let dir = normalize(delta)?;
+    let (y, z) = aim_axes(dir, pole);
+    let frame = qmul(from_basis(dir, y, z), axis_angle([1., 0., 0.], rolls[0]));
     // Segment lengths carry the joints' scale, so they may be zero or
     // negative; the reference only guards the zero product (FUN_1401c57b0).
     let product = 2. * l1 * l2;
@@ -1272,21 +1348,12 @@ fn solve_two_joint(
     }
     let mid = qmul(
         axis_angle([0., 0., 1.], sine.atan2(cosine)),
-        axis_angle([1., 0., 0.], locals[b].rotation[0]),
+        axis_angle([1., 0., 0.], rolls[1]),
     );
     let u = (l1 + l2 * cosine) * dist;
     let v = -(l2 * sine) * dist;
     let upper = qmul(frame, axis_angle([0., 0., 1.], v.atan2(u)));
-    world[a].rotation = qnorm(qmul(parent.rotation, upper));
-    let mid_local = Local {
-        scale: locals[b].scale,
-        rotation: [0.; 3],
-        translation: locals[b].translation,
-    };
-    let mut mid_world = World::compose(&world[a], &mid_local);
-    mid_world.rotation = qnorm(qmul(world[a].rotation, mid));
-    world[b] = mid_world;
-    world[c] = World::compose(&world[b], &locals[c]);
+    Some((upper, mid))
 }
 
 /// The aim frame the reference builds from the direction to the target and,
@@ -1324,11 +1391,77 @@ pub fn blend_poses(parents: &[i32], from: &[World], to: &[World], weight: f32) -
 /// relative to its own parent with FUN_1401c6150, which mixes the two axes
 /// that agree most between the poses and rebuilds the third and then the
 /// second by cross products. `helpers[j]` marks the helpers (missing entries
-/// are not). The IK chains' own blend (FUN_1401c57b0, chain joints mixed by
-/// position and solved again) is not reproduced.
+/// are not). No IK chain is re-solved ([`blend_poses_with_chains`] with no
+/// chains).
 pub fn blend_poses_with_helpers(
     parents: &[i32],
     helpers: &[bool],
+    from: &[World],
+    to: &[World],
+    weight: f32,
+) -> Vec<World> {
+    let none = ChainBlend {
+        lengths: &[],
+        from: &[],
+        to: &[],
+    };
+    blend_poses_with_chains(parents, helpers, &none, from, to, weight)
+}
+
+/// What [`blend_poses_with_chains`] needs for the IK chains: each joint's
+/// bone length ([`bone_lengths`]) and the chains each pose's snapshot holds
+/// (an evaluated pose's [`Evaluated::chains`]; none for a pose that was
+/// itself a blend, whose snapshot has no motion: FUN_1401a4cd0 clears the
+/// object's motion, so FUN_1401c5d00 records no chains for it).
+pub struct ChainBlend<'a> {
+    pub lengths: &'a [f32],
+    pub from: &'a [ChainTop],
+    pub to: &'a [ChainTop],
+}
+
+/// The record FUN_1401d2810 keeps for a chain, in the frame of the top
+/// joint's nearest non-helper ancestor (that joint's scaled matrix inverted,
+/// FUN_1401a9890): the top joint's position, the point one middle-joint
+/// length along the middle joint's X axis, and the top joint's Y and Z rows
+/// (directions carrying the joint's scale).
+struct ChainRecord {
+    start: Vec3,
+    reach: Vec3,
+    y: Vec3,
+    z: Vec3,
+}
+
+/// [`blend_poses_with_helpers`] with the IK chains' own blend, as
+/// FUN_1401c3a30 does it (0x1401c3e6a..0x1401c4bb6). The blend walks the
+/// joints in index order with a cursor into each pose's chain list (sorted
+/// by joint); a chain top that both poses list with the same level takes the
+/// chain branch for itself and the next joint (its middle joint), and the
+/// walk resumes after the middle joint; every other joint blends as before.
+///
+/// In the chain branch the two poses' chain records are mixed linearly. The
+/// top position and the reach point go into the world through the blended
+/// matrix of the chain parent's nearest non-helper ancestor (FUN_1401a7a80
+/// of the parent; the record's own frame is the top's nearest non-helper
+/// ancestor, the same joint whenever the parent is a helper, as on every
+/// chain checked), then into the chain parent's unscaled frame. The pole is
+/// the mixed Y row when the poses' Y rows agree at least as much as their Z
+/// rows (dot products) and it is not within 0.96 (DAT_1405b3fb8) of the aim;
+/// otherwise the normalised mixed Z row crossed with the aim. FUN_1401c57b0
+/// then solves the two joints with the bone lengths times the joints' X
+/// scale, the arm bend for level 3, no roll on the top joint (the pole
+/// carries it) and, as the middle joint's roll, its X rotation channels
+/// mixed the short way round (the snapshot's scale word 3; FUN_1401a90c0
+/// wrapping). The top keeps the mixed position; the middle joint sits one
+/// top bone length along the top's X axis. The end joint and everything
+/// below blend as plain joints against the solved middle joint.
+///
+/// Left out: the ground placement the caller's foot table asks for (the
+/// table's +0x1c joint, FUN_1401712b0 casts; the rewrite has no foot table)
+/// and the attachment list pass (snapshot +0x20, FUN_1401c5190).
+pub fn blend_poses_with_chains(
+    parents: &[i32],
+    helpers: &[bool],
+    chains: &ChainBlend,
     from: &[World],
     to: &[World],
     weight: f32,
@@ -1340,41 +1473,91 @@ pub fn blend_poses_with_helpers(
         scale: [1.; 3],
     };
     let helper = |j: usize| helpers.get(j).copied().unwrap_or(false);
-    // The joint a joint blends against: its parent for a helper, else the
-    // nearest ancestor that is not one (FUN_1401a7a80).
-    let anchor = |j: usize| -> i32 {
-        let mut p = parents[j];
-        if helper(j) {
-            return p;
-        }
+    let parent_of = |j: usize| parents.get(j).copied().unwrap_or(-1);
+    // The nearest ancestor of `j` that is not a helper (FUN_1401a7a80).
+    let solid_ancestor = |j: usize| -> i32 {
+        let mut p = parent_of(j);
         while p >= 0 && (p as usize) < n && helper(p as usize) {
             p = parents[p as usize];
         }
         p
     };
+    // The joint a joint blends against: its parent for a helper, else the
+    // nearest ancestor that is not one.
+    let anchor = |j: usize| -> i32 {
+        if helper(j) {
+            parent_of(j)
+        } else {
+            solid_ancestor(j)
+        }
+    };
+    let frame = |pose: &[World], j: i32| -> World {
+        if j < 0 || j as usize >= n {
+            root
+        } else {
+            pose[j as usize]
+        }
+    };
+    let unscale = |v: Vec3, s: Vec3| -> Vec3 {
+        std::array::from_fn(|k| if s[k].abs() > 1e-6 { v[k] / s[k] } else { v[k] })
+    };
     let lerp =
         |a: Vec3, b: Vec3| -> Vec3 { std::array::from_fn(|k| a[k] + (b[k] - a[k]) * weight) };
     // A pose's anchor-relative rotation and translation of joint `j`.
     let local = |pose: &[World], j: usize| -> (Quat, Vec3) {
-        let parent = anchor(j);
-        let p = if parent < 0 || parent as usize >= n {
-            &root
-        } else {
-            &pose[parent as usize]
-        };
+        let p = frame(pose, anchor(j));
         let inv = qconj(p.rotation);
         let t = rotate(inv, sub(pose[j].translation, p.translation));
-        (
-            qnorm(qmul(inv, pose[j].rotation)),
-            std::array::from_fn(|k| {
-                if p.scale[k].abs() > 1e-6 {
-                    t[k] / p.scale[k]
-                } else {
-                    t[k]
-                }
-            }),
-        )
+        (qnorm(qmul(inv, pose[j].rotation)), unscale(t, p.scale))
     };
+    let length_of = |j: usize| chains.lengths.get(j).copied().unwrap_or(0.);
+    // An ancestor search that finds no non-helper joint falls back to the
+    // joint's parent (both FUN_1401d2810 and FUN_1401c3a30).
+    let solid_or_parent = |j: usize| match solid_ancestor(j) {
+        a if a < 0 => parent_of(j),
+        a => a,
+    };
+    // FUN_1401d2810's record of the chain at `top` in `pose`.
+    let record = |pose: &[World], top: usize| -> ChainRecord {
+        let f = frame(pose, solid_or_parent(top));
+        let inv = qconj(f.rotation);
+        let point = |q: Vec3| unscale(rotate(inv, sub(q, f.translation)), f.scale);
+        let dir = |d: Vec3| unscale(rotate(inv, d), f.scale);
+        let (t, m) = (pose[top], pose[top + 1]);
+        ChainRecord {
+            start: point(t.translation),
+            reach: point(add(
+                m.translation,
+                rotate(m.rotation, [length_of(top + 1) * m.scale[0], 0., 0.]),
+            )),
+            y: dir(rotate(t.rotation, [0., t.scale[1], 0.])),
+            z: dir(rotate(t.rotation, [0., 0., t.scale[2]])),
+        }
+    };
+    // The walk over both chain lists (0x1401c3e6a): a list's cursor moves on
+    // when its chain's top is the joint the walk is at.
+    let mut chain_at = vec![None::<(u8, f32, f32)>; n];
+    let mut in_chain = vec![false; n];
+    let (mut a, mut b, mut j) = (0, 0, 0);
+    while j < n {
+        let take = |list: &[ChainTop], cursor: &mut usize| match list.get(*cursor) {
+            Some(c) if c.joint == j => {
+                *cursor += 1;
+                (c.level, c.mid_roll)
+            }
+            _ => (0, 0.),
+        };
+        let (la, ra) = take(chains.from, &mut a);
+        let (lb, rb) = take(chains.to, &mut b);
+        let parent = parent_of(j);
+        if la == lb && la >= 2 && j + 1 < n && parent >= 0 && (parent as usize) < n {
+            chain_at[j] = Some((la, ra, rb));
+            in_chain[j + 1] = true;
+            j += 2;
+        } else {
+            j += 1;
+        }
+    }
     let mut out = vec![root; n];
     let mut done = vec![false; n];
     let mut remaining = n;
@@ -1382,8 +1565,82 @@ pub fn blend_poses_with_helpers(
         let before = remaining;
         for j in 0..n {
             let parent = parents[j];
-            if done[j] || (parent >= 0 && !done.get(parent as usize).copied().unwrap_or(true)) {
+            if done[j]
+                || in_chain[j]
+                || (parent >= 0 && !done.get(parent as usize).copied().unwrap_or(true))
+            {
                 continue;
+            }
+            if let Some((level, roll_a, roll_b)) = chain_at[j] {
+                let mid = j + 1;
+                let (ra, rb) = (record(from, j), record(to, j));
+                let f = frame(&out, solid_or_parent(parent as usize));
+                let world_point = |q: Vec3| -> Vec3 {
+                    let scaled: Vec3 = std::array::from_fn(|k| q[k] * f.scale[k]);
+                    add(f.translation, rotate(f.rotation, scaled))
+                };
+                let world_dir = |d: Vec3| -> Vec3 {
+                    rotate(f.rotation, std::array::from_fn(|k| d[k] * f.scale[k]))
+                };
+                let p = out[parent as usize];
+                let inv = qconj(p.rotation);
+                let start_world = world_point(lerp(ra.start, rb.start));
+                let start = rotate(inv, sub(start_world, p.translation));
+                let reach = world_point(lerp(ra.reach, rb.reach));
+                let target = rotate(inv, sub(reach, p.translation));
+                let aim = sub(target, start);
+                let z_up = || {
+                    let z = lerp(ra.z, rb.z);
+                    let z = normalize(z).unwrap_or(z);
+                    cross(rotate(inv, world_dir(z)), aim)
+                };
+                let up = if dot(ra.z, rb.z) <= dot(ra.y, rb.y) {
+                    let up = rotate(inv, world_dir(lerp(ra.y, rb.y)));
+                    let along = normalize(aim).unwrap_or(aim);
+                    if 0.96 < dot(along, up).abs() {
+                        z_up()
+                    } else {
+                        up
+                    }
+                } else {
+                    z_up()
+                };
+                let pole = add(start, up);
+                let (sa, sm) = (
+                    lerp(from[j].scale, to[j].scale),
+                    lerp(from[mid].scale, to[mid].scale),
+                );
+                let roll = mix_angle(roll_a, roll_b, weight);
+                if let Some((upper, bend)) = two_joint_turns(
+                    aim,
+                    Some(sub(pole, start)),
+                    [sa[0] * length_of(j), length_of(mid) * sm[0]],
+                    level == 3,
+                    [0., roll],
+                ) {
+                    let top_rotation = qnorm(qmul(p.rotation, upper));
+                    out[j] = World {
+                        rotation: top_rotation,
+                        translation: start_world,
+                        scale: sa,
+                    };
+                    out[mid] = World {
+                        rotation: qnorm(qmul(top_rotation, bend)),
+                        translation: add(
+                            start_world,
+                            rotate(top_rotation, [length_of(j) * sa[0], 0., 0.]),
+                        ),
+                        scale: sm,
+                    };
+                    for k in [j, mid] {
+                        done[k] = true;
+                        remaining -= 1;
+                    }
+                    continue;
+                }
+                // A target on the top joint: both blend as plain joints.
+                chain_at[j] = None;
+                in_chain[mid] = false;
             }
             let (ra, ta) = local(from, j);
             let (rb, tb) = local(to, j);
@@ -1401,12 +1658,7 @@ pub fn blend_poses_with_helpers(
                 }
             };
             let translation = lerp(ta, tb);
-            let a = anchor(j);
-            let p = if a < 0 || a as usize >= n {
-                root
-            } else {
-                out[a as usize]
-            };
+            let p = frame(&out, anchor(j));
             let scaled: Vec3 = std::array::from_fn(|k| translation[k] * p.scale[k]);
             out[j] = World {
                 rotation: qnorm(qmul(p.rotation, rotation)),
@@ -1421,6 +1673,13 @@ pub fn blend_poses_with_helpers(
         }
     }
     out
+}
+
+/// Two angles mixed the short way round, as FUN_1401c3a30 mixes a chain's
+/// middle-joint roll (0x1401c486b): the difference and the result are both
+/// wrapped into [-pi, pi] (FUN_1401a90c0's loops).
+fn mix_angle(a: f32, b: f32, weight: f32) -> f32 {
+    wrap_angle(a + wrap_angle(b - a) * weight)
 }
 
 /// FUN_1401c6150: the blend of a helper joint's axes. The axis pair that
@@ -1831,6 +2090,230 @@ mod tests {
         assert!((y[1] - 1.).abs() < 1e-4, "{y:?}");
         let x0 = blend_axes_aligned(a, b, 0.);
         assert!(dot(rotate(x0, [1., 0., 0.]), [1., 0., 0.]) > 0.9999);
+    }
+
+    /// A generated leg: root 0, a helper 1 the chain hangs from, the chain
+    /// top 2 (a helper, as on the installed players), middle 3, end 4 (a
+    /// helper) and a toe 5. The middle joint sits one top length along the
+    /// top's X and bends about Z after its roll; the end sits one middle
+    /// length along the middle joint's X.
+    fn leg(
+        top: Vec3,
+        bend: f32,
+        roll: f32,
+        hip: f32,
+    ) -> (Vec<i32>, Vec<bool>, Vec<f32>, Vec<World>) {
+        let parents = vec![-1, 0, 1, 2, 3, 4];
+        let helpers = vec![false, true, true, false, true, false];
+        let lengths = vec![0., 0., 30., 28., 6., 3.];
+        let locals = [
+            ([0., 0.2, 0.], [5., 90., -3.]),
+            ([0., 0., hip], [8., -4., 2.]),
+            (top, [3., -2., 1.]),
+            ([roll, 0., bend], [30., 0., 0.]),
+            ([0.1, -0.2, 0.3], [28., 0., 0.]),
+            ([0., 0.4, 0.], [6., 0., 0.]),
+        ];
+        let root = World {
+            rotation: IDENTITY,
+            translation: [0.; 3],
+            scale: [1.; 3],
+        };
+        let mut world: Vec<World> = Vec::new();
+        for (j, (rotation, translation)) in locals.into_iter().enumerate() {
+            let p = if parents[j] < 0 {
+                root
+            } else {
+                world[parents[j] as usize]
+            };
+            world.push(World::compose(
+                &p,
+                &Local {
+                    scale: [1.; 3],
+                    rotation,
+                    translation,
+                },
+            ));
+        }
+        (parents, helpers, lengths, world)
+    }
+
+    fn leg_chain(roll: f32) -> Vec<ChainTop> {
+        vec![ChainTop {
+            joint: 2,
+            level: 2,
+            mid_roll: roll,
+        }]
+    }
+
+    fn same_world(a: &World, b: &World, tolerance: f32) -> bool {
+        let (ma, mb) = (a.matrix(), b.matrix());
+        (0..4).all(|r| (0..3).all(|k| (ma[r][k] - mb[r][k]).abs() <= tolerance))
+    }
+
+    #[test]
+    fn a_chain_blend_ends_on_each_pose() {
+        let (parents, helpers, lengths, a) = leg([0.3, -0.5, -1.2], 0.9, 0.4, 0.2);
+        let (_, _, _, b) = leg([-0.6, 0.4, -0.7], 1.4, -0.7, -0.5);
+        let chains = ChainBlend {
+            lengths: &lengths,
+            from: &leg_chain(0.4),
+            to: &leg_chain(-0.7),
+        };
+        for (w, pose) in [(0., &a), (1., &b)] {
+            let out = blend_poses_with_chains(&parents, &helpers, &chains, &a, &b, w);
+            for j in 0..6 {
+                assert!(
+                    same_world(&out[j], &pose[j], 2e-4),
+                    "weight {w} joint {j}: {:?} vs {:?}",
+                    out[j],
+                    pose[j]
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_blended_chain_keeps_its_bones_and_reaches_the_mixed_target() {
+        let (parents, helpers, lengths, a) = leg([0.3, -0.5, -1.2], 0.9, 0.4, 0.2);
+        let (_, _, _, b) = leg([-0.6, 0.4, -0.7], 1.4, -0.7, -0.5);
+        let chains = ChainBlend {
+            lengths: &lengths,
+            from: &leg_chain(0.4),
+            to: &leg_chain(-0.7),
+        };
+        let reach = |pose: &[World]| {
+            add(
+                pose[3].translation,
+                rotate(pose[3].rotation, [lengths[3], 0., 0.]),
+            )
+        };
+        for w in [0.25, 0.5, 0.75] {
+            let out = blend_poses_with_chains(&parents, &helpers, &chains, &a, &b, w);
+            // The hip and its helper are the same in both poses' frames, so
+            // the mixed records are the mixed world points.
+            let start: Vec3 = std::array::from_fn(|k| {
+                a[2].translation[k] + (b[2].translation[k] - a[2].translation[k]) * w
+            });
+            let target: Vec3 = std::array::from_fn(|k| {
+                let (ra, rb) = (reach(&a), reach(&b));
+                ra[k] + (rb[k] - ra[k]) * w
+            });
+            assert!(length(sub(out[2].translation, start)) < 1e-3);
+            let thigh = length(sub(out[3].translation, out[2].translation));
+            assert!((thigh - 30.).abs() < 1e-3, "{thigh}");
+            assert!(length(sub(out[4].translation, target)) < 1e-3);
+            assert!((length(sub(out[4].translation, out[3].translation)) - 28.).abs() < 1e-3);
+            // The axis mix alone neither keeps the target nor the knee.
+            let plain = blend_poses_with_helpers(&parents, &helpers, &a, &b, w);
+            assert!(length(sub(plain[4].translation, target)) > 0.5);
+            // Joints outside the chain blend as before.
+            for j in [0, 1] {
+                assert!(same_world(&out[j], &plain[j], 1e-6));
+            }
+        }
+    }
+
+    #[test]
+    fn chains_the_poses_do_not_share_blend_as_plain_joints() {
+        let (parents, helpers, lengths, a) = leg([0.3, -0.5, -1.2], 0.9, 0.4, 0.2);
+        let (_, _, _, b) = leg([-0.6, 0.4, -0.7], 1.4, -0.7, -0.5);
+        let plain = blend_poses_with_helpers(&parents, &helpers, &a, &b, 0.5);
+        let arm = [ChainTop {
+            joint: 2,
+            level: 3,
+            mid_roll: 0.,
+        }];
+        // Only one pose lists the chain, or the levels differ.
+        for (from, to) in [
+            (&leg_chain(0.4)[..], &[][..]),
+            (&[][..], &leg_chain(0.4)[..]),
+            (&leg_chain(0.4)[..], &arm[..]),
+        ] {
+            let chains = ChainBlend {
+                lengths: &lengths,
+                from,
+                to,
+            };
+            let out = blend_poses_with_chains(&parents, &helpers, &chains, &a, &b, 0.5);
+            for j in 0..6 {
+                assert!(same_world(&out[j], &plain[j], 0.));
+            }
+        }
+    }
+
+    #[test]
+    fn a_chain_on_a_middle_joint_stops_the_walk() {
+        // Two legs on one hip: chains at 2 and 6. A listed chain at 3 (the
+        // first chain's middle joint) is never reached, and its cursor then
+        // holds back the chain at 6 too (0x1401c3e6a).
+        let (mut parents, mut helpers, mut lengths, a) = leg([0.3, -0.5, -1.2], 0.9, 0.4, 0.2);
+        let (_, _, _, b) = leg([-0.6, 0.4, -0.7], 1.4, -0.7, -0.5);
+        let (_, _, _, a2) = leg([0.1, 0.2, -1.0], 0.5, 0.1, 0.2);
+        let (_, _, _, b2) = leg([-0.4, 0.1, -0.9], 1.1, 0.3, -0.5);
+        let mut a = a;
+        let mut b = b;
+        parents.extend([1, 6, 7, 8]);
+        helpers.extend([true, false, true, false]);
+        lengths.extend([30., 28., 6., 3.]);
+        a.extend_from_slice(&a2[2..]);
+        b.extend_from_slice(&b2[2..]);
+        let top = |joint: usize| ChainTop {
+            joint,
+            level: 2,
+            mid_roll: 0.,
+        };
+        let solve = |list: &[ChainTop]| {
+            let chains = ChainBlend {
+                lengths: &lengths,
+                from: list,
+                to: list,
+            };
+            blend_poses_with_chains(&parents, &helpers, &chains, &a, &b, 0.5)
+        };
+        let both = solve(&[top(2), top(6)]);
+        let stuck = solve(&[top(2), top(3), top(6)]);
+        let plain = blend_poses_with_helpers(&parents, &helpers, &a, &b, 0.5);
+        assert!(!same_world(&both[7], &plain[7], 1e-3));
+        for j in 0..10 {
+            assert!(same_world(&stuck[j], &both[j], 0.) || j >= 6, "joint {j}");
+        }
+        for j in 6..10 {
+            assert!(same_world(&stuck[j], &plain[j], 0.), "joint {j}");
+        }
+    }
+
+    #[test]
+    fn a_middle_roll_mixes_the_short_way_round() {
+        let pi = std::f32::consts::PI;
+        // 3 and -3 are 0.28 apart across pi, not 6 apart through zero.
+        assert!((mix_angle(3.0, -3.0, 0.5).abs() - pi).abs() < 1e-3);
+        assert!((mix_angle(3.0, -3.0, 0.25) - (3. + (2. * pi - 6.) / 4.)).abs() < 1e-5);
+        assert!((mix_angle(0.5, 1.5, 0.25) - 0.75).abs() < 1e-6);
+        assert!((mix_angle(-3.0, 3.0, 1.) - 3.0).abs() < 1e-5);
+    }
+
+    #[test]
+    fn chain_tops_take_ik_levels_two_and_three_sorted() {
+        let locals: Vec<Local> = (0..40)
+            .map(|j| Local {
+                scale: [1.; 3],
+                rotation: [j as f32 * 0.01, 0., 0.],
+                translation: [0.; 3],
+            })
+            .collect();
+        // Joint order entries (joint, flags): levels 0..3, one past the
+        // model bones, unsorted.
+        let order = [(9, 2), (4, 1), (2, 3 | 64), (30, 2), (6, 0), (5, 2 | 128)];
+        let chains = chain_tops(&order, 20, &locals);
+        let got: Vec<(usize, u8)> = chains.iter().map(|c| (c.joint, c.level)).collect();
+        assert_eq!(got, [(2, 3), (5, 2), (9, 2)]);
+        assert!((chains[0].mid_roll - 0.03).abs() < 1e-6);
+        // At most 32, taken in table order before the sort.
+        let many: Vec<(usize, u8)> = (0..40).rev().map(|j| (j, 2)).collect();
+        let chains = chain_tops(&many, 40, &locals);
+        assert_eq!(chains.len(), 32);
+        assert_eq!(chains[0].joint, 8);
     }
 
     #[test]

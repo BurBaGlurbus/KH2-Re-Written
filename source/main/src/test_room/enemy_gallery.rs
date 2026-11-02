@@ -76,10 +76,13 @@ pub struct GalleryActor {
     revision: u64,
     /// Optional source-resolved idle after a one-shot appearance preview.
     preview_idle: Option<usize>,
-    /// The joints last shown (root motion taken out), and the pose a
-    /// running blend started from with the motion serial it belongs to.
+    /// The joints last shown (root motion taken out) with the IK chains a
+    /// blend from them re-solves (none when they were a blend), and the
+    /// pose a running blend started from with the motion serial it belongs
+    /// to.
     shown_joints: Vec<motion_eval::World>,
-    blend_from: Option<(u64, Vec<motion_eval::World>)>,
+    shown_chains: Vec<motion_eval::ChainTop>,
+    blend_from: Option<(u64, Vec<motion_eval::World>, Vec<motion_eval::ChainTop>)>,
     /// The motion serial of the shown battle pose.
     shown_serial: Option<u64>,
     /// The spawn record serial an area placed it with (0: summoned by hand).
@@ -122,9 +125,10 @@ impl GalleryActor {
         let serial = battle.brain.serial();
         let sampled = if forward_kinematics_only {
             self.shown_joints.clear();
+            self.shown_chains.clear();
             sample(&self.kind, &motion, key, false, true)?
         } else {
-            let (sampled, joints) = sample_joints(&self.kind, &motion, key)?;
+            let (sampled, joints, chains) = sample_joints(&self.kind, &motion, key)?;
             // FUN_1403c73c0: while the motion's blend runs, the pose the
             // switch left turns toward the new motion's start frame, joint
             // by joint (FUN_1401c3a30, as Sora's and the party's).
@@ -132,14 +136,29 @@ impl GalleryActor {
             // blend cut short by another included).
             if weight.is_none() {
                 self.blend_from = None;
-            } else if self.blend_from.as_ref().is_none_or(|(s, _)| *s != serial) {
-                self.blend_from = Some((serial, std::mem::take(&mut self.shown_joints)));
+            } else if self
+                .blend_from
+                .as_ref()
+                .is_none_or(|(s, _, _)| *s != serial)
+            {
+                self.blend_from = Some((
+                    serial,
+                    std::mem::take(&mut self.shown_joints),
+                    std::mem::take(&mut self.shown_chains),
+                ));
             }
             let shown = match (&self.blend_from, weight) {
-                (Some((_, from)), Some(w)) if from.len() == joints.len() && !joints.is_empty() => {
-                    Some(motion_eval::blend_poses_with_helpers(
+                (Some((_, from, from_chains)), Some(w))
+                    if from.len() == joints.len() && !joints.is_empty() =>
+                {
+                    Some(motion_eval::blend_poses_with_chains(
                         &bone_parents(&self.kind),
                         &bone_helpers(&self.kind),
+                        &motion_eval::ChainBlend {
+                            lengths: &motion_eval::bone_lengths(&self.kind.model.skinning.bones),
+                            from: from_chains,
+                            to: &chains,
+                        },
                         from,
                         &joints,
                         w,
@@ -151,10 +170,13 @@ impl GalleryActor {
                 Some(shown) => {
                     let sampled = skin_joints(&self.kind, &shown)?;
                     self.shown_joints = shown;
+                    // A blended pose's snapshot holds no chains.
+                    self.shown_chains.clear();
                     sampled
                 }
                 None => {
                     self.shown_joints = joints;
+                    self.shown_chains = chains;
                     sampled
                 }
             }
@@ -809,6 +831,7 @@ fn summon(
         revision: 0,
         preview_idle: None,
         shown_joints: Vec::new(),
+        shown_chains: Vec::new(),
         blend_from: None,
         shown_serial: None,
         spawn_serial: 0,
@@ -990,13 +1013,14 @@ fn bone_helpers(kind: &Kind) -> Vec<bool> {
         .collect()
 }
 
-/// The evaluated pose at `frame` with its root motion taken out, and its
-/// joints moved the same way (none for a raw-matrix motion).
+/// The evaluated pose at `frame` with its root motion taken out, its joints
+/// moved the same way and its IK chains (none for a raw-matrix motion).
+#[allow(clippy::type_complexity)]
 fn sample_joints(
     kind: &Kind,
     motion: &motion::SelectedMotion,
     frame: f32,
-) -> Result<(Sampled, Vec<motion_eval::World>), String> {
+) -> Result<(Sampled, Vec<motion_eval::World>, Vec<motion_eval::ChainTop>), String> {
     let (pose, evaluated) = kind
         .model
         .skinning
@@ -1012,7 +1036,11 @@ fn sample_joints(
             ..*w
         })
         .collect();
-    Ok((finish(kind, &pose, Vec3::from_array(root))?, joints))
+    Ok((
+        finish(kind, &pose, Vec3::from_array(root))?,
+        joints,
+        evaluated.chains,
+    ))
 }
 
 /// Skins joints that already have their root motion taken out.
@@ -1494,6 +1522,7 @@ mod tests {
             revision: 0,
             preview_idle: None,
             shown_joints: Vec::new(),
+            shown_chains: Vec::new(),
             blend_from: None,
             shown_serial: None,
             spawn_serial: 0,

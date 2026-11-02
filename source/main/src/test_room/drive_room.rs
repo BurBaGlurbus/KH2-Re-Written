@@ -2127,6 +2127,8 @@ pub fn present(
     g.blend_from = None;
     g.display_joints.clear();
     g.blend_from_joints.clear();
+    g.display_chains.clear();
+    g.blend_from_chains.clear();
     g.shown_action = None;
 }
 

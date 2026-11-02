@@ -612,6 +612,13 @@ pub fn load_kit(source: &ProbeSource, k: KitInputs) -> Result<Kit, Box<dyn std::
             .iter()
             .map(|b| b.header_i32[1])
             .collect(),
+        helpers: actor
+            .skinning
+            .bones
+            .iter()
+            .map(|b| b.header_i32[3] & 1 != 0)
+            .collect(),
+        lengths: data::motion_eval::bone_lengths(&actor.skinning.bones),
         weapon_joint,
         shared_bones,
     });
