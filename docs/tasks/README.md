@@ -306,3 +306,4 @@ Records through T128 retain historical commands and paths. See [the folder guide
 | [T360](T360-item-shop.md) | The item shop (issue #33) | PASS in the room; no synthesis, no side-by-side. |
 | [T361](T361-cutscene-weapon-mount.md) | Keyblades mounted on the hand without the axis flip (issue #27) | PASS against footage; no side-by-side. |
 | [T362](T362-gummi-records.md) | Gummi mission records from the save (issue #142, piece 1) | PASS on the route panel with a generated save. |
+| [T363](T363-gummi-result-rules.md) | Gummi result rules and tables (issue #142, piece 3) | PASS in isolation, tables checked; no flight yet. |

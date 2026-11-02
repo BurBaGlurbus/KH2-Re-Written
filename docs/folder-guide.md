@@ -15,6 +15,7 @@ established.
 | Room setup, exits or progress | [source/game/area/src/](../source/game/area/src/) |
 | Walls and floors | [source/game/collision/src/lib.rs](../source/game/collision/src/lib.rs) |
 | Cutscene timing and camera state | [source/game/event/src/](../source/game/event/src/) |
+| Gummi Ship records and result rules | [source/game/gummi/src/](../source/game/gummi/src/) |
 | The launcher window | [source/main/src/launcher.rs](../source/main/src/launcher.rs), [launcher/](../source/main/src/launcher/) |
 | The test room or debug menu | [source/main/src/test_room.rs](../source/main/src/test_room.rs), [debug_menu.rs](../source/main/src/test_room/debug_menu.rs) |
 | Pause menu, equipment or journal | [source/visual/src/pause_menu/](../source/visual/src/pause_menu/), [pause_menu.rs](../source/visual/src/pause_menu.rs) |

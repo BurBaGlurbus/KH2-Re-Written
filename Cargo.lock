@@ -2584,6 +2584,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "gummi"
+version = "0.1.2"
+
+[[package]]
 name = "half"
 version = "2.7.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5633,6 +5637,7 @@ name = "world_map"
 version = "0.1.2"
 dependencies = [
  "area",
+ "gummi",
 ]
 
 [[package]]
