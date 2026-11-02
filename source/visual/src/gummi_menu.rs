@@ -26,6 +26,8 @@ pub struct GummiData {
     pub entries: Vec<MenuEntry>,
     pub transitions: Vec<Transition>,
     pub digits: Vec<DigitStyle>,
+    /// `gumibattle/treasure.bin` rows as (route, level byte, obtained bit).
+    pub treasures: Vec<(u8, u8, u32)>,
     /// `msg/<lang>/gumi.bar` by id.
     pub texts: HashMap<u32, Vec<u8>>,
 }

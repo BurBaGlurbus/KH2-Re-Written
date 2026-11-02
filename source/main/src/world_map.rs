@@ -222,6 +222,8 @@ struct WorldMap {
     autoplay_decide: bool,
     /// Where the landing's field comes from (`--field`).
     field: Option<FieldHandoff>,
+    /// The loaded save the Gummi result writes its record into.
+    gummi_save: Option<save::data::SaveData>,
     /// `07localset.bin`: per world, program id → area (FUN_14039fbc0).
     program_areas: Vec<Vec<(u16, u16)>>,
     captures_taken: usize,
@@ -1064,6 +1066,55 @@ fn close_up(a: &Actor, mode: u8, now: Pose) -> Pose {
     pose
 }
 
+/// The result's save write (FUN_140210730 state 4): the unlocks
+/// (FUN_140209b50) on the save as it was, then on decide the record write
+/// (FUN_140209750) with the treasure share (FUN_1402083d0), into the loaded
+/// save and the image the field starts from. [Not built] The prizes, so no
+/// treasure bit changes here; the route panel keeps the records it loaded.
+fn gummi_save_write(
+    wm: &mut WorldMap,
+    data: &visual::gummi_menu::GummiData,
+    route: u8,
+    (level, ex, run): (u8, bool, ::gummi::Mission),
+) {
+    let r = route.saturating_sub(1);
+    let mut block = run;
+    block.route = r;
+    block.level = level;
+    let images = wm
+        .gummi_save
+        .iter_mut()
+        .chain(wm.field.as_mut().map(|f| &mut f.image));
+    let mut log = None;
+    for image in images {
+        let Some(mut records) = ::gummi::read_records(image.bytes()) else {
+            continue;
+        };
+        let unlocked = ::gummi::rules::unlock(&mut records, r, level, ex, &block);
+        // Normal and EX treasures of the level count together.
+        let share = ::gummi::rules::treasure_share(data.treasures.iter().copied(), r, level, |b| {
+            ::gummi::obtained(image.bytes(), b)
+        });
+        ::gummi::rules::write_clear(&mut records, r, level, ex, &block, share);
+        let mut bytes = image.bytes().to_vec();
+        ::gummi::write_records(&mut bytes, &records);
+        image.set_slice(0, &bytes);
+        image.seal();
+        log.get_or_insert((
+            unlocked,
+            records[::gummi::record_index(r, level, ex)],
+            share,
+        ));
+    }
+    if let Some((unlocked, record, share)) = log {
+        wm.log.push(
+            serde_json::json!({"event":"gummi_save_write","tick":wm.tick,
+            "route":route,"level":level,"ex":ex,"unlocked":format!("{unlocked:?}"),
+            "record":format!("{record:?}"),"share":share}),
+        );
+    }
+}
+
 /// The Gummi menu for one tick; true while it is up. [Not built] The leave
 /// window (0x4ab0) isn't drawn, so World Map returns at once; ship select
 /// and the editor end the run as the route did before.
@@ -1136,7 +1187,11 @@ fn gummi_tick(wm: &mut WorldMap, ui: &UiRes) -> bool {
             wm.log
                 .push(serde_json::json!({"event":"gummi_result_closed","tick":wm.tick}));
             let first = panel.first();
+            let input = panel.input();
             wm.gummi_result = None;
+            if let Some((_, data)) = ui.ui.gummi.as_ref() {
+                gummi_save_write(wm, data, route, input);
+            }
             // A first clear goes straight back to the map (battle phase 0x12).
             if !first
                 && let (Some(menu), Some((_, data))) =
@@ -3690,6 +3745,7 @@ fn run(args: Vec<PathBuf>) -> Result<AppExit> {
             .ok()
             .and_then(|b| data::world_map::read_program_areas(&b).ok())
             .unwrap_or_default(),
+        gummi_save: load_image.clone(),
         field: field.map(|arena| FieldHandoff {
             arena,
             root: args[0].clone(),

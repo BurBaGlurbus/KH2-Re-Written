@@ -406,6 +406,11 @@ impl ResultPanel {
         out
     }
 
+    /// The result's level, EX flag and run block.
+    pub fn input(&self) -> (u8, bool, Mission) {
+        (self.input.level, self.input.ex, self.input.run)
+    }
+
     /// A route's first level 1 clear (no after-clear menu follows).
     pub fn first(&self) -> bool {
         self.input.first

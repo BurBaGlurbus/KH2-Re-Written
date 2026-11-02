@@ -5,4 +5,7 @@ pub mod menu;
 pub mod record;
 pub mod rules;
 
-pub use record::{Mission, RECORD_BYTES, RECORD_COUNT, RECORDS, record_index, route_missions};
+pub use record::{
+    Mission, RECORD_BYTES, RECORD_COUNT, RECORDS, obtained, read_records, record_index,
+    route_missions, write_records,
+};

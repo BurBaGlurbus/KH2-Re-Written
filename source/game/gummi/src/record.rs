@@ -85,6 +85,35 @@ impl Mission {
     }
 }
 
+/// The obtained-treasure bits (save +0x10f60, u32 words; DAT_1409ba810).
+pub const TREASURE_BITS: usize = 0x10f60;
+
+/// Whether treasure `bit` is obtained in a save image.
+pub fn obtained(save: &[u8], bit: u32) -> bool {
+    let at = TREASURE_BITS + (bit as usize >> 5) * 4;
+    save.get(at..at + 4)
+        .map(|w| u32::from_le_bytes([w[0], w[1], w[2], w[3]]))
+        .is_some_and(|w| w >> (bit & 31) & 1 != 0)
+}
+
+/// All 54 records of a save image.
+pub fn read_records(save: &[u8]) -> Option<[Mission; RECORD_COUNT]> {
+    let mut out = [Mission::default(); RECORD_COUNT];
+    for (k, m) in out.iter_mut().enumerate() {
+        *m = Mission::read(save.get(RECORDS + k * RECORD_BYTES..)?)?;
+    }
+    Some(out)
+}
+
+/// The 54 records back into a save image.
+pub fn write_records(save: &mut [u8], records: &[Mission; RECORD_COUNT]) {
+    for (k, m) in records.iter().enumerate() {
+        if let Some(r) = save.get_mut(RECORDS + k * RECORD_BYTES..) {
+            m.write(r);
+        }
+    }
+}
+
 /// A route's normal and EX records out of a save image, `route` 1..=9 as
 /// the world map numbers them. Missing bytes read as unplayed.
 pub fn route_missions(save: &[u8], route: u8) -> [[Mission; 3]; 2] {
@@ -148,6 +177,16 @@ mod tests {
         assert_eq!(m[0][2], Mission::default());
         assert_eq!(route_missions(&save, 1), [[Mission::default(); 3]; 2]);
         assert_eq!(route_missions(&save[..10], 2), [[Mission::default(); 3]; 2]);
+        // All 54 round-trip, and treasure bits read by word and bit.
+        let all = read_records(&save).unwrap();
+        let mut copy_all = save.clone();
+        write_records(&mut copy_all, &all);
+        assert_eq!(copy_all, save);
+        let mut bits = vec![0u8; TREASURE_BITS + 8];
+        bits[TREASURE_BITS + 4] = 0b100;
+        assert!(obtained(&bits, 34));
+        assert!(!obtained(&bits, 33));
+        assert!(!obtained(&bits[..10], 34));
         // Written back, the record is the same bytes.
         let mut copy = save[at..at + RECORD_BYTES].to_vec();
         copy[..0x24].fill(0);

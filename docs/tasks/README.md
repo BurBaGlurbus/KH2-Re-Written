@@ -321,3 +321,4 @@ Records through T128 retain historical commands and paths. See [the folder guide
 | [T375](T375-motion-tolerance-effectors.md) | The owner's tolerance and the external effector lists (issue #72) | PASS: 7716 match, the rest are rounding, singular poses or bad reference data. |
 | [T376](T376-gummi-after-clear-menu.md) | The Gummi after-clear and game-over menus (issue #142) | PASS in the world map program for 0x35; retry needs the flight. |
 | [T377](T377-ik-chain-blend.md) | The IK chains' own blend on a motion switch (issue #73) | PASS against the exe's blend in Ghidra's emulator; non-uniform scales outside chains are a gap. |
+| [T378](T378-gummi-save-write.md) | The Gummi result's save write (issue #142) | PASS in the world map program: unlocks and record write on the loaded save. |

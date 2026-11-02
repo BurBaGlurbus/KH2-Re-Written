@@ -173,12 +173,18 @@ fn load_gummi(source: &ProbeSource, library: &mut Library) -> Result<(Menu2ld, G
     let entries = data::gummi_table::read_menu_entries(&library.read("gumimenu/menuentry.bar")?)
         .ok_or("menuentry.bar unreadable")?;
     let texts = message_table(&library.read("msg/us/gumi.bar")?)?;
+    let treasures = data::gummi_table::read_treasure(&library.read("gumibattle/treasure.bin")?)
+        .ok_or("treasure.bin unreadable")?
+        .iter()
+        .map(|t| (t.route, t.level, t.bit))
+        .collect();
     Ok((
         layout,
         GummiData {
             entries,
             transitions,
             digits,
+            treasures,
             texts,
         },
     ))
