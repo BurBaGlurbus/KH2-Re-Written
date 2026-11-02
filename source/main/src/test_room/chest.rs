@@ -41,6 +41,72 @@ fn turned(yaw: f32, target: f32) -> f32 {
 
 /// FUN_1403a1520 and FUN_1403a1590: the kills and the reaction commands of
 /// this tick count once story flag 0x2d0 is set.
+/// The stock and levels the flag tail reads (`Progress::holdings`), the items a
+/// flag took, and each area entered (FUN_1403baf20, FUN_1403a5330). A gain runs
+/// its check at once, as FUN_1403c3fe0 and the level-ups do.
+pub fn sync_holdings(
+    mut game: ResMut<Game>,
+    area: Option<ResMut<AreaRes>>,
+    camp: Option<ResMut<CampRes>>,
+    mut last: Local<Option<(u8, u8)>>,
+) {
+    let Some(mut area) = area else { return };
+    let here = (area.current.world, area.current.area);
+    let tick = game.tick;
+    let mut camp = camp;
+    let Game {
+        items, drive, save, ..
+    } = &mut *game;
+    let stock = match (items.as_mut(), camp.as_mut()) {
+        (Some(i), _) => Some(&mut i.stock),
+        (None, Some(c)) => Some(&mut c.stock),
+        _ => None,
+    };
+    let p = area.source.progress_mut();
+    if *last != Some(here) {
+        *last = Some(here);
+        p.see_area(here.0, here.1);
+        p.enter_stage_area(here.0, here.1);
+    }
+    let before = p.holdings.clone();
+    let count = |item: u16| stock.as_ref().and_then(|s| s.get(&item).copied());
+    for item in [0x17, 0x20, 0x57] {
+        p.holdings.items.insert(item, count(item).unwrap_or(0));
+    }
+    p.holdings.byte_352a = save.base.u8_at(0x352a);
+    p.holdings.summon_level = save.base.u8_at(0x3526);
+    if let Some(d) = drive.as_ref() {
+        for (to, from) in p.holdings.form_levels.iter_mut().zip(&d.forms.records) {
+            *to = from.level;
+        }
+    }
+    if p.holdings.count(0x20) > before.count(0x20) {
+        p.check_torn_pages();
+    }
+    if [0x17, 0x57]
+        .iter()
+        .any(|&i| p.holdings.count(i) > before.count(i))
+    {
+        p.check_atlantica();
+    }
+    if p.holdings.form_levels != before.form_levels
+        || p.holdings.summon_level != before.summon_level
+    {
+        p.check_levels();
+    }
+    let taken = std::mem::take(&mut p.taken);
+    if !taken.is_empty() {
+        if let Some(stock) = stock {
+            for item in &taken {
+                if let Some(n) = stock.get_mut(item) {
+                    *n = n.saturating_sub(1);
+                }
+            }
+        }
+        game.event(serde_json::json!({"event":"flag_took_items","tick":tick,"items":taken}));
+    }
+}
+
 pub fn count_journal(
     mut game: ResMut<Game>,
     area: Option<Res<AreaRes>>,

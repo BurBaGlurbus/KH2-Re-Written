@@ -269,6 +269,16 @@ pub fn texa_page(
 ) -> Option<(u32, u32, Vec<u8>)> {
     let patch = &play.patch;
     let image = patch.image_at(patch.animation_for(number)?, 0.)?;
+    texa_image_page(set, play, image)
+}
+
+/// `play`'s page with its image `image` on it.
+pub fn texa_image_page(
+    set: &InspectionTextures,
+    play: &TexturePlay,
+    image: u16,
+) -> Option<(u32, u32, Vec<u8>)> {
+    let patch = &play.patch;
     let page = set
         .bind(patch.environment, TextureMode::OriginalIndexed)
         .ok()?

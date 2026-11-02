@@ -16359,6 +16359,7 @@ impl Plugin for RoomPlugin {
                             field_npc_tick,
                             chest::tick,
                             chest::count_journal,
+                            chest::sync_holdings,
                             story_events::tick,
                         )
                             .chain(),

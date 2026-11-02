@@ -27,6 +27,11 @@ pub struct EventArchive {
     pub voices: HashMap<u32, String>,
 }
 
+/// Range trigger 0x17 (FUN_140535430 → FUN_1401a8a20).
+const FACE_TRIGGER: u8 = 0x17;
+/// `DAT_140717480` at 60 Hz.
+const TICK: f32 = 1.;
+
 /// The widget player's view of a motion: its length in ticks (vtable +8,
 /// header word 1 of an interpolated motion), the loop point (+0x30,
 /// `(frameReturn − frameStart) × 60 / fps`) and the sounds of its frame
@@ -49,10 +54,23 @@ fn clip(m: &InterpolatedMotion, triggers: &[motion_trigger::SelectedTriggers]) -
             )
         })
         .collect();
+    // FUN_140535b10 tests a range against the tick length, not the clock
+    // (FUN_14040e7f0 is given dt): a record fires for the whole motion or never.
+    let faces = triggers
+        .iter()
+        .flat_map(|t| t.records.ranges.iter())
+        .filter(|r| r.trigger == FACE_TRIGGER && !r.parameters.is_empty())
+        .filter(|r| {
+            let (s, e) = (r.start_frame as u16, r.end_frame as u16);
+            f32::from(s) <= TICK && (e == 0xffff || TICK < f32::from(e))
+        })
+        .map(|r| r.parameters[0] as u16)
+        .collect();
     Clip {
         length,
         loop_start: (ret - start) * scale,
         sounds,
+        faces,
     }
 }
 

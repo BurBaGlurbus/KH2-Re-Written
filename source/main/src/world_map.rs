@@ -52,7 +52,7 @@ use data::{
 };
 use player::actor_physics::{self, ObjParams, Sampler};
 use std::{collections::HashMap, fs::OpenOptions, path::PathBuf, sync::Arc};
-use visual::area_fog::{FogMaterial, FogPlugin};
+use visual::area_fog::{AddFogged, FogMaterial, FogPlugin};
 use visual::field_command_menu::{self, CommandMenu, Font, Item, Reaction};
 use visual::overlay::{Ui2dFrame, Ui2dPlugin};
 use visual::world_map_menu::{self, Info, Menu, RouteInfo, TotalInfo};
@@ -100,6 +100,8 @@ enum Kind {
 }
 
 struct Actor {
+    /// The frame triggers' sounds this motion started (ctrl+0x16c).
+    live_sounds: Vec<u32>,
     kind: Kind,
     /// None for the objects whose archive holds no model.
     model: Option<Arc<InspectionModel>>,
@@ -175,6 +177,16 @@ struct WidgetModel {
     slot: usize,
     object: u32,
     model: Arc<InspectionModel>,
+    /// One TEXA worker per play of its texture set.
+    faces: Vec<WidgetFace>,
+}
+
+/// FUN_1401c0310's worker: the group it plays, since when, and the image shown.
+#[derive(Clone, Copy, Default)]
+struct WidgetFace {
+    group: Option<usize>,
+    start: u64,
+    shown: Option<u16>,
 }
 
 #[derive(Resource)]
@@ -233,6 +245,8 @@ struct WorldMap {
     /// Sound requests of this tick (FUN_1401de0c0 ids: se000 1 cursor,
     /// 2 decide, 3 open, 4 cancel, 5 error).
     sounds: Vec<u32>,
+    /// The sounds a motion change fades.
+    sound_fades: Vec<u32>,
     /// The world events still to play (FUN_14038dc60) and the one playing
     /// with its event camera (camera slot 2) and message window.
     event_queue: std::collections::VecDeque<u32>,
@@ -2069,6 +2083,17 @@ fn play_audio(mut wm: ResMut<WorldMap>, mut audio: ResMut<AudioRes>) {
             }
         }
     }
+    // FUN_1401df740: 10 units are 10 / 240 of a second [I: count 41, in ms].
+    for id in std::mem::take(&mut wm.sound_fades) {
+        if let Some(output) = audio.output.as_ref()
+            && let Ok(mut mixer) = output.mixer.lock()
+        {
+            mixer.fade(id, 0., 10. / 240., audio::FadeEnd::Stop);
+        }
+        let tick = wm.tick;
+        wm.log
+            .push(serde_json::json!({"event":"sound_fade","tick":tick,"id":id}));
+    }
     // Map effect sounds stop with their draw group.
     for id in std::mem::take(&mut wm.sound_stops) {
         if let Some(output) = audio.output.as_ref()
@@ -2243,6 +2268,10 @@ fn fire_triggers(wm: &mut WorldMap) {
         wm.actors[i].clock = Some((motion, now));
         if changed {
             wm.fx_requests.push(FxRequest::ReleaseMotion(i));
+            // FUN_1403c7300 → FUN_1401de500(handle, 10): the motion's sounds
+            // fade out as the next one starts.
+            let live = std::mem::take(&mut wm.actors[i].live_sounds);
+            wm.sound_fades.extend(live);
         }
         for (kind, p) in due {
             let p0 = p.first().copied().unwrap_or(0);
@@ -2257,7 +2286,15 @@ fn fire_triggers(wm: &mut WorldMap) {
                         follow: true,
                     });
                 }
-                8 if p.len() >= 2 => wm.sounds.push(p0 as u16 as u32 * 1000 + p[1] as u16 as u32),
+                8 if p.len() >= 2 => {
+                    let id = p0 as u16 as u32 * 1000 + p[1] as u16 as u32;
+                    // FUN_1403c8280: one still playing isn't started again
+                    // ([I] on the map's one use, a motion played once).
+                    if !wm.actors[i].live_sounds.contains(&id) {
+                        wm.actors[i].live_sounds.push(id);
+                        wm.sounds.push(id);
+                    }
+                }
                 26 if (0..64).contains(&p0) => wm.actors[i].hidden_parts &= !(1 << p0),
                 27 if (0..64).contains(&p0) => wm.actors[i].hidden_parts |= 1 << p0,
                 _ => {}
@@ -2607,6 +2644,104 @@ fn journal_model_present(
     );
 }
 
+/// FUN_1401a8a20 and FUN_1401c0310 per tick: while the playing motion names a
+/// number, each worker whose id map holds it plays that group; the tick after
+/// none does, it returns to its idle group. Two different groups on one worker
+/// restart it each tick, which holds it on the later's first frame.
+fn widget_faces(
+    mut commands: Commands,
+    mut wm: ResMut<WorldMap>,
+    parts: Query<(Entity, &WidgetPart)>,
+    mut materials: ResMut<Assets<FogMaterial>>,
+    mut images: ResMut<Assets<Image>>,
+    mut cache: Local<HashMap<(usize, usize, u16), Handle<FogMaterial>>>,
+    mut shown_tick: Local<Option<u64>>,
+) {
+    if *shown_tick == Some(wm.tick) {
+        return;
+    }
+    *shown_tick = Some(wm.tick);
+    let wm = &mut *wm;
+    let tick = wm.tick;
+    let archive = wm.event.as_ref().and_then(|e| wm.archives.get(&e.id));
+    for (index, w) in wm.widget_models.iter_mut().enumerate() {
+        let widget = wm.scene.slots[w.slot]
+            .as_ref()
+            .filter(|s| s.object == w.object);
+        let Some(widget) = widget else {
+            // A fresh menu::ObjWidget has fresh workers.
+            w.faces.iter_mut().for_each(|f| *f = WidgetFace::default());
+            continue;
+        };
+        let Some(set) = w.model.textures.as_ref() else {
+            continue;
+        };
+        let clip = widget
+            .track
+            .entry
+            .and_then(|e| archive?.clips.get(e as usize)?.as_ref());
+        for (k, play) in set.play.iter().enumerate() {
+            let Some(face) = w.faces.get_mut(k) else {
+                continue;
+            };
+            let patch = &play.patch;
+            let wanted: Vec<usize> = clip
+                .map(|c| {
+                    c.faces
+                        .iter()
+                        .filter_map(|&id| patch.animation_for(id))
+                        .collect()
+                })
+                .unwrap_or_default();
+            let group = wanted.last().copied().or(patch.default_animation);
+            let restart = wanted.windows(2).any(|p| p[0] != p[1]);
+            if group != face.group || restart {
+                face.group = group;
+                face.start = tick;
+            }
+            let Some(image) = group.and_then(|g| patch.image_at(g, (tick - face.start) as f32))
+            else {
+                continue;
+            };
+            if face.shown == Some(image) {
+                continue;
+            }
+            face.shown = Some(image);
+            let material = cache.entry((index, k, image)).or_insert_with(|| {
+                let (width, height, rgba) = crate::test_room::outfit::texa_image_page(
+                    set, play, image,
+                )
+                .unwrap_or((1, 1, vec![0; 4]));
+                let texture = visual::room::static_rgba_image(width, height, rgba, &mut images);
+                materials.add_fogged(StandardMaterial {
+                    base_color: Color::WHITE,
+                    base_color_texture: Some(texture),
+                    unlit: true,
+                    cull_mode: None,
+                    ..default()
+                })
+            });
+            for (entity, part) in &parts {
+                let on_page = part.model == index
+                    && w.model
+                        .texture_routes
+                        .first()
+                        .and_then(|r| r.parts.get(part.part))
+                        .is_some_and(|r| r.environment_ordinal == patch.environment);
+                if on_page {
+                    commands
+                        .entity(entity)
+                        .insert(MeshMaterial3d(material.clone()));
+                }
+            }
+            wm.log.push(
+                serde_json::json!({"event":"widget_face","tick":tick,"object":w.object,
+                "play":k,"image":image,"group":group,"ids":clip.map(|c| c.faces.clone())}),
+            );
+        }
+    }
+}
+
 /// The character scene: while widgets exist the map hides and each widget
 /// model draws at its matrix (FUN_1403939f0) on its motion (FUN_140535450)
 /// through the widget camera (FUN_1405352e0: at the origin looking along
@@ -2669,14 +2804,21 @@ fn present_widgets(
             );
         }
     }
+    // FUN_140535040's draw block: flag 2 fogs towards its own colour, grey,
+    // not the area's (FUN_1401af000).
+    let fog = Vec4::new(128. / 255., 128. / 255., 128. / 255., 1.);
     for (part, handle, material) in &parts {
         let model = &wm.widget_models[part.model].model;
         let alpha = blend(model.parts[part.part].attributes);
         if let Some(m) = materials.get(&material.0)
-            && m.base.alpha_mode != alpha
+            && (m.base.alpha_mode != alpha
+                || (m.extension.colour.w > 0. && m.extension.colour != fog))
             && let Some(mut m) = materials.get_mut(&material.0)
         {
             m.base.alpha_mode = alpha;
+            if m.extension.colour.w > 0. {
+                m.extension.colour = fog;
+            }
         }
         let Some(pose) = poses.get(&part.model) else {
             continue;
@@ -3119,6 +3261,7 @@ fn run(args: Vec<PathBuf>) -> Result<AppExit> {
             cursor = Some(actors.len());
         }
         actors.push(Actor {
+            live_sounds: Vec::new(),
             kind,
             model: model.clone(),
             motions: motions.clone(),
@@ -3275,6 +3418,7 @@ fn run(args: Vec<PathBuf>) -> Result<AppExit> {
         jump: None,
         commands,
         sounds: Vec::new(),
+        sound_fades: Vec::new(),
         event_queue: events_queued.iter().copied().collect(),
         event: None,
         event_camera: None,
@@ -3473,10 +3617,12 @@ fn run(args: Vec<PathBuf>) -> Result<AppExit> {
                 v.insert(model);
             }
             if let Some(model) = widget_names[&object].clone() {
+                let plays = model.textures.as_ref().map_or(0, |t| t.play.len());
                 wm.widget_models.push(WidgetModel {
                     slot,
                     object,
                     model,
+                    faces: vec![WidgetFace::default(); plays],
                 });
             }
         }
@@ -3650,6 +3796,7 @@ fn run(args: Vec<PathBuf>) -> Result<AppExit> {
                 present,
                 journal_model_present,
                 present_widgets,
+                widget_faces,
                 present_effects,
                 draw_ui,
                 finish,

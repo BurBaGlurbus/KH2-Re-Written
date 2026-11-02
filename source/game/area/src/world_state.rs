@@ -646,21 +646,34 @@ impl Progress {
     }
 
     /// The tail of FUN_14039afc0 that this module owns: the link table
-    /// (FUN_1403f0ea0), FUN_1403a5540's world point, the triggered world
-    /// events (FUN_1403df1b0) and FUN_1403f2190's world points.
+    /// (FUN_1403f0ea0), FUN_1403a5540's world point and stage, the triggered
+    /// world events (FUN_1403df1b0), the battle bits (FUN_1403ee4a0), the level
+    /// checks (FUN_1403e66c0), flag 0x8d0 (FUN_1403baf00) and FUN_1403f2190's
+    /// world points.
     pub(crate) fn after_flag(&mut self, flag: u32) {
-        self.note_battle_flag(flag);
         if self.world_tables.is_some() {
             self.run_links();
         }
-        if flag == 0x401e {
-            self.world.touch_point(0xd);
+        match flag {
+            0x4019 => self.stage = 0x16,
+            0x401e => {
+                self.stage = 0x12;
+                self.world.touch_point(0xd);
+            }
+            0x4028 => self.stage = 0x14,
+            0x4030 => self.stage = 0x12,
+            _ => {}
         }
         if let Some(tables) = self.world_tables.clone() {
             let hold = self.test(HOLD_FLAG);
             for e in tables.events.iter().filter(|e| e.trigger == flag) {
                 self.world.mark_event(&tables, e.id, hold);
             }
+        }
+        self.note_battle_flag(flag);
+        self.check_levels();
+        if flag == 0x8d0 {
+            self.area_seen = [0; 19];
         }
         // FUN_1403f2190.
         let point = match flag {

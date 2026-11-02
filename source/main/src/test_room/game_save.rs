@@ -197,6 +197,10 @@ pub fn apply_progress(progress: &mut Progress, data: &SaveData) {
     for (i, word) in progress.battle_bits.iter_mut().enumerate() {
         *word = data.u32_at(state::BATTLE_BITS + i * 4);
     }
+    for (i, word) in progress.area_seen.iter_mut().enumerate() {
+        let at = state::AREA_SEEN + i * 8;
+        *word = u64::from(data.u32_at(at)) | u64::from(data.u32_at(at + 4)) << 32;
+    }
     let dsa: Vec<[u16; 2]> = (0..progress.dsa_state().len())
         .map(|i| {
             [
@@ -240,6 +244,11 @@ fn write_progress(progress: &Progress, p: &mut Persistent, data: &mut SaveData) 
     p.menu_flags = w.menu_flags;
     for (i, &word) in progress.battle_bits.iter().enumerate() {
         data.set_u32(state::BATTLE_BITS + i * 4, word);
+    }
+    for (i, &word) in progress.area_seen.iter().enumerate() {
+        let at = state::AREA_SEEN + i * 8;
+        data.set_u32(at, word as u32);
+        data.set_u32(at + 4, (word >> 32) as u32);
     }
     for (i, e) in progress.dsa_state().iter().enumerate() {
         data.set_u16(state::DSA + i * 4, e[0]);

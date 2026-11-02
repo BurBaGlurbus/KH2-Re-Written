@@ -94,6 +94,8 @@ pub struct Clip {
     pub length: f32,
     pub loop_start: f32,
     pub sounds: Vec<(f32, u32)>,
+    /// The range triggers 0x17 that fire while it plays: their TEXA numbers.
+    pub faces: Vec<u16>,
 }
 
 /// FUN_14040e8a0's test: frames in (from, to], or exactly `from` when `to`
@@ -352,6 +354,7 @@ mod tests {
             length,
             loop_start,
             sounds: sounds.to_vec(),
+            faces: Vec::new(),
         })
     }
 

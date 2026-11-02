@@ -2,6 +2,7 @@
 //! 00progress.bin flag scripts (FUN_14039afc0 / FUN_14039a980 /
 //! FUN_140152e80).
 use crate::world_state::{WorldState, WorldTables};
+use std::collections::HashMap;
 use std::sync::Arc;
 
 /// World codes in the exe's order (`PTR_140717210`): world index → code.
@@ -63,6 +64,60 @@ const WORLD_10_BLOCKS: [(u32, [u8; 3], u16); 4] = [
     (0x4049, [0x00, 0x08, 0x0b], 0xc2c3),
 ];
 
+/// What the tail of FUN_14039afc0 reads of the save. A room without a save
+/// holds nothing, so no item check fires.
+#[derive(Clone, Debug, Default)]
+pub struct Holdings {
+    /// The counts of the items the checks read (0x17, 0x20, 0x57).
+    pub items: HashMap<u16, u8>,
+    /// save+0x352a; [U] what it counts.
+    pub byte_352a: u8,
+    /// FormRecord.level of forms 1..=5.
+    pub form_levels: [u8; 5],
+    /// save+0x3526.
+    pub summon_level: u8,
+}
+
+impl Holdings {
+    pub fn count(&self, item: u16) -> u8 {
+        self.items.get(&item).copied().unwrap_or(0)
+    }
+}
+
+/// [I] Item 0x20, the Torn Page: these flags take one.
+const TORN_PAGE: u16 = 0x20;
+const TORN_PAGE_TAKEN: [u32; 5] = [0x2409, 0x2411, 0x2419, 0x2421, 0x2428];
+const TORN_PAGE_PAIRS: [(u32, u32); 5] = [
+    (0x2408, 0x103b),
+    (0x2410, 0x2434),
+    (0x2418, 0x2435),
+    (0x2420, 0x2436),
+    (0x2427, 0x2437),
+];
+/// {flag, world, area} of the table at 0x1405c3370.
+const AREA_SEEN_FLAGS: [(u32, u8, u8); 14] = [
+    (0x1409, 5, 7),
+    (0x1425, 5, 6),
+    (0x2827, 10, 0xd),
+    (0x899, 2, 3),
+    (0x899, 2, 4),
+    (0x899, 2, 6),
+    (0x899, 2, 7),
+    (0x899, 2, 0xd),
+    (0x3804, 0xe, 0),
+    (0x380f, 0xe, 9),
+    (0x102b, 4, 2),
+    (0x1c25, 7, 3),
+    (0x1415, 5, 4),
+    (0x8df, 2, 8),
+];
+/// FUN_1403e66c0's third check.
+const LEVEL_FLAGS: [u32; 11] = [
+    0x1847, 0x184d, 0x184f, 0x200f, 0x1412, 0x4050, 0x3837, 0x1c20, 0x1826, 0x4433, 0x2830,
+];
+/// The world of FUN_1403a5330's stages.
+const STAGE_WORLD: u8 = 0x10;
+
 #[derive(Clone)]
 pub struct Progress {
     flags: Vec<u32>,
@@ -91,6 +146,14 @@ pub struct Progress {
     dsa_state: Vec<[u16; 2]>,
     /// Set by `unblock_all`: also ignore the world-0x10 table.
     unblocked: bool,
+    /// What the flag tail reads of the stock and the levels.
+    pub holdings: Holdings,
+    /// Items a flag took, until the room removes them.
+    pub taken: Vec<u16>,
+    /// save+0x22f8: the areas seen, one word per world.
+    pub area_seen: [u64; 19],
+    /// DAT_142ae7cc8: the Port Royal ship stage (FUN_1403a5540, FUN_1403a5330).
+    pub stage: u32,
 }
 
 impl Progress {
@@ -109,6 +172,10 @@ impl Progress {
             dsa: Vec::new(),
             dsa_state: Vec::new(),
             unblocked: false,
+            holdings: Holdings::default(),
+            taken: Vec::new(),
+            area_seen: [0; 19],
+            stage: 0,
         }
     }
 
@@ -331,17 +398,112 @@ impl Progress {
         self.programs[world as usize * AREAS_PER_WORLD + area as usize]
     }
 
-    /// FUN_14039afc0: sets `flag`, runs its script, then the link table,
-    /// the world events and the world points (`world_state`). The item and
-    /// ability checks after the script (FUN_1403c4720 tests and the flags
-    /// they set), FUN_1403ee4a0 and FUN_1403e66c0 are not carried out.
+    /// FUN_14039afc0: sets `flag`, runs its script, then its tail in the
+    /// executable's order: the Torn Pages, Atlantica, the area table and the
+    /// 0x102b rule here, then the link table, the world events, the battle
+    /// bits, the level checks and the world points (`world_state`).
     pub fn set(&mut self, flag: u32) {
         let (w, bit) = Self::word(flag);
         if let Some(v) = self.flags.get_mut(w) {
             *v |= bit;
         }
         self.run_flag_script(flag);
+        if TORN_PAGE_TAKEN.contains(&flag) {
+            self.take_item(TORN_PAGE);
+        } else if self.holdings.count(TORN_PAGE) != 0 {
+            self.check_torn_pages();
+        }
+        self.check_atlantica();
+        for &(f, world, area) in &AREA_SEEN_FLAGS {
+            if f == flag {
+                self.see_area(world, area);
+            }
+        }
+        if self.test(0x102b) && !self.test(0x1807) && !self.test(0x1809) && self.test(0x1822) {
+            let next = if self.test(0x1865) { 0x1809 } else { 0x1807 };
+            self.set(next);
+        }
         self.after_flag(flag);
+    }
+
+    /// FUN_1403c49c0(item, 100): one leaves the stock. The room drains `taken`.
+    fn take_item(&mut self, item: u16) {
+        if let Some(n) = self.holdings.items.get_mut(&item) {
+            *n = n.saturating_sub(1);
+        }
+        self.taken.push(item);
+    }
+
+    /// FUN_14039aa80: a page held opens its chapter once the chapter before
+    /// it is done. Also when item 0x20 is gained.
+    pub fn check_torn_pages(&mut self) {
+        for (a, b) in TORN_PAGE_PAIRS {
+            if !self.test(a) && self.test(b) {
+                self.set(a);
+            }
+        }
+    }
+
+    /// FUN_14039a9c0: one step of Atlantica's chain, by the items held. Also
+    /// when an item of kind 0x12 or a bonus level is gained.
+    pub fn check_atlantica(&mut self) {
+        let next = if !self.test(0x2c26) {
+            (self.test(0x2c31) && self.holdings.count(0x57) >= 1).then_some(0x2c26)
+        } else if !self.test(0x2c27) {
+            (self.test(0x2c34) && self.holdings.byte_352a >= 5).then_some(0x2c27)
+        } else if !self.test(0x2c28) {
+            (self.test(0x2c37) && self.holdings.count(0x57) >= 2).then_some(0x2c28)
+        } else if !self.test(0x2c2d) {
+            (self.test(0x2c3a) && self.holdings.count(0x17) >= 3).then_some(0x2c2d)
+        } else {
+            None
+        };
+        if let Some(flag) = next {
+            self.set(flag);
+        }
+    }
+
+    /// FUN_1403baf20, and FUN_1403baf00 clears them all at flag 0x8d0: one
+    /// area of a world has been seen.
+    pub fn see_area(&mut self, world: u8, area: u8) {
+        if let Some(w) = self.area_seen.get_mut(world as usize) {
+            *w |= 1u64 << (area & 63);
+        }
+    }
+
+    /// FUN_1403a5330, on entering an area: the Port Royal ship stages.
+    pub fn enter_stage_area(&mut self, world: u8, area: u8) {
+        if world != STAGE_WORLD {
+            return;
+        }
+        let at = match area {
+            1 => (0x15, 0x4040),
+            8 => (0x16, 0x4042),
+            0xe => (0x14, 0x4043),
+            0x10 => (0x13, 0x4049),
+            _ => return,
+        };
+        self.stage = at.0;
+        self.set(at.1);
+    }
+
+    /// FUN_1403e66c0, after a flag and each level-up: the menu flags that
+    /// count the Drive forms' and the summons' levels.
+    pub fn check_levels(&mut self) {
+        let h = &self.holdings;
+        let forms_at = |n: usize, least: u8| h.form_levels[..n].iter().all(|&l| l >= least);
+        let (four, summons) = (forms_at(4, 5), h.summon_level >= 5);
+        let all = forms_at(5, 7) && h.summon_level >= 7;
+        let open = self.world.menu_flag(0x65);
+        if !self.world.menu_flag(0x6a) && open && four {
+            self.set_menu_flag(0x6a);
+        }
+        if !self.world.menu_flag(0x67) && open && summons {
+            self.set_menu_flag(0x67);
+        }
+        if !self.world.menu_flag(0x68) && all && LEVEL_FLAGS.iter().all(|&f| self.test(f)) {
+            self.set_menu_flag(0x68);
+        }
     }
 
     fn run_flag_script(&mut self, flag: u32) {
@@ -394,6 +556,15 @@ impl Progress {
                         if op == 2 {
                             e[1] = words.get(2).copied().unwrap_or(0);
                         }
+                    }
+                    // FUN_1403f0600 / FUN_1403f0650: the destination's world
+                    // point is forgotten too.
+                    if matches!(op, 4 | 5)
+                        && let Some(&[w, a]) = words.first().and_then(|&i| self.dsa.get(i as usize))
+                        && let Some(tables) = self.world_tables.clone()
+                        && let Some(p) = tables.world_point_at(w, a)
+                    {
+                        self.world.forget_point(p as u32);
                     }
                 }
                 1 => {
@@ -591,5 +762,103 @@ mod tests {
         p.set(0x801);
         assert_eq!(p.blocked(2, 3), None);
         assert_eq!(p.blocked(2, 9), None);
+    }
+}
+
+#[cfg(test)]
+mod tail_tests {
+    use super::*;
+
+    fn progress() -> Progress {
+        Progress::new(Vec::new())
+    }
+
+    #[test]
+    fn a_page_flag_takes_one_page_and_a_held_page_opens_its_chapter() {
+        let mut p = progress();
+        p.holdings.items.insert(TORN_PAGE, 2);
+        p.set(0x103b);
+        assert!(p.test(0x2408));
+        p.set(0x2409);
+        assert_eq!(p.holdings.count(TORN_PAGE), 1);
+        assert_eq!(p.taken, [TORN_PAGE]);
+    }
+
+    #[test]
+    fn with_nothing_held_no_item_check_fires() {
+        let mut p = progress();
+        p.set(0x103b);
+        assert!(!p.test(0x2408));
+        p.set(0x2c31);
+        assert!(!p.test(0x2c26));
+        assert!(p.taken.is_empty());
+    }
+
+    #[test]
+    fn atlantica_takes_one_step_per_flag() {
+        let mut p = progress();
+        p.holdings.items.insert(0x57, 2);
+        p.set(0x2c31);
+        assert!(p.test(0x2c26));
+        p.holdings.byte_352a = 5;
+        p.set(0x2c34);
+        assert!(p.test(0x2c27));
+        p.set(0x2c37);
+        assert!(p.test(0x2c28));
+        assert!(!p.test(0x2c2d));
+    }
+
+    #[test]
+    fn a_flag_marks_its_areas_and_0x8d0_clears_them() {
+        let mut p = progress();
+        p.set(0x899);
+        assert_eq!(p.area_seen[2], 1 << 3 | 1 << 4 | 1 << 6 | 1 << 7 | 1 << 0xd);
+        p.set(0x8d0);
+        assert_eq!(p.area_seen, [0; 19]);
+    }
+
+    #[test]
+    fn the_0x102b_rule_picks_by_0x1865() {
+        let mut p = progress();
+        p.set(0x1822);
+        p.set(0x102b);
+        assert!(p.test(0x1807) && !p.test(0x1809));
+        let mut p = progress();
+        p.set(0x1865);
+        p.set(0x1822);
+        p.set(0x102b);
+        assert!(p.test(0x1809) && !p.test(0x1807));
+    }
+
+    #[test]
+    fn the_stage_follows_its_flags_and_areas() {
+        let mut p = progress();
+        p.set(0x4019);
+        assert_eq!(p.stage, 0x16);
+        p.enter_stage_area(STAGE_WORLD, 1);
+        assert_eq!(p.stage, 0x15);
+        assert!(p.test(0x4040));
+        p.enter_stage_area(2, 8);
+        assert_eq!(p.stage, 0x15);
+    }
+
+    #[test]
+    fn the_level_checks_need_the_opening_flag_and_the_levels() {
+        let mut p = progress();
+        p.holdings.form_levels = [5, 5, 5, 5, 1];
+        p.holdings.summon_level = 5;
+        p.check_levels();
+        assert!(!p.world.menu_flag(0x6a));
+        p.set_menu_flag(0x65);
+        p.check_levels();
+        assert!(p.world.menu_flag(0x6a) && p.world.menu_flag(0x67));
+        assert!(!p.world.menu_flag(0x68));
+        p.holdings.form_levels = [7; 5];
+        p.holdings.summon_level = 7;
+        for f in LEVEL_FLAGS {
+            p.set(f);
+        }
+        p.check_levels();
+        assert!(p.world.menu_flag(0x68));
     }
 }
