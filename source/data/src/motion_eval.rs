@@ -363,10 +363,40 @@ struct Constraint {
     constrained: usize,
     source: usize,
     limiter: Option<usize>,
-    /// Validated but unused: the reference gates on `temporary_active` only
-    /// (timed windows were tried against the reference and matched worse).
-    _activations: Vec<(f32, bool)>,
-    temporary_active: bool,
+    /// On at this evaluation's time (see [`constraint_active`]).
+    active: bool,
+}
+
+/// FUN_1401d2c80's pass before the evaluator: a constraint with no
+/// activation entries keeps its record's flag (+1); otherwise the flag of
+/// the entry the motion time falls in, found by halving between the first
+/// and the last entry, the last entry's from its time on, and before the
+/// first entry the opposite of the first entry's. The evaluator
+/// (FUN_1401d3b80) then reads these flags. Guard (P_EX100 motion 173)
+/// switches Sora's left-hand target off its Keyblade grip this way.
+fn constraint_active(record_flag: bool, entries: &[(f32, bool)], time: f32) -> bool {
+    let (Some(first), Some(last)) = (entries.first(), entries.last()) else {
+        return record_flag;
+    };
+    if time < first.0 {
+        return !first.1;
+    }
+    if time >= last.0 {
+        return last.1;
+    }
+    let (mut lo, mut hi) = (0, entries.len() - 1);
+    while hi - lo > 1 {
+        let mid = (lo + hi) / 2;
+        if entries[mid].0 <= time {
+            lo = mid;
+            if time <= entries[mid].0 {
+                break;
+            }
+        } else {
+            hi = mid;
+        }
+    }
+    entries[lo].1
 }
 struct Limiter {
     kind: u32,
@@ -502,18 +532,21 @@ pub fn evaluate_shared(
 
 /// Evaluates every joint of `m` at `frame` (key-time units).
 pub fn evaluate(bones: &[BoneRecord], m: &InterpolatedMotion, frame: f32) -> io::Result<Evaluated> {
-    evaluate_with_clock(bones, m, frame, frame)
+    evaluate_with_clock(bones, m, frame, frame, true)
 }
 
 /// [`evaluate`] with the expression time node (kind 30) reading `clock`
 /// instead of `frame`. The exe passes its motion clock there (FUN_1401d2c80,
 /// context +0x30); the local PS2 reference adapter never sets that clock, so
-/// comparisons with it pass 0.
+/// comparisons with it pass 0. `timed_activations` false keeps every
+/// constraint's record flag, as that adapter hands the evaluator alone
+/// (the activation pass belongs to its caller, FUN_1401d2c80).
 pub fn evaluate_with_clock(
     bones: &[BoneRecord],
     m: &InterpolatedMotion,
     frame: f32,
     clock: f32,
+    timed_activations: bool,
 ) -> io::Result<Evaluated> {
     if m.raw.is_some() {
         return Err(invalid(
@@ -640,8 +673,11 @@ pub fn evaluate_with_clock(
             constrained,
             source,
             limiter: usize::try_from(half(b, 6)).ok(),
-            _activations: activations,
-            temporary_active: b[1] != 0,
+            active: if timed_activations {
+                constraint_active(b[1] != 0, &activations, frame)
+            } else {
+                b[1] != 0
+            },
         });
     }
     let limiters: Vec<Limiter> = m
@@ -849,7 +885,7 @@ pub fn evaluate_with_clock(
         if aims
             && let Some(target) = constraints
                 .iter()
-                .find(|c| Some(c.constrained) == aim_target[j] && c.temporary_active && c.kind == 0)
+                .find(|c| Some(c.constrained) == aim_target[j] && c.active && c.kind == 0)
                 .map(|c| world[c.source].translation)
         {
             let (pr, pt, ps) = if parent < 0 {
@@ -863,7 +899,7 @@ pub fn evaluate_with_clock(
             let to = sub(rotate(inv, sub(target, pt)), origin);
             let pole = constraints
                 .iter()
-                .find(|c| c.kind == 4 && c.constrained == j && c.temporary_active)
+                .find(|c| c.kind == 4 && c.constrained == j && c.active)
                 .map(|c| sub(rotate(inv, sub(world[c.source].translation, pt)), origin));
             if let Some(x) = normalize(to) {
                 let (y, z) = aim_axes(x, pole);
@@ -880,7 +916,7 @@ pub fn evaluate_with_clock(
         let pole_of = |joint: usize| -> Option<usize> {
             constraints
                 .iter()
-                .find(|c| c.kind == 4 && c.constrained == joint && c.temporary_active)
+                .find(|c| c.kind == 4 && c.constrained == joint && c.active)
                 .map(|c| c.source)
         };
         // IK chain top (levels 2 and 3): the chain is solved here, with the
@@ -890,7 +926,7 @@ pub fn evaluate_with_clock(
             let (mid, end) = (j + 1, j + 2);
             let targets: Vec<usize> = constraints
                 .iter()
-                .filter(|c| c.constrained == end && c.temporary_active && c.kind == 0)
+                .filter(|c| c.constrained == end && c.active && c.kind == 0)
                 .map(|c| c.source)
                 .collect();
             // The end joint's turn solves the chain only when the end has
@@ -974,8 +1010,8 @@ pub fn evaluate_with_clock(
             _ => 4,
         });
         for c in own {
-            // The reference evaluator gates on the temporary-active byte only.
-            if !c.temporary_active {
+            // The evaluator gates on the flag the activation pass set.
+            if !c.active {
                 continue;
             }
             let source = world[c.source];
@@ -1159,7 +1195,7 @@ pub fn evaluate_with_clock(
         // sees the constrained position).
         if constraints
             .iter()
-            .any(|c| c.constrained == j && c.temporary_active && c.kind == 0)
+            .any(|c| c.constrained == j && c.active && c.kind == 0)
             && !aims
             && !aimed_at
             && !solved_end[j]
@@ -1186,7 +1222,7 @@ pub fn evaluate_with_clock(
         if flags[j] & 64 != 0
             && constraints
                 .iter()
-                .any(|c| c.constrained == j && c.temporary_active && matches!(c.kind, 2 | 3 | 5))
+                .any(|c| c.constrained == j && c.active && matches!(c.kind, 2 | 3 | 5))
         {
             let (pr, _) = match parents[j] {
                 p if p < 0 => (IDENTITY, [0.; 3]),
@@ -2399,6 +2435,30 @@ mod tests {
             key_start: 0,
         };
         (m, curve)
+    }
+
+    #[test]
+    fn timed_activations_switch_a_constraint() {
+        // No entries: the record's flag.
+        assert!(constraint_active(true, &[], 10.));
+        assert!(!constraint_active(false, &[], 10.));
+        // Guard's shape: on, off from 4, on again from 74.
+        let entries = [(-6e7, true), (4., false), (74., true)];
+        assert!(constraint_active(false, &entries, 0.));
+        assert!(!constraint_active(true, &entries, 4.));
+        assert!(!constraint_active(true, &entries, 60.));
+        assert!(constraint_active(false, &entries, 74.));
+        assert!(constraint_active(false, &entries, 200.));
+        // Before the first entry: the opposite of its flag.
+        assert!(constraint_active(false, &[(10., false), (20., true)], 5.));
+        assert!(!constraint_active(true, &[(10., true), (20., false)], 5.));
+        // Halving across many entries lands on the one the time falls in.
+        let many: Vec<(f32, bool)> = (0..9).map(|k| (k as f32 * 10., k % 2 == 0)).collect();
+        for k in 0..8 {
+            let t = k as f32 * 10. + 5.;
+            assert_eq!(constraint_active(false, &many, t), k % 2 == 0, "at {t}");
+        }
+        assert!(!constraint_active(false, &many, 30.));
     }
 
     #[test]

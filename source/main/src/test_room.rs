@@ -1406,9 +1406,8 @@ pub struct Game {
     pub motors: [u8; 2],
     pub motors_fresh: bool,
     pub vibration_scan: Option<(u64, Action, u32)>,
-    /// The shown kit's attack shapes by collision group (bone, offset,
-    /// radius).
-    pub sora_attack: HashMap<u8, Vec<(usize, Vec3, f32)>>,
+    /// The shown kit's attack shapes by collision group.
+    pub sora_attack: HashMap<u8, Vec<character_kit::AttackShape>>,
     /// The Keyblade swings' environment test (wall_hit.rs).
     pub wall: wall_hit::WallHit,
     /// Hits each victim has taken, for the alternating hit sound.
@@ -7517,8 +7516,9 @@ pub struct Compose {
     pub stable_frames: u64,
 }
 
-/// An attack window this frame: key, ATKP and its spheres.
-pub type ActiveVolume = (u64, u16, Vec<(Vec3, f32)>);
+/// An attack window this frame: key, ATKP and its volumes (centre, radius,
+/// height; a sphere when the two are equal).
+pub type ActiveVolume = (u64, u16, Vec<(Vec3, f32, f32)>);
 
 /// The afterimage's feedback cameras and whether they ran last frame.
 #[derive(Resource)]
@@ -11178,6 +11178,7 @@ pub fn combat_tick(game: &mut Game, tick: u64) {
                     (
                         sora_at + sora_turn * to_model.transform_point3(offset),
                         radius,
+                        radius,
                     )
                 })
                 .collect();
@@ -11197,10 +11198,7 @@ pub fn combat_tick(game: &mut Game, tick: u64) {
                 .get(&group)
                 .into_iter()
                 .flatten()
-                .filter_map(|&(bone, offset, radius)| {
-                    let m = bones.get(&bone)?;
-                    Some((sora_at + sora_turn * m.transform_point3(offset), radius))
-                })
+                .filter_map(|s| Some((s.centre(bones, sora_at, sora_turn)?, s.radius, s.height)))
                 .collect();
             active.push(((*action_started << 7) | 2 << 5 | w as u64, atkp, spheres));
         }
@@ -11228,7 +11226,7 @@ pub fn combat_tick(game: &mut Game, tick: u64) {
         if !guard && rt.enemy.record.has(aid) {
             continue;
         }
-        for (i, (centre, radius)) in spheres.into_iter().enumerate() {
+        for (i, (centre, radius, height)) in spheres.into_iter().enumerate() {
             let previous = rt.previous.insert((instance, i), centre);
             if guard {
                 guards.push((centre, radius, atkp, None));
@@ -11239,9 +11237,9 @@ pub fn combat_tick(game: &mut Game, tick: u64) {
             }
             for c in combat::swept(centre.to_array(), previous.map(|p| p.to_array()), radius) {
                 if hit.is_none()
-                    && let Some(&(target, target_radius, high)) = body
-                        .iter()
-                        .find(|(b, r, _)| combat::spheres_overlap(c, radius, b.to_array(), *r))
+                    && let Some(&(target, target_radius, high)) = body.iter().find(|(b, r, _)| {
+                        combat::volume_hits_sphere(c, radius, height, b.to_array(), *r)
+                    })
                 {
                     let at = (Vec3::from_array(c), target, target_radius);
                     hit = Some((instance, atkp, 0u8, high, at, None::<Vec3>, None::<u64>));

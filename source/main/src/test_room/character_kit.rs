@@ -156,8 +156,8 @@ pub struct Kit {
     /// HIT spheres (bone, offset, radius, high) and the TARGET shape's
     /// radius and height.
     pub body: Vec<(usize, Vec3, f32, bool)>,
-    /// ATTACK shapes (kind 1) by collision group: bone, offset, radius.
-    pub attack: HashMap<u8, Vec<(usize, Vec3, f32)>>,
+    /// ATTACK shapes (kind 6) by collision group.
+    pub attack: HashMap<u8, Vec<AttackShape>>,
     pub target_radius: f32,
     pub target_shape: Option<object_collision::Entry>,
     /// Push shapes (object collision kind 4; FUN_1403b4f10(obj, 4)).
@@ -254,6 +254,57 @@ fn evaluate_matrices(
         },
         evaluated,
     ))
+}
+
+/// One ATTACK shape of the object (type-23 kind 6): on a bone, or on the
+/// object's origin (bone code 0x4000, FUN_1403b50f0), as Explosion's and
+/// Finishing Leap's groups 19 and 18 are. A round shape (kind 0) is an
+/// ellipsoid of its radius and height; its centre is lifted by the entry's
+/// height offset.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct AttackShape {
+    /// None: the object's origin.
+    pub bone: Option<usize>,
+    pub offset: Vec3,
+    /// Added to the centre's height after the bone (the entry's +0xe).
+    pub lift: f32,
+    pub radius: f32,
+    pub height: f32,
+}
+
+impl AttackShape {
+    /// The shape of a type-23 entry, or None for an attachment other than a
+    /// bone or the plain origin (0x4001.., FUN_1403b5450's bone pairs).
+    pub fn of(e: &object_collision::Entry, bones: usize) -> Option<Self> {
+        let position = Vec3::from_array(e.position.map(f32::from));
+        let (bone, offset) = match e.bone {
+            0x4000 => (None, super::enemy_combat::origin_offset(position)),
+            b if (0..bones as i16).contains(&b) => (Some(b as usize), position),
+            _ => return None,
+        };
+        let radius = f32::from(e.radius);
+        Some(AttackShape {
+            bone,
+            offset,
+            lift: f32::from(e.position_height),
+            radius,
+            height: if e.shape == object_collision::SPHERE {
+                radius
+            } else {
+                f32::from(e.height)
+            },
+        })
+    }
+
+    /// The centre for a frame's bone matrices (model space, root removed),
+    /// the object standing at `at` turned by `turn`.
+    pub fn centre(&self, bones: &BoneMatrices, at: Vec3, turn: Quat) -> Option<Vec3> {
+        let local = match self.bone {
+            None => self.offset,
+            Some(b) => bones.get(&b)?.transform_point3(self.offset),
+        };
+        Some(at + turn * (local + Vec3::Y * self.lift))
+    }
 }
 
 /// A clip's frames and its evaluation statistics (constraints, IK chains,
@@ -535,29 +586,18 @@ pub fn load_kit(source: &ProbeSource, k: KitInputs) -> Result<Kit, Box<dyn std::
     };
     // The Keyblades' motion controllers are children of the player's
     // (FUN_1403c8e90): each plays the player's motion slot.
-    let mut attack: HashMap<u8, Vec<(usize, Vec3, f32)>> = HashMap::new();
+    let mut attack: HashMap<u8, Vec<AttackShape>> = HashMap::new();
     if let Some(archive) = &collision_archive {
         for c in object_collision::read(super::bar_entry_typed(archive, 23)?)?
             .iter()
-            .filter(|c| c.kind == object_collision::ATTACK && c.bone >= 0)
+            .filter(|c| c.kind == object_collision::ATTACK)
         {
-            attack.entry(c.group).or_default().push((
-                c.bone as usize,
-                Vec3::new(
-                    c.position[0] as f32,
-                    c.position[1] as f32,
-                    c.position[2] as f32,
-                ),
-                c.radius as f32,
-            ));
+            if let Some(shape) = AttackShape::of(c, actor.skinning.bones.len()) {
+                attack.entry(c.group).or_default().push(shape);
+            }
         }
     }
-    let attack_bones: Vec<usize> = attack
-        .values()
-        .flatten()
-        .map(|a| a.0)
-        .filter(|&b| b < actor.skinning.bones.len())
-        .collect();
+    let attack_bones: Vec<usize> = attack.values().flatten().filter_map(|a| a.bone).collect();
     let mut weapon_motions: [HashMap<usize, motion::SelectedMotion>; 2] = Default::default();
     for (k, set) in [&weapon_motion_set, &second_weapon_motion_set]
         .into_iter()

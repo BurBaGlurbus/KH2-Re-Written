@@ -82,7 +82,7 @@ pub struct Own {
     pub poses: HashMap<(Action, bool), usize>,
     pub clip_poses: Arc<Vec<ClipPoses>>,
     pub player_target_shape: Option<object_collision::Entry>,
-    pub sora_attack: HashMap<u8, Vec<(usize, Vec3, f32)>>,
+    pub sora_attack: HashMap<u8, Vec<character_kit::AttackShape>>,
     pub magic: Option<magic_room::MagicRt>,
     pub items: Option<item_room::ItemRt>,
     pub drive: Option<drive_room::DriveRt>,

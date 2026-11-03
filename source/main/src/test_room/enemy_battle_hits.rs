@@ -199,11 +199,11 @@ pub fn tick(game: &mut Game, actors: &mut [GalleryActor], tick: u64) {
                 .get(&group)
                 .into_iter()
                 .flatten()
-                .filter_map(|&(bone, offset, radius)| {
+                .filter_map(|s| {
                     Some((
-                        sora_at + sora_turn * bones.get(&bone)?.transform_point3(offset),
-                        radius,
-                        radius,
+                        s.centre(bones, sora_at, sora_turn)?,
+                        s.radius,
+                        s.height,
                         None,
                     ))
                 })

@@ -676,7 +676,7 @@ struct Stash {
     poses: HashMap<(Action, bool), usize>,
     clip_poses: Arc<Vec<ClipPoses>>,
     body: Vec<(usize, Vec3, f32, bool)>,
-    attack: HashMap<u8, Vec<(usize, Vec3, f32)>>,
+    attack: HashMap<u8, Vec<character_kit::AttackShape>>,
     /// The kit's two Keyblades' attack spheres.
     blade: [character_kit::Blade; 2],
     /// Its slot 0 Keyblade's effects (None: the room's default), and slot

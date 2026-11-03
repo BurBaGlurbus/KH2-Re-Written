@@ -598,6 +598,9 @@ pub struct Player {
     pub invulnerable: f32,
     /// A no-gravity ANB range was active last tick (obj+0x120 bits 23 / 24).
     was_floating: bool,
+    /// A ground attack whose root climbed off the floor: in the jump mode
+    /// with its motion still playing (`Action::Attack` stays the action).
+    lifted: bool,
     /// Sora's jump height as FUN_1403b5a40 reads it (High Jump's row height
     /// or the PRTY one), kept from the last tick for the hop cap.
     jump_reach_height: f32,
@@ -788,6 +791,7 @@ impl Player {
             square_held: false,
             invulnerable: 0.,
             was_floating: false,
+            lifted: false,
             jump_reach_height: 0.,
             command_lock: 0.,
             quick_run: None,
@@ -840,6 +844,7 @@ impl Player {
         self.cast = None;
         self.action = action;
         self.frame = 0;
+        self.lifted = false;
         self.blend = blend;
         self.begin_blend();
         self.arm();
@@ -1030,6 +1035,7 @@ impl Player {
         self.cast = None;
         self.action = action;
         self.frame = 0;
+        self.lifted = false;
         self.blend = 0.;
         self.arm();
     }
@@ -1315,6 +1321,7 @@ impl Player {
     fn start(&mut self, action: Action, step: &mut Step) {
         self.action = action;
         self.frame = 0;
+        self.lifted = false;
         self.blend = blend_for(action);
         self.begin_blend();
         step.started = Some(action);
@@ -1432,6 +1439,7 @@ impl Player {
         match self.action {
             Action::Hurt(hurt::DEAD) => self.dead_air,
             Action::Scripted(_) => self.scripted_air,
+            Action::Attack(_) if self.lifted => true,
             a => a.airborne() && self.pending_jump.is_none(),
         }
     }
@@ -2026,13 +2034,25 @@ impl Player {
                     );
                 }
             }
-            Action::Attack(i) => {
+            Action::Attack(i) if !self.lifted => {
                 let clip = &clips.attacks[i].clip;
                 self.face_target(clip, input);
                 // Root motion: the attack's root-curve change this tick.
                 let root = self.root_delta(clips);
                 disp[0] += root[0];
                 disp[2] += root[2];
+                if root[1] > 0. {
+                    // A root that climbs (Finishing Leap, motion 167: 150 up
+                    // under a no-gravity range from tick 1) lifts Sora off
+                    // the floor: FUN_1403b7ca0 adds the root's Y in every
+                    // mode, and the ground mode then has no floor, so the
+                    // jump mode takes over with the motion still playing.
+                    self.lifted = true;
+                    self.arc = actor_physics::Arc::fall(self.position[1], 0.);
+                    self.air_velocity = [0.; 2];
+                    self.sampler.reset();
+                    disp[1] += root[1];
+                }
                 let recovery = self.frame >= clip.blend_to_idle.unwrap_or(clip.end);
                 let ready = self.command_window(clips);
                 // FUN_1403d6fc0 takes Square (FUN_1403a81f0) before the
@@ -2160,7 +2180,8 @@ impl Player {
                     disp = self.dead_fall(p);
                 }
             }
-            Action::AirAttack(_) | Action::AirCast(_) => {
+            // (A lifted ground attack: the arm above takes the others.)
+            Action::AirAttack(_) | Action::AirCast(_) | Action::Attack(_) => {
                 // The motion's root moves an air attack or cast too
                 // (FUN_1403b7ca0), on top of mode 1's arc and drift.
                 let root = self.root_delta(clips);
@@ -2284,7 +2305,12 @@ impl Player {
             // land test only runs once it has stepped, so the take-off tick
             // never lands.
             let took_off = !was_in_air && disp[1] >= 0.;
-            if airborne && moved.on_floor && !took_off {
+            // FUN_1403b9090 skips the land test while a no-gravity range
+            // holds (obj+0x18c & 0x1000020, bit 6): Finishing Leap's hop
+            // comes back to the floor at tick 28 and strikes from there
+            // before its leap.
+            let frozen = Clip::within(&self.clip(clips).no_gravity, self.frame);
+            if airborne && moved.on_floor && !took_off && !frozen {
                 // Landing switches to the ground mode and plays the land
                 // motion (FUN_1403cb940: obj+0x11c = 5, which FUN_1403d78d0
                 // also sets for aerial attacks), cutting an aerial swing
@@ -2579,6 +2605,7 @@ impl Player {
         };
         self.action = action;
         self.frame = 0;
+        self.lifted = false;
         self.blend = start.blend;
         self.cast = Some(CastState {
             start,
@@ -2843,7 +2870,7 @@ impl Player {
                 self.cast = None;
                 self.start(Action::Fall, step);
             }
-        } else if let Action::AirAttack(i) = self.action {
+        } else if let Action::AirAttack(i) | Action::Attack(i) = self.action {
             let clip = &clips.attacks[i].clip;
             self.face_target(clip, input);
             let ready = self.command_window(clips);
@@ -4315,6 +4342,43 @@ mod tests {
             player.position
         );
         assert!(player.position[2].abs() < 1e-3);
+    }
+
+    #[test]
+    fn a_climbing_root_lifts_a_ground_attack_and_the_hover_skips_the_land() {
+        let (p, mut c, w) = (params(), clips(), room());
+        // Finishing Leap's shape: a hop to 60 by tick 24, back on the floor
+        // at 28, the strike, then a leap to 150 by 64, all under a
+        // no-gravity range from tick 1.
+        let y = |f: f32| match f {
+            f if f <= 24. => 60. * f / 24.,
+            f if f <= 28. => 60. * (28. - f) / 4.,
+            f if f <= 34. => 0.,
+            f => 150. * (f - 34.) / 30.,
+        };
+        c.attacks[1].root = (0..=64).map(|f| [0., y(f as f32), f as f32]).collect();
+        c.attacks[1].clip.no_gravity = vec![(1, 64)];
+        c.attacks[1].clip.end = 64;
+        c.attacks[1].clip.blend_to_idle = None;
+        let mut player = Player::new([0., 0., 0.], 0.);
+        let press = Input {
+            attack: true,
+            ..Input::default()
+        };
+        player.tick(&press, &p, &c, &w);
+        assert_eq!(player.action, Action::Attack(1));
+        let mut heights = Vec::new();
+        while player.action == Action::Attack(1) {
+            heights.push((player.frame, player.position[1]));
+            player.tick(&Input::default(), &p, &c, &w);
+        }
+        let at = |f: u32| heights.iter().find(|h| h.0 == f).map(|h| h.1).unwrap();
+        assert!((at(24) - 60.).abs() < 3., "{}", at(24));
+        assert!(at(30).abs() < 1e-3, "{}", at(30));
+        assert!(at(63) > 140., "{}", at(63));
+        // The motion played out in the air (no LAND), then the fall.
+        assert_eq!(player.action, Action::Fall);
+        assert!(player.in_air());
     }
 
     #[test]

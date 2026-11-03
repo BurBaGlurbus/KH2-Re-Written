@@ -75,7 +75,10 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             Ok(v) => v.parse()?,
             Err(_) => tick * scale,
         };
-        let e = motion_eval::evaluate_with_clock(&skinning.bones, &m, tick * scale, clock)?;
+        // The adapter calls the evaluator alone, with each constraint's
+        // record flag; ACTIVATIONS=1 runs the game's timed activation pass.
+        let timed = std::env::var_os("ACTIVATIONS").is_some();
+        let e = motion_eval::evaluate_with_clock(&skinning.bones, &m, tick * scale, clock, timed)?;
         if let Ok(list) = std::env::var("SHOW_JOINTS") {
             for j in list.split(',').filter_map(|v| v.parse::<usize>().ok()) {
                 let w = e.joints[j];
