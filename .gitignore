@@ -14,7 +14,10 @@
 !/Cargo.lock
 !/rust-toolchain.toml
 !/.cargo/config.toml
-!/build.bat
+!/build-release-skate3.bat
+!/build-release.bat
+!/build-debug-skate3.bat
+!/build-debug.bat
 !/.github/workflows/*.yml
 !/.github/pull_request_template.md
 !/source/main/Cargo.toml

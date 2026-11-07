@@ -1,8 +1,9 @@
 @echo off
+rem Builds the development-profile launcher and its two viewers.
 setlocal
 set "PATH=%USERPROFILE%\.cargo\bin;%PATH%"
 pushd "%~dp0" || exit /b 1
-powershell -NoProfile -ExecutionPolicy Bypass -File tools\Build-Launcher.ps1 -Skate3 %*
+powershell -NoProfile -ExecutionPolicy Bypass -File tools\Build-Launcher.ps1 -Debug %*
 set "BUILD_EXIT_CODE=%ERRORLEVEL%"
 popd
 echo.

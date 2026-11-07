@@ -98,6 +98,22 @@ pub mod effect {
     pub const NEW_EPISODE: u16 = 4;
 }
 
+/// FUN_140394fc0's land reaction (command 0x9f) at these symbols plays a
+/// world event instead of opening the landing menu while one world-event
+/// bit (FUN_1403deab0) is set and another clear: `(symbol, set, clear,
+/// event)`. Twilight Town's plays 0x72d, The World That Never Was's 0x72c.
+pub const LAND_EVENTS: [(u32, u32, u32, u32); 2] =
+    [(0x3a2, 1, 2, 0x72d), (0x456, 0x35, 0x37, 0x72c)];
+
+/// The event the land reaction on `symbol` plays instead of the menu, if
+/// any; `seen` is FUN_1403deab0.
+pub fn land_event(symbol: u32, seen: impl Fn(u32) -> bool) -> Option<u32> {
+    LAND_EVENTS
+        .iter()
+        .find(|&&(s, set, clear, _)| s == symbol && seen(set) && !seen(clear))
+        .map(|&(.., event)| event)
+}
+
 /// The effects a symbol holds (+0xd58, +0xd60, +0xd70) and the element
 /// each slot wants under this look; FUN_140390510 starts a slot's element
 /// only when the slot is empty and frees it when the look wants none.
@@ -307,6 +323,16 @@ mod tests {
         assert_eq!(symbol_look(0x12, &record(2, 0), false).eh_effect, Some(6));
         assert_eq!(symbol_look(0x12, &record(1, 0), true).eh_effect, None);
         assert_eq!(symbol(0x3a9).map(|s| s.world), Some(16));
+    }
+
+    #[test]
+    fn land_reactions_play_their_gated_events() {
+        let seen = |bits: &'static [u32]| move |b: u32| bits.contains(&b);
+        assert_eq!(land_event(0x3a2, seen(&[1])), Some(0x72d));
+        assert_eq!(land_event(0x3a2, seen(&[1, 2])), None);
+        assert_eq!(land_event(0x456, seen(&[0x35])), Some(0x72c));
+        assert_eq!(land_event(0x456, seen(&[0x35, 0x37])), None);
+        assert_eq!(land_event(0x3a3, seen(&[1, 0x35])), None);
     }
 
     #[test]

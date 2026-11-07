@@ -273,9 +273,65 @@ pub fn read_world_points(bytes: &[u8]) -> io::Result<Vec<WorldPoint>> {
         .collect())
 }
 
+/// `07localset.bin` (FUN_14039fc50 → `DAT_1429fb4a0`): per world (its n-th
+/// BAR type-2 entry) the `{u16 program, u16 area}` records sorted by program
+/// that FUN_14039fbc0 bsearches to place a jump by program id.
+pub fn read_program_areas(bytes: &[u8]) -> io::Result<Vec<Vec<(u16, u16)>>> {
+    let table = crate::bar::read_bar(bytes)?;
+    let mut out = Vec::new();
+    for e in table.entries.iter().filter(|e| e.entry_type == 2) {
+        let body = bytes
+            .get(e.offset as usize..e.offset as usize + e.size as usize)
+            .ok_or(invalid("07localset entry outside the file"))?;
+        let count = body
+            .get(4..8)
+            .map(|c| i32::from_le_bytes(c.try_into().unwrap()).max(0) as usize)
+            .ok_or(invalid("07localset entry truncated"))?;
+        let records = body
+            .get(8..8 + count * 4)
+            .ok_or(invalid("07localset records truncated"))?;
+        out.push(
+            records
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .map(|r| {
+                    (
+                        u16::from_le_bytes([r[0], r[1]]),
+                        u16::from_le_bytes([r[2], r[3]]),
+                    )
+                })
+                .collect(),
+        );
+    }
+    Ok(out)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn program_areas_read_per_world() {
+        let body: Vec<u8> = [1u32, 2]
+            .iter()
+            .flat_map(|w| w.to_le_bytes())
+            .chain([0x33u16, 9, 0x40, 4].iter().flat_map(|h| h.to_le_bytes()))
+            .collect();
+        let mut bytes = b"BAR\x01".to_vec();
+        bytes.extend(1u32.to_le_bytes());
+        bytes.extend([0; 8]);
+        bytes.extend(2u16.to_le_bytes());
+        bytes.extend(0u16.to_le_bytes());
+        bytes.extend(*b"loca");
+        bytes.extend(0x20u32.to_le_bytes());
+        bytes.extend((body.len() as u32).to_le_bytes());
+        bytes.extend(&body);
+        assert_eq!(
+            read_program_areas(&bytes).unwrap(),
+            vec![vec![(0x33, 9), (0x40, 4)]]
+        );
+    }
 
     fn table(records: &[&[u8]]) -> Vec<u8> {
         let mut out = Vec::new();
