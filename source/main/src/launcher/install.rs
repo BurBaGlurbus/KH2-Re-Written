@@ -525,23 +525,33 @@ pub fn field_room_config(
         })
         .or(saved)
         .unwrap_or(default);
-    write_field_config(arena, world, start, &[story], &format!("test-room-{world}"))
+    write_field_config(
+        arena,
+        world,
+        start,
+        None,
+        &[story],
+        &format!("test-room-{world}"),
+    )
 }
 
 /// The field config the world map's landing jumps to (FUN_1403946d0 →
 /// FUN_140152990): the arena config's sources with `world`'s `area` at
-/// `entrance` and the world map's story ranges.
+/// `entrance`, the program overrides a jump by program id sets
+/// (FUN_14039fbc0) and the world map's story ranges.
 pub fn landing_room_config(
     arena: &Path,
     world: &str,
     area: u8,
     entrance: u8,
+    programs: Option<[i16; 3]>,
     story: &[[u32; 2]],
 ) -> Result<PathBuf, String> {
     write_field_config(
         arena,
         world,
         (area, entrance),
+        programs,
         story,
         "test-room-wm-landing",
     )
@@ -553,6 +563,7 @@ fn write_field_config(
     arena: &Path,
     world: &str,
     start: (u8, u8),
+    programs: Option<[i16; 3]>,
     story: &[[u32; 2]],
     name: &str,
 ) -> Result<PathBuf, String> {
@@ -566,10 +577,12 @@ fn write_field_config(
     for key in ["arena", "enemy", "spawn", "npc", "room_selection"] {
         o.remove(key);
     }
-    o.insert(
-        "area".into(),
-        serde_json::json!({"world":world,"area":start.0,"entrance":start.1,"story":story}),
-    );
+    let mut area =
+        serde_json::json!({"world":world,"area":start.0,"entrance":start.1,"story":story});
+    if let Some(p) = programs {
+        area["programs"] = serde_json::json!(p);
+    }
+    o.insert("area".into(), area);
     let dir = arena.parent().unwrap_or(Path::new("."));
     let (out, next) = (
         dir.join(format!("{name}.json")),
@@ -862,7 +875,7 @@ mod tests {
         let f = Fixture::new();
         let arena = f.0.join("arena.json");
         fs::write(&arena, br#"{"arena":{},"enemy":{},"hud":"h"}"#).unwrap();
-        let out = landing_room_config(&arena, "tt", 9, 0x63, &[[0x800, 0x895]]).unwrap();
+        let out = landing_room_config(&arena, "tt", 9, 0x63, None, &[[0x800, 0x895]]).unwrap();
         assert_eq!(out.file_name().unwrap(), "test-room-wm-landing.json");
         let v: serde_json::Value = serde_json::from_slice(&fs::read(out).unwrap()).unwrap();
         assert_eq!(
@@ -870,6 +883,10 @@ mod tests {
             serde_json::json!({"world":"tt","area":9,"entrance":0x63,"story":[[0x800,0x895]]})
         );
         assert!(v.get("enemy").is_none() && v["hud"] == "h");
+        // A jump by program id carries it as the three programs.
+        let out = landing_room_config(&arena, "hb", 9, 0, Some([0x33; 3]), &[]).unwrap();
+        let v: serde_json::Value = serde_json::from_slice(&fs::read(out).unwrap()).unwrap();
+        assert_eq!(v["area"]["programs"], serde_json::json!([0x33, 0x33, 0x33]));
     }
 
     #[test]

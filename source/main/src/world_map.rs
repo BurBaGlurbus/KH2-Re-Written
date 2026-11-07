@@ -184,6 +184,8 @@ struct WorldMap {
     autoplay_decide: bool,
     /// Where the landing's field comes from (`--field`).
     field: Option<FieldHandoff>,
+    /// `07localset.bin`: per world, program id → area (FUN_14039fbc0).
+    program_areas: Vec<Vec<(u16, u16)>>,
     captures_taken: usize,
     capture_pending: bool,
     log: Vec<serde_json::Value>,
@@ -907,7 +909,17 @@ fn landing_tick(wm: &mut WorldMap, ui: &UiRes) -> bool {
             // FUN_140391f50: camera slot 2 goes; ObjCamera blends back.
             wm.camera.suspend();
             match outcome {
-                Some(Outcome::Land(target)) => wm.jump = Some(target),
+                // A default landing by program id (wlds area ≥ 0x33) is
+                // placed by FUN_14039fbc0.
+                Some(Outcome::Land(target)) => {
+                    wm.jump = Some(match target.spawn {
+                        Some(p) if target.area == 0xff => {
+                            world_state::resolve_program(&wm.program_areas, target.world, p)
+                                .unwrap_or(target)
+                        }
+                        _ => target,
+                    })
+                }
                 // FUN_1403946f0 queues the route's Gummi mission task (not
                 // part of this program): the run ends as a jump does.
                 Some(Outcome::Route(route)) => {
@@ -947,8 +959,28 @@ fn landing_tick(wm: &mut WorldMap, ui: &UiRes) -> bool {
             && let Some(world) = actor_world(&wm.actors[r])
             && let Some(p) = ui.ui.worlds.get(&world)
         {
-            // FUN_140394fc0: TT before its flag 2 and The World That Never
-            // Was between flags 0x35 and 0x37 play an event instead (#89).
+            // FUN_140394fc0: Twilight Town and The World That Never Was play
+            // a world event instead while their world-event bits say so
+            // (FUN_14038de90), and the panels close (FUN_1403966c0 /
+            // FUN_140399cd0) [I: at once; their close animation would run
+            // under the event].
+            let gated = match wm.actors[r].kind {
+                Kind::Symbol(e) => objects::land_event(e.object, |b| {
+                    wm.after_world.as_ref().is_some_and(|w| w.event_seen(b))
+                }),
+                _ => None,
+            };
+            if let Some(event) = gated {
+                wm.event_queue.push_back(event);
+                wm.events_ended = false;
+                wm.info = None;
+                wm.route_info = None;
+                wm.velocity = [0.; 2];
+                wm.log.push(
+                    serde_json::json!({"event":"land_event","tick":wm.tick,"world":world,"id":event}),
+                );
+                return false;
+            }
             let state = Landing::new(world, p.grid.clone(), p.default_target, p.episodes.clone());
             let menu = Menu::new(
                 layout,
@@ -1203,6 +1235,15 @@ fn event_tick(wm: &mut WorldMap, ui: &UiRes) -> bool {
             }
             events::Action::Jump { world, area } => {
                 wm.jump = Some(world_state::Target::at(world, area, 0));
+            }
+            events::Action::JumpProgram { world, program } => {
+                let t = world_state::resolve_program(&wm.program_areas, world, program);
+                wm.log
+                    .push(serde_json::json!({"event":"jump_program","tick":wm.tick,
+                    "world":world,"program":program,"area":t.map(|t| t.area)}));
+                if t.is_some() {
+                    wm.jump = t;
+                }
             }
             other => wm
                 .log
@@ -1978,7 +2019,8 @@ struct FieldHandoff {
 /// Writes the field config for `target` and, unless the run is unattended,
 /// starts the field there as a new `kh2fm room` process (the game's area
 /// jump FUN_140152990 loads it in place; this rewrite's programs run one
-/// window each). A spawn-id target (FUN_14039fbc0) is not resolved yet.
+/// window each). A target placed by program id (FUN_14039fbc0) starts the
+/// area with that id as its map, battle and event programs.
 fn start_field(
     h: &FieldHandoff,
     target: world_state::Target,
@@ -1987,14 +2029,16 @@ fn start_field(
     let Some(code) = ::area::progress::WORLDS.get(target.world as usize) else {
         return serde_json::json!({"event":"field_rejected","reason":"world outside the table"});
     };
-    if let Some(spawn) = target.spawn {
-        return serde_json::json!({"event":"field_rejected","reason":"spawn-id target","spawn":spawn});
+    if target.area == 0xff {
+        return serde_json::json!({"event":"field_rejected","reason":"no area","spawn":target.spawn});
     }
+    let programs = target.spawn.map(|p| [p as i16; 3]);
     let config = match crate::launcher::landing_room_config(
         &h.arena,
         code,
         target.area,
         target.entrance,
+        programs,
         &h.story,
     ) {
         Ok(c) => c,
@@ -2010,7 +2054,7 @@ fn start_field(
             })
             .is_ok();
     serde_json::json!({"event":"field_start","world":code,"area":target.area,
-        "entrance":target.entrance,"config":config.file_name().map(|n| n.to_string_lossy().into_owned()),
+        "entrance":target.entrance,"programs":programs,"config":config.file_name().map(|n| n.to_string_lossy().into_owned()),
         "started":started})
 }
 
@@ -2028,7 +2072,7 @@ fn parse_story(spec: &str) -> Result<(u32, u32)> {
 
 fn run(args: Vec<PathBuf>) -> Result<AppExit> {
     if args.len() < 2 {
-        return Err("usage: kh2fm wm <Steam-root> <manifest> [--from <world code>] [--story <first>:<last>]... [--touch <world point>,...] [--slot <n>:<state>]... [--at <x>,<z>] [--event <id>]... [--field <test-room config>] [--load-only] [--autoplay <new-capture-dir> [--decide]]".into());
+        return Err("usage: kh2fm wm <Steam-root> <manifest> [--from <world code>] [--story <first>:<last>]... [--touch <world point>,...] [--seen <world-event bit>,...] [--slot <n>:<state>]... [--at <x>,<z>] [--event <id>]... [--field <test-room config>] [--load-only] [--autoplay <new-capture-dir> [--decide]]".into());
     }
     let mut from = "tt".to_owned();
     let mut story = Vec::new();
@@ -2040,6 +2084,7 @@ fn run(args: Vec<PathBuf>) -> Result<AppExit> {
     let mut extra_events: Vec<u32> = Vec::new();
     let mut at: Option<[f32; 2]> = None;
     let mut field: Option<PathBuf> = None;
+    let mut seen: Vec<u32> = Vec::new();
     let mut options = args[2..].iter();
     while let Some(option) = options.next() {
         let mut value = || -> Result<String> {
@@ -2081,6 +2126,17 @@ fn run(args: Vec<PathBuf>) -> Result<AppExit> {
             }
             // A test-room config whose sources the landing's field uses.
             Some("--field") => field = Some(PathBuf::from(value()?)),
+            // World-event bits to mark seen (FUN_1403deab0), as a save would
+            // hold them.
+            Some("--seen") => {
+                for b in value()?.split(',') {
+                    let b = b.trim();
+                    seen.push(match b.strip_prefix("0x") {
+                        Some(h) => u32::from_str_radix(h, 16)?,
+                        None => b.parse()?,
+                    });
+                }
+            }
             Some("--touch") => {
                 for p in value()?.split(',') {
                     touched.push(p.trim().parse()?);
@@ -2116,6 +2172,11 @@ fn run(args: Vec<PathBuf>) -> Result<AppExit> {
     let events = events_queued.clone();
     for &p in &touched {
         src.progress_mut().world.touch_point(p);
+    }
+    for &b in &seen {
+        if let Some(w) = src.progress_mut().world.event_bits.get_mut(b as usize / 32) {
+            *w |= 1 << (b % 32);
+        }
     }
     for &(n, s) in &slots {
         if let Some(slot) = n
@@ -2291,6 +2352,11 @@ fn run(args: Vec<PathBuf>) -> Result<AppExit> {
         stick: [0.; 3],
         autoplay: autoplay.clone(),
         autoplay_decide: decide,
+        program_areas: library
+            .read("07localset.bin")
+            .ok()
+            .and_then(|b| data::world_map::read_program_areas(&b).ok())
+            .unwrap_or_default(),
         field: field.map(|arena| FieldHandoff {
             arena,
             root: args[0].clone(),
@@ -2410,7 +2476,10 @@ fn run(args: Vec<PathBuf>) -> Result<AppExit> {
     let mut voice_files: Vec<((u32, u32), String)> = Vec::new();
     let mut widget_names: HashMap<u32, Option<Arc<InspectionModel>>> = HashMap::new();
     let mut scene_log = Vec::new();
-    for &id in &events {
+    // The queued events, and those the land reaction may play.
+    let mut scene_events = events.clone();
+    scene_events.extend(objects::LAND_EVENTS.iter().map(|e| e.3));
+    for &id in &scene_events {
         let Some(script) = ui.events.get(&(id as u16)) else {
             continue;
         };
