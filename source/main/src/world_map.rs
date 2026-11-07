@@ -14,8 +14,11 @@
 //! the objects' refresh and the character scenes (worldmap::ObjWidget),
 //! which hide the map while they show.
 //!
-//! Not here yet: the jump into the field (entrance 0x63 arrivals) and the
-//! objects' effects (#89).
+//! The map's effects run per draw group and the world symbols hold their
+//! effects by world state.
+//!
+//! Not here yet: the jump into the field (entrance 0x63 arrivals).
+mod effects;
 mod scene;
 mod ui;
 
@@ -38,7 +41,7 @@ use data::{
     model_inspection_textures::{TextureMode, UvProfile},
     model_pose::PoseProfile,
     motion::{self, InterpolatedMotion},
-    object_collision,
+    object_collision, object_effect,
     path_lookup::Library,
     probe_source::ProbeSource,
 };
@@ -64,6 +67,8 @@ const TICK_HZ: f64 = 60.;
 /// above the mean of the walk and run speeds (FUN_140563880).
 const CURSOR_IDLE: u16 = 0;
 const CURSOR_FAST: u16 = 0x99;
+/// Op 0x110's motion (FUN_1403c86a0).
+const CURSOR_RIDE: u16 = 0x9c;
 /// The symbols' motions (FUN_140390510).
 const SYMBOL_CLOSED: u16 = 0x97;
 const SYMBOL_OPEN: u16 = 0xa1;
@@ -89,8 +94,10 @@ struct Actor {
     kind: Kind,
     /// None for the objects whose archive holds no model.
     model: Option<Arc<InspectionModel>>,
-    /// Motions by the exe's motion number (FUN_1403c6dc0).
-    motions: HashMap<u16, Arc<InterpolatedMotion>>,
+    /// Motions by the exe's motion number (FUN_1403c6dc0) and their frame
+    /// triggers.
+    motions: MotionMap,
+    triggers: TriggerMap,
     /// Engine coordinates (Y down) and engine yaw.
     position: [f32; 3],
     yaw: f32,
@@ -104,6 +111,19 @@ struct Actor {
     /// A symbol that offers its reaction (state ≥ 2, record flag bit 1
     /// clear: FUN_140390510's flag 0x40 is off).
     reacts: bool,
+    /// The object's own effects (its `.a.us` PAX, BAR type 18).
+    pax: Option<Arc<object_effect::Pax>>,
+    /// The effects a symbol holds (+0xd58, +0xd60, +0xd70) and the
+    /// new-episode one (+0xd68), as effect handles.
+    held: [Option<u64>; 3],
+    episode_effect: Option<u64>,
+    /// Mesh parts hidden by frame triggers 26 / 27 (bit per part) and the
+    /// motion controller's last tick with its motion (FUN_14040e960).
+    hidden_parts: u64,
+    clock: Option<(u16, f32)>,
+    /// The world record (state, flags) a symbol last applied (+0xd38), or
+    /// the slot state a ship last applied (+0xd40).
+    applied: (u8, u8),
 }
 
 #[derive(Component)]
@@ -202,6 +222,47 @@ struct WorldMap {
     widget_models: Vec<WidgetModel>,
     /// Op 0x108 requests of this tick: (event, archive entry).
     voices: Vec<(u32, u32)>,
+    /// The map's own effects (its PAX), the object effect starts and stops
+    /// of this tick, the next effect handle and the sounds to stop.
+    map_pax: Option<Arc<object_effect::Pax>>,
+    fx_requests: Vec<FxRequest>,
+    next_fx: u64,
+    sound_stops: Vec<u32>,
+    /// The worlds that list an unlocked episode still marked new, and
+    /// whether the arrival's events task has ended (FUN_14038de20).
+    new_worlds: Vec<u8>,
+    events_ended: bool,
+    /// Op 0x110: the cursor rides Hollow Bastion's symbol.
+    riding: bool,
+}
+
+/// An object effect start or stop for the effects tick.
+enum FxRequest {
+    /// `follow`: a bound element (flag bit 0) started by a motion keeps
+    /// to its object.
+    Object {
+        handle: u64,
+        actor: usize,
+        id: u16,
+        follow: bool,
+    },
+    Stop(u64),
+    /// The object's motion changed (FUN_1403c7300).
+    ReleaseMotion(usize),
+}
+
+impl WorldMap {
+    fn start_effect(&mut self, actor: usize, id: u16) -> u64 {
+        self.next_fx += 1;
+        let handle = self.next_fx;
+        self.fx_requests.push(FxRequest::Object {
+            handle,
+            actor,
+            id,
+            follow: false,
+        });
+        handle
+    }
 }
 
 /// The sound output, the system bank and the world map's field BGM.
@@ -252,11 +313,13 @@ fn model_options() -> ModelOptions {
 
 /// FUN_1403c7c50: a motion set whose BAR header word +0xc has bit 0 set
 /// holds four variants per motion number; the world map's sets do not, so
-/// the number is the entry index.
-fn read_motions(mset: &[u8], ids: &[u16]) -> Result<HashMap<u16, Arc<InterpolatedMotion>>> {
+/// the number is the entry index. Each motion comes with its frame triggers
+/// (the ANB's type-16 entry): (60 Hz tick, trigger, parameters).
+fn read_motions(mset: &[u8], ids: &[u16]) -> Result<(MotionMap, TriggerMap)> {
     let table = bar::read_bar(mset)?;
     let variants = table.header_field_12 & 1 != 0;
     let mut out = HashMap::new();
+    let mut triggers = HashMap::new();
     for &id in ids {
         let present = |slot: usize| {
             table
@@ -272,10 +335,23 @@ fn read_motions(mset: &[u8], ids: &[u16]) -> Result<HashMap<u16, Arc<Interpolate
         let Some(slot) = slot else { continue };
         let e = &table.entries[slot];
         let anb = &mset[e.offset as usize..e.offset as usize + e.size as usize];
-        out.insert(id, Arc::new(motion::read_anb(anb, slot)?.motion));
+        let sel = motion::read_anb(anb, slot)?;
+        let list: Vec<Trigger> = sel
+            .triggers
+            .iter()
+            .flat_map(|t| &t.records.frames)
+            .map(|f| (f.frame as f32, f.trigger, f.parameters.clone()))
+            .collect();
+        triggers.insert(id, Arc::new(list));
+        out.insert(id, Arc::new(sel.motion));
     }
-    Ok(out)
+    Ok((out, triggers))
 }
+
+/// A frame trigger: its tick, kind and parameters.
+type Trigger = (f32, u8, Vec<i16>);
+type MotionMap = HashMap<u16, Arc<InterpolatedMotion>>;
+type TriggerMap = HashMap<u16, Arc<Vec<Trigger>>>;
 
 /// An object's model, or none when its archive holds only collision (the
 /// Gummi route objects). A texture set the reader cannot decode yet leaves
@@ -327,6 +403,18 @@ fn blend(attributes: u32) -> AlphaMode {
     } else {
         AlphaMode::Blend
     }
+}
+
+/// An object's own effects: the PAX (BAR type 18) of its `obj/<name>.a.us`.
+fn read_object_pax(library: &mut Library, name: &str) -> Option<object_effect::Pax> {
+    let bytes = library.read(&format!("obj/{name}.a.us")).ok()?;
+    let table = bar::read_bar(&bytes).ok()?;
+    let e = table
+        .entries
+        .iter()
+        .find(|e| e.entry_type == 18 && e.size > 0)?;
+    let pax = bytes.get(e.offset as usize..e.offset as usize + e.size as usize)?;
+    object_effect::read_pax(pax).ok()
 }
 
 /// An object's collision shapes (its BAR type-23 entry).
@@ -382,7 +470,31 @@ fn apply_world_state(
         }
     }
     wm.eh_symbol = None;
-    for a in &mut wm.actors {
+    for i in 0..wm.actors.len() {
+        // The held effects: a slot's element starts when the slot is empty
+        // and goes when the look wants none (FUN_140390510).
+        if let Kind::Symbol(entry) = wm.actors[i].kind {
+            let record = state.record(entry.world).copied().unwrap_or_default();
+            let look = objects::symbol_look(entry.world, &record, eh_flag);
+            for (slot, want) in objects::held_effects(&look).into_iter().enumerate() {
+                match (want, wm.actors[i].held[slot]) {
+                    (Some(id), None) => {
+                        let h = wm.start_effect(i, id);
+                        wm.actors[i].held[slot] = Some(h);
+                    }
+                    (None, Some(h)) => {
+                        wm.fx_requests.push(FxRequest::Stop(h));
+                        wm.actors[i].held[slot] = None;
+                    }
+                    _ => {}
+                }
+            }
+            wm.actors[i].applied = (record.state, record.flags);
+        }
+        if let Kind::Gumi(route) = wm.actors[i].kind {
+            wm.actors[i].applied = (state.symbol_slot(route), 0);
+        }
+        let a = &mut wm.actors[i];
         match a.kind {
             Kind::Cursor => {}
             Kind::Symbol(entry) => {
@@ -926,12 +1038,62 @@ fn refresh_objects(wm: &mut WorldMap) {
         .push(serde_json::json!({"event":"event_refresh","tick":wm.tick}));
 }
 
+/// FUN_1403940b0: op 0x105's pre-refresh, per object (FUN_1403900d0 for
+/// symbols, FUN_140397240 for ships) against the state after the scripts.
+fn pre_refresh(wm: &mut WorldMap) {
+    let Some(after) = wm.after_world.clone() else {
+        return;
+    };
+    for i in 0..wm.actors.len() {
+        let (state, flags) = wm.actors[i].applied;
+        let starts = match wm.actors[i].kind {
+            Kind::Symbol(entry) => {
+                let before = world_state::WorldRecord {
+                    state,
+                    flags,
+                    ..Default::default()
+                };
+                let now = after.record(entry.world).copied().unwrap_or_default();
+                objects::symbol_pre_refresh(&before, &now)
+            }
+            Kind::Gumi(route) => objects::gumi_pre_refresh(state, after.symbol_slot(route)),
+            Kind::Cursor => false,
+        };
+        if starts {
+            wm.start_effect(i, objects::effect::PRE_REFRESH);
+        }
+    }
+    wm.log
+        .push(serde_json::json!({"event":"event_pre_refresh","tick":wm.tick}));
+}
+
+/// FUN_14038de20 → FUN_140390460, when the arrival's events task ends:
+/// each open symbol whose world has a new episode starts element 4 once.
+fn new_episode_effects(wm: &mut WorldMap) {
+    for i in 0..wm.actors.len() {
+        let Kind::Symbol(entry) = wm.actors[i].kind else {
+            continue;
+        };
+        let any_new = wm.new_worlds.contains(&entry.world);
+        if wm.actors[i].episode_effect.is_none()
+            && objects::new_episode(wm.actors[i].applied.0, any_new)
+        {
+            let h = wm.start_effect(i, objects::effect::NEW_EPISODE);
+            wm.actors[i].episode_effect = Some(h);
+        }
+    }
+}
+
 /// FUN_14038dc60 / FUN_14038fae0: the queued world events play one after
 /// another; while one plays the cursor is held and no reaction or info
 /// panel runs (FUN_14038da50). True while an event plays.
 fn event_tick(wm: &mut WorldMap, ui: &UiRes) -> bool {
     if wm.event.is_none() {
         let Some(id) = wm.event_queue.pop_front() else {
+            if !wm.events_ended {
+                wm.events_ended = true;
+                new_episode_effects(wm);
+            }
             return false;
         };
         let script = ui.ui.events.get(&(id as u16)).cloned().unwrap_or_default();
@@ -1003,6 +1165,23 @@ fn event_tick(wm: &mut WorldMap, ui: &UiRes) -> bool {
                     Some(wm_camera::EventCamera::new(wm.pose, target, offset, frames));
             }
             events::Action::Refresh => refresh_objects(wm),
+            events::Action::PreRefresh => pre_refresh(wm),
+            events::Action::ShipToHollowBastion => {
+                let hb = wm.actors.iter().position(
+                    |a| matches!(a.kind, Kind::Symbol(e) if e.object == objects::SYMBOLS[1].object),
+                );
+                if let Some(hb) = hb {
+                    let (position, yaw) = (wm.actors[hb].position, wm.actors[hb].yaw);
+                    let c = &mut wm.actors[wm.cursor];
+                    c.position = position;
+                    c.yaw = wrap_angle(yaw + std::f32::consts::PI);
+                    c.motion = CURSOR_RIDE;
+                    c.time = 0.;
+                    wm.riding = true;
+                }
+                wm.log
+                    .push(serde_json::json!({"event":"ship_rides","tick":wm.tick,"symbol":hb}));
+            }
             events::Action::Sound(s) => wm.sounds.push(s),
             events::Action::Widgets(op) => {
                 let WorldMap {
@@ -1106,7 +1285,7 @@ fn tick(mut wm: ResMut<WorldMap>, ui: Res<UiRes>) {
     }
     wm.fade.update(1.);
     let eventing = wm.landing.is_none() && event_tick(&mut wm, &ui);
-    let held = eventing || landing_tick(&mut wm, &ui);
+    let held = eventing || landing_tick(&mut wm, &ui) || wm.riding;
     // FUN_1403a8fa0's move request: the stick direction (up = away from
     // the camera, which looks along +Z) at the walk speed below magnitude
     // 0.8 and the run speed from it.
@@ -1166,13 +1345,15 @@ fn tick(mut wm: ResMut<WorldMap>, ui: Res<UiRes>) {
     // with an 8-tick blend [the blend is not modelled].
     let fast = speed > 0. && (wm.params.walk + wm.params.run) * 0.5 <= speed;
     let wanted = if fast { CURSOR_FAST } else { CURSOR_IDLE };
-    if wm.actors[ci].motion != wanted {
+    // Riding a symbol (op 0x110) keeps the scripted motion.
+    if !wm.riding && wm.actors[ci].motion != wanted {
         wm.actors[ci].motion = wanted;
         wm.actors[ci].time = 0.;
     }
     for a in &mut wm.actors {
         a.time += actor_physics::DT;
     }
+    fire_triggers(&mut wm);
     let cursor = wm.actors[ci].position;
     // Camera slot 2 (the close-up or the event camera) wins over ObjCamera.
     if let Some(c) = wm.event_camera.as_mut() {
@@ -1205,6 +1386,14 @@ fn play_audio(mut wm: ResMut<WorldMap>, mut audio: ResMut<AudioRes>) {
             for layer in r.layers {
                 mixer.play(layer, id, r.volume, 1.);
             }
+        }
+    }
+    // Map effect sounds stop with their draw group.
+    for id in std::mem::take(&mut wm.sound_stops) {
+        if let Some(output) = audio.output.as_ref()
+            && let Ok(mut mixer) = output.mixer.lock()
+        {
+            mixer.stop(id);
         }
     }
     // Op 0x108: the last voice stops and this one plays at volume 0x3fff.
@@ -1299,6 +1488,68 @@ fn draw_ui(wm: Res<WorldMap>, ui: Res<UiRes>, mut frame: ResMut<Ui2dFrame>) {
         ));
     }
 }
+
+/// FUN_14040e960 → FUN_14040dd70 for the world map objects: the frame
+/// triggers the motion controller's clock passed this tick (in 60 Hz
+/// ticks of the motion; a motion starts just before its first frame and a
+/// loop resumes after its return frame). Trigger 1 starts an element of
+/// the object's PAX, 8 plays a sound (`p0 × 1000 + p1`), 26 shows and 27
+/// hides mesh part `p0` (FUN_1403cd670 / FUN_1403cd4c0 fade the part over
+/// `p1` frames; the installed world map motions use 0, at once).
+fn fire_triggers(wm: &mut WorldMap) {
+    for i in 0..wm.actors.len() {
+        let a = &wm.actors[i];
+        let (Some(m), Some(list)) = (a.motions.get(&a.motion), a.triggers.get(&a.motion)) else {
+            continue;
+        };
+        let (start, end, fps, ret) = m.frame_window().unwrap_or((0., 1., 30., 0.));
+        let to_ticks = 60. / fps.max(1.);
+        let now = motion_time(m, a.time) * to_ticks;
+        let changed = a.clock.is_some_and(|(motion, _)| motion != a.motion);
+        let before = match a.clock {
+            Some((motion, t)) if motion == a.motion => t,
+            _ => start * to_ticks - 1.,
+        };
+        let passed = |f: f32| {
+            if now >= before {
+                before < f && f <= now
+            } else {
+                // Wrapped: the end of the pass, then from the return frame.
+                (before < f && f <= end * to_ticks) || (ret * to_ticks < f && f <= now)
+            }
+        };
+        let due: Vec<(u8, Vec<i16>)> = list
+            .iter()
+            .filter(|t| passed(t.0))
+            .map(|t| (t.1, t.2.clone()))
+            .collect();
+        let motion = a.motion;
+        wm.actors[i].clock = Some((motion, now));
+        if changed {
+            wm.fx_requests.push(FxRequest::ReleaseMotion(i));
+        }
+        for (kind, p) in due {
+            let p0 = p.first().copied().unwrap_or(0);
+            match kind {
+                1 => {
+                    wm.next_fx += 1;
+                    let handle = wm.next_fx;
+                    wm.fx_requests.push(FxRequest::Object {
+                        handle,
+                        actor: i,
+                        id: p0 as u16,
+                        follow: true,
+                    });
+                }
+                8 if p.len() >= 2 => wm.sounds.push(p0 as u16 as u32 * 1000 + p[1] as u16 as u32),
+                26 if (0..64).contains(&p0) => wm.actors[i].hidden_parts &= !(1 << p0),
+                27 if (0..64).contains(&p0) => wm.actors[i].hidden_parts |= 1 << p0,
+                _ => {}
+            }
+        }
+    }
+}
+
 /// Key time of a looping motion `ticks` after its start.
 fn motion_time(motion: &InterpolatedMotion, ticks: f32) -> f32 {
     let (start, end, fps, ret) = motion.frame_window().unwrap_or((0., 1., 30., 0.));
@@ -1321,7 +1572,12 @@ fn present(
     wm: Res<WorldMap>,
     bobs: Option<Res<BobState>>,
     mut roots: Query<(&ActorRoot, &mut Transform, &mut Visibility), Without<ActorPart>>,
-    parts: Query<(&ActorPart, &Mesh3d, &MeshMaterial3d<FogMaterial>)>,
+    mut parts: Query<(
+        &ActorPart,
+        &Mesh3d,
+        &MeshMaterial3d<FogMaterial>,
+        &mut Visibility,
+    )>,
     bob_parts: Query<
         (
             &BobPart,
@@ -1365,9 +1621,19 @@ fn present(
             );
         }
     }
-    for (part, handle, material) in &parts {
+    for (part, handle, material, mut visibility) in &mut parts {
         let a = &wm.actors[part.actor];
         let Some(model) = &a.model else { continue };
+        // Frame triggers 26 / 27 [I: the part mask counts the model's
+        // mesh parts in order].
+        let want = if part.part < 64 && a.hidden_parts >> part.part & 1 != 0 {
+            Visibility::Hidden
+        } else {
+            Visibility::Inherited
+        };
+        if *visibility != want {
+            *visibility = want;
+        }
         // The state tint (FUN_140390510's colour) and the part's blending.
         let color = Color::srgba(a.tint[0], a.tint[1], a.tint[2], 1.);
         let alpha = blend(model.parts[part.part].attributes);
@@ -1436,6 +1702,113 @@ fn present(
             }
         }
     }
+}
+
+/// An object's matrix for its effects: its position and the turn its model
+/// is drawn with (π − yaw in the scene, a game turn of yaw − π) [I].
+fn object_matrix(a: &Actor) -> ::effect::math::Mat {
+    ::effect::instance_matrix(a.position, [0., a.yaw - std::f32::consts::PI, 0.], [1.; 3])
+}
+
+/// One tick of the effects: the map's elements follow the draw groups
+/// (FUN_1402c7010 per group switched on, in bit then table order;
+/// FUN_1402c65a0 per group switched off), the objects' starts and stops
+/// apply, and every instance steps against the camera.
+fn effects_tick(
+    mut wm: ResMut<WorldMap>,
+    mut fx: ResMut<effects::Effects>,
+    mut last: Local<Option<u64>>,
+) {
+    if *last == Some(wm.tick) {
+        return;
+    }
+    *last = Some(wm.tick);
+    let mut step = effects::Step::default();
+    let (mask, before) = (wm.bg_mask, fx.map_mask);
+    if let Some(pax) = wm.map_pax.clone() {
+        for bit in 0..64u8 {
+            let (now, was) = (mask >> bit & 1 != 0, before >> bit & 1 != 0);
+            if now && !was {
+                for (index, element) in pax.elements.iter().enumerate() {
+                    if element.group == bit {
+                        wm.next_fx += 1;
+                        let handle = wm.next_fx;
+                        fx.start(handle, &pax, effects::Start::Map { index }, &mut step);
+                    }
+                }
+            } else if was && !now {
+                fx.stop_group(bit, &mut step);
+            }
+        }
+    }
+    fx.map_mask = mask;
+    for request in std::mem::take(&mut wm.fx_requests) {
+        match request {
+            FxRequest::Stop(handle) => fx.stop(handle, &mut step),
+            FxRequest::ReleaseMotion(actor) => fx.release_motion(actor),
+            FxRequest::Object {
+                handle,
+                actor,
+                id,
+                follow,
+            } => {
+                let a = &wm.actors[actor];
+                let Some(pax) = a.pax.clone() else {
+                    step.log.push(serde_json::json!({"event":"effect_no_pax",
+                        "actor":actor,"element":id}));
+                    continue;
+                };
+                let object = object_matrix(a);
+                fx.start(
+                    handle,
+                    &pax,
+                    effects::Start::Object {
+                        object,
+                        id,
+                        follow: follow.then_some(actor),
+                    },
+                    &mut step,
+                );
+            }
+        }
+    }
+    fx.follow(|i| wm.actors.get(i).map(object_matrix));
+    let view = effects::view(wm.pose.eye, wm.pose.target);
+    fx.step(&view, &mut step);
+    let tick = wm.tick;
+    wm.sounds.extend(step.sounds);
+    wm.sound_stops.extend(step.stops);
+    for mut v in step.log {
+        if let Some(o) = v.as_object_mut() {
+            o.insert("tick".into(), tick.into());
+        }
+        wm.log.push(v);
+    }
+    if tick.is_multiple_of(120) && fx.running() > 0 {
+        let (running, vertices) = (fx.running(), fx.vertices());
+        wm.log
+            .push(serde_json::json!({"event":"effects_state","tick":tick,
+            "running":running,"vertices":vertices,"parts":fx.parts()}));
+    }
+}
+
+/// The effect meshes, under the map so that they hide with it.
+fn present_effects(
+    mut commands: Commands,
+    mut fx: ResMut<effects::Effects>,
+    maps: Query<Entity, With<MapRoot>>,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
+    mut images: ResMut<Assets<Image>>,
+) {
+    effects::present(
+        &mut commands,
+        &mut fx,
+        maps.single().ok(),
+        &mut meshes,
+        &mut materials,
+        &mut images,
+    );
 }
 
 /// The character scene: while widgets exist the map hides and each widget
@@ -1701,10 +2074,12 @@ fn run(args: Vec<PathBuf>) -> Result<AppExit> {
     let mut cursor = None;
     type Loaded = (
         Option<Arc<InspectionModel>>,
-        HashMap<u16, Arc<InterpolatedMotion>>,
+        MotionMap,
+        TriggerMap,
         Vec<object_collision::Entry>,
     );
     let mut models: HashMap<String, Loaded> = HashMap::new();
+    let mut paxes: HashMap<String, Option<Arc<object_effect::Pax>>> = HashMap::new();
     let mut untextured = Vec::new();
     for s in &loaded.spawns {
         let Some(entry) = src.object(s.entity.object) else {
@@ -1731,21 +2106,26 @@ fn run(args: Vec<PathBuf>) -> Result<AppExit> {
             }
             let model = model.map(Arc::new);
             let ids: &[u16] = match kind {
-                Kind::Cursor => &[CURSOR_IDLE, CURSOR_FAST],
+                Kind::Cursor => &[CURSOR_IDLE, CURSOR_FAST, CURSOR_RIDE],
                 Kind::Symbol(_) => &[0, SYMBOL_CLOSED, SYMBOL_OPEN],
                 Kind::Gumi(_) => &[0],
             };
             let motions = match library.find(&format!("obj/{name}.mset")) {
                 Some(f) => read_motions(&library.read_found(&f)?, ids)?,
-                None => HashMap::new(),
+                None => (HashMap::new(), HashMap::new()),
             };
+            let (motions, triggers) = motions;
             let shapes = library
                 .read(&format!("obj/{name}.mdlx"))
                 .map(|a| read_shapes(&a))
                 .unwrap_or_default();
-            models.insert(name.clone(), (model, motions, shapes));
+            models.insert(name.clone(), (model, motions, triggers, shapes));
+            paxes.insert(
+                name.clone(),
+                read_object_pax(&mut library, &name).map(Arc::new),
+            );
         }
-        let (model, motions, shapes) = &models[&name];
+        let (model, motions, triggers, shapes) = &models[&name];
         if matches!(kind, Kind::Cursor) {
             cursor = Some(actors.len());
         }
@@ -1753,6 +2133,7 @@ fn run(args: Vec<PathBuf>) -> Result<AppExit> {
             kind,
             model: model.clone(),
             motions: motions.clone(),
+            triggers: triggers.clone(),
             position: s.entity.position,
             yaw: s.yaw,
             motion: match kind {
@@ -1764,6 +2145,12 @@ fn run(args: Vec<PathBuf>) -> Result<AppExit> {
             tint: [1.; 4],
             shapes: shapes.clone(),
             reacts: false,
+            pax: paxes.get(&name).cloned().flatten(),
+            hidden_parts: 0,
+            clock: None,
+            held: [None; 3],
+            episode_effect: None,
+            applied: (0, 0),
         });
     }
     let cursor = cursor.ok_or("the world map has no cursor at this entrance")?;
@@ -1873,6 +2260,13 @@ fn run(args: Vec<PathBuf>) -> Result<AppExit> {
         archives: HashMap::new(),
         widget_models: Vec::new(),
         voices: Vec::new(),
+        map_pax: loaded.pax.clone(),
+        fx_requests: Vec::new(),
+        next_fx: 0,
+        sound_stops: Vec::new(),
+        new_worlds: Vec::new(),
+        events_ended: false,
+        riding: false,
     };
     let progress = src.progress();
     // FUN_14038cf20 creates the objects before its task runs the queued
@@ -1923,6 +2317,20 @@ fn run(args: Vec<PathBuf>) -> Result<AppExit> {
     let worlds: Vec<u8> = wm.actors.iter().filter_map(actor_world).collect();
     let routes: Vec<u8> = wm.actors.iter().filter_map(actor_route).collect();
     let ui = ui::Ui::load(&source, &mut library, &src, &worlds, &routes)?;
+    wm.new_worlds = ui
+        .worlds
+        .iter()
+        .filter(|(_, p)| p.episodes.iter().any(|e| e.new))
+        .map(|(&w, _)| w)
+        .collect();
+    wm.new_worlds.sort_unstable();
+    println!(
+        "{}",
+        serde_json::json!({"event":"effects_prepared","new_worlds":wm.new_worlds,
+            "map_pax":wm.map_pax.as_ref().map(|p| p.elements.iter().map(|e| (e.id, e.group, e.effect_number, e.sound)).collect::<Vec<_>>()),
+            "triggers":wm.actors.iter().map(|a| a.triggers.iter().map(|(m, l)| (*m, l.iter().map(|t| (t.0, t.1, t.2.clone())).collect::<Vec<_>>())).collect::<Vec<_>>()).collect::<Vec<_>>(),
+            "objects":wm.actors.iter().map(|a| a.pax.as_ref().map(|p| (p.name.clone(), p.elements.iter().map(|e| (e.id, e.effect_number, e.flags, e.sound)).collect::<Vec<_>>()))).collect::<Vec<_>>()})
+    );
     let prepared: Vec<_> = worlds
         .iter()
         .filter_map(|w| ui.worlds.get(w).map(|p| (w, p)))
@@ -2013,6 +2421,28 @@ fn run(args: Vec<PathBuf>) -> Result<AppExit> {
             banks.insert(bytes)?;
         }
     }
+    // The banks the effects' own sounds name.
+    let mut effect_banks: Vec<u32> = wm
+        .map_pax
+        .iter()
+        .chain(wm.actors.iter().filter_map(|a| a.pax.as_ref()))
+        .flat_map(|p| p.elements.iter())
+        .filter(|e| e.sound > 0)
+        .map(|e| e.sound as u32 / 1000)
+        .collect();
+    effect_banks.sort_unstable();
+    effect_banks.dedup();
+    for bank in effect_banks {
+        if !banks.numbers().contains(&(bank as u16))
+            && let Ok(bytes) = library.read(&format!("se/se{bank:03}.win32.scd"))
+        {
+            banks.insert(bytes)?;
+        }
+    }
+    let texcommon = library
+        .read("effect/texcommon.dpd")
+        .ok()
+        .and_then(|b| object_effect::read_dpd(&b).ok());
     // The banks the widget motions' sound triggers name.
     let mut trigger_banks: Vec<u32> = wm
         .archives
@@ -2074,6 +2504,7 @@ fn run(args: Vec<PathBuf>) -> Result<AppExit> {
             white: 0,
         })
         .insert_resource(StartupRes(Some(Startup { room, area: loaded })))
+        .insert_resource(effects::Effects::new(texcommon))
         .insert_resource(Time::<Fixed>::from_hz(TICK_HZ))
         .insert_resource(ClearColor(Color::BLACK))
         .add_plugins(DefaultPlugins.set(WindowPlugin {
@@ -2093,10 +2524,21 @@ fn run(args: Vec<PathBuf>) -> Result<AppExit> {
             overlay: true,
         })
         .add_systems(Startup, (setup, setup_ui))
-        .add_systems(FixedUpdate, (read_stick, tick, play_audio).chain())
+        .add_systems(
+            FixedUpdate,
+            (read_stick, tick, effects_tick, play_audio).chain(),
+        )
         .add_systems(
             Update,
-            (apply_draw_groups, present, present_widgets, draw_ui, finish).chain(),
+            (
+                apply_draw_groups,
+                present,
+                present_widgets,
+                present_effects,
+                draw_ui,
+                finish,
+            )
+                .chain(),
         );
     Ok(app.run())
 }
@@ -2149,7 +2591,7 @@ mod tests {
         bytes.extend(&anb);
         // Entry 1 is not a valid ANB, so reading it fails; entry 0 is absent
         // (size 0) and skipped without an error.
-        assert!(read_motions(&bytes, &[0]).unwrap().is_empty());
+        assert!(read_motions(&bytes, &[0]).unwrap().0.is_empty());
         assert!(read_motions(&bytes, &[1]).is_err());
     }
 }

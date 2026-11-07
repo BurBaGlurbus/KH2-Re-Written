@@ -1183,3 +1183,19 @@ fn world_draw_matrices_put_the_part_at_its_origin_plus_its_offset() {
         assert_eq!(p.draw[3], [11., 22., 33., 1.], "{kind}");
     }
 }
+
+#[test]
+fn a_full_particle_heap_makes_no_parts() {
+    let dpd = synthetic();
+    let mut open = Instance::new(dpd.clone(), 0, IDENTITY, 0.).unwrap();
+    let mut full = Instance::new(dpd, 0, IDENTITY, 0.).unwrap();
+    full.heap_limit = Some(0);
+    let mut rng = Rng::default();
+    open.frame(&IDENTITY, &mut rng);
+    full.frame(&IDENTITY, &mut rng);
+    // One part: its work block and cursor words rounded to 16, plus the
+    // block header.
+    assert_eq!(open.live_parts(), 1);
+    assert_eq!(open.heap_used() % 16, 0);
+    assert_eq!(full.live_parts(), 0);
+}

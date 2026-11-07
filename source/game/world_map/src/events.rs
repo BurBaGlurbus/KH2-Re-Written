@@ -78,8 +78,10 @@ pub enum Op {
         world: u8,
         spawn: u32,
     },
-    /// 0x110: Hollow Bastion's symbol (0x3a3) plays effect 0x9c.
-    HollowBastionEffect,
+    /// 0x110: the cursor (`DAT_142a105d0`) rides Hollow Bastion's symbol
+    /// (FUN_1403b4110(0x3a3), FUN_1403d9fe0 with flags 0x4002), turned by π
+    /// on it (FUN_1403b65f0), and plays motion 0x9c (FUN_1403c86a0).
+    ShipToHollowBastion,
     /// 0x112: every widget goes (FUN_14038f150); 0x113: looks refresh now.
     ClearWidgets,
     RefreshNow,
@@ -144,7 +146,7 @@ pub fn read_script(bytes: &[u8]) -> Vec<Op> {
                 world: w(0) as u8,
                 spawn: w(1),
             },
-            0x110 => Op::HollowBastionEffect,
+            0x110 => Op::ShipToHollowBastion,
             0x112 => Op::ClearWidgets,
             0x113 => Op::RefreshNow,
             _ => Op::Other(op, a.clone()),
@@ -214,6 +216,8 @@ pub enum Action {
     Widgets(Op),
     /// Op 0x108: the voice of this archive entry.
     Voice(u32),
+    /// Op 0x110.
+    ShipToHollowBastion,
     Jump {
         world: u8,
         area: u8,
@@ -326,6 +330,7 @@ impl EventPlayer {
                 Op::TutorialWindows => self.tutorial = true,
                 Op::Jump { world, area } => out.push(Action::Jump { world, area }),
                 Op::Voice(entry) => out.push(Action::Voice(entry)),
+                Op::ShipToHollowBastion => out.push(Action::ShipToHollowBastion),
                 op @ (Op::Widget(..)
                 | Op::WidgetMotion(..)
                 | Op::WidgetQueue(..)
