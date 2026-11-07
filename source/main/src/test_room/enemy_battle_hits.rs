@@ -415,6 +415,11 @@ pub fn tick(game: &mut Game, actors: &mut [GalleryActor], tick: u64) {
                 if rows[row].hit_sound >= 0 {
                     sound_queue.push((rows[row].hit_sound as u32, "hit"));
                 }
+                effect_queue.push(EffectRequest::VictimSound {
+                    object: battle.assets.object_id,
+                    reaction: rows[row].reaction,
+                    key: actor.id,
+                });
                 if rows[row].hit_effect != 0 {
                     let delta = centre - target.centre;
                     let y = delta.y.clamp(-target.height, target.height);

@@ -49,7 +49,7 @@ folder and prepares the launch configurations. `source/main/src/test_room.rs` as
 the development room; `source/main/src/area.rs` and `cutscene/` connect state to scenes.
 `source/main/src/bin/` holds the smoke window and research viewers/probes. The default
 `cargo run -p main` program is the source-free smoke window; the player launcher
-is selected with `--bin KH2RW` or built with `build.bat`.
+is selected with `--bin KH2RW` or built with `build-release.bat`.
 
 `source/visual/src/lib.rs` lists the shared presentation modules. The pause menu is in
 `source/visual/src/pause_menu.rs` and `pause_menu/`. The title state and title banner are
@@ -59,7 +59,7 @@ application. `source/visual/src/overlay.rs` and `overlay.wgsl` compose the 2D di
 The optional Skate 3 code retains its upstream package names and GPL notices in
 `source/extras/skateboard/engine/`. It is existing extension code, not a roadmap for
 rewriting another collection game. The `skate3` feature remains opt-in for Cargo;
-`build.bat` retains its existing feature selection.
+the `build-*-skate3.bat` scripts enable it.
 
 ## Current limitations
 

@@ -40,6 +40,31 @@ pub fn load_bank(
     Ok(bytes)
 }
 
+/// The sound bank an object archive carries: its `se/obj/seNNN` replacement
+/// asset, which the exe loads together with the object (FUN_14039e900 →
+/// FUN_1401dcef0). `None` when the archive has none.
+pub fn object_bank(
+    source: &ProbeSource,
+    index: &str,
+    ordinal: usize,
+    name_hash: [u8; 16],
+) -> Option<Vec<u8>> {
+    let mut checked = source.open_index(index).ok()?;
+    let entry = checked
+        .inventory
+        .entries
+        .get(ordinal)
+        .filter(|e| e.name_hash == name_hash)?;
+    let bank = replacement_payload::read_all_replacements(&mut checked.reader, entry)
+        .ok()?
+        .into_iter()
+        .find(|r| r.metadata.name_bytes.starts_with(b"se/obj/se"))?
+        .bytes;
+    checked.verify_unchanged().ok()?;
+    scd::read(&bank).ok()?;
+    Some(bank)
+}
+
 /// One resolved request: its layers, the sound's volume and loop flag.
 pub struct Request {
     pub layers: Vec<Clip>,
