@@ -217,6 +217,13 @@ pub fn tick(mut game: ResMut<Game>, rig: Res<CameraRig>, mut fx: ResMut<DriveFx>
         .enemy
         .as_ref()
         .map(|rt| (rt.enemy.position, rt.enemy.yaw));
+    // Effects an owner ends (the weapon trail's window closing: FUN_1402be8e0
+    // sets the instance's end flag, a looping effect then drains).
+    for owner in std::mem::take(&mut game.fx_release) {
+        for r in fx.running.iter_mut().filter(|r| r.owner == owner) {
+            r.instance.release();
+        }
+    }
     // Map elements leave with their background group (FUN_1402c65a0).
     for group in std::mem::take(&mut game.fx_clear_map) {
         for r in fx
@@ -415,6 +422,10 @@ pub fn tick(mut game: ResMut<Game>, rig: Res<CameraRig>, mut fx: ResMut<DriveFx>
         }
     }
     fx.running.retain(|r| !r.instance.finished());
+    game.trail_live = fx
+        .running
+        .iter()
+        .any(|r| r.owner == super::weapon_trail::OWNER && !r.instance.is_released());
     // The prizes on the ground (obj/PRIZE.mdlx, program 203): billboards at
     // each prize's centre.
     if let (Some((dpd, prize)), Some(rt)) = (&fx.prize, game.enemy.as_ref()) {

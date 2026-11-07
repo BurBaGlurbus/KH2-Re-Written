@@ -357,6 +357,11 @@ impl Instance {
         self.finished
     }
 
+    /// An end was requested (`release`, FUN_1402c2830 sets +0x91).
+    pub fn is_released(&self) -> bool {
+        self.released
+    }
+
     pub fn live_parts(&self) -> usize {
         self.parts.iter().flatten().count()
     }

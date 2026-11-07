@@ -4,10 +4,10 @@
 //! pair on the blade bone are handed to the running instance
 //! (FUN_1402c5f70 → FUN_1403b54f0 build them the same way).
 //!
-//! [I] The spawn rule (the range's first tick starts element 10 once) and
-//! the bone length (FUN_1401a7af0's skeleton field, taken from the blade
-//! mesh's extent along its bone) are inferred; the element, its points and
-//! the strip are the exe's.
+//! The window rule is the exe's (FUN_1403effa0, see [`tick`]): one effect
+//! per open window, ended when the window closes. [I] The bone length
+//! (FUN_1401a7af0's skeleton field, taken from the blade mesh's extent along
+//! its bone) is inferred; the element, its points and the strip are the exe's.
 use super::*;
 use data::object_effect::{BonePos, Pax};
 
@@ -53,47 +53,57 @@ fn calibrate(game: &Game, far_ratio: f32) -> Option<f32> {
     Some(lo.abs().max(hi.abs()) / far_ratio.abs())
 }
 
-/// Starts the trail element when a trail window opens.
+/// The effect owner id of the trail's instance.
+pub const OWNER: u8 = 0xfc;
+
+/// FUN_1403effa0, the weapon object's per-frame trail routine: with no live
+/// trail effect (`obj+0xc00` clear), an open range-12 window (`obj+0x18c`
+/// bit 11) starts element 10 once; while the effect lives it stays as long as
+/// the window holds, and when the window closes the effect is ended
+/// (FUN_1402be8e0) and the handle cleared, so the next window starts a new
+/// one. [I] FUN_1403ba840's blocking conditions (`obj+0x124 & 0x180`, an event
+/// mode, a menu) are taken as clear.
 pub fn tick(game: &mut Game, pax: Option<&Arc<Pax>>) {
     let Some(pax) = pax else { return };
-    if !game.player.armed {
-        game.trail_scan = None;
-        return;
-    }
     let Some(element) = pax.by_id(TRAIL_ELEMENT) else {
         return;
     };
-    if game.trail_length.is_none() {
+    let window = window_open(game);
+    if window && game.trail_length.is_none() {
         game.trail_length = calibrate(game, element.bone_pos.ratio_b);
         let tick = game.tick;
         let length = game.trail_length;
         game.event(serde_json::json!({"event":"weapon_trail_length","tick":tick,"length":length}));
     }
+    if !game.trail_live {
+        if window {
+            game.fx_queue.push(drive_fx::Placed {
+                req: drive_fx::FxRequest {
+                    pax: pax.clone(),
+                    id: TRAIL_ELEMENT,
+                    owner: OWNER,
+                },
+                anchor: drive_fx::Anchor::Weapon,
+            });
+            game.trail_live = true;
+        }
+    } else if !window {
+        game.fx_release.push(OWNER);
+        game.trail_live = false;
+    }
+}
+
+/// Whether the weapon motion's range 12 holds at this frame.
+fn window_open(game: &Game) -> bool {
+    if !game.player.armed {
+        return false;
+    }
     let Some(&clip) = game.poses.get(&(game.player.action, game.player.armed)) else {
-        return;
+        return false;
     };
     let frame = game.player.motion_frame(&game.clips);
-    let started = game.action_started;
-    let from = match game.trail_scan {
-        Some((s, f)) if s == started && f <= frame => Some(f),
-        _ => None,
-    };
-    game.trail_scan = Some((started, frame));
-    let due = game.clip_poses[clip].trails.iter().any(|&(start, end)| {
-        frame <= end
-            && match from {
-                Some(prev) => start > prev && start <= frame,
-                None => start <= frame,
-            }
-    });
-    if due {
-        game.fx_queue.push(drive_fx::Placed {
-            req: drive_fx::FxRequest {
-                pax: pax.clone(),
-                id: TRAIL_ELEMENT,
-                owner: 0xfc,
-            },
-            anchor: drive_fx::Anchor::Weapon,
-        });
-    }
+    game.clip_poses[clip]
+        .trails
+        .iter()
+        .any(|&(start, end)| start <= frame && frame <= end)
 }
