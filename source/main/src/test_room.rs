@@ -14,6 +14,7 @@ use bevy::{
     camera::visibility::RenderLayers,
     core_pipeline::tonemapping::{DebandDither, Tonemapping},
     image::ImageSampler,
+    input::gamepad::{GamepadRumbleIntensity, GamepadRumbleRequest},
     input::mouse::AccumulatedMouseMotion,
     prelude::*,
     render::render_resource::{Extent3d, TextureDimension, TextureFormat},
@@ -972,6 +973,14 @@ struct Game {
     dust_scan: Option<(u64, Action, u32)>,
     /// The scan of the actor's own frame-8 sounds.
     move_se_scan: Option<(u64, Action, u32)>,
+    /// Vibration: the waves, the running one, this tick's motor bytes (set
+    /// once per simulation tick, sent to the pad by `rumble_output`) and the
+    /// frame trigger 31 scan.
+    vibration: Option<player::vibration::Library>,
+    rumble: player::vibration::Playback,
+    motors: [u8; 2],
+    motors_fresh: bool,
+    vibration_scan: Option<(u64, Action, u32)>,
     /// The shown kit's attack shapes by collision group (bone, offset,
     /// radius).
     sora_attack: HashMap<u8, Vec<(usize, Vec3, f32)>>,
@@ -1017,10 +1026,12 @@ struct Game {
     /// serial and frame their triggers were last scanned at.
     actor_poses: HashMap<u64, (Vec3, f32)>,
     actor_scan: HashMap<u64, (u64, f32)>,
-    /// Weapon trail: the action tick and clip frame last scanned, and the
-    /// calibrated bone length.
-    trail_scan: Option<(u64, u32)>,
+    /// Weapon trail: whether its effect is alive (the exe's handle at
+    /// `obj+0xc00`, FUN_1403effa0), and the calibrated bone length.
+    trail_live: bool,
     trail_length: Option<f32>,
+    /// Effect owners whose running instances are to be released.
+    fx_release: Vec<u8>,
     /// Map effect groups to end (None = all of them).
     fx_clear_map: Vec<Option<u8>>,
     /// The area's map effects still to be started (a new area).
@@ -1090,9 +1101,49 @@ struct CameraRig {
     /// Right-drag turn not yet consumed by a tick, in manual-turn units.
     pending_turn: f32,
     recenter_queued: bool,
+    /// Mouse-drag look not yet consumed by a tick (first person's pitch).
+    pending_look: f32,
+    /// First person last tick, and Sora's fade ramp (`actor+0xa10`: value and
+    /// step, FUN_1403b7810) with its end.
+    was_first_person: bool,
+    fade: FadeRamp,
     /// The map's camera collision in game world space.
     collision: CameraCollision,
     collision_hits: u64,
+}
+
+/// FUN_1403b7810's ramp: a value and its per-frame step toward `end`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct FadeRamp {
+    value: f32,
+    step: f32,
+    end: f32,
+}
+
+impl FadeRamp {
+    const SHOWN: FadeRamp = FadeRamp {
+        value: 1.,
+        step: 0.,
+        end: 1.,
+    };
+
+    /// `FUN_1403b7810(ramp, start, end, 30)`.
+    fn start(start: f32, end: f32) -> Self {
+        FadeRamp {
+            value: start,
+            step: (end - start) / follow_camera::FIRST_PERSON_FADE_FRAMES,
+            end,
+        }
+    }
+
+    fn tick(&mut self) {
+        self.value += self.step;
+        if (self.step > 0. && self.value >= self.end) || (self.step < 0. && self.value <= self.end)
+        {
+            self.value = self.end;
+            self.step = 0.;
+        }
+    }
 }
 
 /// The camera's collision: a map's COCT worlds queried like the executable's
@@ -1170,6 +1221,17 @@ fn start_map_effects(game: &mut Game, pax: &Arc<object_effect::Pax>, mask: u64, 
             }
         }
     }
+}
+
+/// FUN_1403ba300: first person is possible in a physics mode with flag bit 7
+/// (ground, air; not Quick Run's mode 0x10 or the glides' 0x11 / 0x12). The
+/// object flag bits it also tests (+0x18c bit 14, +0x194 bit 1) are not
+/// modelled.
+fn first_person_allowed(player: &Player) -> bool {
+    use player::growth::motion::{GLIDE, GLIDE_STAND, QUICK_RUN, QUICK_RUN_END};
+    !player.dead()
+        && !matches!(player.action, Action::Growth(m)
+            if (QUICK_RUN..=QUICK_RUN_END).contains(&m) || (GLIDE..=GLIDE_STAND).contains(&m))
 }
 
 fn camera_input(player: &Player, previous: [f32; 3], speed: f32) -> CameraInput {
@@ -1390,6 +1452,18 @@ fn clip_for(selected: &motion::SelectedMotion) -> Result<(Clip, u32), Box<dyn st
             21 => {
                 if let Some(&deg) = record.parameters.first() {
                     clip.face_target.push((frame, deg as f32));
+                }
+            }
+            // A vibration wave (FUN_14040dd70 case 0x1f): its id at +4.
+            31 => {
+                if let Some(&id) = record.parameters.first() {
+                    clip.vibrations.push((frame, id as u8));
+                }
+            }
+            // The command lockout (FUN_14040dd70 case 0x10): ticks at +4.
+            16 => {
+                if let Some(&ticks) = record.parameters.first() {
+                    clip.command_lockout.push((frame, ticks as f32));
                 }
             }
             1 => {
@@ -1665,6 +1739,8 @@ struct Loaded {
     /// the swings' environment test (wall_hit.rs).
     atkp: Vec<u8>,
     wall_blade: character_kit::Blade,
+    /// The vibration waves of the battle archive's `vbrt` block.
+    vibration: Option<player::vibration::Library>,
     abilities: AbilitySource,
     magic: Option<magic_room::MagicSource>,
     items: Option<item_room::ItemSource>,
@@ -2644,6 +2720,7 @@ fn player_params(
         fall_max: obj_params.fall_max,
         land_inertia: obj_params.word10,
         land_drag: obj_params.word11,
+        head_height: obj_params.head,
         step_height: STEP_HEIGHT,
         walk_threshold: WALK_THRESHOLD,
         radius: BODY_RADIUS,
@@ -3452,6 +3529,7 @@ fn load(
     Ok(Loaded {
         atkp: bar_entry(&battle, b"atkp")?.to_vec(),
         wall_blade,
+        vibration: vibration_library(&battle),
         board_motion,
         keyblades,
         weapon_model: config.object_model_name.clone(),
@@ -5846,6 +5924,14 @@ fn simulate(
         (stick, jump, decide)
     };
     let (up, down) = if talking { (false, false) } else { (up, down) };
+    // First person: the "is moving" predicates the idle and run states test
+    // (FUN_1403a7830, FUN_1403a8f00) are false, so the left stick starts no
+    // walk or run [I: read from those two predicates, not from a capture].
+    let stick = if rig.camera.first_person {
+        Vec2::ZERO
+    } else {
+        stick
+    };
     // Camera-relative stick: forward is the view direction on the ground,
     // right is screen right.
     let eye = from_world(rig.camera.eye);
@@ -6525,6 +6611,35 @@ fn simulate(
         }
     }
     let mut camera = camera_input(&game.player, rig.previous_position, game.params.run_speed);
+    // First person (camera mode 1, Select): FUN_140165110 enters on the press,
+    // FUN_140165e30 reads the right stick's up/down bits (0xc0000) for the
+    // pitch and R3 to level it, and the idle states (FUN_1403a70a0,
+    // FUN_1403a9250) turn Sora in place by 3 degrees a frame while its left /
+    // right bits (20, 21) are held and a command is possible.
+    camera.select = game.pad.pressed & 0x40_0000 != 0;
+    camera.reset_pitch = game.pad.pressed & 0x2_0000 != 0;
+    camera.head_lift = game.params.head_height;
+    camera.first_person_ok = first_person_allowed(&game.player);
+    if game.autoplay.is_none() && game.pad.held & 0xc_0000 != 0 {
+        let [_, y, magnitude] = controller::analog(game.pad_data.right);
+        camera.look = y * magnitude;
+    }
+    let pending_look = rig.pending_look.clamp(-1., 1.);
+    if camera.look == 0. && pending_look != 0. {
+        camera.look = pending_look;
+        rig.pending_look -= pending_look;
+    }
+    if rig.camera.first_person && !game.player.dead() && game.player.can_command(&game.clips) {
+        let held = game.pad.held;
+        let mut amount =
+            (held & 0x20_0000 != 0) as i32 as f32 - (held & 0x10_0000 != 0) as i32 as f32;
+        if amount == 0. {
+            amount = turn.clamp(-1., 1.);
+        }
+        // A turn to the right lowers the scene yaw.
+        game.player.yaw -= amount * follow_camera::MANUAL_TURN;
+        camera.player_forward = to_world([game.player.yaw.sin(), 0., game.player.yaw.cos()]);
+    }
     camera.stick = [stick.x, -stick.y];
     camera.magnitude = stick.length().min(1.);
     camera.turn = turn.clamp(-1., 1.);
@@ -6552,6 +6667,17 @@ fn simulate(
         hit
     });
     *collision_hits += hits.get();
+    // Sora fades out as first person starts and back in as it ends (the ramp
+    // restarts from its far end each time, as FUN_1403b7810 does).
+    if rig.camera.first_person != rig.was_first_person {
+        rig.fade = if rig.camera.first_person {
+            FadeRamp::start(1., 0.)
+        } else {
+            FadeRamp::start(0., 1.)
+        };
+        rig.was_first_person = rig.camera.first_person;
+    }
+    rig.fade.tick();
     rig.previous_position = game.player.position;
     game.tick += 1;
     if let Some(action) = step.started {
@@ -6570,6 +6696,7 @@ fn simulate(
         );
     }
     sora_sounds(&mut game);
+    sora_vibration(&mut game);
     sora_dust(&mut game);
     if tick.is_multiple_of(60) {
         let (position, yaw, action) = (game.player.position, game.player.yaw, game.player.action);
@@ -7330,6 +7457,85 @@ fn dissolve_present(
 
 /// Frame-8 sound triggers of Sora's current clip (the Keyblade's motion)
 /// reached since the last scan; a new action or a loop rescans from 0.
+/// The battle archive's vibration waves: the `vbrt` block's `vibr` table and
+/// its type 47 entries in order.
+fn vibration_library(battle: &[u8]) -> Option<player::vibration::Library> {
+    let table = bar::read_bar(battle).ok()?;
+    let block = table.entries.iter().find(|e| e.name_bytes == *b"vbrt")?;
+    let start = block.offset.max(0) as usize;
+    let bytes = battle.get(start..start.checked_add(block.size as usize)?)?;
+    let inner = bar::read_bar(bytes).ok()?;
+    let slice = |e: &data::bar::BarEntry| {
+        let at = e.offset.max(0) as usize;
+        bytes.get(at..at.checked_add(e.size as usize)?)
+    };
+    let vibr = inner.entries.iter().find(|e| e.name_bytes == *b"vibr")?;
+    let waves: Option<Vec<&[u8]>> = inner
+        .entries
+        .iter()
+        .filter(|e| e.entry_type == 47)
+        .map(slice)
+        .collect();
+    player::vibration::Library::read(slice(vibr)?, &waves?)
+}
+
+/// Frame trigger 31 on Sora's motion starts a wave, and the callback
+/// (FUN_14019b1d0) turns the running one into this tick's motor bytes.
+fn sora_vibration(game: &mut Game) {
+    let key = (game.action_started, game.player.action);
+    let frame = game.player.motion_frame(&game.clips);
+    let from = match game.vibration_scan {
+        Some((s, a, f)) if (s, a) == key && f <= frame => Some(f),
+        _ => None,
+    };
+    game.vibration_scan = Some((key.0, key.1, frame));
+    let due: Vec<u8> = game
+        .player
+        .clip(&game.clips)
+        .vibrations
+        .iter()
+        .filter(|&&(at, _)| from.is_none_or(|f| at > f) && at <= frame)
+        .map(|&(_, id)| id)
+        .collect();
+    for id in due {
+        if let Some(wave) = game.vibration.as_ref().and_then(|l| l.find(id)) {
+            game.rumble.start(wave);
+            let tick = game.tick;
+            game.event(serde_json::json!({"event":"vibration_start","tick":tick,"id":id}));
+        }
+    }
+    game.motors = game.rumble.tick();
+    game.motors_fresh = true;
+}
+
+/// The pad's motors (FUN_14039bbe0 → XInputSetState): sent once per
+/// simulation tick for one tick's length. The room has no Config page, so the
+/// vibration bit (default on) is taken as set.
+fn rumble_output(
+    mut game: ResMut<Game>,
+    pads: Query<Entity, With<Gamepad>>,
+    mut requests: MessageWriter<GamepadRumbleRequest>,
+) {
+    if !std::mem::take(&mut game.motors_fresh) {
+        return;
+    }
+    let (strong_motor, weak_motor) = player::vibration::motors(game.motors);
+    for gamepad in &pads {
+        if strong_motor == 0. && weak_motor == 0. {
+            requests.write(GamepadRumbleRequest::Stop { gamepad });
+        } else {
+            requests.write(GamepadRumbleRequest::Add {
+                gamepad,
+                duration: std::time::Duration::from_secs_f32(1. / 60.),
+                intensity: GamepadRumbleIntensity {
+                    strong_motor,
+                    weak_motor,
+                },
+            });
+        }
+    }
+}
+
 fn sora_sounds(game: &mut Game) {
     let clip = game.poses[&(game.player.action, game.player.armed)];
     let frame = game.player.motion_frame(&game.clips);
@@ -8702,6 +8908,36 @@ type CameraOnly = (
     Without<MenuCamera>,
 );
 
+/// Sora's body parts and the Keyblade's.
+type SoraOrWeapon = Or<(With<SoraPart>, With<WeaponPart>)>;
+
+/// First person hides Sora (the ramp at `actor+0xa10`): his body and the
+/// Keyblade he carries fade with it [I: the weapon follows the owner's flag,
+/// FUN_1403d9fe0, not a measured capture].
+fn first_person_fade(
+    rig: Res<CameraRig>,
+    mut materials: ResMut<Assets<FogMaterial>>,
+    parts: Query<&MeshMaterial3d<FogMaterial>, SoraOrWeapon>,
+) {
+    let alpha = rig.fade.value.clamp(0., 1.);
+    for material in &parts {
+        let Some(current) = materials.get(&material.0) else {
+            continue;
+        };
+        if (current.base.base_color.alpha() - alpha).abs() < 1e-4 {
+            continue;
+        }
+        if let Some(mut m) = materials.get_mut(&material.0) {
+            m.base.base_color = Color::WHITE.with_alpha(alpha);
+            m.base.alpha_mode = if alpha < 1. {
+                AlphaMode::Blend
+            } else {
+                AlphaMode::Opaque
+            };
+        }
+    }
+}
+
 fn camera_control(
     motion: Res<AccumulatedMouseMotion>,
     mut rig: ResMut<CameraRig>,
@@ -8713,6 +8949,12 @@ fn camera_control(
     // right stick; its sensitivity is unresolved): 0.1 at Camera Speed 5.
     let speed = settings.current.camera_factor();
     rig.pending_turn = (rig.pending_turn + motion.delta.x * speed).clamp(-30., 30.);
+    // First person's pitch takes the vertical drag (up looks up).
+    if rig.camera.first_person {
+        rig.pending_look = (rig.pending_look + motion.delta.y * speed).clamp(-30., 30.);
+    } else {
+        rig.pending_look = 0.;
+    }
     let (eye, look_at, fov) = match talk.as_ref().and_then(|t| t.camera) {
         // The talk camera (FUN_140175e50): 60° in the game's horizontal
         // 4:3 sense, converted like the follow camera's.
@@ -11151,6 +11393,11 @@ fn run(mut args: Vec<PathBuf>) -> Result<AppExit, Box<dyn std::error::Error>> {
         map_pax: None,
         dust_scan: None,
         move_se_scan: None,
+        vibration: loaded.vibration.take(),
+        rumble: player::vibration::Playback::default(),
+        motors: [0; 2],
+        motors_fresh: false,
+        vibration_scan: None,
         sora_attack: std::mem::take(&mut loaded.kit.attack),
         party: loaded
             .party
@@ -11228,8 +11475,9 @@ fn run(mut args: Vec<PathBuf>) -> Result<AppExit, Box<dyn std::error::Error>> {
         fx_queue: Vec::new(),
         actor_poses: HashMap::new(),
         actor_scan: HashMap::new(),
-        trail_scan: None,
+        trail_live: false,
         trail_length: None,
+        fx_release: Vec::new(),
         fx_clear_map: Vec::new(),
         map_fx_pending: true,
         sound_stops: Vec::new(),
@@ -11487,6 +11735,9 @@ fn run(mut args: Vec<PathBuf>) -> Result<AppExit, Box<dyn std::error::Error>> {
         previous_position: game.player.position,
         pending_turn: 0.,
         recenter_queued: false,
+        pending_look: 0.,
+        was_first_person: false,
+        fade: FadeRamp::SHOWN,
         collision_hits: 0,
         collision: CameraCollision::new(&loaded.room),
     };
@@ -11634,6 +11885,7 @@ fn run(mut args: Vec<PathBuf>) -> Result<AppExit, Box<dyn std::error::Error>> {
         )
         .add_systems(Update, crate::skate::toggle)
         .add_systems(Update, settings_room::apply_settings)
+        .add_systems(Update, rumble_output)
         .add_systems(
             FixedUpdate,
             (
@@ -11678,6 +11930,7 @@ fn run(mut args: Vec<PathBuf>) -> Result<AppExit, Box<dyn std::error::Error>> {
                 field_npc_present,
                 dissolve_present,
                 camera_control,
+                first_person_fade,
                 game_over::camera,
                 skate_camera,
             )

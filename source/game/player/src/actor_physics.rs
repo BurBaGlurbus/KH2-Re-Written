@@ -70,6 +70,10 @@ pub struct ObjParams {
     /// PRTY word 11 (record +0x2c): the drag of range-42 movement. Not part
     /// of the init block; 0 without a record.
     pub word11: f32,
+    /// PRTY word 12 (record +0x30): the head's height above the root, which
+    /// the first-person camera (FUN_1403b5c50) puts the eye at. 0 without a
+    /// record.
+    pub head: f32,
 }
 
 impl ObjParams {
@@ -85,6 +89,7 @@ impl ObjParams {
             word8: 0.,
             word10: f32::from_bits(0x3f73_3333),
             word11: 0.,
+            head: 0.,
         }
     }
 
@@ -98,6 +103,7 @@ impl ObjParams {
         self.word8 = f32::from_bits(words[8]);
         self.word10 = f32::from_bits(words[10]);
         self.word11 = f32::from_bits(words[11]);
+        self.head = f32::from_bits(words[12]);
     }
 }
 
