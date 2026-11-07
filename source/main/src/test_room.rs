@@ -1359,7 +1359,7 @@ fn clip_for(selected: &motion::SelectedMotion) -> Result<(Clip, u32), Box<dyn st
                 let p = record.parameters.first().copied().unwrap_or(0);
                 clip.windows.push((start, stop, record.trigger, p));
             }
-            3 => clip.no_gravity.push((start, stop)),
+            3 | 24 | 30 => clip.no_gravity.push((start, stop)),
             27 => clip.invulnerable.push((start, stop)),
             42 => clip.inertia.push((start, stop)),
             // 28 turns toward the lock-on target, 22 toward the command
