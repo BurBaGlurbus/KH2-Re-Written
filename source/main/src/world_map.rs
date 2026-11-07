@@ -10,13 +10,17 @@
 //! menu (dk::WM_LANDING) under worldmap::CloseUpCamera, and a decided world
 //! point ends the program with its target (the jump, FUN_1403946d0).
 //!
-//! Not here yet: the jump into the field (entrance 0x63 arrivals), the
-//! Gummi routes (#88), the world-opening events, sounds and the objects'
-//! effects (#89).
+//! The queued world events play on arrival: messages, the event camera,
+//! the objects' refresh and the character scenes (worldmap::ObjWidget),
+//! which hide the map while they show.
+//!
+//! Not here yet: the jump into the field (entrance 0x63 arrivals) and the
+//! objects' effects (#89).
+mod scene;
 mod ui;
 
 use crate::area::{self, AreaSource, LoadedArea};
-use crate::test_room::{BobPart, RoomPart, spawn_bobs, spawn_model, spawn_room};
+use crate::test_room::{BgChunk, BobPart, RoomPart, spawn_bobs, spawn_model, spawn_room};
 use ::area::world_state;
 use bevy::{
     app::AppExit,
@@ -47,8 +51,10 @@ use visual::world_map_menu::{self, Info, Menu, RouteInfo};
 use visual::{controller, input};
 use world_map::{
     camera::{self as wm_camera, ObjCamera, Pose},
+    events,
     landing::{self, Landing, Outcome},
     objects::{self, Switch},
+    widgets,
 };
 
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
@@ -68,6 +74,8 @@ const DEFAULT_STORY: (u32, u32) = (0x800, 0x895);
 const AUTOPLAY_CAPTURES: [u64; 8] = [40, 130, 190, 270, 350, 430, 560, 700];
 const AUTOPLAY_END: u64 = 780;
 const WARM_UP_FRAMES: u32 = 90;
+/// The map camera's near plane.
+const MAP_NEAR: f32 = 5.;
 
 /// What a world map object is (FUN_140393f50 by objentry sub-kind).
 #[derive(Clone, Copy)]
@@ -107,6 +115,25 @@ struct ActorPart {
 }
 #[derive(Component)]
 struct MapCamera;
+/// The map (room, map objects and world map objects), hidden while
+/// widgets show (FUN_1401625f0).
+#[derive(Component)]
+struct MapRoot;
+/// A widget model (an index into `WorldMap::widget_models`) and its parts.
+#[derive(Component)]
+struct WidgetRoot(usize);
+#[derive(Component)]
+struct WidgetPart {
+    model: usize,
+    part: usize,
+}
+
+/// An object model a script puts in a widget slot.
+struct WidgetModel {
+    slot: usize,
+    object: u32,
+    model: Arc<InspectionModel>,
+}
 
 #[derive(Resource)]
 struct WorldMap {
@@ -151,7 +178,46 @@ struct WorldMap {
     jump: Option<world_state::Target>,
     /// 03system 'cmd': each command's execute id (FUN_1403b68b0).
     commands: HashMap<u16, u16>,
+    /// Sound requests of this tick (FUN_1401de0c0 ids: se000 1 cursor,
+    /// 2 decide, 3 open, 4 cancel, 5 error).
+    sounds: Vec<u32>,
+    /// The world events still to play (FUN_14038dc60) and the one playing
+    /// with its event camera (camera slot 2) and message window.
+    event_queue: std::collections::VecDeque<u32>,
+    event: Option<events::EventPlayer>,
+    event_camera: Option<wm_camera::EventCamera>,
+    window: Option<visual::dialogue::TalkWindow>,
+    fade: visual::fade::Fade,
+    /// The world state the objects show after the queued events' scripts
+    /// (op 0x105 / 0x113 refresh to it), the tables and the eh flag.
+    after_world: Option<world_state::WorldState>,
+    tables: Option<world_state::WorldTables>,
+    eh_flag: bool,
+    /// Unattended runs start their script once the events are over.
+    event_ticks: u64,
+    /// The character scene (the event object's widget slots and the
+    /// shared view), the events' archives and the widget models.
+    scene: widgets::Scene,
+    archives: HashMap<u32, scene::EventArchive>,
+    widget_models: Vec<WidgetModel>,
+    /// Op 0x108 requests of this tick: (event, archive entry).
+    voices: Vec<(u32, u32)>,
 }
+
+/// The sound output, the system bank and the world map's field BGM.
+#[derive(Resource)]
+struct AudioRes {
+    output: Option<audio::Output>,
+    banks: visual::sound::Banks,
+    music: Option<visual::sound::MusicSlot>,
+    bgm_started: bool,
+    /// The events' voices by (event, archive entry).
+    voices: HashMap<(u32, u32), audio::Clip>,
+}
+
+const BGM_KEY: u32 = 0xb6_0000;
+/// One voice plays at a time (thunk_FUN_1401df2f0 stops the last).
+const VOICE_KEY: u32 = 0xb7_0000;
 
 /// The 2D assets and the sheets they were uploaded to.
 #[derive(Resource)]
@@ -161,6 +227,10 @@ struct UiRes {
     pictures: Vec<usize>,
     font: usize,
     icon: usize,
+    /// The message window art, the event font and a white texel (fades).
+    window: Option<usize>,
+    event_font: Option<usize>,
+    white: usize,
 }
 
 struct Startup {
@@ -290,11 +360,11 @@ fn map_body(shapes: &[object_collision::Entry]) -> Option<Body> {
 /// FUN_14039a410) and the symbol slots (FUN_14038df20).
 fn apply_world_state(
     wm: &mut WorldMap,
-    progress: &::area::progress::Progress,
+    state: &world_state::WorldState,
     tables: Option<&world_state::WorldTables>,
+    eh_flag: bool,
     bobs: usize,
 ) {
-    let state = &progress.world;
     let mut switches = Vec::new();
     if let Some(set) = tables.and_then(|t| t.draw_group_set(state.draw_group_set as i32)) {
         for bit in 0..64 {
@@ -311,7 +381,6 @@ fn apply_world_state(
             }
         }
     }
-    let eh_flag = progress.test(objects::EH_EFFECT_FLAG);
     wm.eh_symbol = None;
     for a in &mut wm.actors {
         match a.kind {
@@ -382,8 +451,32 @@ fn setup(
 ) {
     let Startup { room, area } = startup.0.take().expect("startup data");
     let root = commands
-        .spawn((Transform::default(), Visibility::default()))
+        .spawn((Transform::default(), Visibility::default(), MapRoot))
         .id();
+    // The widget models, outside the map so that hiding it leaves them.
+    for (i, w) in wm.widget_models.iter().enumerate() {
+        let widget_root = commands
+            .spawn((Transform::default(), Visibility::Hidden, WidgetRoot(i)))
+            .id();
+        let pose: Vec<Vec3> = w.model.poses[0]
+            .position_bits
+            .iter()
+            .map(|v| Vec3::from_array(v.map(f32::from_bits)))
+            .collect();
+        for (part, entity) in spawn_model(
+            &mut commands,
+            &w.model,
+            &pose,
+            widget_root,
+            &mut meshes,
+            &mut materials,
+            &mut images,
+        ) {
+            if let Some(e) = entity {
+                commands.entity(e).insert(WidgetPart { model: i, part });
+            }
+        }
+    }
     spawn_room(
         &mut commands,
         &mut meshes,
@@ -437,7 +530,7 @@ fn setup(
         Camera3d::default(),
         Projection::Perspective(PerspectiveProjection {
             fov: horizontal_to_vertical(world_map::camera::FOV_DEGREES.to_radians()),
-            near: 5.,
+            near: MAP_NEAR,
             far: 200_000.,
             ..default()
         }),
@@ -483,6 +576,38 @@ fn setup_ui(
         i.size,
         i.texel_scale as f32,
     );
+    if let Some(w) = ui.ui.window.as_mut() {
+        ui.window = Some(frame.add_sheet(
+            &mut images,
+            std::mem::take(&mut w.texture_rgba),
+            w.texture_size,
+            w.texel_scale as f32,
+        ));
+    }
+    if let Some(e) = ui.ui.event_font.as_mut() {
+        ui.event_font = Some(frame.add_sheet(
+            &mut images,
+            std::mem::take(&mut e.rgba),
+            e.size,
+            e.texel_scale as f32,
+        ));
+    }
+    ui.white = frame.add_sheet(&mut images, vec![255; 4], [1, 1], 1.);
+}
+
+/// The map's draw groups as they change (FUN_140162a00 / FUN_1401629b0):
+/// room chunks and map objects whose group is off hide.
+fn apply_draw_groups(wm: Res<WorldMap>, mut parts: Query<(&BgChunk, &mut Visibility)>) {
+    for (chunk, mut v) in &mut parts {
+        let want = if visual::room::chunk_visible(chunk.0, wm.bg_mask) {
+            Visibility::Inherited
+        } else {
+            Visibility::Hidden
+        };
+        if *v != want {
+            *v = want;
+        }
+    }
 }
 
 /// The map objects and their motions, kept for the presentation.
@@ -641,6 +766,7 @@ fn landing_tick(wm: &mut WorldMap, ui: &UiRes) -> bool {
         let mut mode_changed = false;
         if menu.ready(state) {
             let (sounds, changes) = state.input(pressed, repeat);
+            wm.sounds.extend(sounds.iter().map(|&s| s as u32));
             mode_changed = changes
                 .iter()
                 .any(|c| matches!(c, landing::Change::Scene { .. }));
@@ -696,6 +822,8 @@ fn landing_tick(wm: &mut WorldMap, ui: &UiRes) -> bool {
             wm.log.push(
                 serde_json::json!({"event":"route_menu_opened","tick":wm.tick,"route":route}),
             );
+            // FUN_140398bd0 ends with sound 3.
+            wm.sounds.push(landing::Sound::Open as u32);
             wm.landing = Some((state, menu, r));
         }
         // The reaction command (field logical 0x400, Triangle) lands.
@@ -724,6 +852,8 @@ fn landing_tick(wm: &mut WorldMap, ui: &UiRes) -> bool {
                 serde_json::json!({"event":"landing_opened","tick":wm.tick,"world":world,
                 "mode":state.mode,"cells":state.cells.len(),"episodes":state.episodes.len()}),
             );
+            // FUN_140392e70 ends with sound 3.
+            wm.sounds.push(landing::Sound::Open as u32);
             wm.landing = Some((state, menu, r));
         }
     }
@@ -784,6 +914,158 @@ fn landing_tick(wm: &mut WorldMap, ui: &UiRes) -> bool {
     wm.landing.is_some()
 }
 
+/// FUN_140394050 (with FUN_1403f0b70's draw group set): the objects re-read
+/// their looks from the world state after the events' scripts.
+fn refresh_objects(wm: &mut WorldMap) {
+    if let Some(after) = wm.after_world.clone() {
+        let tables = wm.tables.clone();
+        let (eh, bobs) = (wm.eh_flag, wm.hidden_bobs.len());
+        apply_world_state(wm, &after, tables.as_ref(), eh, bobs);
+    }
+    wm.log
+        .push(serde_json::json!({"event":"event_refresh","tick":wm.tick}));
+}
+
+/// FUN_14038dc60 / FUN_14038fae0: the queued world events play one after
+/// another; while one plays the cursor is held and no reaction or info
+/// panel runs (FUN_14038da50). True while an event plays.
+fn event_tick(wm: &mut WorldMap, ui: &UiRes) -> bool {
+    if wm.event.is_none() {
+        let Some(id) = wm.event_queue.pop_front() else {
+            return false;
+        };
+        let script = ui.ui.events.get(&(id as u16)).cloned().unwrap_or_default();
+        wm.log.push(
+            serde_json::json!({"event":"world_event_start","tick":wm.tick,
+            "id":id,"ops":script.len()}),
+        );
+        wm.event = Some(events::EventPlayer::new(id, script));
+    }
+    // The message window: the field's advance bits (trigger & 0x40c).
+    if let Some(w) = wm.window.as_mut() {
+        let advance = wm.pad.pressed & 0x40c != 0;
+        let sounds = w.step(advance);
+        if w.state == 3 {
+            w.close();
+        }
+        let deleted = w.deleted();
+        wm.sounds.extend(sounds);
+        if deleted {
+            wm.window = None;
+            if let Some(p) = wm.event.as_mut() {
+                p.message_closed();
+            }
+        }
+    }
+    let Some(player) = wm.event.as_mut() else {
+        return false;
+    };
+    let actions = player.tick();
+    let done = player.done;
+    let id = player.id;
+    let mut changes = Vec::new();
+    for a in actions {
+        match a {
+            events::Action::Message { id, tutorial } => {
+                let text = ui.ui.message(id);
+                match (&ui.ui.window, &ui.ui.event_font) {
+                    (Some(sheet), Some(font)) => {
+                        wm.window = Some(visual::dialogue::TalkWindow::balloon(
+                            &sheet.sequence,
+                            text,
+                            ui.ui.colours[usize::from(tutorial)],
+                            &font.widths,
+                        ));
+                    }
+                    _ => {
+                        if let Some(p) = wm.event.as_mut() {
+                            p.message_closed();
+                        }
+                    }
+                }
+                wm.log
+                    .push(serde_json::json!({"event":"event_message","tick":wm.tick,
+                    "message":id,"tutorial":tutorial}));
+            }
+            events::Action::Fade { out, white, n } => {
+                if out {
+                    wm.fade.fade_out(n, white);
+                } else {
+                    wm.fade.fade_in(n, white);
+                }
+            }
+            events::Action::Camera {
+                target,
+                offset,
+                frames,
+            } => {
+                wm.event_camera =
+                    Some(wm_camera::EventCamera::new(wm.pose, target, offset, frames));
+            }
+            events::Action::Refresh => refresh_objects(wm),
+            events::Action::Sound(s) => wm.sounds.push(s),
+            events::Action::Widgets(op) => {
+                let WorldMap {
+                    scene,
+                    archives,
+                    sounds,
+                    ..
+                } = &mut *wm;
+                let clips = archives.get(&id).map_or(&[][..], |a| &a.clips[..]);
+                changes.extend(scene.apply(&op, clips, sounds));
+                wm.log
+                    .push(serde_json::json!({"event":"widget_op","tick":wm.tick,
+                    "op":format!("{op:?}")}));
+            }
+            events::Action::Voice(entry) => {
+                wm.voices.push((id, entry));
+            }
+            events::Action::Jump { world, area } => {
+                wm.jump = Some(world_state::Target::at(world, area, 0));
+            }
+            other => wm
+                .log
+                .push(serde_json::json!({"event":"event_op","tick":wm.tick,
+                "op":format!("{other:?}")})),
+        }
+    }
+    // The widgets' motions (their tasks run after the event's).
+    {
+        let WorldMap {
+            scene,
+            archives,
+            sounds,
+            ..
+        } = &mut *wm;
+        let clips = archives.get(&id).map_or(&[][..], |a| &a.clips[..]);
+        scene.update(clips, sounds);
+    }
+    if done {
+        // The event object's teardown (FUN_14038eda0) clears the widgets
+        // (FUN_14038f150): the map shows and the objects refresh.
+        changes.extend(wm.scene.clear());
+    }
+    for c in changes {
+        match c {
+            widgets::Change::HideMap => wm
+                .log
+                .push(serde_json::json!({"event":"map_hidden","tick":wm.tick})),
+            widgets::Change::ShowMap => refresh_objects(wm),
+        }
+    }
+    if done {
+        wm.log
+            .push(serde_json::json!({"event":"world_event_end","tick":wm.tick,"id":id}));
+        wm.event = None;
+        // FUN_14038dc60's end: camera slot 2 clears and ObjCamera blends
+        // back.
+        if wm.event_camera.take().is_some() {
+            wm.camera.suspend();
+        }
+    }
+    true
+}
+
 /// One 60 Hz tick: the cursor (worldmap::Player with worldmap::ActionShip),
 /// the landing, the objects' motion clocks and the camera.
 fn tick(mut wm: ResMut<WorldMap>, ui: Res<UiRes>) {
@@ -792,7 +1074,22 @@ fn tick(mut wm: ResMut<WorldMap>, ui: Res<UiRes>) {
     }
     wm.tick += 1;
     if wm.autoplay.is_some() {
-        let (stick, buttons) = autoplay_input(wm.tick, wm.autoplay_decide);
+        let (stick, buttons) = if wm.event.is_some() || !wm.event_queue.is_empty() {
+            // During world events the script is held: messages advance
+            // every 90 ticks.
+            let t = wm.tick;
+            let advance = if t % 90 < 2 {
+                controller::button::CROSS
+            } else {
+                0
+            };
+            ([0.; 3], advance)
+        } else {
+            autoplay_input(wm.tick - wm.event_ticks, wm.autoplay_decide)
+        };
+        if wm.event.is_some() || !wm.event_queue.is_empty() {
+            wm.event_ticks = wm.tick;
+        }
         wm.stick = stick;
         wm.raw = controller::raw(&controller::PadData {
             buttons,
@@ -807,7 +1104,9 @@ fn tick(mut wm: ResMut<WorldMap>, ui: Res<UiRes>) {
     } else {
         wm.pad.update_raw(raw, controller::MODE_FIELD, 1.);
     }
-    let held = landing_tick(&mut wm, &ui);
+    wm.fade.update(1.);
+    let eventing = wm.landing.is_none() && event_tick(&mut wm, &ui);
+    let held = eventing || landing_tick(&mut wm, &ui);
     // FUN_1403a8fa0's move request: the stick direction (up = away from
     // the camera, which looks along +Z) at the walk speed below magnitude
     // 0.8 and the run speed from it.
@@ -875,8 +1174,10 @@ fn tick(mut wm: ResMut<WorldMap>, ui: Res<UiRes>) {
         a.time += actor_physics::DT;
     }
     let cursor = wm.actors[ci].position;
-    // Camera slot 2 (the close-up) wins while the menu runs.
-    if !held {
+    // Camera slot 2 (the close-up or the event camera) wins over ObjCamera.
+    if let Some(c) = wm.event_camera.as_mut() {
+        wm.pose = c.update();
+    } else if wm.landing.is_none() {
         let (eh, now) = (wm.eh_symbol, wm.pose);
         wm.pose = wm.camera.update(cursor, eh, now);
     }
@@ -886,6 +1187,64 @@ fn tick(mut wm: ResMut<WorldMap>, ui: Res<UiRes>) {
         let reaction = wm.reaction.and_then(|r| actor_world(&wm.actors[r]));
         wm.log.push(serde_json::json!({"event":"cursor","tick":t,
             "position":cursor,"motion":wanted,"velocity":velocity,"reaction":reaction}));
+    }
+}
+
+/// Plays this tick's sound requests and starts the field BGM once decoded.
+fn play_audio(mut wm: ResMut<WorldMap>, mut audio: ResMut<AudioRes>) {
+    let audio = &mut *audio;
+    let tick = wm.tick;
+    for id in std::mem::take(&mut wm.sounds) {
+        let resolved = audio.banks.request(id).ok().flatten();
+        wm.log
+            .push(serde_json::json!({"event":"sound","tick":tick,"id":id,
+            "layers":resolved.as_ref().map(|r| r.layers.len())}));
+        if let (Some(output), Some(r)) = (audio.output.as_ref(), resolved)
+            && let Ok(mut mixer) = output.mixer.lock()
+        {
+            for layer in r.layers {
+                mixer.play(layer, id, r.volume, 1.);
+            }
+        }
+    }
+    // Op 0x108: the last voice stops and this one plays at volume 0x3fff.
+    for (event, entry) in std::mem::take(&mut wm.voices) {
+        let clip = audio.voices.get(&(event, entry)).cloned();
+        wm.log.push(
+            serde_json::json!({"event":"voice","tick":tick,"event_id":event,
+            "entry":entry,"found":clip.is_some()}),
+        );
+        if let (Some(output), Some(clip)) = (audio.output.as_ref(), clip)
+            && let Ok(mut mixer) = output.mixer.lock()
+        {
+            mixer.stop(VOICE_KEY);
+            mixer.play(clip, VOICE_KEY, 0x3fff as f32 / 16383., 1.);
+        }
+    }
+    if audio.bgm_started {
+        return;
+    }
+    let decoded = audio
+        .music
+        .as_ref()
+        .and_then(|slot| slot.lock().ok().and_then(|mut m| m.take()));
+    match decoded {
+        Some(Ok(m)) => {
+            if let Some(output) = audio.output.as_ref()
+                && let Ok(mut mixer) = output.mixer.lock()
+            {
+                mixer.play(m.clip.clone(), BGM_KEY, m.volume, 1.);
+            }
+            audio.bgm_started = true;
+            wm.log
+                .push(serde_json::json!({"event":"bgm_start","tick":tick,"stats":m.stats}));
+        }
+        Some(Err(e)) => {
+            audio.bgm_started = true;
+            wm.log
+                .push(serde_json::json!({"event":"bgm_failed","tick":tick,"error":e}));
+        }
+        None => {}
     }
 }
 
@@ -907,7 +1266,7 @@ fn draw_ui(wm: Res<WorldMap>, ui: Res<UiRes>, mut frame: ResMut<Ui2dFrame>) {
     if let Some(info) = &wm.route_info {
         items.extend(info.draw(seq, &font));
     }
-    for (sheet, quads) in items {
+    for (sheet, quads) in items.drain(..) {
         let slot = match sheet {
             world_map_menu::Sheet::Image(k) => ui.images.get(k).copied(),
             world_map_menu::Sheet::Picture(k) => ui.pictures.get(k).copied(),
@@ -917,6 +1276,27 @@ fn draw_ui(wm: Res<WorldMap>, ui: Res<UiRes>, mut frame: ResMut<Ui2dFrame>) {
         if let Some(s) = slot {
             frame.draws.push((s, quads));
         }
+    }
+    if let (Some(w), Some(window), Some(evt)) = (&wm.window, ui.window, ui.event_font) {
+        for d in w.draw(window, evt) {
+            if let visual::gauge::Draw::Quads { quads, sheet, .. } = d {
+                frame.draws.push((sheet, quads));
+            }
+        }
+    }
+    // dk::Fade on top (black blends, white adds).
+    if wm.fade.state != visual::fade::State::Idle {
+        let ([r, g, b, a], additive) = wm.fade.colour();
+        let (l, rr) = (-200., 712.);
+        frame.draws.push((
+            ui.white,
+            vec![data::sprite_sequence::Quad {
+                corners: [[l, -10.], [rr, -10.], [l, 426.], [rr, 426.]],
+                uv: [0, 0, 1, 1],
+                colors: [[r, g, b, a]; 4],
+                blend: additive as i32,
+            }],
+        ));
     }
 }
 /// Key time of a looping motion `ticks` after its start.
@@ -1058,6 +1438,103 @@ fn present(
     }
 }
 
+/// The character scene: while widgets exist the map hides and each widget
+/// model draws at its matrix (FUN_1403939f0) on its motion (FUN_140535450)
+/// through the widget camera (FUN_1405352e0: at the origin looking along
+/// +Z, focal 512).
+#[allow(clippy::type_complexity, clippy::too_many_arguments)]
+fn present_widgets(
+    wm: Res<WorldMap>,
+    mut maps: Query<&mut Visibility, With<MapRoot>>,
+    mut roots: Query<(&WidgetRoot, &mut Transform, &mut Visibility), Without<MapRoot>>,
+    parts: Query<(&WidgetPart, &Mesh3d, &MeshMaterial3d<FogMaterial>)>,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<FogMaterial>>,
+    mut cameras: Query<(&mut Transform, &mut Projection), (With<MapCamera>, Without<WidgetRoot>)>,
+    mut shown_tick: Local<Option<u64>>,
+) {
+    if *shown_tick == Some(wm.tick) {
+        return;
+    }
+    *shown_tick = Some(wm.tick);
+    let shown = wm.scene.shown();
+    for mut v in &mut maps {
+        let want = if shown {
+            Visibility::Hidden
+        } else {
+            Visibility::Inherited
+        };
+        if *v != want {
+            *v = want;
+        }
+    }
+    let archive = wm.event.as_ref().and_then(|e| wm.archives.get(&e.id));
+    let mut poses: HashMap<usize, Vec<[f32; 3]>> = HashMap::new();
+    for (root, mut transform, mut visibility) in &mut roots {
+        let w = &wm.widget_models[root.0];
+        let widget = wm.scene.slots[w.slot]
+            .as_ref()
+            .filter(|s| s.object == w.object);
+        let (Some(widget), Some(m)) = (widget, wm.scene.matrix(w.slot)) else {
+            *visibility = Visibility::Hidden;
+            continue;
+        };
+        *visibility = Visibility::Inherited;
+        *transform = Transform::from_matrix(Mat4::from_cols_array_2d(&scene::scene_matrix(&m)));
+        let motion = widget
+            .track
+            .entry
+            .and_then(|e| archive?.motions.get(e as usize)?.as_ref());
+        if let Some(motion) = motion
+            && let Ok((pose, _)) = w
+                .model
+                .skinning
+                .sample_evaluated(motion, scene::key_time(motion, widget.track.time))
+        {
+            poses.insert(
+                root.0,
+                pose.position_bits
+                    .iter()
+                    .map(|p| p.map(f32::from_bits))
+                    .collect(),
+            );
+        }
+    }
+    for (part, handle, material) in &parts {
+        let model = &wm.widget_models[part.model].model;
+        let alpha = blend(model.parts[part.part].attributes);
+        if let Some(m) = materials.get(&material.0)
+            && m.base.alpha_mode != alpha
+            && let Some(mut m) = materials.get_mut(&material.0)
+        {
+            m.base.alpha_mode = alpha;
+        }
+        let Some(pose) = poses.get(&part.model) else {
+            continue;
+        };
+        let positions: Vec<[f32; 3]> = model.parts[part.part]
+            .indices
+            .iter()
+            .map(|&i| pose[i as usize])
+            .collect();
+        if let Some(mut mesh) = meshes.get_mut(&handle.0) {
+            visual::room::update_positions(&mut mesh, positions);
+        }
+    }
+    if shown && let Ok((mut transform, mut projection)) = cameras.single_mut() {
+        *transform = Transform::IDENTITY;
+        if let Projection::Perspective(p) = projection.as_mut() {
+            p.fov = horizontal_to_vertical(widgets::horizontal_fov());
+            p.near = widgets::NEAR;
+        }
+    } else if let Ok((_, mut projection)) = cameras.single_mut()
+        && let Projection::Perspective(p) = projection.as_mut()
+        && p.near != MAP_NEAR
+    {
+        p.near = MAP_NEAR;
+    }
+}
+
 fn finish(
     mut commands: Commands,
     mut wm: ResMut<WorldMap>,
@@ -1125,7 +1602,7 @@ fn parse_story(spec: &str) -> Result<(u32, u32)> {
 
 fn run(args: Vec<PathBuf>) -> Result<AppExit> {
     if args.len() < 2 {
-        return Err("usage: kh2fm wm <Steam-root> <manifest> [--from <world code>] [--story <first>:<last>]... [--touch <world point>,...] [--slot <n>:<state>]... [--at <x>,<z>] [--load-only] [--autoplay <new-capture-dir> [--decide]]".into());
+        return Err("usage: kh2fm wm <Steam-root> <manifest> [--from <world code>] [--story <first>:<last>]... [--touch <world point>,...] [--slot <n>:<state>]... [--at <x>,<z>] [--event <id>]... [--load-only] [--autoplay <new-capture-dir> [--decide]]".into());
     }
     let mut from = "tt".to_owned();
     let mut story = Vec::new();
@@ -1134,6 +1611,7 @@ fn run(args: Vec<PathBuf>) -> Result<AppExit> {
     let mut decide = false;
     let mut touched: Vec<u32> = Vec::new();
     let mut slots: Vec<(usize, u8)> = Vec::new();
+    let mut extra_events: Vec<u32> = Vec::new();
     let mut at: Option<[f32; 2]> = None;
     let mut options = args[2..].iter();
     while let Some(option) = options.next() {
@@ -1150,6 +1628,15 @@ fn run(args: Vec<PathBuf>) -> Result<AppExit> {
             Some("--load-only") => load_only = true,
             Some("--autoplay") => autoplay = Some(PathBuf::from(value()?)),
             Some("--decide") => decide = true,
+            // Play this libretto-wm.bar event after the queued ones.
+            Some("--event") => {
+                let v = value()?;
+                let v = v.trim();
+                extra_events.push(match v.strip_prefix("0x") {
+                    Some(h) => u32::from_str_radix(h, 16)?,
+                    None => v.parse()?,
+                });
+            }
             // World points to mark touched (save points visited), as a
             // save would hold them.
             // A symbol slot's state (save +0x4158 + n − 1), as a save would
@@ -1194,7 +1681,10 @@ fn run(args: Vec<PathBuf>) -> Result<AppExit> {
     // FUN_14038cf20 → FUN_14038de90(0) → FUN_14038dc60: the queued world
     // events' scripts run on arrival; their world map events (#89) are
     // listed, not played.
-    let (events, set) = src.progress_mut().play_queued_world_events();
+    let before_world = src.progress().world.clone();
+    let (mut events_queued, set) = src.progress_mut().play_queued_world_events();
+    events_queued.extend(extra_events.iter().copied());
+    let events = events_queued.clone();
     for &p in &touched {
         src.progress_mut().world.touch_point(p);
     }
@@ -1369,14 +1859,45 @@ fn run(args: Vec<PathBuf>) -> Result<AppExit> {
         route_info: None,
         jump: None,
         commands,
+        sounds: Vec::new(),
+        event_queue: events_queued.iter().copied().collect(),
+        event: None,
+        event_camera: None,
+        window: None,
+        fade: visual::fade::Fade::default(),
+        after_world: None,
+        tables: None,
+        eh_flag: false,
+        event_ticks: 0,
+        scene: widgets::Scene::default(),
+        archives: HashMap::new(),
+        widget_models: Vec::new(),
+        voices: Vec::new(),
     };
     let progress = src.progress();
+    // FUN_14038cf20 creates the objects before its task runs the queued
+    // events' scripts: they show the state from before the scripts until
+    // an event refreshes them (op 0x105 / 0x113).
+    let eh_flag = progress.test(objects::EH_EFFECT_FLAG);
     apply_world_state(
         &mut wm,
-        progress,
+        &before_world,
         progress.world_tables(),
+        eh_flag,
         loaded.bobs.placements.len(),
     );
+    if wm.event_queue.is_empty() {
+        apply_world_state(
+            &mut wm,
+            &progress.world,
+            progress.world_tables(),
+            eh_flag,
+            loaded.bobs.placements.len(),
+        );
+    }
+    wm.after_world = Some(progress.world.clone());
+    wm.tables = progress.world_tables().cloned();
+    wm.eh_flag = eh_flag;
     let records: Vec<_> = progress
         .world
         .records
@@ -1414,17 +1935,143 @@ fn run(args: Vec<PathBuf>) -> Result<AppExit> {
         "layout":{"props":ui.layout.layout.props.len(),"scenes":ui.layout.layout.scenes.len(),"images":ui.layout.image_sizes},
         "pictures":ui.pictures.len(),"ws_i":ui.ws_i.is_some()})
     );
+    // The events' character scenes: each event's archive (op 0x101), its
+    // voices, and the models its widgets show (op 0x102).
+    let mut voice_files: Vec<((u32, u32), String)> = Vec::new();
+    let mut widget_names: HashMap<u32, Option<Arc<InspectionModel>>> = HashMap::new();
+    let mut scene_log = Vec::new();
+    for &id in &events {
+        let Some(script) = ui.events.get(&(id as u16)) else {
+            continue;
+        };
+        if script.contains(&events::Op::Archive) && !wm.archives.contains_key(&id) {
+            let name = events::archive_name(id, scene::LANGUAGE);
+            match library.read(&name) {
+                Ok(bytes) => {
+                    let archive = scene::read_archive(&bytes, &mut scene_log)?;
+                    for (&entry, file) in &archive.voices {
+                        voice_files.push(((id, entry), file.clone()));
+                    }
+                    scene_log.push(serde_json::json!({"event":"event_archive","id":id,
+                        "name":name,"entries":archive.clips.len(),
+                        "motions":archive.clips.iter().filter(|c| c.is_some()).count(),
+                        "voices":archive.voices.len()}));
+                    wm.archives.insert(id, archive);
+                }
+                Err(e) => scene_log.push(serde_json::json!({"event":"event_archive_absent",
+                    "id":id,"name":name,"error":e.to_string()})),
+            }
+        }
+        for (slot, object) in scene::widget_objects(script) {
+            if wm
+                .widget_models
+                .iter()
+                .any(|w| w.slot == slot && w.object == object)
+            {
+                continue;
+            }
+            if let std::collections::hash_map::Entry::Vacant(v) = widget_names.entry(object) {
+                let model = match src.object(object) {
+                    Some(entry) => {
+                        let name = String::from_utf8_lossy(&entry.model_name).into_owned();
+                        let (model, failed) = read_model(&source, &mut library, &name)
+                            .map_err(|e| format!("obj/{name}.mdlx: {e}"))?;
+                        if let Some(reason) = failed {
+                            untextured.push(serde_json::json!({"model": name, "reason": reason}));
+                        }
+                        model.map(Arc::new)
+                    }
+                    None => None,
+                };
+                v.insert(model);
+            }
+            if let Some(model) = widget_names[&object].clone() {
+                wm.widget_models.push(WidgetModel {
+                    slot,
+                    object,
+                    model,
+                });
+            }
+        }
+    }
+    println!(
+        "{}",
+        serde_json::json!({"event":"scenes_prepared","archives":scene_log,
+        "widgets":wm.widget_models.iter().map(|w| (w.slot, format!("{:#x}", w.object))).collect::<Vec<_>>(),
+        "voices":voice_files.len(),"untextured":untextured})
+    );
     if load_only {
         return Ok(AppExit::Success);
     }
+    // The system sounds (se000) and the area's field BGM (its arif pair,
+    // FUN_1403a5960), decoded on a worker thread as the title does.
+    let mut banks = visual::sound::Banks::default();
+    // se000 (menus) and se016 (op 0x105's 16008) [I: the banks the world
+    // map loads were not traced; these are the ones its requests name].
+    for bank in ["se/se000.win32.scd", "se/se016.win32.scd"] {
+        if let Ok(bytes) = library.read(bank) {
+            banks.insert(bytes)?;
+        }
+    }
+    // The banks the widget motions' sound triggers name.
+    let mut trigger_banks: Vec<u32> = wm
+        .archives
+        .values()
+        .flat_map(|a| a.clips.iter().flatten())
+        .flat_map(|c| c.sounds.iter().map(|&(_, id)| id / 1000))
+        .collect();
+    trigger_banks.sort_unstable();
+    trigger_banks.dedup();
+    for bank in trigger_banks {
+        if banks.numbers().contains(&(bank as u16)) {
+            continue;
+        }
+        if let Ok(bytes) = library.read(&format!("se/se{bank:03}.win32.scd")) {
+            banks.insert(bytes)?;
+        }
+    }
+    let mut voices = HashMap::new();
+    for (key, file) in voice_files {
+        match library
+            .read(&file)
+            .map_err(|e| e.to_string())
+            .and_then(|b| crate::cutscene::decode_voice(&b).map_err(|e| e.to_string()))
+        {
+            Ok(clip) => {
+                voices.insert(key, clip);
+            }
+            Err(e) => eprintln!("{file}: voice unreadable: {e}"),
+        }
+    }
+    let music = match std::mem::take(&mut loaded.music.slots[0]) {
+        Some(Some(bytes)) => Some(visual::sound::decode_music_in_background(bytes)),
+        _ => None,
+    };
+    let output = match audio::Output::open() {
+        Ok(o) => Some(o),
+        Err(e) => {
+            eprintln!("Sound output unavailable: {e}");
+            None
+        }
+    };
     let mut app = App::new();
     app.insert_resource(wm)
+        .insert_resource(AudioRes {
+            output,
+            banks,
+            music,
+            bgm_started: false,
+            voices,
+        })
         .insert_resource(UiRes {
             ui,
             images: Vec::new(),
             pictures: Vec::new(),
             font: 0,
             icon: 0,
+            window: None,
+            event_font: None,
+            white: 0,
         })
         .insert_resource(StartupRes(Some(Startup { room, area: loaded })))
         .insert_resource(Time::<Fixed>::from_hz(TICK_HZ))
@@ -1446,8 +2093,11 @@ fn run(args: Vec<PathBuf>) -> Result<AppExit> {
             overlay: true,
         })
         .add_systems(Startup, (setup, setup_ui))
-        .add_systems(FixedUpdate, (read_stick, tick).chain())
-        .add_systems(Update, (present, draw_ui, finish).chain());
+        .add_systems(FixedUpdate, (read_stick, tick, play_audio).chain())
+        .add_systems(
+            Update,
+            (apply_draw_groups, present, present_widgets, draw_ui, finish).chain(),
+        );
     Ok(app.run())
 }
 

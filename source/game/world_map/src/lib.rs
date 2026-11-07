@@ -3,9 +3,11 @@
 //! exe's `worldmap::*` and `dk::WM_*` classes. Positions are engine
 //! coordinates (Y down).
 pub mod camera;
+pub mod events;
 pub mod gummi;
 pub mod landing;
 pub mod objects;
+pub mod widgets;
 
 pub use camera::ObjCamera;
 pub use objects::{GumiLook, SymbolLook, symbol, symbol_look};

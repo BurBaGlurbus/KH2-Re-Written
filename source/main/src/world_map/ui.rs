@@ -62,6 +62,35 @@ fn message_table(archive: &[u8]) -> Result<HashMap<u32, Vec<u8>>> {
     Ok(out)
 }
 
+/// libretto-wm.bar's type-2 table {u32, i32 count, count × {u16 id, u16,
+/// u32 offset}} and the scripts it points at (FUN_1403ec420).
+fn read_events(library: &mut Library) -> HashMap<u16, Vec<world_map::events::Op>> {
+    let mut out = HashMap::new();
+    let Ok(bytes) = library.read("libretto-wm.bar") else {
+        return out;
+    };
+    let Some(entry) = bar::read_bar(&bytes).ok().and_then(|t| {
+        let e = t.entries.iter().find(|e| e.entry_type == 2)?;
+        bytes.get(e.offset as usize..e.offset as usize + e.size as usize)
+    }) else {
+        return out;
+    };
+    let count = entry.get(4..8).map_or(0, |w| {
+        i32::from_le_bytes(w.try_into().unwrap()).max(0) as usize
+    });
+    for r in 0..count {
+        let Some(rec) = entry.get(8 + r * 8..16 + r * 8) else {
+            break;
+        };
+        let id = u16::from_le_bytes([rec[0], rec[1]]);
+        let off = u32::from_le_bytes(rec[4..8].try_into().unwrap()) as usize;
+        if let Some(script) = entry.get(off..) {
+            out.insert(id, world_map::events::read_script(script));
+        }
+    }
+    out
+}
+
 /// What one world's info panel and landing menu show.
 pub struct Prepared {
     pub grid: LandingGrid,
@@ -112,6 +141,15 @@ pub struct Ui {
     pub ws_i: Option<sprite_sequence::Sequence>,
     pub worlds: HashMap<u8, Prepared>,
     pub routes: HashMap<u8, PreparedRoute>,
+    /// libretto-wm.bar (FUN_1403ec4d0: "libretto-%s.bar" for the world):
+    /// the world map event scripts by event id.
+    pub events: HashMap<u16, Vec<world_map::events::Op>>,
+    /// The message windows' SEQD and art (fontinfo.bar, wm.bar 'md_m'),
+    /// the event font and the window text colours (03system 'ftst' ids 5
+    /// and 6 for world 15).
+    pub window: Option<hud::Sheet>,
+    pub event_font: Option<SystemFont>,
+    pub colours: [u32; 2],
     /// The loaded message tables in search order, sys.bar second (the
     /// 0xadc fallback's table).
     tables: [HashMap<u32, Vec<u8>>; 3],
@@ -203,6 +241,29 @@ impl Ui {
             ws_i,
             worlds: HashMap::new(),
             routes: HashMap::new(),
+            events: read_events(library),
+            window: hud::load_window_sheet(
+                source,
+                locate(library, "msg/us/fontinfo.bar")?,
+                locate(library, "msg/us/wm.bar")?,
+            )
+            .map_err(|e| eprintln!("Message window art unavailable: {e}"))
+            .ok(),
+            event_font: hud::load_font(
+                source,
+                locate(library, "msg/us/fontimage.bar")?,
+                locate(library, "msg/us/fontinfo.bar")?,
+                b"evt\0",
+            )
+            .map_err(|e| eprintln!("Event font unavailable: {e}"))
+            .ok(),
+            colours: {
+                let system = library.read("03system.bin")?;
+                [
+                    hud::ftst_colour(&system, 5, 15).unwrap_or(0x80050520),
+                    hud::ftst_colour(&system, 6, 15).unwrap_or(0x80050520),
+                ]
+            },
             tables: [area, sys, journal],
         };
         for &r in routes {
