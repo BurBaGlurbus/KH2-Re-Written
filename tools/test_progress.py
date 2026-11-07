@@ -135,6 +135,14 @@ class ProgressTests(unittest.TestCase):
             progress.generate(self.root, check=True)
         self.assertEqual((self.root / "docs/progress/summary.json").read_text(), "stale")
 
+    def test_readme_without_markers_is_left_alone(self):
+        readme = "# Project\n\nNo progress block here.\n"
+        (self.root / "README.md").write_text(readme, encoding="utf-8")
+        (self.root / "docs/progress/coverage.json").write_text(
+            json.dumps(self.data), encoding="utf-8")
+        self.assertNotIn("README.md", progress.generate(self.root))
+        self.assertEqual((self.root / "README.md").read_text(encoding="utf-8"), readme)
+
     def test_bad_markers_fail_without_mutating_readme(self):
         for text in ("user text", progress.END + progress.START,
                      progress.START + progress.START + progress.END):

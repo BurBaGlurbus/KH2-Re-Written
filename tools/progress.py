@@ -250,12 +250,14 @@ def generate(root, check=False):
     data = json.loads((root / "docs/progress/coverage.json").read_text(encoding="utf-8"))
     validate(data, root)
     summary = summarize(data)
-    readme = (root / "README.md").read_text(encoding="utf-8")
     outputs = {
-        "README.md": replace_block(readme, readme_block(summary)),
         "docs/progress/README.md": report(data, summary),
         "docs/progress/summary.json": json.dumps(summary, indent=2) + "\n",
     }
+    # The README progress block is optional: only refresh it when the markers exist.
+    readme = (root / "README.md").read_text(encoding="utf-8")
+    if START in readme or END in readme:
+        outputs["README.md"] = replace_block(readme, readme_block(summary))
     stale = []
     for name, content in outputs.items():
         file = root / name
