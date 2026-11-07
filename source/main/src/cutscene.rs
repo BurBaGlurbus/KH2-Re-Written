@@ -105,7 +105,7 @@ const VOICE_KEY: u32 = 8_000_000;
 const MUSIC_KEY: u32 = 8_100_000;
 const SE_KEY: u32 = 8_200_000;
 
-fn decode_voice(bytes: &[u8]) -> Result<audio::Clip, Box<dyn std::error::Error>> {
+pub(crate) fn decode_voice(bytes: &[u8]) -> Result<audio::Clip, Box<dyn std::error::Error>> {
     let bank = data::scd::read(bytes)?;
     let sound = bank.sound(0)?.ok_or("voice sound absent")?;
     let audio = *sound.audio.first().ok_or("voice audio absent")?;
