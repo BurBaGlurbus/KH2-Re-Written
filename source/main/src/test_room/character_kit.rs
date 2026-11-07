@@ -629,7 +629,7 @@ pub(super) fn load_kit(
         };
         slots.push(serde_json::json!({"motion_id":ids[clip_list.len()],"slot":selected.slot,"sha256":selected.sha256,
             "end_ticks":clip.end,"loop_start":clip.loop_start,"combo_windows":clip.combo_windows,
-            "blend_to_idle":clip.blend_to_idle,"no_gravity":clip.no_gravity,"command_lockout":clip.command_lockout,"actionable":clip.actionable,
+            "blend_to_idle":clip.blend_to_idle,"no_gravity":clip.no_gravity,"command_lockout":clip.command_lockout,"no_first_person":clip.no_first_person,"actionable":clip.actionable,
             "inertia":clip.inertia,"turn_to_target":clip.turn_to_target,"face_target":clip.face_target,"takeoff":clip.takeoff,
             "root_start":clip_poses[index].root.first().map(|r| r.to_array()),
             "root_end":clip_poses[index].root.last().map(|r| r.to_array())}));
