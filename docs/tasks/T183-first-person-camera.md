@@ -84,10 +84,9 @@ turns the view right; the executable's own yaw sign was not derived); `[I]` that
 the left stick starts no movement (read from the two predicates, not captured);
 `[I]` that the Keyblade fades with Sora (its attach routine copies the owner's
 flag `+0x7b8` bit 6 outside camera mode 0); the entry frame keeps the field
-camera's collision where the executable already uses mode 1's; `obj+0x18c` bit 14
-and `obj+0x194` bit 1 of `FUN_1403ba300` are not modelled; the party members are
-not faded. Which actions the executable lets run while in first person beyond
-the turn and the movement were not traced (attacks and jumps are unchanged).
+camera's collision where the executable already uses mode 1's; the party members are
+not faded. (`FUN_1403ba300`'s two flag bits and what first person blocks were traced
+afterwards, T192.)
 
 Verdict: PARTIAL. The camera follows the traced routines in the development room;
 the input side is read from the predicates only.

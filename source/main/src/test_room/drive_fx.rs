@@ -112,6 +112,8 @@ struct Running {
     group: Option<u8>,
     /// The element's sound, stopped with the element (map beds loop).
     sound_id: Option<u32>,
+    /// The serial it holds in the hit-effect ring (0 = none).
+    spark: u64,
     /// The element's sound (sound > 0) and the ticks until it plays: it
     /// starts with the element, after its start wait.
     sound: Option<u32>,
@@ -199,7 +201,12 @@ fn bound_world(root: Mat4, bones: Option<&HashMap<usize, Mat4>>, bind: &Bind) ->
 
 /// One tick: start the queued elements, follow Sora, step every instance
 /// and batch what it drew.
-pub fn tick(mut game: ResMut<Game>, rig: Res<CameraRig>, mut fx: ResMut<DriveFx>) {
+pub fn tick(
+    mut game: ResMut<Game>,
+    rig: Res<CameraRig>,
+    mut fx: ResMut<DriveFx>,
+    mut sparks: ResMut<super::SparkRing>,
+) {
     let mut requests: Vec<Placed> = std::mem::take(&mut game.fx_queue);
     let mut swapped = None;
     if let Some(d) = game.drive.as_mut() {
@@ -222,6 +229,14 @@ pub fn tick(mut game: ResMut<Game>, rig: Res<CameraRig>, mut fx: ResMut<DriveFx>
     for owner in std::mem::take(&mut game.fx_release) {
         for r in fx.running.iter_mut().filter(|r| r.owner == owner) {
             r.instance.release();
+        }
+    }
+    // Effects displaced from the hit-effect ring fade out over four frames.
+    for serial in std::mem::take(&mut sparks.fade_fx) {
+        for r in fx.running.iter_mut().filter(|r| r.spark == serial) {
+            r.instance.fade_out(super::SPARK_FADE);
+            let tick = game.tick;
+            game.event(serde_json::json!({"event":"spark_fade","tick":tick,"kind":"enemy_hit","serial":serial}));
         }
     }
     // Map elements leave with their background group (FUN_1402c65a0).
@@ -352,10 +367,18 @@ pub fn tick(mut game: ResMut<Game>, rig: Res<CameraRig>, mut fx: ResMut<DriveFx>
             if !fx.dpds.iter().any(|x| Arc::ptr_eq(x, &dpd)) {
                 fx.dpds.push(dpd.clone());
             }
+            // An attacker's hit spark is one of the eight most recent
+            // (FUN_1403d9be0).
+            let spark = if req.owner == super::ENEMY_HIT_OWNER {
+                sparks.register()
+            } else {
+                0
+            };
             fx.running.push(Running {
                 instance,
                 dpd,
                 bind,
+                spark,
                 owner: req.owner,
                 enemy_element,
                 actor_element,

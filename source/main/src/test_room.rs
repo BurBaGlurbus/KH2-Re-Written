@@ -356,7 +356,44 @@ struct RunningEffect {
     label: &'static str,
     /// Element transform kept for effects bound to the enemy.
     bound: Option<object_effect::Element>,
+    /// The serial it holds in the hit-effect ring (0 = none).
+    spark: u64,
 }
+
+/// The executable's ring of the eight most recent hit effects
+/// (`FUN_1403d9be0`, slots `DAT_142a24cd0`, index `DAT_142a24d10`): each
+/// hit, clash and map spark registers in the next slot, and the effect
+/// still sitting there is faded out over four event frames
+/// (`FUN_1402be6a0(handle, 4.0)`). Instances are named by serial, so a slot
+/// whose effect has ended fades nothing (the sweep `FUN_1403d9c40`).
+#[derive(Default, Resource)]
+struct SparkRing {
+    slots: [u64; 8],
+    next: usize,
+    serial: u64,
+    /// Serials to fade, for the legacy effect list and for `drive_fx`.
+    fade_legacy: Vec<u64>,
+    fade_fx: Vec<u64>,
+}
+
+impl SparkRing {
+    /// FUN_1403d9be0: registers a new effect and returns its serial.
+    fn register(&mut self) -> u64 {
+        self.serial += 1;
+        let old = std::mem::replace(&mut self.slots[self.next], self.serial);
+        if old != 0 {
+            self.fade_legacy.push(old);
+            self.fade_fx.push(old);
+        }
+        self.next = (self.next + 1) & 7;
+        self.serial
+    }
+}
+
+/// Frames a displaced hit effect takes to fade out (`DAT_140623b90`).
+const SPARK_FADE: f32 = 4.;
+/// The effect owner id of an enemy attack's hit spark.
+const ENEMY_HIT_OWNER: u8 = 0xf9;
 
 /// Running effect instances and the quads they drew this tick.
 #[derive(Resource)]
@@ -1224,12 +1261,15 @@ fn start_map_effects(game: &mut Game, pax: &Arc<object_effect::Pax>, mask: u64, 
 }
 
 /// FUN_1403ba300: first person is possible in a physics mode with flag bit 7
-/// (ground, air; not Quick Run's mode 0x10 or the glides' 0x11 / 0x12). The
-/// object flag bits it also tests (+0x18c bit 14, +0x194 bit 1) are not
-/// modelled.
-fn first_person_allowed(player: &Player) -> bool {
+/// (ground, air; not Quick Run's mode 0x10 or the glides' 0x11 / 0x12), with
+/// `obj+0x194` bit 1 (range trigger 46) clear and `obj+0x18c` bit 14 clear.
+/// Bit 14 is the riding state (`obj+0x2b0`, the ridden object, replaces the
+/// actor in `FUN_14040d810` / `FUN_14040e4e0` when it is set); no rideable
+/// object exists in the room, so it is always clear here.
+fn first_person_allowed(player: &Player, clips: &Clips) -> bool {
     use player::growth::motion::{GLIDE, GLIDE_STAND, QUICK_RUN, QUICK_RUN_END};
     !player.dead()
+        && !player.first_person_blocked(clips)
         && !matches!(player.action, Action::Growth(m)
             if (QUICK_RUN..=QUICK_RUN_END).contains(&m) || (GLIDE..=GLIDE_STAND).contains(&m))
 }
@@ -1433,6 +1473,8 @@ fn clip_for(selected: &motion::SelectedMotion) -> Result<(Clip, u32), Box<dyn st
                 clip.windows.push((start, stop, record.trigger, p));
             }
             3 | 24 | 30 => clip.no_gravity.push((start, stop)),
+            // obj+0x194 bit 1 (FUN_14040d810 case 0x2e): no first person.
+            46 => clip.no_first_person.push((start, stop)),
             27 => clip.invulnerable.push((start, stop)),
             42 => clip.inertia.push((start, stop)),
             // 28 turns toward the lock-on target, 22 toward the command
@@ -1596,6 +1638,19 @@ impl AbilitySource {
 #[cfg(test)]
 mod ability_source_tests {
     use super::*;
+
+    #[test]
+    fn the_ninth_hit_effect_fades_the_first_and_so_on_round_the_ring() {
+        let mut ring = SparkRing::default();
+        let serials: Vec<u64> = (0..8).map(|_| ring.register()).collect();
+        assert_eq!(serials, [1, 2, 3, 4, 5, 6, 7, 8]);
+        assert!(ring.fade_legacy.is_empty() && ring.fade_fx.is_empty());
+        // The ninth takes slot 0 and fades effect 1, the tenth effect 2.
+        assert_eq!(ring.register(), 9);
+        assert_eq!(ring.register(), 10);
+        assert_eq!(ring.fade_legacy, [1, 2]);
+        assert_eq!(ring.fade_fx, [1, 2]);
+    }
 
     #[test]
     fn saved_arena_expands_without_accepting_unbounded_geometry() {
@@ -6619,7 +6674,7 @@ fn simulate(
     camera.select = game.pad.pressed & 0x40_0000 != 0;
     camera.reset_pitch = game.pad.pressed & 0x2_0000 != 0;
     camera.head_lift = game.params.head_height;
-    camera.first_person_ok = first_person_allowed(&game.player);
+    camera.first_person_ok = first_person_allowed(&game.player, &game.clips);
     if game.autoplay.is_none() && game.pad.held & 0xc_0000 != 0 {
         let [_, y, magnitude] = controller::analog(game.pad_data.right);
         camera.look = y * magnitude;
@@ -6748,7 +6803,12 @@ fn bound_world(
 
 /// Starts requested effects, steps every running instance one game frame
 /// and keeps the quads they drew.
-fn effects_tick(mut game: ResMut<Game>, rig: Res<CameraRig>, mut fx: ResMut<Effects>) {
+fn effects_tick(
+    mut game: ResMut<Game>,
+    rig: Res<CameraRig>,
+    mut fx: ResMut<Effects>,
+    mut sparks: ResMut<SparkRing>,
+) {
     let tick = game.tick;
     if std::mem::take(&mut game.weapon_pax_changed)
         && let Some(pax) = game.weapon_pax.clone()
@@ -6852,7 +6912,7 @@ fn effects_tick(mut game: ResMut<Game>, rig: Res<CameraRig>, mut fx: ResMut<Effe
                     req: drive_fx::FxRequest {
                         pax: pax.clone(),
                         id: element.id,
-                        owner: 0xfe,
+                        owner: ENEMY_HIT_OWNER,
                     },
                     anchor: drive_fx::Anchor::World {
                         at: contact,
@@ -6947,13 +7007,12 @@ fn effects_tick(mut game: ResMut<Game>, rig: Res<CameraRig>, mut fx: ResMut<Effe
         ) else {
             continue;
         };
-        // At most 8 hit effects live (FUN_1403d9be0 ring).
-        if label == "hit"
-            && fx.running.iter().filter(|r| r.label == "hit").count() >= 8
-            && let Some(oldest) = fx.running.iter().position(|r| r.label == "hit")
-        {
-            fx.running.remove(oldest);
-        }
+        // The eight most recent hit effects stay (FUN_1403d9be0).
+        let spark = if matches!(label, "hit" | "system") {
+            sparks.register()
+        } else {
+            0
+        };
         game.event(serde_json::json!({"event":"effect","tick":tick,"kind":label,
             "element":element.id,"effect_number":element.effect_number,"dpd":dpx.dpd,"pdata":dpx.pdata,
             "position":[world[3][0],world[3][1],world[3][2]]}));
@@ -6961,7 +7020,15 @@ fn effects_tick(mut game: ResMut<Game>, rig: Res<CameraRig>, mut fx: ResMut<Effe
             instance,
             label,
             bound,
+            spark,
         });
+    }
+    // Effects displaced from the ring fade out.
+    for serial in std::mem::take(&mut sparks.fade_legacy) {
+        for r in fx.running.iter_mut().filter(|r| r.spark == serial) {
+            r.instance.fade_out(SPARK_FADE);
+            game.event(serde_json::json!({"event":"spark_fade","tick":tick,"kind":r.label,"serial":serial}));
+        }
     }
     let enemy = game
         .enemy
@@ -11832,6 +11899,7 @@ fn run(mut args: Vec<PathBuf>) -> Result<AppExit, Box<dyn std::error::Error>> {
             npc_model,
         })
         .insert_resource(rig)
+        .insert_resource(SparkRing::default())
         .insert_resource(FrameStats {
             started,
             first_frame: false,
